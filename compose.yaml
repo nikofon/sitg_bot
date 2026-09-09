@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: sitg
+      POSTGRES_USER: sitg
+      POSTGRES_PASSWORD: sitg
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sitg -d sitg"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - sitg-postgres:/var/lib/postgresql/data
+
+volumes:
+  sitg-postgres:

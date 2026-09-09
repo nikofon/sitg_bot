@@ -1,0 +1,725 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ApiClient } from "./api/client";
+import { MiniAppShell } from "./app";
+import type { MiniAppPlatform } from "./platform/telegram";
+import { Router } from "./routing/router";
+
+function response(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+class FakePlatform implements MiniAppPlatform {
+  readonly initData = "signed-init-data";
+  readonly isTelegram = true;
+  initialize = vi.fn();
+  destroy = vi.fn();
+  setBackHandler = vi.fn();
+  setMainAction = vi.fn();
+  notifySuccess = vi.fn();
+  notifyError = vi.fn();
+  returnToBot = vi.fn();
+}
+
+describe("MiniAppShell", () => {
+  let shell: MiniAppShell | undefined;
+
+  afterEach(() => {
+    shell?.stop();
+    shell = undefined;
+    document.body.replaceChildren();
+    sessionStorage.clear();
+  });
+
+  const lobby = {
+    kind: "lobby", state: "ready", id: "lobby-id", version: 7,
+    tournament_id: "cup-id", tournament_name: "Autumn Cup", invitation_code: "invite-code",
+    status: "assembling", max_players: 4, expires_at: "2099-01-01", searching: false,
+    hybrid_matchmaking_available: false, settings: { theme_count: 3, ready_delay: 1 },
+    selected_packets: [{ packet_id: "selected", name: "Selected packet", year: 2020, published_at: "2024-12-31T23:00:00Z", lead_author: "Anna", authors: ["Anna", "Boris"], fresh_play_unit_count: 2, total_play_unit_count: 5, playable_for_all: true }],
+    packet_suggestions: [{ packet_id: "discoverable", name: "Discoverable packet", year: 2022, published_at: "2025-01-01T00:00:00Z", lead_author: "Carol", authors: ["Carol", "Dmitry"], fresh_play_unit_count: 4, total_play_unit_count: 6, playable_for_all: false }],
+    members: [{ display_name: "Alice <b>", role: "player", ready: true }],
+    viewer: { display_name: "Alice <b>", role: "player", ready: true },
+    validation_violations: [{ code: "insufficient_fresh_content" }], available_actions: ["settings_update", "packet_select", "packet_remove", "unready", "invite"],
+    mutable_parameters: ["theme_count"], poll_after_seconds: 5, last_event_sequence: 1,
+    setting_descriptors: [
+      { name: "theme_count", value: 3, value_type: "integer", description_key: "setting.theme_count.description", options: [] },
+      { name: "ready_delay", value: 1, value_type: "number", description_key: "setting.ready_delay.description", options: [] },
+    ],
+  };
+
+  function lobbyShell(section: string) {
+    window.history.replaceState({}, "", `/lobbies/ref?section=${section}`);
+    const resource = structuredClone(lobby);
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).endsWith("/packet-select")) {
+        const { packet_id } = JSON.parse(String(options?.body));
+        resource.selected_packets.push(resource.packet_suggestions.find((packet) => packet.packet_id === packet_id)!);
+        resource.version += 1;
+        return response({ selected: true });
+      }
+      if (String(url).endsWith("/packet-remove")) {
+        const { packet_id } = JSON.parse(String(options?.body));
+        resource.selected_packets = resource.selected_packets.filter((packet) => packet.packet_id !== packet_id);
+        resource.version += 1;
+        return response({ removed: true });
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    return { root, fetcher };
+  }
+
+  it("opens the packet picker and submits a discoverable packet with the lobby version", async () => {
+    const { root, fetcher } = lobbyShell("packets");
+    await vi.waitFor(() => expect(root.textContent).toContain("Discoverable packet"));
+    expect(root.querySelector('input[name="username"]')).toBeNull();
+    const button = root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button');
+    button?.click();
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/packet-select"))).toBe(true));
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-select"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "discoverable" });
+    await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Remove"));
+    expect(root.querySelectorAll('[data-packet-id="discoverable"]')).toHaveLength(1);
+    root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button')?.click();
+    await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Add packet"));
+    const remove = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
+    expect(JSON.parse(String(remove?.[1]?.body))).toEqual({ expected_version: 8, packet_id: "discoverable" });
+  });
+
+  it("shows all settings and edits only granted fields with typed controls", async () => {
+    const { root, fetcher } = lobbyShell("settings");
+    await vi.waitFor(() => expect(root.querySelector('input[name="setting:theme_count"]')).not.toBeNull());
+    const input = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
+    expect(input.type).toBe("number");
+    expect(root.querySelector('input[name="setting:ready_delay"]')).toBeNull();
+    expect(root.textContent).toContain("Ready delay");
+    input.value = "4";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/settings"))).toBe(true));
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/settings"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { theme_count: 4 } });
+  });
+
+  it("shows lobby membership without an invite-player form", async () => {
+    const { root } = lobbyShell("overview");
+    await vi.waitFor(() => expect(root.textContent).toContain("Alice <b>"));
+    expect(root.querySelector("li b")).toBeNull();
+    expect(root.textContent).toContain("Selected packet");
+    expect(root.querySelector('input[name="username"]')).toBeNull();
+    expect(root.textContent).not.toContain("Invite player");
+    expect(root.textContent).not.toContain("Discoverable packet");
+    expect(root.querySelector("form")).toBeNull();
+    expect(root.querySelector(".lobby-packet-card button")).toBeNull();
+    expect(root.textContent).toContain("Ready delay");
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain("Not enough themes");
+    expect(root.querySelector(".lobby-overview")?.lastElementChild?.getAttribute("role")).toBe("alert");
+  });
+
+  it("shows selected cards first with metadata, shared freshness, and independent playability", async () => {
+    const { root } = lobbyShell("packets");
+    await vi.waitFor(() => expect(root.querySelectorAll(".lobby-packet-card")).toHaveLength(2));
+    const cards = root.querySelectorAll(".lobby-packet-card");
+    expect(cards[0]?.textContent).toContain("Selected packet");
+    expect(cards[0]?.textContent).toContain("2020");
+    expect(cards[0]?.textContent).toContain("Anna, Boris");
+    expect(cards[0]?.textContent).toContain("2 / 5");
+    expect(cards[0]?.textContent).toContain("Playable for all: Yes");
+    expect(cards[1]?.textContent).toContain("4 / 6");
+    expect(cards[1]?.textContent).toContain("Playable for all: No");
+  });
+
+  it("combines title, author, and inclusive year ranges and preserves filters after mutation", async () => {
+    const { root } = lobbyShell("packets");
+    await vi.waitFor(() => expect(root.querySelector('input[name="name"]')).not.toBeNull());
+    const filter = (name: string, value: string): void => {
+      const input = root.querySelector<HTMLInputElement>(`input[name="${name}"]`)!;
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const ids = (): Array<string | null> => Array.from(root.querySelectorAll(".lobby-packet-card"), (card) => card.getAttribute("data-packet-id"));
+    filter("name", "DISCOVERABLE");
+    filter("author", "dmitry");
+    filter("year_from", "2022");
+    filter("year_to", "2022");
+    filter("publication_from", "2025");
+    filter("publication_to", "2025");
+    expect(ids()).toEqual(["discoverable"]);
+    for (const [name, value, restore] of [
+      ["author", "Anna", "Carol"], ["year_from", "2023", "2022"],
+      ["year_to", "2021", "2022"], ["publication_from", "2026", "2025"],
+      ["publication_to", "2024", "2025"],
+    ] as const) {
+      filter(name, value);
+      expect(ids()).toEqual([]);
+      expect(root.textContent).toContain("No packets match");
+      filter(name, restore);
+      expect(ids()).toEqual(["discoverable"]);
+    }
+    root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button')?.click();
+    await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Remove"));
+    expect(ids()).toEqual(["discoverable"]);
+    expect(root.querySelector<HTMLInputElement>('input[name="name"]')?.value).toBe("DISCOVERABLE");
+    Array.from(root.querySelectorAll("button")).find((button) => button.textContent === "Reset filters")?.click();
+    expect(ids()).toEqual(["selected", "discoverable"]);
+  });
+
+  it("authenticates, re-authorizes a route, localizes it, and renders untrusted text safely", async () => {
+    window.history.replaceState({}, "", "/history");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            state: "ready",
+            items: [{ id: "one", label: "<b>Result</b>", description: "Player & score" }],
+          },
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    const platform = new FakePlatform();
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), platform, false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("h1")?.textContent).toBe("History"));
+    expect(root.querySelector("h2")?.textContent).toBe("<b>Result</b>");
+    expect(root.querySelector("h2 b")).toBeNull();
+    expect(root.querySelector(".shell-nav")).toBeNull();
+    expect(fetcher.mock.calls[1]?.[0]).toBe("/api/miniapp/routes/resolve?path=%2Fhistory");
+    expect(platform.initialize).toHaveBeenCalledOnce();
+  });
+
+  it("renders a canonical access error without retrying a forbidden action", async () => {
+    window.history.replaceState({}, "", "/manager/appeals");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "ru" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "ru",
+          authorization: { allowed: false, reason_code: "forbidden" },
+          resource: { state: "empty" },
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("[role=alert]")).not.toBeNull());
+    expect(root.querySelector("[role=alert]")?.textContent).toContain("больше нет доступа");
+    expect(root.querySelector("[role=alert] button")).toBeNull();
+  });
+
+  it("renders permission-derived tournament actions and opens localized info in-app", async () => {
+    window.history.replaceState({}, "", "/tournaments?role=player");
+    const tournament = {
+      id: "00000000-0000-0000-0000-000000000001",
+      name: "Autumn Open",
+      slug: "autumn-open",
+      status: "active",
+      phase: "ongoing",
+      visibility: "public",
+      starts_at: "2026-09-10T12:00:00Z",
+      planned_ends_at: null,
+      actual_ends_at: null,
+      language: "en",
+      payment_type: "free",
+      pricing_plans: [],
+      registration_open: true,
+      registration_starts_at: null,
+      registration_ends_at: null,
+      authors: ["Author One"],
+      type_key: "ladder",
+      type_version: 1,
+      ruleset_key: "si",
+      ruleset_version: 1,
+      membership_status: null,
+      managed: false,
+      policy_version: 2,
+      available_actions: ["info", "register"],
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            kind: "tournaments",
+            state: "ready",
+            role: "player",
+            navigation_version: 4,
+            total: 1,
+            items: [tournament],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          tournament,
+          registration_requirements: [],
+          policies: { observing: "forbidden" },
+          default_parameters: { players: 3 },
+          player_mutable_parameters: [],
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("h2")?.textContent).toBe("Autumn Open"));
+    expect(Array.from(root.querySelectorAll(".tournament-actions button"), (item) => item.textContent)).toEqual([
+      "Info",
+      "Register",
+    ]);
+    (root.querySelector(".tournament-actions button") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(document.querySelector("dialog h2")?.textContent).toBe("Autumn Open"));
+    expect(document.querySelector("dialog")?.textContent).toContain("Registration requirements");
+    expect(fetcher.mock.calls[2]?.[0]).toContain("/api/miniapp/tournaments/00000000-0000-0000-0000-000000000001?role=player");
+  });
+
+  it("selects a managed tournament with the authoritative navigation version", async () => {
+    window.history.replaceState({}, "", "/tournaments?role=manager&relationship=managed");
+    const platform = new FakePlatform();
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "ru" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "ru",
+          authorization: { allowed: true },
+          resource: {
+            kind: "tournaments",
+            state: "ready",
+            role: "manager",
+            navigation_version: 7,
+            total: 1,
+            items: [{
+              id: "00000000-0000-0000-0000-000000000002",
+              name: "Кубок",
+              slug: "cup",
+              status: "active",
+              phase: "ongoing",
+              visibility: "private",
+              language: "ru",
+              payment_type: "free",
+              pricing_plans: [],
+              registration_open: false,
+              authors: [],
+              type_key: "classic",
+              type_version: 1,
+              ruleset_key: "si",
+              ruleset_version: 1,
+              managed: true,
+              policy_version: 1,
+              available_actions: ["info", "select_manager"],
+            }],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(response({ ok: true }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), platform, false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("h2")?.textContent).toBe("Кубок"));
+    const select = Array.from(root.querySelectorAll<HTMLButtonElement>(".tournament-actions button"))
+      .find((button) => button.textContent === "Выбрать");
+    select?.click();
+
+    await vi.waitFor(() => expect(platform.returnToBot).toHaveBeenCalledOnce());
+    const request = fetcher.mock.calls[2];
+    expect(request?.[0]).toContain("/select");
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ mode: "manager", expected_version: 7 });
+  });
+
+  it("renders manager settings from capabilities and locks competition after finalization", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/settings");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            kind: "manager_settings",
+            state: "ready",
+            settings_version: 3,
+            finalized_at: "2026-09-03T12:00:00Z",
+            registration_enabled: false,
+            ignore_late_registrations: true,
+            available_actions: ["update_metadata", "update_policy"],
+            type_options: ["classic", "ladder"],
+            ruleset_options: ["si"],
+            policies: { observing: "forbidden" },
+            default_parameters: { theme_count: 5 },
+            player_mutable_parameters: ["theme_count"],
+            author_names: ["Author One"],
+            authors: [{ id: "00000000-0000-0000-0000-000000000004", display_name: "Author One" }],
+            setting_descriptors: [
+              { name: "theme_count", value_type: "integer", description_key: "ruleset.si.theme_count.description", value: 5, options: [] },
+              { name: "question_values", value_type: "array", description_key: "ruleset.si.question_values.description", value: [10, 20], options: [] },
+            ],
+            policy_descriptors: [
+              { name: "observing", value_type: "enum", description_key: "policy.observing.description", value: "forbidden", options: ["unlimited", "burnt-only", "forbidden"] },
+              { name: "packets_discoverable_by_default", value_type: "boolean", description_key: "policy.packets_discoverable_by_default.description", value: true, options: [] },
+              { name: "packets_playable_by_default", value_type: "boolean", description_key: "policy.packets_playable_by_default.description", value: false, options: [] },
+              { name: "packets_readable_by_default", value_type: "boolean", description_key: "policy.packets_readable_by_default.description", value: false, options: [] },
+            ],
+            registration_requirements: [],
+            packet_assignment_count: 2,
+            membership_count: 10,
+            manager_count: 2,
+            tournament: {
+              id: "00000000-0000-0000-0000-000000000003",
+              name: "Managed Cup",
+              slug: "managed-cup",
+              status: "active",
+              phase: "ongoing",
+              visibility: "private",
+              language: "en",
+              payment_type: "one-time",
+              pricing_plans: [{
+                name: "Standard",
+                prices: [
+                  { amount: 100, currency: "RUB" },
+                  { amount: 2, currency: "USD" },
+                ],
+              }],
+              registration_open: false,
+              authors: ["Author One"],
+              type_key: "classic",
+              type_version: 1,
+              ruleset_key: "si",
+              ruleset_version: 1,
+              managed: true,
+              policy_version: 2,
+              settings_version: 3,
+              available_actions: ["info", "select_manager"],
+            },
+          },
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("form.settings-form")).not.toBeNull());
+    expect(root.querySelector<HTMLSelectElement>("[name=type_key]")?.disabled).toBe(true);
+    expect(root.textContent).toContain("Tournament type and ruleset were locked");
+    expect(root.querySelector("[name=registration_open]")).toBeNull();
+    expect(root.querySelector<HTMLInputElement>("[name=ignore_late_registrations]")?.checked).toBe(true);
+    expect(root.querySelector("textarea")).toBeNull();
+    expect(root.querySelector("[name='setting:theme_count']")).not.toBeNull();
+    expect(root.querySelector("[name='setting:question_values']")?.getAttribute("type")).toBe("text");
+    expect(root.querySelector("[name=author_ids]")?.getAttribute("value")).toBe("00000000-0000-0000-0000-000000000004");
+    expect(root.textContent).toContain("Add pricing plan");
+    expect(root.querySelectorAll("[data-pricing-plan]")).toHaveLength(1);
+    expect(root.querySelectorAll(".pricing-price-row")).toHaveLength(2);
+    const addPrice = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Add price");
+    addPrice?.click();
+    expect(root.querySelectorAll(".pricing-price-row")).toHaveLength(3);
+    const settingPanels = root.querySelectorAll<HTMLElement>(".descriptor-editor:first-of-type .descriptor-panel");
+    expect(Array.from(settingPanels).filter((panel) => !panel.hidden)).toHaveLength(1);
+    expect(root.textContent).not.toContain("Management overview");
+    expect(root.querySelector(".danger-button")).toBeNull();
+    expect(fetcher.mock.calls[1]?.[0]).toContain("opaque-reference");
+    for (const [name, defaultValue] of [
+      ["packets_discoverable_by_default", true],
+      ["packets_playable_by_default", false],
+      ["packets_readable_by_default", false],
+    ] as const) {
+      const control = root.querySelector<HTMLInputElement>(`[name='policy:${name}']`);
+      expect(control?.type).toBe("checkbox");
+      expect(control?.checked).toBe(defaultValue);
+      control!.checked = !defaultValue;
+    }
+    expect(root.textContent).toContain("Packets discoverable by default");
+    expect(root.textContent).toContain("Packets playable by default");
+    expect(root.textContent).toContain("Packets readable by default");
+    fetcher.mockRejectedValueOnce(new Error("Offline"));
+    root.querySelector<HTMLFormElement>("form.settings-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    const saved = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
+    expect(saved.policies).toMatchObject({
+      packets_discoverable_by_default: false,
+      packets_playable_by_default: true,
+      packets_readable_by_default: true,
+    });
+  });
+
+  it("renders capability-derived tournament management sections and packet access", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            kind: "manager_management",
+            state: "ready",
+            sections: ["general", "registrations", "packet_accessibility", "packet_management"],
+            settings_version: 4,
+            finalized_at: null,
+            registration_scheduled_open: false,
+            registration_open: false,
+            registration_open_override: null,
+            registration_count: 1,
+            approved_count: 0,
+            participant_count: 1,
+            packet_count: 1,
+            available_actions: ["finalize", "registration_decide", "packet_access", "packet_management"],
+            registrations: [{
+              player_id: "player-1",
+              display_name: "Ada",
+              real_name: "Ada Lovelace",
+              status: "registered",
+              registered_at: "2026-09-04T12:00:00Z",
+              available_actions: ["approve", "reject"],
+            }],
+            packets: [{
+              assignment_id: "assignment-1",
+              packet_id: "packet-1",
+              name: "Final packet",
+              version: 2,
+              player_access: [{
+                player_id: "player-2",
+                display_name: "Grace",
+                playable: true,
+                discoverable: false,
+                readable: false,
+              }],
+            }],
+            tournament: {
+              id: "tournament-1",
+              name: "Managed Cup",
+              slug: "managed-cup",
+              status: "active",
+              phase: "ongoing",
+              visibility: "private",
+              language: "en",
+              payment_type: "free",
+              pricing_plans: [],
+              registration_open: false,
+              authors: [],
+              type_key: "classic",
+              type_version: 1,
+              ruleset_key: "si",
+              ruleset_version: 1,
+              managed: true,
+              policy_version: 1,
+              available_actions: [],
+            },
+          },
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("[data-section=general]")).not.toBeNull());
+    expect(root.querySelectorAll(".management-section-nav button")).toHaveLength(4);
+    expect(root.querySelectorAll(".management-section")).toHaveLength(1);
+    expect(root.querySelector("[data-section=general]")).not.toBeNull();
+    expect(root.textContent).not.toContain("Ada Lovelace");
+
+    const registrationsButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Registrations");
+    registrationsButton?.click();
+    expect(root.querySelectorAll(".management-section")).toHaveLength(1);
+    expect(root.querySelector("[data-section=registrations]")).not.toBeNull();
+    expect(root.textContent).toContain("Ada Lovelace");
+
+    const accessibilityButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Packet accessibility");
+    accessibilityButton?.click();
+    expect(root.querySelectorAll(".management-section")).toHaveLength(1);
+    expect(root.querySelector("[data-section=packet_accessibility]")).not.toBeNull();
+    expect(root.textContent).toContain("Final packet · v2");
+    expect(root.textContent).toContain("Set for all");
+    expect(root.querySelectorAll(".packet-access-table input[type=checkbox]")).toHaveLength(6);
+
+    const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Packet management");
+    managementButton?.click();
+    expect(root.querySelector(".lobby-packet-card h3")?.textContent).toBe("Final packet");
+    expect(Array.from(root.querySelectorAll(".lobby-packet-card button")).map((button) => button.textContent))
+      .toEqual(["Delete", "Release", "Modify"]);
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
+      commentary: "", source: "", form: "", author: "Ada" };
+    fetcher.mockResolvedValueOnce(response({
+      assignment_id: "assignment-1", version: 2, errors: [], warnings: [],
+      field_author_ids: { lead_author: "ada", "themes.0.author": "ada", "themes.0.questions.0.author": "ada",
+        "themes.1.author": "ada", "themes.1.questions.0.author": "ada" },
+      associated_authors: [{ author_id: "ada", display_name: "Ada" }],
+      packet: { name: "Final packet", language: "en", year: 2026, lead_author: "Ada",
+        themes: [{ name: "First", author: "Ada", questions: [question] },
+          { name: "Second", author: "Ada", questions: [question] }] },
+      editor: { packet_fields: ["name", "year", "language", "lead_author"],
+        theme_fields: ["name", "author"], question_fields: ["value", "text", "answer", "accepted_answers", "author"] },
+    }));
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".lobby-packet-card button"))
+      .find((button) => button.textContent === "Modify")!.click();
+    await vi.waitFor(() => expect(root.querySelector("form.packet-editor")).not.toBeNull());
+    expect(root.querySelector<HTMLInputElement>("[data-field=name]")!.disabled).toBe(true);
+    const answer = root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]")!;
+    expect(answer.disabled).toBe(true);
+    expect(root.querySelector<HTMLSelectElement>(".packet-field-author select")!.closest("fieldset")!.disabled).toBe(true);
+    expect(root.querySelector("[data-field=name]")!.parentElement!.querySelectorAll(".packet-change-button")).toHaveLength(1);
+    answer.parentElement!.querySelector<HTMLButtonElement>(".is-substitution")!.click();
+    expect(answer.disabled).toBe(false);
+    expect(answer.parentElement!.querySelector(".is-substitution")!.getAttribute("aria-pressed")).toBe("true");
+    answer.value = "Replacement answer";
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".packet-page-nav button"))
+      .find((button) => button.textContent === "Next")!.click();
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".packet-page-nav button"))
+      .find((button) => button.textContent === "Previous")!.click();
+    expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]")!.value).toBe("Replacement answer");
+    expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]")!.disabled).toBe(false);
+    expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=text]")!.disabled).toBe(true);
+    fetcher.mockResolvedValueOnce(response({ error: { code: "validation_failed" } }, 422));
+    root.querySelector<HTMLFormElement>("form.packet-editor")!.requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    expect(fetcher.mock.calls[3]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
+    const saved = JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body));
+    expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution" });
+    expect(saved.content.themes[0].questions[0].answer).toBe("Replacement answer");
+    expect(saved.field_author_ids["themes.0.questions.0.author"]).toBe("ada");
+  });
+
+  it("associates packet authors, creates a lead author, and preserves theme edits", async () => {
+    window.history.replaceState({}, "", "/manager/packets/opaque-reference/edit");
+    const question = (text: string) => ({
+      value: 10,
+      form: "",
+      text,
+      answer: "Old answer",
+      accepted_answers: [],
+      commentary: "",
+      source: "",
+      author: "Ada",
+    });
+    const resource = {
+      kind: "packet_draft",
+      state: "ready",
+      draft_id: "00000000-0000-0000-0000-000000000010",
+      version: 2,
+      status: "awaiting_confirmation",
+      source_filename: "packet.json",
+      ruleset_key: "si",
+      ruleset_version: 1,
+      errors: [],
+      warnings: ["Missing source"],
+      can_publish: true,
+      can_reject: true,
+      packet: {
+        name: "Final",
+        language: "en",
+        lead_author: "Ada",
+        year: 2026,
+        themes: [
+          { name: "Theme one", author: "Ada", questions: [question("First")] },
+          { name: "Theme two", author: "Grace", questions: [question("Second")] },
+        ],
+      },
+      editor: {
+        schema: "si.packet.v1",
+        page_collection: "themes",
+        packet_fields: ["name", "language", "lead_author", "year"],
+        theme_fields: ["name", "author"],
+        question_fields: ["value", "text", "answer", "accepted_answers", "commentary", "source", "author"],
+        question_values: [10],
+      },
+    } as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({ locale: "en", authorization: { allowed: true }, resource }),
+      )
+      .mockResolvedValueOnce(response({ items: [{ author_id: "registered-ada", display_name: "Ada Lovelace" }] }))
+      .mockResolvedValueOnce(response({ author_id: "new-lead", display_name: "New Editor" }))
+      .mockResolvedValueOnce(response({ ...resource, version: 3 }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.textContent).toContain("Theme one"));
+    const answer = root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]");
+    expect(answer).not.toBeNull();
+    if (answer) answer.value = "New answer";
+    expect(Array.from(root.querySelectorAll("[data-packet-author] h3")).map((item) => item.textContent))
+      .toEqual(["Ada", "Grace"]);
+    const authorSelect = root.querySelector<HTMLSelectElement>('[data-packet-author="Ada"] select')!;
+    authorSelect.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(authorSelect.textContent).toContain("Ada Lovelace"));
+    authorSelect.value = "registered-ada";
+    authorSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Publish packet")?.disabled).toBe(true);
+
+    const createLead = root.querySelector<HTMLButtonElement>("fieldset > .packet-author-picker button")!;
+    createLead.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    Object.defineProperty(dialog, "close", { value: () => dialog.remove() });
+    dialog.querySelector<HTMLInputElement>('[name="first_name"]')!.value = "New";
+    dialog.querySelector<HTMLInputElement>('[name="surname"]')!.value = "Editor";
+    dialog.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await vi.waitFor(() => expect(root.querySelector<HTMLInputElement>("[data-field=lead_author]")!.value).toBe("New Editor"));
+    expect(fetcher.mock.calls[3]?.[0]).toBe("/api/miniapp/manager/packets/opaque-reference/authors");
+    expect(JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body))).toMatchObject({ first_name: "New", surname: "Editor" });
+    const next = Array.from(root.querySelectorAll<HTMLButtonElement>(".packet-page-nav button"))
+      .find((button) => button.textContent === "Next");
+    next?.click();
+    expect(root.textContent).toContain("Theme two");
+    (root.querySelector("form.packet-editor") as HTMLFormElement).requestSubmit();
+
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(5));
+    const submitted = JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body));
+    expect(submitted.expected_version).toBe(2);
+    expect(submitted.content.themes[0].questions[0].answer).toBe("New answer");
+    expect(submitted.content.themes[1].name).toBe("Theme two");
+    expect(submitted.author_bindings).toEqual({ Ada: "registered-ada" });
+    expect(submitted.lead_author_id).toBe("new-lead");
+    expect(submitted.content.lead_author).toBe("New Editor");
+  });
+});

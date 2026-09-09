@@ -1,0 +1,113 @@
+# Mini App and HTTP Adapter
+
+[Technical index](architecture.md) · [Setup](database-operations.md) · [Telegram](telegram.md)
+
+## Source map
+
+| Path | Responsibility |
+| --- | --- |
+| [web/src/app.ts](../web/src/app.ts), [main.ts](../web/src/main.ts) | Screen rendering and startup |
+| [web/src/routing](../web/src/routing) | Route parsing and navigation |
+| [web/src/api](../web/src/api) | Typed payloads, credentialed requests, stable errors |
+| [web/src/platform](../web/src/platform) | Telegram chrome and local development harness |
+| [web/src/ui](../web/src/ui), [state](../web/src/state) | DOM helpers, packet cards, filters and filter persistence |
+| [web/src/i18n](../web/src/i18n), [styles.css](../web/src/styles.css) | Russian/English catalogs and responsive layout |
+| [miniapp_http.py](../src/sitg_bot/miniapp_http.py) | aiohttp routes, session resolution, gateway translation, static files |
+| [services/miniapp_auth.py](../src/sitg_bot/services/miniapp_auth.py), [launch_references.py](../src/sitg_bot/services/launch_references.py) | Telegram signature validation, sessions, CSRF, actor-bound launch targets |
+
+One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
+across routes. It uses direct DOM rendering, not a component framework. Production assets
+are served by the application server from `web/dist`.
+
+## Authentication and request flow
+
+1. Telegram supplies signed `initData`. `POST /api/miniapp/session` validates signature,
+   age, bot environment, and exact origin, then creates an opaque short-lived session.
+2. The server sets an HTTP-only session cookie and returns `csrf_token`, `expires_at`,
+   and `locale`. Browser code never reads the cookie.
+3. Route resolution reloads the caller and reauthorizes the requested resource. Opaque
+   launch references bind sensitive lobby/manager/draft routes to their actor and expiry;
+   possessing a route string is insufficient authorization.
+4. Mutations use POST JSON with `X-CSRF-Token`, `X-Idempotency-Key`, and
+   `X-Correlation-ID`. Queries include correlation metadata. Session refresh rotates CSRF.
+
+The adapter resolves the principal from server-side session state on every request and calls
+the typed gateway. Requested `role` is a view selector, never a grant of manager/admin rights.
+Exact-origin CORS, CSP/security headers, and per-action authorization remain enforced.
+Stable error codes are localized; server exception text is neither rendered nor logged.
+
+## Implemented screens
+
+**Tournaments:** public and membership discovery, player/manager selection, full information,
+and registration. Queries support phase, relationship, registration status, type, ruleset,
+language, text search, ordering, and cursor pagination. Default ordering is `starts_asc`;
+alternatives are `starts_desc`, `name_asc`, and `name_desc`.
+
+**Lobbies:** overview, packet selection, and settings. The overview shows current selections
+and validation warnings. Packet cards show author/year metadata, shared fresh-theme counts,
+and playability for all players; observers do not affect freshness/playability. Selected cards
+come first. Text and inclusive packet/publication year filters survive refresh. Mutations
+use current capabilities and versions; ordered lobby events trigger refresh.
+
+**Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
+pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
+management records. Authors can be searched, selected, removed, or registered. Typed editors
+replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
+Stale saves reload current state; setup finalization requires confirmation.
+
+**Tournament management:** General, Registrations, Packet accessibility, and Packet management,
+with sections derived from the tournament type. Supports setup finalization, manual
+registration availability, completion, pending-registration decisions, and per-player or
+all-player packet rights.
+
+**Packets:** draft preview/edit, author association/creation, publish/reject, assignment
+retirement, version release, and correction/substitution editing. Published fields stay locked
+until an edit classification is selected; save validates actual changes atomically.
+See [packet administration](packet-administration.md) for identity and propagation rules.
+
+Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
+
+## HTTP route families
+
+All paths below start with `/api/miniapp`. Exact request/response fields live in
+[api/types.ts](../web/src/api/types.ts), [api/client.ts](../web/src/api/client.ts), and
+[application/contracts.py](../src/sitg_bot/application/contracts.py).
+
+| Routes | Purpose |
+| --- | --- |
+| POST `/session`, `/session/refresh` | Authenticate and refresh |
+| GET `/routes/resolve?path=...` | Reauthorize and project a route |
+| GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
+| GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
+| `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
+| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
+| `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
+
+Use the route registrations in `MiniAppHttpServer.application` as the complete HTTP inventory;
+the table groups endpoints rather than duplicating their schemas.
+
+## Development and verification
+
+Run from `web/`:
+
+```bash
+npm ci
+npm run dev
+npm test
+npm run build
+```
+
+Vite proxies `/api` to `http://127.0.0.1:8080`; override with
+`SITG_MINIAPP_API_TARGET`. The localhost/127.0.0.1 development harness accepts server-signed
+test `initData` in untracked `web/.env.local` as `VITE_DEV_INIT_DATA`. It only works in a
+development build and displays a warning. It still requires valid backend authentication;
+there is no production fallback identity and no browser bot token.
+
+Use text insertion for user/server content, preserve the security policy and lockfile, and keep
+production source maps disabled. Add routes through the shared shell and permission-aware
+backend projections rather than separate apps.
+
+Browser tests are colocated `*.test.ts`; HTTP and auth tests are
+[test_miniapp_http.py](../tests/unit/test_miniapp_http.py) and
+[test_telegram_miniapp_auth.py](../tests/unit/test_telegram_miniapp_auth.py).

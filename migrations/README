@@ -1,0 +1,6 @@
+PostgreSQL schema migrations for SITG Bot. Apply with `alembic upgrade head`.
+
+0001_initial_schema is the frozen pre-release baseline. It creates the complete
+schema and seeds Ladder, Classic, and SI version 1 on an empty database. Reset
+databases using the former development revision chain before applying it; there
+is no upgrade path from that chain. Future changes belong in new revisions.
