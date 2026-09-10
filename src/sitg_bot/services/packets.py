@@ -1094,7 +1094,7 @@ class PacketAdminService:
         released: bool,
         version_id: UUID | None = None,
     ) -> None:
-        """Set the owner-controlled gate used by the future packet library."""
+        """Set the owner-controlled packet library release gate."""
         async with self.database.transaction() as session:
             packet = await session.get(LogicalPacketRecord, packet_id)
             if packet is None:

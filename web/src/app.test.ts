@@ -29,6 +29,7 @@ describe("MiniAppShell", () => {
     shell = undefined;
     document.body.replaceChildren();
     sessionStorage.clear();
+    vi.restoreAllMocks();
   });
 
   const lobby = {
@@ -73,6 +74,56 @@ describe("MiniAppShell", () => {
     shell.start();
     return { root, fetcher };
   }
+
+  function libraryShell(command: "view" | "download", confirm: boolean) {
+    window.history.replaceState({}, "", command === "view" ? "/library/version" : "/library");
+    vi.spyOn(window, "confirm").mockReturnValue(confirm);
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).endsWith(`/${command}`)) {
+        const body = JSON.parse(String(options?.body));
+        if (!body.confirm) return response({ confirmation_required: true, fresh_unit_count: 1 });
+        return response(command === "download" ? { confirmation_required: false, queued: true } : {
+          confirmation_required: false, name: "Packet", pages: [{ title: "Theme", author: "Writer", questions: [{
+            value: 10, text: "Protected question", answer: "Protected answer", accepted_answers: [], commentary: "", author: "", form: "", source: "",
+          }] }],
+        });
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource: {
+        kind: "library", state: "ready", items: [{ packet_id: "packet", version_id: "version", name: "Packet", year: 2020, published_at: "2026-01-01", lead_author: "Writer", authors: [], tournaments: [] }],
+      } });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    return { root, fetcher };
+  }
+
+  it("requires confirmation before exposing a fresh packet", async () => {
+    const { root, fetcher } = libraryShell("view", true);
+    await vi.waitFor(() => expect(root.textContent).toContain("Protected answer"));
+    const calls = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/view"));
+    expect(calls.map(([, options]) => JSON.parse(String(options?.body)))).toEqual([{ confirm: false }, { confirm: true }]);
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("prevent you from playing"));
+  });
+
+  it("returns to library without revealing content when confirmation is declined", async () => {
+    const { root, fetcher } = libraryShell("view", false);
+    await vi.waitFor(() => expect(root.querySelector("article button")?.textContent).toBe("View"));
+    expect(root.textContent).not.toContain("Protected answer");
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/view"))).toHaveLength(1);
+  });
+
+  it("confirms a fresh download and reports that Telegram delivery is queued", async () => {
+    const { root, fetcher } = libraryShell("download", true);
+    await vi.waitFor(() => expect(root.querySelectorAll("article button")).toHaveLength(2));
+    root.querySelectorAll<HTMLButtonElement>("article button")[1]!.click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("queued for delivery in Telegram"));
+    const calls = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/download"));
+    expect(calls.map(([, options]) => JSON.parse(String(options?.body)))).toEqual([{ confirm: false }, { confirm: true }]);
+    expect(root.textContent).not.toContain("Protected answer");
+  });
 
   it("opens the packet picker and submits a discoverable packet with the lobby version", async () => {
     const { root, fetcher } = lobbyShell("packets");
@@ -580,7 +631,7 @@ describe("MiniAppShell", () => {
     managementButton?.click();
     expect(root.querySelector(".lobby-packet-card h3")?.textContent).toBe("Final packet");
     expect(Array.from(root.querySelectorAll(".lobby-packet-card button")).map((button) => button.textContent))
-      .toEqual(["Delete", "Release", "Modify"]);
+      .toEqual(["Modify", "Release", "Delete"]);
     const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
       commentary: "", source: "", form: "", author: "Ada" };
     fetcher.mockResolvedValueOnce(response({

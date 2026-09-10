@@ -44,7 +44,9 @@ class FakeGateway:
     async def execute(self, principal: ApplicationPrincipal, request: object) -> GatewayResponse:
         self.requests.append(request)
         operation = request.operation  # type: ignore[attr-defined]
-        if operation.action == ActionCode.TOURNAMENT_LIST:
+        if operation.action == ActionCode.LIBRARY_LIST:
+            data = {"items": []}
+        elif operation.action == ActionCode.TOURNAMENT_LIST:
             data = {
                 "items": [
                     {

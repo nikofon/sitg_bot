@@ -34,6 +34,8 @@ from sitg_bot.application.contracts import (
     GatewayError,
     GatewayRequest,
     GatewayResponse,
+    LibraryAccessOperation,
+    LibraryListOperation,
     LobbyCreateOperation,
     LobbyEventsOperation,
     LobbyInfoOperation,
@@ -94,6 +96,7 @@ from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.launch_references import LaunchReferenceService
+from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.packets import PacketAdminService
@@ -250,6 +253,10 @@ ACTION_POLICIES.update(
             stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.LIBRARY_VIEW: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.LIBRARY_DOWNLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.PACKET_MANAGEMENT_UPDATE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
@@ -365,6 +372,7 @@ class ApplicationGateway:
         self.admin_authentication = admin_authentication
         self.launch_references = launch_references
         self.packets = packets or PacketAdminService(database)
+        self.library = PacketLibraryService(database)
         self.minimum_client_version = minimum_client_version
         self.idempotency_lease = idempotency_lease
 
@@ -756,6 +764,16 @@ class ApplicationGateway:
                 telegram_user_id, operation.tournament_id
             )
             return await self.packets.upload_eligibility(tournament_id, player_id)
+        if isinstance(operation, LibraryListOperation):
+            return await self.library.list_packets(player_id)
+        if isinstance(operation, LibraryAccessOperation):
+            return await self.library.access(
+                player_id, operation.version_id, confirm=operation.confirm,
+                download=action == ActionCode.LIBRARY_DOWNLOAD,
+                request_key=hashlib.sha256(
+                    (request.metadata.idempotency_key or "").encode()
+                ).hexdigest(),
+            )
         if isinstance(operation, PacketManagementGetOperation):
             return await self.packets.management_editor(
                 operation.tournament_id, operation.assignment_id, player_id

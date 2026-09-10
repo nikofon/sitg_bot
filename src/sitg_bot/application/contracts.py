@@ -51,6 +51,9 @@ class ActionCode(StrEnum):
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
+    LIBRARY_LIST = "library.list.v1"
+    LIBRARY_VIEW = "library.view.v1"
+    LIBRARY_DOWNLOAD = "library.download.v1"
     PACKET_MANAGEMENT_UPDATE = "packets.management.update.v1"
     PACKET_MANAGEMENT_DELETE = "packets.management.delete.v1"
     PACKET_MANAGEMENT_RELEASE = "packets.management.release.v1"
@@ -390,6 +393,16 @@ class TournamentCompleteOperation(ContractModel):
     expected_version: int = Field(ge=1)
 
 
+class LibraryListOperation(ContractModel):
+    action: Literal[ActionCode.LIBRARY_LIST]
+
+
+class LibraryAccessOperation(ContractModel):
+    action: Literal[ActionCode.LIBRARY_VIEW, ActionCode.LIBRARY_DOWNLOAD]
+    version_id: UUID
+    confirm: bool = Field(default=False, strict=True)
+
+
 class PacketManagementGetOperation(ContractModel):
     action: Literal[ActionCode.PACKET_MANAGEMENT_GET]
     tournament_id: UUID
@@ -679,6 +692,8 @@ GatewayOperation = Annotated[
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation
+    | LibraryListOperation
+    | LibraryAccessOperation
     | PacketManagementUpdateOperation
     | PacketManagementActionOperation
     | TournamentCompleteOperation

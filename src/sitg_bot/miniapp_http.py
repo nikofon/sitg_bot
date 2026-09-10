@@ -18,6 +18,8 @@ from sitg_bot.application.contracts import (
     AuthorsSearchOperation,
     GatewayOperation,
     GatewayResponse,
+    LibraryAccessOperation,
+    LibraryListOperation,
     LobbyEventsOperation,
     LobbyInfoOperation,
     LobbyPacketOperation,
@@ -104,6 +106,7 @@ class MiniAppHttpServer:
         app.router.add_post("/api/miniapp/session", self._create_session)
         app.router.add_post("/api/miniapp/session/refresh", self._refresh_session)
         app.router.add_get("/api/miniapp/routes/resolve", self._resolve_route)
+        app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/tournaments/{tournament_id}", self._tournament_info)
         app.router.add_post(
             "/api/miniapp/tournaments/{tournament_id}/register",
@@ -266,6 +269,19 @@ class MiniAppHttpServer:
         if parsed.scheme or parsed.netloc:
             return self._route_not_found()
         normalized_path = parsed.path.rstrip("/")
+        if normalized_path == "/library" or re.fullmatch(
+            r"/library/[0-9a-fA-F-]{36}", normalized_path
+        ):
+            session, result = await self._query(
+                request, LibraryListOperation(action=ActionCode.LIBRARY_LIST)
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": {"kind": "library", "state": "ready", **result.data},
+            })
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
@@ -926,6 +942,18 @@ class MiniAppHttpServer:
         if resolved.route != "lobby":
             raise LookupError("Lobby launch reference not found")
         return session, resolved.target_id
+
+    async def _library_access(self, request: web.Request) -> web.Response:
+        actions = {"view": ActionCode.LIBRARY_VIEW, "download": ActionCode.LIBRARY_DOWNLOAD}
+        command = request.match_info["command"]
+        if command not in actions:
+            raise web.HTTPNotFound()
+        body = await self._json_body(request)
+        operation = LibraryAccessOperation.model_validate({
+            **body, "action": actions[command], "version_id": request.match_info["version_id"],
+        })
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
 
     async def _query(
         self, request: web.Request, operation: GatewayOperation

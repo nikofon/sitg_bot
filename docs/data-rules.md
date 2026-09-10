@@ -168,8 +168,10 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
   Requirement changes are not retroactive.
 - A packet version has one language and an owner-controlled library-release gate. Tournament
   assignments independently define `no-access`, `play-only`, `read-after-play`, or
-  `read-or-play`, with optional per-player overrides. Future library viewing must require
-  both eligibility and version release and atomically burn the canonical play claims.
+  `read-or-play`, with optional per-player overrides. Library reading requires the readable
+  entitlement, viewing eligibility, and version release; tournament managers bypass these gates.
+  Reading atomically burns canonical claims after confirmation of fresh content. Live game
+  reservations block reading until disclosure or release. Downloads enqueue delivery in that transaction.
 - Payment type belongs to the tournament. Paid tournaments have at least one named pricing
   plan; every plan has at least one positive amount and cannot repeat a currency. Free
   tournaments have no pricing plans.

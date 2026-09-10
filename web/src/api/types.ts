@@ -327,10 +327,38 @@ export interface PageCursor {
   next?: string;
 }
 
+export interface LibraryPacket {
+  packet_id: string;
+  version_id: string;
+  name: string;
+  year: number | null;
+  published_at: string;
+  lead_author: string;
+  authors: string[];
+  tournaments: Array<{ id: string; name: string; slug: string; role: "player" | "manager" }>;
+}
+
+export interface LibraryResource {
+  kind: "library";
+  state: "ready";
+  items: LibraryPacket[];
+}
+
+export interface LibraryPage {
+  title: string;
+  author: string;
+  questions: PacketQuestion[];
+}
+
+export type LibraryAccess =
+  | { confirmation_required: true; fresh_unit_count: number }
+  | { confirmation_required: false; name: string; pages: LibraryPage[] }
+  | { confirmation_required: false; queued: true };
+
 export interface RoutePayload {
   locale: Locale;
   authorization: RouteAuthorization;
-  resource: RouteResource | TournamentRouteResource | TournamentManagerSettingsResource | TournamentManagerManagementResource | LobbyResource | PacketDraftResource;
+  resource: RouteResource | TournamentRouteResource | TournamentManagerSettingsResource | TournamentManagerManagementResource | LobbyResource | PacketDraftResource | LibraryResource;
   pagination?: PageCursor;
 }
 

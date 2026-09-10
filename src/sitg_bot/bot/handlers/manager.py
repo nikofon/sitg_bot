@@ -930,20 +930,21 @@ async def handle_manager_menu_action(
                 ),
             )
             return
+        route = "tournaments"
         url = mini_app_route_url(
             launch_links,
-            "tournaments",
+            route,
             query={"role": "manager", "relationship": "managed", "select": "1"},
         )
         await send_message_model(
             message,
             MessageModel(
-                localization.text("miniapp.tournaments.prompt", locale),
+                localization.text(f"miniapp.{route}.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
-                                localization.text("miniapp.tournaments.open", locale),
+                                localization.text(f"miniapp.{route}.open", locale),
                                 web_app_url=url,
                             ),
                         ),

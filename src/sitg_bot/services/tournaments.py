@@ -2582,42 +2582,57 @@ class TournamentService:
             )
             if (
                 version is None
-                or version.library_released_at is None
                 or version_id is not None
                 and version.id != version_id
             ):
                 return False
-            if await self.has_assignment_access(session, assignment, player_id, "content_visible"):
-                return True
-            level = await self.packet_access_level(session, assignment, player_id)
-            if level == "read-or-play":
-                return True
-            if level != "read-after-play":
-                return False
-            return bool(
-                await session.scalar(
-                    select(PlayerExposureClaimRecord.id)
-                    .join(
-                        GameParticipantRecord,
-                        and_(
-                            GameParticipantRecord.game_id == PlayerExposureClaimRecord.game_id,
-                            GameParticipantRecord.player_id == player_id,
-                        ),
+            return await self.can_read_assignment(session, assignment, version, player_id)
+
+    @classmethod
+    async def can_read_assignment(
+        cls,
+        session: AsyncSession,
+        assignment: TournamentPacketAssignmentRecord,
+        version: PacketVersionRecord,
+        player_id: UUID,
+    ) -> bool:
+        if assignment.status != "active" or version.state != "published":
+            return False
+        if await cls._is_manager(session, assignment.tournament_id, player_id):
+            return True
+        if version.library_released_at is None or not await cls.has_assignment_access(
+            session, assignment, player_id, "content_visible"
+        ):
+            return False
+        level = await cls.packet_access_level(session, assignment, player_id)
+        if level == "read-or-play":
+            return True
+        if level != "read-after-play":
+            return False
+        return bool(
+            await session.scalar(
+                select(PlayerExposureClaimRecord.id)
+                .join(
+                    GameParticipantRecord,
+                    and_(
+                        GameParticipantRecord.game_id == PlayerExposureClaimRecord.game_id,
+                        GameParticipantRecord.player_id == player_id,
                     )
-                    .join(GameRecord, GameRecord.id == GameParticipantRecord.game_id)
-                    .join(
-                        PacketVersionRecord,
-                        PacketVersionRecord.id == PlayerExposureClaimRecord.packet_version_id,
-                    )
-                    .where(
-                        PlayerExposureClaimRecord.player_id == player_id,
-                        PlayerExposureClaimRecord.state == "burnt",
-                        PacketVersionRecord.packet_id == packet_id,
-                        GameRecord.tournament_id == tournament_id,
-                    )
-                    .limit(1)
                 )
+                .join(GameRecord, GameRecord.id == GameParticipantRecord.game_id)
+                .join(
+                    PacketVersionRecord,
+                    PacketVersionRecord.id == PlayerExposureClaimRecord.packet_version_id,
+                )
+                .where(
+                    PlayerExposureClaimRecord.player_id == player_id,
+                    PlayerExposureClaimRecord.state == "burnt",
+                    PacketVersionRecord.packet_id == assignment.packet_id,
+                    GameRecord.tournament_id == assignment.tournament_id,
+                )
+                .limit(1)
             )
+        )
 
     @classmethod
     async def has_assignment_access(

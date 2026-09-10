@@ -244,6 +244,8 @@
   "menu.player": "<b>Player</b>\nChoose an action.",
   "menu.player.other": "<b>Other</b>\nChoose an action.",
   "miniapp.tournaments.open": "Open tournaments",
+  "miniapp.library.open": "Open library",
+  "miniapp.library.prompt": "Open your packet library to read or download packets.",
   "miniapp.tournaments.prompt": "Open the tournament catalogue to search, filter, register, or select a tournament.",
   "miniapp.manager_settings.open": "Open settings",
   "miniapp.manager_settings.prompt": "Open tournament settings to finish setup or update the tournament.",

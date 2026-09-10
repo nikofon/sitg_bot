@@ -65,6 +65,13 @@ retirement, version release, and correction/substitution editing. Published fiel
 until an edit classification is selected; save validates actual changes atomically.
 See [packet administration](packet-administration.md) for identity and propagation rules.
 
+**Library:** readable packets and all managed tournament packets, grouped by adopted version.
+Opened from the player menu only; managed tournament packets remain available in player mode.
+Cards link visible tournament profiles and filter by packet/tournament name or slug, author,
+and packet/publication years. View opens ruleset-defined pages (SI themes), with a dropdown
+and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
+and request confirmation before burning fresh content.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -76,6 +83,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | Routes | Purpose |
 | --- | --- |
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
+| POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |

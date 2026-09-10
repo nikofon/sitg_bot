@@ -8,7 +8,7 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("Mini App base URL must be HTTPS")
     normalized_route = route.strip("/")
-    if normalized_route not in {"tournaments", "history"}:
+    if normalized_route not in {"tournaments", "history", "library"}:
         raise ValueError("Unsupported Mini App route")
     path = f"{parsed.path.rstrip('/')}/{normalized_route}"
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query or {}), ""))

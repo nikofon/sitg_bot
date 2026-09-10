@@ -39,12 +39,17 @@ browser contract.
 ## Schema baseline
 
 [0001_initial_schema.py](../migrations/versions/0001_initial_schema.py) is the sole
-baseline/current head. It freezes tables, indexes, constraints, and Ladder/Classic/SI seeds
+baseline. It freezes tables, indexes, constraints, and Ladder/Classic/SI seeds
 without importing runtime models.
 
 The baseline requires an empty database. Databases from the removed development migration
 chain require an intentional reset; stamping them with this revision is unsupported.
 Subsequent schema changes require new ordered migrations.
+
+Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0002_token_delivery_pgcrypto` enables PostgreSQL `pgcrypto`, required for encrypted
+one-time token delivery when `SITG_TOKEN_DELIVERY_KEY` is configured. The migration role needs
+permission to create this extension. Downgrading preserves it because it may be shared.
 
 [storage/models.py](../src/sitg_bot/storage/models.py) defines ORM records;
 [data rules](data-rules.md) maps their relationships, transaction boundaries, and invariants.

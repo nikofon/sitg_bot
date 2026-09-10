@@ -8,6 +8,7 @@ describe("route matching", () => {
     ["/ongoing", "ongoing"],
     ["/history", "history"],
     ["/library", "library"],
+    ["/library/version-id", "library_reader"],
     ["/authors/link", "authors_link"],
     ["/manager/appeals", "manager_appeals"],
   ])("matches %s", (pathname, expected) => {

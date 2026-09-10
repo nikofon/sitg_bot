@@ -24,6 +24,7 @@ from sitg_bot.bot.callbacks import CallbackReferenceStore
 from sitg_bot.bot.chat_delivery import chat_delivery_handler
 from sitg_bot.bot.game_delivery import game_delivery_handler
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.library_delivery import library_document_delivery_handler
 from sitg_bot.bot.lobby_delivery import (
     lobby_notice_delivery_handler,
     lobby_open_delivery_handler,
@@ -188,6 +189,7 @@ async def run_polling(settings: Settings) -> None:
             )
             dependencies.backend.game_delivery = game_delivery
             handlers = {
+                "telegram.library.document": library_document_delivery_handler(bot),
                 "telegram.chat.message": chat_delivery_handler(
                     bot, dependencies.localization, protocol, game_delivery
                 ),

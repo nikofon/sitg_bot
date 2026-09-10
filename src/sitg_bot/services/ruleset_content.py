@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Protocol
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from sitg_bot.storage.models import (
     QuestionRevisionRecord,
     ThemeRevisionRecord,
 )
+from sitg_bot.storage.packets import PostgresPacketRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,10 @@ class PacketSelection:
 class RulesetContentAdapter(Protocol):
     key: str
     version: int
+
+    async def library_pages(
+        self, session: AsyncSession, packet_version_id: UUID
+    ) -> list[dict[str, object]]: ...
 
     async def play_unit_count(self, session: AsyncSession, packet_version_id: UUID) -> int: ...
 
@@ -41,6 +46,21 @@ class RulesetContentAdapter(Protocol):
 class SIContentAdapter:
     key: str = "si"
     version: int = 1
+
+    async def library_pages(
+        self, session: AsyncSession, packet_version_id: UUID
+    ) -> list[dict[str, object]]:
+        stored = await PostgresPacketRepository().get(session, packet_version_id)
+        if stored is None:
+            raise LookupError("Packet version not found")
+        return [
+            {"title": theme.name, "author": theme.author,
+             "questions": [
+                 {**asdict(question), "accepted_answers": list(question.accepted_answers)}
+                 for question in theme.questions
+             ]}
+            for theme in stored.packet.themes
+        ]
 
     async def play_unit_count(self, session: AsyncSession, packet_version_id: UUID) -> int:
         return int(

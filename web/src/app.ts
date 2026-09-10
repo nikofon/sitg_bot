@@ -1,6 +1,7 @@
 import { ApiClient, ApiError } from "./api/client";
 import type {
   RoutePayload,
+  LibraryAccess,
   RouteResource,
   LobbyResource,
   StableErrorCode,
@@ -25,6 +26,7 @@ import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
+import { renderLibrary, renderLibraryReader } from "./ui/library";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -153,8 +155,26 @@ export class MiniAppShell {
   }
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
+    if ("kind" in payload.resource && payload.resource.kind === "library") {
+      if (route.id === "library_reader") {
+        void this.accessLibrary(route, route.params.version_id ?? "", "view");
+      } else {
+        this.renderFrame(route, renderLibrary(
+          payload.resource.items, this.i18n, this.filters.read("library"),
+          (filters) => this.filters.write("library", filters),
+          (packet, command, button) => {
+            if (command === "view") this.router.navigate(`/library/${encodeURIComponent(packet.version_id)}`);
+            else void this.accessLibrary(route, packet.version_id, command, button);
+          },
+          (tournament) => void this.openLibraryTournament(tournament),
+        ));
+      }
+      return;
+    }
     if (route.id === "tournaments" && isTournamentResource(payload.resource)) {
       this.renderTournamentRoute(route, payload.resource, payload.pagination);
+      const info = route.query.get("info");
+      if (info) void this.openLibraryTournament({ id: info, role: payload.resource.role });
       return;
     }
     if (route.id === "manager_settings" && isManagerSettingsResource(payload.resource)) {
@@ -204,6 +224,58 @@ export class MiniAppShell {
     }
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private async openLibraryTournament(tournament: { id: string; role: TournamentRouteResource["role"] }): Promise<void> {
+    const signal = this.request?.signal;
+    try {
+      const details = await this.api.request<TournamentDetailsPayload>(
+        `/api/miniapp/tournaments/${encodeURIComponent(tournament.id)}?role=${tournament.role}`, { signal },
+      );
+      if (!signal?.aborted) this.showTournamentDetails(details);
+    } catch (error) {
+      if (signal?.aborted) return;
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("route.library.title"), [this.i18n.t(`error.${code}`)]);
+    }
+  }
+
+  private async accessLibrary(route: RouteMatch, version: string, command: "view" | "download", button?: HTMLButtonElement): Promise<void> {
+    const signal = this.request?.signal;
+    if (button) button.disabled = true;
+    try {
+      const path = `/api/miniapp/library/${encodeURIComponent(version)}/${command}`;
+      let result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: false }, signal });
+      if (signal?.aborted) return;
+      if (result.confirmation_required) {
+        if (!window.confirm(this.i18n.t("library.confirm"))) {
+          if (command === "view") this.router.navigate("/library", { replace: true });
+          return;
+        }
+        result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: true }, signal });
+      }
+      if (signal?.aborted) return;
+      if ("pages" in result) {
+        this.renderFrame(route, element("section", {},
+          element("button", {
+            type: "button", className: "secondary-button",
+            onclick: (() => this.router.navigate("/library")) as EventListener,
+          }, this.i18n.t("route.library.title")),
+          renderLibraryReader(result.name, result.pages, this.i18n)));
+      } else if ("queued" in result) {
+        this.showTextDialog(this.i18n.t("library.download"), [this.i18n.t("library.queued")]);
+      }
+    } catch (error) {
+      if (signal?.aborted) return;
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      const message = code === "forbidden" ? this.i18n.t("library.unavailable") : this.i18n.t(`error.${code}`);
+      if (command === "view") {
+        this.renderFrame(route, element("section", {}, this.statusCard("error", message),
+          element("button", { type: "button", onclick: (() => this.router.navigate("/library")) as EventListener }, this.i18n.t("route.library.title"))));
+      } else this.showTextDialog(this.i18n.t("library.download"), [message]);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   private renderPacketEditor(route: RouteMatch, resource: PacketDraftResource): void {

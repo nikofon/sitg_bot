@@ -11,6 +11,7 @@
 | [services/packets.py](../src/sitg_bot/services/packets.py) | Drafts, preview/edit, publication, management and authorization |
 | [storage/packets.py](../src/sitg_bot/storage/packets.py) | Logical content, immutable revisions and publication persistence |
 | [services/author_exposure.py](../src/sitg_bot/services/author_exposure.py) | Permanent exposure burns for linked authors |
+| [services/library.py](../src/sitg_bot/services/library.py), [packet_export.py](../src/sitg_bot/packet_export.py) | Library access, exposure, and DOCX export |
 | [packet_admin.py](../src/sitg_bot/packet_admin.py) | Trusted local administration CLI |
 
 Start tests with [test_packet.py](../tests/unit/test_packet.py),

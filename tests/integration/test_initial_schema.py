@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -20,12 +21,20 @@ from sitg_bot.application.contracts import (
 )
 from sitg_bot.application.gateway import ApplicationGateway, ApplicationPrincipal
 from sitg_bot.services.reliable_delivery import DurableJobQueue, TransactionalOutbox
+from sitg_bot.services.token_requests import (
+    TokenPlaintextUnavailable,
+    TournamentTokenRequestService,
+)
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     ApplicationRequestAuditRecord,
     Base,
     DurableJobRecord,
     OutboxEventRecord,
+    PlatformAdministratorRecord,
+    PlayerRecord,
+    TournamentCreationTokenDeliveryRecord,
+    TournamentCreationTokenRecord,
 )
 
 pytestmark = pytest.mark.integration
@@ -108,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0001_initial_schema"
+                "0002_token_delivery_pgcrypto"
             )
             types = (
                 await connection.execute(
@@ -135,6 +144,56 @@ def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):
     asyncio.run(assert_schema(url, empty=True))
     command.upgrade(config, "head")
     asyncio.run(assert_schema(url))
+
+
+def test_token_approval_and_one_time_delivery_after_baseline_upgrade(baseline_database):
+    url, config = baseline_database
+    command.upgrade(config, "0001_initial_schema")
+    command.upgrade(config, "head")
+
+    async def exercise():
+        database = Database(url)
+        try:
+            async with database.transaction() as session:
+                admin, requester = [
+                    PlayerRecord(
+                        real_name=name, public_nickname=name, status="active",
+                        registration_step="complete", registration_completed_at=datetime.now(UTC),
+                    )
+                    for name in ("Admin", "Requester")
+                ]
+                session.add_all([admin, requester])
+                await session.flush()
+                session.add(PlatformAdministratorRecord(player_id=admin.id))
+            service = TournamentTokenRequestService(
+                database, delivery_encryption_key="test-only-token-delivery-key-32-characters"
+            )
+            request = await service.create_request(requester.id, tournament_name="Test tournament")
+            approved = await service.decide_request(request.request_id, admin.id, approve=True)
+            assert approved.status == "approved"
+            async with database.sessions() as session:
+                delivery = await session.get(
+                    TournamentCreationTokenDeliveryRecord, approved.token_id
+                )
+                assert delivery.status == "pending"
+                encrypted = delivery.encrypted_token
+                assert encrypted
+            delivered = await service.claim_token_once(request.request_id, requester.id)
+            async with database.sessions() as session:
+                token = await session.get(TournamentCreationTokenRecord, approved.token_id)
+                assert token.token_digest == hashlib.sha256(delivered.token.encode()).hexdigest()
+                assert delivered.token.encode() not in encrypted
+                delivery = await session.get(
+                    TournamentCreationTokenDeliveryRecord, approved.token_id
+                )
+                assert delivery.status == "delivered"
+                assert delivery.encrypted_token is None
+            with pytest.raises(TokenPlaintextUnavailable):
+                await service.claim_token_once(request.request_id, requester.id)
+        finally:
+            await database.close()
+
+    asyncio.run(exercise())
 
 
 async def _exercise_reliable_queues(database_url: str) -> tuple[str, str, int, int]:

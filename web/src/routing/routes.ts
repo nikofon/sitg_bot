@@ -5,6 +5,7 @@ export type RouteId =
   | "ongoing"
   | "history"
   | "library"
+  | "library_reader"
   | "authors_link"
   | "lobby"
   | "report"
@@ -61,6 +62,13 @@ const routes: RouteDefinition[] = [
     titleKey: "route.library.title",
     emptyKey: "route.library.empty",
     isRoot: true,
+  },
+  {
+    id: "library_reader",
+    pattern: /^\/library\/([^/]+)\/?$/,
+    parameterNames: ["version_id"],
+    titleKey: "route.library.title",
+    emptyKey: "route.library.empty",
   },
   {
     id: "authors_link",

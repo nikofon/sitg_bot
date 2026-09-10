@@ -942,3 +942,38 @@ p {
 .packet-change-button.is-substitution { background: #b62b32; }
 .packet-change-button[aria-pressed="true"] { border-color: currentColor; outline: 2px solid var(--tg-theme-text-color, #222); }
 .packet-field-author { border: 0; padding: 0; margin: .5rem 0; }
+.library-packet-title {
+  margin-block: 1rem 1.5rem;
+  font-size: clamp(1.75rem, 6vw, 2.25rem);
+  line-height: 1.2;
+}
+
+.library-theme-title {
+  margin-block: 1.5rem 1rem;
+  font-size: 1.35rem;
+  line-height: 1.3;
+}
+
+.library-page { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.library-question {
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 30%, transparent);
+  border-radius: 1rem;
+  background: var(--tg-theme-section-bg-color);
+  line-height: 1.5;
+}
+
+.library-question h3 {
+  margin: 0 0 1.5em;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: inherit;
+}
+
+.library-question p {
+  margin: 0;
+}
+
+.library-page + .pagination { flex-wrap: wrap; gap: .5rem; }

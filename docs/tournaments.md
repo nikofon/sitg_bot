@@ -230,7 +230,7 @@ tournament policy.
 
 Gameplay/library access has an assignment-wide default and optional per-player override:
 
-- `no-access`: neither play nor future library eligibility;
+- `no-access`: neither play nor library eligibility;
 - `play-only`: may play, but play does not grant library eligibility;
 - `read-after-play`: may play and becomes library-eligible only after actually playing;
 - `read-or-play`: may play or read; reading first must burn the version's canonical claims
@@ -238,7 +238,9 @@ Gameplay/library access has an assignment-wide default and optional per-player o
 
 Library eligibility is not sufficient for reading. The owner must also release the adopted
 packet version for library viewing. Release is version-specific and global, while access is
-tournament-assignment-specific. The library reader is not implemented yet.
+tournament-assignment-specific. The readable flag controls library listing; it does not bypass
+these rules. Managers can list and read every active assignment in their tournaments,
+regardless of readable flags, viewing rules, or release status.
 Tournament managers can release adopted packets through Packet management. The
 `packets_released_by_default` policy releases confirmed uploads automatically and defaults to false;
 it does not grant read eligibility. Removing a packet retires only its tournament assignment.
