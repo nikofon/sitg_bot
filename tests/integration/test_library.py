@@ -44,12 +44,15 @@ async def configure(database, fixture, *, level="read-or-play", readable=True, r
         return assignment.id, version.id
 
 
-async def claims_for(database, player_id):
+async def claims_for(database, player_id, version_id=None):
     async with database.sessions() as session:
-        return list(await session.scalars(select(PlayerExposureClaimRecord).where(
+        query = select(PlayerExposureClaimRecord).where(
             PlayerExposureClaimRecord.player_id == player_id,
             PlayerExposureClaimRecord.state.in_(("reserved", "burnt")),
-        )))
+        )
+        if version_id is not None:
+            query = query.where(PlayerExposureClaimRecord.packet_version_id == version_id)
+        return list(await session.scalars(query))
 
 
 @pytest.mark.parametrize("download", [False, True])
@@ -153,6 +156,27 @@ async def test_confirmation_rechecks_authorization(database_url, revocation):
         fixture = await tournament_fixture(database, player_count=1)
         assignment_id, version_id = await configure(database, fixture)
         player_id = fixture.manager.id if revocation == "manager" else fixture.players[0].id
+        if revocation == "manager":
+            # Publication burns every manager of the destination tournament, so
+            # this case reads a packet that reached the tournament without a
+            # publication burn and is still fresh for its managers.
+            other = await tournament_fixture(database, player_count=1)
+            async with database.transaction() as session:
+                foreign = await session.scalar(
+                    select(TournamentPacketAssignmentRecord).where(
+                        TournamentPacketAssignmentRecord.tournament_id == other.tournament_id,
+                        TournamentPacketAssignmentRecord.packet_id == other.packet_id,
+                    )
+                )
+                version_id = foreign.adopted_version_id
+                session.add(
+                    TournamentPacketAssignmentRecord(
+                        tournament_id=fixture.tournament_id,
+                        packet_id=other.packet_id,
+                        adopted_version_id=version_id,
+                        playable_by_members=True,
+                    )
+                )
         library = PacketLibraryService(database)
         warning = await library.access(player_id, version_id, request_key="probe")
         assert warning["confirmation_required"]
@@ -176,7 +200,7 @@ async def test_confirmation_rechecks_authorization(database_url, revocation):
                     row.status = "retired"
         with pytest.raises(PermissionError):
             await library.access(player_id, version_id, confirm=True, request_key="confirmed")
-        assert not await claims_for(database, player_id)
+        assert not await claims_for(database, player_id, version_id)
     finally:
         await database.close()
 

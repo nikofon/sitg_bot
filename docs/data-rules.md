@@ -177,7 +177,13 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
   tournaments have no pricing plans.
 - Drafts retain their creation tournament, intended assignments, validation result, source
   checksum, and uploader when one is supplied. Publication always records its timestamp and
-  records its actor when the caller supplies one.
+  records its actor when the caller supplies one, and permanently burns every theme and
+  question of the published version for the uploader when one is supplied and every active
+  manager of each destination tournament. Correction and substitution saves burn the new
+  version the same way for the editing actor and the editing tournament's managers, packet
+  assignment burns the adopted version for the destination tournament's managers, and
+  granting a manager role retroactively burns the versions currently assigned to that
+  tournament. Burns are permanent; removing a role or an assignment never resets them.
 
 The implemented publication, correction, and substitution workflows are documented in
 [packet-administration.md](packet-administration.md).

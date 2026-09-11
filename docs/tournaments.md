@@ -35,7 +35,11 @@ Roles are scoped as follows:
 Administrator roles are independent from tournament roles. An administrator may manage a
 tournament they organize and be only a player in another tournament. Within one tournament,
 active manager and player roles are mutually exclusive: managers have access to all assigned
-packets and therefore cannot discover, select, register for, or play that tournament.
+packets and therefore cannot discover, select, register for, or play that tournament. Every
+packet version a manager can read through their role — published into, assigned to, or edited
+in their tournament — is permanently burnt for them, and granting a manager role retroactively
+burns the versions currently assigned to that tournament. Removing a role or an assignment
+never resets burns.
 
 Tournament discovery is independent from membership. A finalized public tournament may be listed
 by every authenticated player, while a private tournament appears only in the membership
@@ -75,7 +79,7 @@ does not retroactively remove registered, approved, or active players.
 
 Exposure claims record their source packet version independently of ruleset-specific claim
 namespaces. Source packet provenance is required for every claim, including permanent
-authorship burns outside games.
+authorship and uploader burns outside games.
 
 Tournaments carry a BCP 47-style language tag (`und` means unspecified), explicit authors,
 and packet-derived lead/theme/question authors. Payment is `free`, `one-time`, or

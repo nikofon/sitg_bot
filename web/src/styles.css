@@ -956,6 +956,18 @@ p {
 
 .library-page { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.library-theme-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.55rem 2rem 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 28%, transparent);
+  border-radius: 0.75rem;
+  background: var(--tg-theme-section-bg-color);
+  color: var(--tg-theme-text-color);
+}
+
 .library-question {
   margin-block: 1rem;
   padding: 1rem;
