@@ -180,12 +180,12 @@ counters, player-question facts, and question aggregates. Evaluation starts with
 twentieth completed multiplayer SI game and compares the player's window with established
 players in a shared 50-point rating-bucket baseline covering approximately ±200 rating
 points. The implemented signals are an average accepted-buzz reveal fraction substantially
-lower than the cohort average, buzzes with at most 10% of the ordinary timer remaining,
-correct answers on 40/50-point questions, and correct answers on questions in the lowest 20%
-of reliable question correct rates. A signal is raised only with at least 10 player
+lower than the cohort average, buzzes with at most 10% of the ordinary timer remaining, and
+correct answers on questions in the lowest 20% of reliable question correct rates. A signal
+is raised only with at least 10 player
 observations, at least 100 cohort observations from 10 cohort players, a difference of at
 least 0.15, and a z-score of at least 2.5. Buzz reveal timing uses the cohort variance of the
-continuous reveal fraction; the other three signals use binomial rate variance. Each raised
+continuous reveal fraction; the other two signals use binomial rate variance. Each raised
 signal adds one suspicion point.
 One durable, unique job is enqueued per player and completed week. Deterministic scheduling
 spreads those jobs across the following seven days. Workers use `FOR UPDATE SKIP LOCKED`,

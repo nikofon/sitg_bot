@@ -87,6 +87,29 @@ class FakeGateway:
                 ],
                 "next_cursor": None,
             }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_LEDGER:
+            data = {
+                "items": [
+                    {
+                        "player_id": str(UUID(int=40)),
+                        "display_name": "Suspicious",
+                        "telegram_username": "suspicious",
+                        "suspicion": 3,
+                        "rulesets": [],
+                        "reports": [],
+                    }
+                ]
+            }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_INSPECT:
+            data = {
+                "player": {
+                    "id": str(UUID(int=40)),
+                    "display_name": "Suspicious",
+                    "telegram_username": "suspicious",
+                    "suspicion": 3,
+                },
+                "events": [],
+            }
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -449,3 +472,59 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
     assert result.status == 200
     assert json.loads(result.text)["selected"] is True
     assert [request.operation.action for request in gateway.requests] == [action]
+
+
+async def test_admin_suspicion_ledger_route_resolves_and_supports_events_and_clear():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request(
+        "GET",
+        "/api/miniapp/routes/resolve?path=/admin/suspicion",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "admin_suspicion_ledger"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["items"][0]["player_id"] == str(UUID(int=40))
+    assert gateway.requests[0].operation.action == ActionCode.ADMIN_SUSPICION_LEDGER
+
+    events_request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/events",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    response = await http._admin_suspicion_events(events_request)
+    assert response.status == 200
+    inspection = json.loads(response.text)
+    assert inspection["player"]["suspicion"] == 3
+    assert gateway.requests[-1].operation.action == ActionCode.ADMIN_SUSPICION_INSPECT
+
+    clear_request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/clear",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "suspicion-clear-test",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    clear_request._read_bytes = json.dumps({"note": "reviewed"}).encode()
+    response = await http._admin_suspicion_clear(clear_request)
+    assert response.status == 200
+    operation = gateway.requests[-1].operation
+    assert operation.action == ActionCode.ADMIN_SUSPICION_CLEAR
+    assert operation.player_id == UUID(int=40)
+    assert operation.note == "reviewed"

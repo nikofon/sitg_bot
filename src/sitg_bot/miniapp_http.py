@@ -15,6 +15,9 @@ from pydantic import ValidationError
 from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminSuspicionClearOperation,
+    AdminSuspicionInspectOperation,
+    AdminSuspicionLedgerOperation,
     AuthorsSearchOperation,
     GatewayOperation,
     GatewayResponse,
@@ -181,6 +184,17 @@ class MiniAppHttpServer:
             "/api/miniapp/manager/packets/{launch_ref}/{decision}",
             self._decide_packet_draft,
         )
+        app.router.add_get(
+            "/api/miniapp/admin/suspicion/ledger", self._admin_suspicion_ledger
+        )
+        app.router.add_get(
+            "/api/miniapp/admin/suspicion/ledger/{player_id}/events",
+            self._admin_suspicion_events,
+        )
+        app.router.add_post(
+            "/api/miniapp/admin/suspicion/ledger/{player_id}/clear",
+            self._admin_suspicion_clear,
+        )
         if self.web_dist is not None:
             app.router.add_get("/{path:.*}", self._static)
         return app
@@ -290,6 +304,25 @@ class MiniAppHttpServer:
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
+        if normalized_path == "/admin/suspicion":
+            session, result = await self._query(
+                request, AdminSuspicionLedgerOperation(action=ActionCode.ADMIN_SUSPICION_LEDGER)
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            items = result.data.get("items", [])
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "admin_suspicion_ledger",
+                        "state": "ready" if items else "empty",
+                        **result.data,
+                    },
+                }
+            )
         management_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/management", normalized_path
         )
@@ -981,6 +1014,39 @@ class MiniAppHttpServer:
         operation = LibraryAccessOperation.model_validate({
             **body, "action": actions[command], "version_id": request.match_info["version_id"],
         })
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_ledger(self, request: web.Request) -> web.Response:
+        raw_limit = request.query.get("limit", "50")
+        operation = AdminSuspicionLedgerOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_LEDGER,
+                "limit": int(raw_limit),
+            }
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_events(self, request: web.Request) -> web.Response:
+        operation = AdminSuspicionInspectOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_INSPECT,
+                "player_id": request.match_info["player_id"],
+            }
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_clear(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        operation = AdminSuspicionClearOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_CLEAR,
+                "player_id": request.match_info["player_id"],
+                "note": body.get("note"),
+            }
+        )
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 

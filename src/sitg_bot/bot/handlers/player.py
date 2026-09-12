@@ -18,14 +18,21 @@ from sitg_bot.bot.keyboards.common import (
 )
 from sitg_bot.bot.miniapps import mini_app_route_url, website_url
 from sitg_bot.bot.presenters.common import menu_message
+from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
     InlineKeyboardModel,
     MessageModel,
 )
 from sitg_bot.bot.presenters.render import send_message_model
-from sitg_bot.bot.state import BotBackend, NavigationState, SettingsState, SettingState
-from sitg_bot.bot.state.settings import SettingEditState
+from sitg_bot.bot.state import (
+    BotBackend,
+    GatewayCallError,
+    NavigationState,
+    SettingsState,
+    SettingState,
+)
+from sitg_bot.bot.state.settings import BugReportState, SettingEditState
 
 router = Router(name=__name__)
 
@@ -141,6 +148,21 @@ def notification_text(
             "tournament_token.request_decided",
             locale,
             status=payload.get("status", ""),
+        )
+    if kind == "bug_report":
+        created_raw = str(payload.get("created_at", ""))
+        try:
+            created_at: str = localization.format_datetime(
+                datetime.fromisoformat(created_raw), locale
+            )
+        except ValueError:
+            created_at = created_raw
+        return localization.text(
+            "notification.bug_report",
+            locale,
+            nickname=payload.get("reporter_nickname") or payload.get("reporter_telegram_username") or "",
+            created_at=created_at,
+            commentary=payload.get("commentary", ""),
         )
     return localization.text("notification.generic", locale, kind=kind)
 
@@ -537,3 +559,83 @@ async def handle_player_menu_action(
                 )
             ),
         )
+
+
+@router.message(Command("bug"))
+async def handle_bug_report(
+    message: Message,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState | None,
+    state: FSMContext,
+) -> None:
+    await state.clear()
+    if navigation is None or navigation.context == "registration":
+        await send_message_model(
+            message, MessageModel(localization.text("registration.start_required", locale))
+        )
+        return
+    commentary = (message.text or "").partition(" ")[2].strip()
+    if not commentary:
+        await state.set_state(BugReportState.entering_commentary)
+        await send_message_model(
+            message, MessageModel(localization.text("bug.prompt", locale))
+        )
+        return
+    await _submit_bug_report(
+        message,
+        backend=backend,
+        claim=telegram_update_claim,
+        localization=localization,
+        locale=locale,
+        commentary=commentary,
+        state=state,
+    )
+
+
+@router.message(StateFilter(BugReportState.entering_commentary), F.text)
+async def handle_bug_report_commentary(
+    message: Message,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    state: FSMContext,
+) -> None:
+    await _submit_bug_report(
+        message,
+        backend=backend,
+        claim=telegram_update_claim,
+        localization=localization,
+        locale=locale,
+        commentary=(message.text or "").strip(),
+        state=state,
+    )
+
+
+async def _submit_bug_report(
+    message: Message,
+    *,
+    backend: BotBackend,
+    claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    commentary: str,
+    state: FSMContext,
+) -> None:
+    await state.clear()
+    if not commentary:
+        await send_message_model(message, MessageModel(localization.text("bug.empty", locale)))
+        return
+    try:
+        await backend.submit_bug_report(claim, commentary=commentary)
+    except GatewayCallError as error:
+        if error.error.code == ErrorCode.VALIDATION_FAILED:
+            await send_message_model(
+                message, MessageModel(localization.text("bug.commentary.invalid", locale))
+            )
+            return
+        raise
+    await send_message_model(message, MessageModel(localization.text("bug.received", locale)))

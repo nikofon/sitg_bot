@@ -80,7 +80,7 @@ export function renderLibrary(
 export function renderLibraryReader(name: string, pages: LibraryPage[], i18n: I18n): HTMLElement {
   const content = element("section", { className: "library-page" });
   const navigation = element("nav", { className: "pagination", "aria-label": i18n.t("library.pages") });
-  const select = element("select", { "aria-label": i18n.t("library.jump") }, ...pages.map((page, index) =>
+  const select = element("select", { className: "library-theme-select", "aria-label": i18n.t("library.jump") }, ...pages.map((page, index) =>
     element("option", { value: String(index) }, `${i18n.t("library.theme")}: ${page.title}`)));
   const render = (index: number): void => {
     const page = pages[index];

@@ -11,6 +11,7 @@ describe("route matching", () => {
     ["/library/version-id", "library_reader"],
     ["/authors/link", "authors_link"],
     ["/manager/appeals", "manager_appeals"],
+    ["/admin/suspicion", "admin_suspicion"],
   ])("matches %s", (pathname, expected) => {
     expect(matchRoute({ pathname, search: "" }).id).toBe(expected);
   });

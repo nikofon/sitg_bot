@@ -15,6 +15,9 @@ from sitg_bot.application.contracts import (
     AccountLookupOperation,
     ActionCode,
     AdminAuthenticateOperation,
+    AdminSuspicionClearOperation,
+    AdminSuspicionInspectOperation,
+    AdminSuspicionLedgerOperation,
     ApplicationPrincipal,
     AuthorLinkAdminDecideOperation,
     AuthorLinkAdminPendingOperation,
@@ -22,6 +25,7 @@ from sitg_bot.application.contracts import (
     AuthorLinkCreateOperation,
     AuthorLinkMineOperation,
     AuthorsSearchOperation,
+    BugReportCreateOperation,
     CapabilityAction,
     CapabilityPayload,
     ChatMembersOperation,
@@ -65,7 +69,9 @@ from sitg_bot.application.contracts import (
     PacketManagementUpdateOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
+    PlayerBanOperation,
     PlayerReportOperation,
+    PlayerUnbanOperation,
     RegistrationCompleteOperation,
     RegistrationStartOperation,
     RegistrationStepSaveOperation,
@@ -99,6 +105,7 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.launch_references import LaunchReferenceService
 from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
+from sitg_bot.services.moderation import BugReportService, PlayerModerationService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
@@ -164,6 +171,14 @@ class _SecretAlreadyDelivered(ValueError):
 
 
 ACTION_POLICIES: dict[ActionCode, ActionPolicy] = {action: ActionPolicy() for action in ActionCode}
+# Banned players keep read access to their packet library; every other action is refused.
+BAN_EXEMPT_ACTIONS = frozenset(
+    {
+        ActionCode.LIBRARY_LIST,
+        ActionCode.LIBRARY_VIEW,
+        ActionCode.LIBRARY_DOWNLOAD,
+    }
+)
 ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
@@ -288,6 +303,12 @@ ACTION_POLICIES.update(
         ActionCode.NOTIFICATION_ALERTS_CLAIM: ActionPolicy(
             mutation=True, idempotency_required=True
         ),
+        ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.PLAYER_UNBAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.BUG_REPORT_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(
+            mutation=True, idempotency_required=True
+        ),
         ActionCode.NAVIGATION_CONTEXT_SET: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
@@ -369,6 +390,8 @@ class ApplicationGateway:
             database, player_accounts=self.player_accounts
         )
         self.trust = trust or TrustService(database)
+        self.moderation = PlayerModerationService(database)
+        self.bug_reports = BugReportService(database)
         from sitg_bot.services.telegram_game import TelegramGameService
 
         self.telegram_games = TelegramGameService(database)
@@ -516,6 +539,7 @@ class ApplicationGateway:
             )
 
         player_id = await self._require_active_principal(principal)
+        await self._reject_banned_player(player_id, action)
         if isinstance(operation, AdminAuthenticateOperation):
             await self._admin_authenticator().authenticate(
                 player_id,
@@ -1090,6 +1114,24 @@ class ApplicationGateway:
                 details=operation.details,
                 expected_game_version=operation.expected_version,
             )
+        if isinstance(operation, PlayerBanOperation):
+            return await self.moderation.ban_player(
+                player_id, operation.target, reason=operation.reason
+            )
+        if isinstance(operation, PlayerUnbanOperation):
+            return await self.moderation.unban_player(player_id, operation.target)
+        if isinstance(operation, BugReportCreateOperation):
+            return await self.bug_reports.submit(player_id, operation.commentary)
+        if isinstance(operation, AdminSuspicionLedgerOperation):
+            return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
+        if isinstance(operation, AdminSuspicionInspectOperation):
+            return await self.trust.suspicion_inspection(
+                player_id, operation.player_id, limit=operation.limit
+            )
+        if isinstance(operation, AdminSuspicionClearOperation):
+            return await self.trust.clear_player_suspicion(
+                player_id, operation.player_id, note=operation.note
+            )
         raise _CapabilityUnavailable
 
     def capabilities(self) -> CapabilityPayload:
@@ -1147,6 +1189,14 @@ class ApplicationGateway:
         if account.registration_status != "active":
             raise _AuthenticationRequired
         return account.player_id
+
+    async def _reject_banned_player(self, player_id: UUID, action: ActionCode) -> None:
+        if action in BAN_EXEMPT_ACTIONS:
+            return
+        async with self.database.transaction() as session:
+            reason = await PlayerModerationService.active_ban_reason(session, player_id)
+        if reason is not None:
+            raise PermissionError("Banned players can only use their library")
 
     async def _require_lobby_member(self, lobby_id: UUID, player_id: UUID) -> None:
         async with self.database.transaction() as session:

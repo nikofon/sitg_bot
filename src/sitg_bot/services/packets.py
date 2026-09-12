@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.packet import Packet
 from sitg_bot.packet_import import packet_from_data, packet_from_docx_bytes
-from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -442,7 +442,13 @@ class PacketAdminService:
                                 "tournament_id": str(item.tournament_id),
                             },
                         )
-            await burn_author_content(session, version_id=version.id)
+            # The editing actor and every manager of this tournament have seen the
+            # new version, including freshly substituted theme identities.
+            seen_players = await tournament_manager_ids(session, (tournament_id,))
+            seen_players.add(actor_id)
+            await burn_author_content(
+                session, version_id=version.id, player_ids=seen_players
+            )
 
     async def import_json(
         self,
@@ -968,7 +974,14 @@ class PacketAdminService:
                         ),
                     )
                 )
-            await burn_author_content(session, version_id=version.id)
+            # The uploader and every manager of each destination tournament have
+            # seen this content and must never be able to play it.
+            seen_players = await tournament_manager_ids(session, intended_tournaments)
+            if draft.uploader_id is not None:
+                seen_players.add(draft.uploader_id)
+            await burn_author_content(
+                session, version_id=version.id, player_ids=seen_players
+            )
             if notify_bound_telegram:
                 await self._enqueue_bound_telegram_status(session, draft, "published")
             await session.flush()

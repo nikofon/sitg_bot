@@ -1,5 +1,6 @@
 """Persist authorship exposure independently of games and attribution corrections."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -14,7 +15,22 @@ from sitg_bot.storage.models import (
     PlayerExposureClaimRecord,
     QuestionRevisionRecord,
     ThemeRevisionRecord,
+    TournamentManagerRecord,
 )
+
+
+async def tournament_manager_ids(
+    session: AsyncSession, tournament_ids: Iterable[UUID]
+) -> set[UUID]:
+    """Active (non-revoked) manager player IDs of the given tournaments."""
+    return set(
+        await session.scalars(
+            select(TournamentManagerRecord.player_id).where(
+                TournamentManagerRecord.tournament_id.in_(tuple(tournament_ids)),
+                TournamentManagerRecord.revoked_at.is_(None),
+            )
+        )
+    )
 
 
 async def burn_author_content(
@@ -22,7 +38,16 @@ async def burn_author_content(
     *,
     version_id: UUID | None = None,
     author_id: UUID | None = None,
+    player_ids: Iterable[UUID] | None = None,
 ) -> None:
+    """Burn canonical claims for linked authors and optionally explicit players.
+
+    ``player_ids`` burns every theme and question of the scoped packet version for
+    those players regardless of author links; it requires ``version_id`` so an
+    explicit player burn can never become global.
+    """
+    if player_ids and version_id is None:
+        raise ValueError("An explicit player burn requires a packet version")
     await session.flush()
     links_query = select(PlayerAuthorLinkRecord)
     if author_id is not None:
@@ -30,7 +55,7 @@ async def burn_author_content(
     links: dict[UUID, set[UUID]] = {}
     for link in await session.scalars(links_query):
         links.setdefault(link.author_id, set()).add(link.player_id)
-    if not links:
+    if not links and not player_ids:
         return
     query = select(ThemeRevisionRecord, PacketVersionRecord.lead_author_id).join(
         PacketVersionRecord, PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id
@@ -50,11 +75,12 @@ async def burn_author_content(
         ).all()
         authors = {lead_id, theme.author_id, *(question.author_id for question in questions)}
         players = {player for author in authors for player in links.get(author, ())}
+        players.update(player_ids or ())
         claims = {("theme", theme.theme_id), *(("question", q.question_id) for q in questions)}
-        for player_id in sorted(players):
+        for burned_player_id in sorted(players):
             for namespace, claim_id in sorted(claims):
                 statement = insert(PlayerExposureClaimRecord).values(
-                    player_id=player_id,
+                    player_id=burned_player_id,
                     packet_version_id=theme.packet_version_id,
                     claim_namespace=namespace,
                     claim_id=claim_id,

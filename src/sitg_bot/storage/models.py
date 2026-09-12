@@ -104,6 +104,40 @@ class PlayerRecord(Base, TimestampMixin):
     )
 
 
+class PlayerBanRecord(Base):
+    """One reversible moderation ban per player; the reason is shown to the player."""
+
+    __tablename__ = "player_bans"
+
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    banned_by_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    banned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lifted_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("length(reason) > 0"),
+        CheckConstraint("lifted_at IS NULL OR lifted_by_id IS NOT NULL"),
+    )
+
+
+class BugReportRecord(Base):
+    __tablename__ = "bug_reports"
+
+    id: Mapped[UUID] = uuid_column()
+    reporter_player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    commentary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(commentary) BETWEEN 1 AND 4000"),
+        Index("ix_bug_reports_created", "created_at"),
+    )
+
+
 class PlatformAdministratorRecord(Base, TimestampMixin):
     __tablename__ = "platform_administrators"
 

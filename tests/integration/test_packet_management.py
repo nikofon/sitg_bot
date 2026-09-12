@@ -17,10 +17,14 @@ from sitg_bot.storage.models import (
     GamePacketVersionRecord,
     GameResultRecord,
     LogicalQuestionRecord,
+    PacketQuestionRecord,
     PacketVersionRecord,
     PlatformAdministratorRecord,
     PlayerExposureClaimRecord,
     PlayerNotificationRecord,
+    QuestionRevisionRecord,
+    ThemeRevisionRecord,
+    TournamentManagerRecord,
     TournamentPacketAssignmentRecord,
     TournamentPacketEntitlementRecord,
 )
@@ -364,5 +368,191 @@ async def test_automatic_release_does_not_grant_read_eligibility(database_url, r
         assert not await tournaments.can_read_packet_library(
             fixture.tournament_id, stored.logical_id, fixture.players[0].id
         )
+    finally:
+        await database.close()
+
+
+async def version_claims(session, version_id):
+    themes = (
+        await session.scalars(
+            select(ThemeRevisionRecord).where(
+                ThemeRevisionRecord.packet_version_id == version_id
+            )
+        )
+    ).all()
+    questions = (
+        await session.scalars(
+            select(QuestionRevisionRecord)
+            .join(
+                PacketQuestionRecord,
+                PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
+            )
+            .where(PacketQuestionRecord.packet_version_id == version_id)
+        )
+    ).all()
+    return {("theme", theme.theme_id) for theme in themes} | {
+        ("question", question.question_id) for question in questions
+    }
+
+
+async def burnt_version_claims(database, player_id, version_id):
+    async with database.sessions() as session:
+        burns = (
+            await session.scalars(
+                select(PlayerExposureClaimRecord).where(
+                    PlayerExposureClaimRecord.player_id == player_id,
+                    PlayerExposureClaimRecord.packet_version_id == version_id,
+                )
+            )
+        ).all()
+    assert all(
+        burn.state == "burnt" and burn.burnt_at is not None and burn.game_id is None
+        for burn in burns
+    )
+    return {(burn.claim_namespace, burn.claim_id) for burn in burns}
+
+
+async def insert_manager(database, fixture, player_id):
+    async with database.transaction() as session:
+        session.add(
+            TournamentManagerRecord(
+                tournament_id=fixture.tournament_id,
+                player_id=player_id,
+                granted_by_id=fixture.manager.id,
+            )
+        )
+
+
+async def test_publication_burns_content_for_uploader_and_tournament_managers(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        await insert_manager(database, fixture, fixture.players[0].id)
+        service = PacketAdminService(database)
+        draft = await service.create_draft(
+            packet(),
+            source_filename="manager-burn.json",
+            uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        stored = await service.publish(draft, administrator_id=fixture.manager.id)
+        async with database.sessions() as session:
+            expected = await version_claims(session, stored.version_id)
+        for player_id in (fixture.manager.id, fixture.players[0].id):
+            assert await burnt_version_claims(database, player_id, stored.version_id) == expected
+        async with database.sessions() as session:
+            assert (
+                await session.scalars(
+                    select(PlayerExposureClaimRecord).where(
+                        PlayerExposureClaimRecord.player_id == fixture.players[1].id
+                    )
+                )
+            ).all() == []
+    finally:
+        await database.close()
+
+
+async def test_theme_substitution_burns_fresh_content_for_actor_and_managers(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        service = PacketAdminService(database)
+        assignment = await assigned(database, fixture)
+        old_version_id = assignment.adopted_version_id
+        await insert_manager(database, fixture, fixture.players[0].id)
+        editor = await edit(service, fixture, assignment)
+        editor["packet"]["themes"][0]["name"] = "Replacement theme"
+        await save(service, fixture, assignment, editor, {"themes.0.name": "substitution"})
+        async with database.sessions() as session:
+            new_version_id = (
+                await session.get(TournamentPacketAssignmentRecord, assignment.id)
+            ).adopted_version_id
+            assert new_version_id != old_version_id
+            expected = await version_claims(session, new_version_id)
+            old_expected = await version_claims(session, old_version_id)
+        # The substituted theme and its questions received fresh identities.
+        assert {identity for namespace, identity in expected if namespace == "theme"}.isdisjoint(
+            {identity for namespace, identity in old_expected if namespace == "theme"}
+        )
+        # The editing actor and every fellow manager are burnt for the new version;
+        # the plain member keeps fresh content.
+        for player_id in (fixture.manager.id, fixture.players[0].id):
+            assert await burnt_version_claims(database, player_id, new_version_id) == expected
+        async with database.sessions() as session:
+            assert (
+                await session.scalars(
+                    select(PlayerExposureClaimRecord).where(
+                        PlayerExposureClaimRecord.player_id == fixture.players[1].id
+                    )
+                )
+            ).all() == []
+    finally:
+        await database.close()
+
+
+async def test_assigning_published_packet_burns_tournament_managers(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        other = await tournament_fixture(database, player_count=1)
+        tournaments = TournamentService(database)
+        await tournaments.add_manager(
+            fixture.tournament_id, fixture.players[0].id, granted_by_id=fixture.manager.id
+        )
+        async with database.sessions() as session:
+            foreign = await session.scalar(
+                select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.tournament_id == other.tournament_id,
+                    TournamentPacketAssignmentRecord.packet_id == other.packet_id,
+                )
+            )
+            version_id = foreign.adopted_version_id
+            expected = await version_claims(session, version_id)
+        await tournaments.assign_packet(
+            fixture.tournament_id, other.packet_id, fixture.manager.id, playable=True
+        )
+        for player_id in (fixture.manager.id, fixture.players[0].id):
+            assert await burnt_version_claims(database, player_id, version_id) == expected
+        async with database.sessions() as session:
+            assert (
+                await session.scalars(
+                    select(PlayerExposureClaimRecord).where(
+                        PlayerExposureClaimRecord.player_id == fixture.players[1].id,
+                        PlayerExposureClaimRecord.packet_version_id == version_id,
+                    )
+                )
+            ).all() == []
+    finally:
+        await database.close()
+
+
+async def test_new_manager_retroactively_burns_assigned_packets(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        tournaments = TournamentService(database)
+        async with database.sessions() as session:
+            assignment = await session.scalar(
+                select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
+                    TournamentPacketAssignmentRecord.packet_id == fixture.packet_id,
+                )
+            )
+            version_id = assignment.adopted_version_id
+            expected = await version_claims(session, version_id)
+        await tournaments.add_manager(
+            fixture.tournament_id, fixture.players[0].id, granted_by_id=fixture.manager.id
+        )
+        assert (
+            await burnt_version_claims(database, fixture.players[0].id, version_id) == expected
+        )
+        async with database.sessions() as session:
+            assert (
+                await session.scalars(
+                    select(PlayerExposureClaimRecord).where(
+                        PlayerExposureClaimRecord.player_id == fixture.players[1].id
+                    )
+                )
+            ).all() == []
     finally:
         await database.close()

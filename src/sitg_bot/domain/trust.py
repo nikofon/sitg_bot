@@ -49,7 +49,6 @@ class SignalCount:
 class SISuspicionCounts:
     very_early_buzz: SignalCount
     very_late_buzz: SignalCount
-    high_value_accuracy: SignalCount
     rare_question_accuracy: SignalCount
 
 
@@ -120,7 +119,6 @@ def evaluate_si_suspicion_counts(
         baseline_unreliable = True
     for name in (
         "very_late_buzz",
-        "high_value_accuracy",
         "rare_question_accuracy",
     ):
         player_count = getattr(player, name)
@@ -228,9 +226,6 @@ def evaluate_si_suspicion(
             and item.buzz_time_remaining_fraction <= 0.1
         )
 
-    def is_high_value(item: SIObservation) -> bool:
-        return item.value in {40, 50}
-
     def is_rare(item: SIObservation) -> bool:
         return (
             rare_cutoff is not None
@@ -240,7 +235,6 @@ def evaluate_si_suspicion(
 
     specifications = (
         ("very_late_buzz", lambda item: item.buzzed, is_slow),
-        ("high_value_accuracy", is_high_value, lambda item: item.correct),
         ("rare_question_accuracy", is_rare, lambda item: item.correct),
     )
     signals: list[str] = []

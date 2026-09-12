@@ -10,6 +10,19 @@ class AdminAuthenticationState(StatesGroup):
     entering_credential = State()
 
 
+class AdminBanState(StatesGroup):
+    entering_target = State()
+    entering_reason = State()
+
+
+class AdminUnbanState(StatesGroup):
+    entering_target = State()
+
+
+class BugReportState(StatesGroup):
+    entering_commentary = State()
+
+
 class TournamentTokenRequestState(StatesGroup):
     entering_name = State()
     entering_commentary = State()

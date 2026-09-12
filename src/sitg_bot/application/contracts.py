@@ -98,6 +98,12 @@ class ActionCode(StrEnum):
     CHAT_SEND = "chat.send.v1"
     GAME_APPEAL_TICKETS = "games.appeals.manager.list.v1"
     GAME_APPEAL_DECIDE = "games.appeals.manager.decide.v1"
+    PLAYER_BAN = "platform.players.ban.v1"
+    PLAYER_UNBAN = "platform.players.unban.v1"
+    BUG_REPORT_CREATE = "platform.bug_reports.create.v1"
+    ADMIN_SUSPICION_LEDGER = "platform.admin.suspicion.ledger.v1"
+    ADMIN_SUSPICION_INSPECT = "platform.admin.suspicion.inspect.v1"
+    ADMIN_SUSPICION_CLEAR = "platform.admin.suspicion.clear.v1"
 
 
 class ErrorCode(StrEnum):
@@ -697,6 +703,39 @@ class PlayerReportOperation(ContractModel):
     details: str | None = Field(default=None, max_length=2000)
 
 
+class PlayerBanOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_BAN]
+    target: str = Field(min_length=1, max_length=200)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class PlayerUnbanOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_UNBAN]
+    target: str = Field(min_length=1, max_length=200)
+
+
+class BugReportCreateOperation(ContractModel):
+    action: Literal[ActionCode.BUG_REPORT_CREATE]
+    commentary: str = Field(min_length=1, max_length=4000)
+
+
+class AdminSuspicionLedgerOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_LEDGER]
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class AdminSuspicionInspectOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_INSPECT]
+    player_id: UUID
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class AdminSuspicionClearOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_CLEAR]
+    player_id: UUID
+    note: str = Field(min_length=1, max_length=2000)
+
+
 GatewayOperation = Annotated[
     CapabilitiesOperation
     | AdminAuthenticateOperation
@@ -772,7 +811,13 @@ GatewayOperation = Annotated[
     | GameAppealTicketsOperation
     | GameAppealDecideOperation
     | ReputationVoteOperation
-    | PlayerReportOperation,
+    | PlayerReportOperation
+    | PlayerBanOperation
+    | PlayerUnbanOperation
+    | BugReportCreateOperation
+    | AdminSuspicionLedgerOperation
+    | AdminSuspicionInspectOperation
+    | AdminSuspicionClearOperation,
     Field(discriminator="action"),
 ]
 

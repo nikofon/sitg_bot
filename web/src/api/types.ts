@@ -386,10 +386,60 @@ export type LibraryAccess =
   | { confirmation_required: false; name: string; pages: LibraryPage[] }
   | { confirmation_required: false; queued: true };
 
+export interface SuspicionRulesetStat {
+  ruleset_key: string;
+  rating: number | null;
+  games_played: number;
+}
+
+export interface SuspicionLedgerCard {
+  player_id: string;
+  display_name: string | null;
+  telegram_username: string | null;
+  suspicion: number;
+  rulesets: SuspicionRulesetStat[];
+  reports: Array<{ kind: string; count: number }>;
+}
+
+export interface SuspicionEvidence {
+  signal: string;
+  ruleset_key: string;
+  summary: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SuspicionEvent {
+  id: number | string;
+  reason: string;
+  ruleset_key: string | null;
+  delta: number;
+  before: number;
+  after: number;
+  note: string | null;
+  created_at: string;
+  evidence: SuspicionEvidence[];
+}
+
+export interface AdminSuspicionLedgerResource {
+  kind: "admin_suspicion_ledger";
+  state: "ready" | "empty";
+  items: SuspicionLedgerCard[];
+}
+
+export interface AdminSuspicionInspectionPayload {
+  player: {
+    id: string;
+    display_name: string | null;
+    telegram_username: string | null;
+    suspicion: number;
+  };
+  events: SuspicionEvent[];
+}
+
 export interface RoutePayload {
   locale: Locale;
   authorization: RouteAuthorization;
-  resource: RouteResource | TournamentRouteResource | TournamentManagerSettingsResource | TournamentManagerManagementResource | LobbyResource | PacketDraftResource | LibraryResource;
+  resource: RouteResource | TournamentRouteResource | TournamentManagerSettingsResource | TournamentManagerManagementResource | LobbyResource | PacketDraftResource | LibraryResource | AdminSuspicionLedgerResource;
   pagination?: PageCursor;
 }
 

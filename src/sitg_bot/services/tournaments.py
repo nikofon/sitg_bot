@@ -21,6 +21,7 @@ from sitg_bot.domain.game_rulesets import (
     RulesetParameters,
 )
 from sitg_bot.domain.packet import normalize_language_tag
+from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
@@ -1470,6 +1471,29 @@ class TournamentService:
                 manager.granted_by_id = granted_by_id
                 manager.revoked_at = None
             membership.status = "left"
+            # The new manager can now read every packet assigned to the tournament.
+            assignments = (
+                await session.scalars(
+                    select(TournamentPacketAssignmentRecord).where(
+                        TournamentPacketAssignmentRecord.tournament_id == tournament_id,
+                        TournamentPacketAssignmentRecord.status == "active",
+                    )
+                )
+            ).all()
+            for item in assignments:
+                version_id = item.adopted_version_id or await session.scalar(
+                    select(PacketVersionRecord.id)
+                    .where(
+                        PacketVersionRecord.packet_id == item.packet_id,
+                        PacketVersionRecord.state == "published",
+                    )
+                    .order_by(PacketVersionRecord.version_number.desc())
+                    .limit(1)
+                )
+                if version_id is not None:
+                    await burn_author_content(
+                        session, version_id=version_id, player_ids=(player_id,)
+                    )
             await self._invalidate_assembling_lobbies(session, tournament_id)
 
     async def remove_manager(
@@ -2527,6 +2551,22 @@ class TournamentService:
             else:
                 for key, value in values.items():
                     setattr(assignment, key, value)
+            version_id = adopted_version_id or await session.scalar(
+                select(PacketVersionRecord.id)
+                .where(
+                    PacketVersionRecord.packet_id == packet_id,
+                    PacketVersionRecord.state == "published",
+                )
+                .order_by(PacketVersionRecord.version_number.desc())
+                .limit(1)
+            )
+            if version_id is not None:
+                # Every manager of this tournament can now read the assigned packet.
+                await burn_author_content(
+                    session,
+                    version_id=version_id,
+                    player_ids=await tournament_manager_ids(session, (tournament_id,)),
+                )
             await self._invalidate_assembling_lobbies(session, tournament_id)
             return assignment.id
 

@@ -64,6 +64,7 @@ describe("library", () => {
     expect(root.querySelector("script")).toBeNull();
     expect(root.querySelector(".library-page")!.textContent).not.toContain("Second question");
     const select = root.querySelector("select")!;
+    expect(select.className).toBe("library-theme-select");
     select.value = "1";
     select.dispatchEvent(new Event("change"));
     expect(root.querySelector(".library-page")!.textContent).toContain("Theme: Second");

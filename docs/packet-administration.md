@@ -10,7 +10,7 @@
 | [domain/packet.py](../src/sitg_bot/domain/packet.py) | Packet/theme/question values and validation |
 | [services/packets.py](../src/sitg_bot/services/packets.py) | Drafts, preview/edit, publication, management and authorization |
 | [storage/packets.py](../src/sitg_bot/storage/packets.py) | Logical content, immutable revisions and publication persistence |
-| [services/author_exposure.py](../src/sitg_bot/services/author_exposure.py) | Permanent exposure burns for linked authors |
+| [services/author_exposure.py](../src/sitg_bot/services/author_exposure.py) | Permanent exposure burns for linked authors, packet uploaders, and tournament managers |
 | [services/library.py](../src/sitg_bot/services/library.py), [packet_export.py](../src/sitg_bot/packet_export.py) | Library access, exposure, and DOCX export |
 | [packet_admin.py](../src/sitg_bot/packet_admin.py) | Trusted local administration CLI |
 
@@ -66,7 +66,9 @@ question values. Parser limits are separate from per-game SI limits.
 6. If the interpretation is correct, an authorized reviewer confirms it. The bot
    publishes the complete packet to PostgreSQL in one transaction. Publication does
    not itself make the packet visible or playable; tournament stage and access policy
-   determine those rights.
+   determine those rights. It permanently burns every theme and question of the
+   published version for the uploader (when one is recorded) and every active
+   manager of each destination tournament, so none of them can ever play it.
 
 The preview must represent exactly the content that confirmation would publish. A
 confirmation identifies a specific draft, preventing an older command from publishing
@@ -171,6 +173,10 @@ Substituting a theme name replaces the entire theme and every question with new 
 fresh statistical histories, and fresh exposure identities. A question-only substitution preserves
 the theme identity, so an already burnt theme stays burnt.
 
+Every confirmed correction or substitution save also permanently burns the new version's themes
+and questions for the editing actor and every active manager of the editing tournament. Already
+burnt identities stay burnt; freshly substituted theme identities are burnt with the save.
+
 A save containing any substitution changes only the current tournament assignment. The old version
 is inaccessible through that assignment, but other tournaments keep their existing version and
 rights; managers of those tournaments receive a notification naming the manager who substituted it.
@@ -273,3 +279,9 @@ questions.
 
 Tournament-scoped packet rights and their current composition are defined in
 [tournaments.md](tournaments.md).
+
+Assigning an already-published packet to a tournament burns the adopted version (or the
+packet's latest published version) for that tournament's active managers. Granting a
+tournament manager role retroactively burns every version currently assigned to that
+tournament for the new manager, including on re-grant after revocation. Burns are
+permanent; removing the role or the assignment never resets them.

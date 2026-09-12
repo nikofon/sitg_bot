@@ -151,6 +151,12 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
 - Every raised statistical signal snapshots its algorithm, baseline, decision statistics,
   and contributing game/round/question actions. Administrator clearance resets the current
   value but never deletes evaluations, evidence, reports, or ledger history.
+- Moderation bans are reversible rows keyed by the player with a reason and issuing
+  administrator; unban records the lifting administrator and time. Banned players keep only
+  their packet library; all other gateway actions are refused, and banned players are
+  excluded from the admin suspicion ledger. Platform administrators cannot be banned.
+- Bug reports are append-only facts carrying the reporter, commentary, and timestamp, and
+  fan out an admin-audience notification per active administrator.
 
 ## Published content and access
 
@@ -180,7 +186,13 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
   tournaments have no pricing plans.
 - Drafts retain their creation tournament, intended assignments, validation result, source
   checksum, and uploader when one is supplied. Publication always records its timestamp and
-  records its actor when the caller supplies one.
+  records its actor when the caller supplies one, and permanently burns every theme and
+  question of the published version for the uploader when one is supplied and every active
+  manager of each destination tournament. Correction and substitution saves burn the new
+  version the same way for the editing actor and the editing tournament's managers, packet
+  assignment burns the adopted version for the destination tournament's managers, and
+  granting a manager role retroactively burns the versions currently assigned to that
+  tournament. Burns are permanent; removing a role or an assignment never resets them.
 
 The implemented publication, correction, and substitution workflows are documented in
 [packet-administration.md](packet-administration.md).
