@@ -1183,11 +1183,22 @@ class MiniAppHttpServer:
         relative = request.match_info.get("path", "")
         candidate = (self.web_dist / relative).resolve()
         if relative and candidate.is_relative_to(self.web_dist) and candidate.is_file():
-            return web.FileResponse(candidate)
+            cache_control = "no-cache"
+            if (
+                relative.startswith("assets/")
+                and candidate.suffix != ".html"
+                and re.search(r"-[A-Za-z0-9_-]{8,}\.[^.]+$", candidate.name)
+            ):
+                cache_control = "public, max-age=31536000, immutable"
+            headers = {"Cache-Control": cache_control}
+            return web.FileResponse(candidate, headers=headers)
+        if relative.startswith("assets/"):
+            raise web.HTTPNotFound()
         index = self.web_dist / "index.html"
         if not index.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(index)
+        # Each route must load the current build's hashed JavaScript and CSS assets.
+        return web.FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     @staticmethod
     async def _json_body(request: web.Request) -> dict[str, object]:

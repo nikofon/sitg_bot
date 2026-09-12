@@ -18,6 +18,17 @@
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`.
+HTML and unversioned static files use `Cache-Control: no-cache`: browsers may store them
+but must revalidate before reuse; unchanged files return 304. Content-hashed files under
+`/assets/` use `public, max-age=31536000, immutable`. Missing assets return 404 instead of
+the HTML shell. Authenticated API responses use `no-store`.
+Bot menu links use a stable `_launch=1` transition value to bypass HTML cached before
+these policies were introduced. It carries no identity or permissions and permits reuse
+across launches. Existing messages keep their original URLs; request a new menu button.
+
+For deployments, build in a staging directory, publish new hashed assets before replacing
+`index.html`, and retain previous assets for the supported open-session window. Avoid
+rebuilding directly into the live directory: Vite cleans the output directory by default.
 
 ## Authentication and request flow
 

@@ -16,7 +16,9 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     ):
         raise ValueError("Unsupported Mini App route")
     path = f"{parsed.path.rstrip('/')}/{normalized_route}"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query or {}), ""))
+    # A stable transition URL bypasses pre-cache-policy HTML while permitting reuse.
+    launch_query = {**(query or {}), "_launch": "1"}
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(launch_query), ""))
 
 
 def mini_app_launch_url(base_url: str, route: str, reference: LaunchReference) -> str:

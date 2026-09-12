@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import pytest
@@ -535,7 +536,9 @@ async def test_player_profile_action_opens_own_mini_app_profile() -> None:
     assert "Open your player profile" in message.answer.await_args.args[0]
     button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.text == "Open profile"
-    assert button.web_app.url == f"https://mini.example.test/app/players/{UUID(int=1)}"
+    url = urlsplit(button.web_app.url)
+    assert url._replace(query="").geturl() == f"https://mini.example.test/app/players/{UUID(int=1)}"
+    assert parse_qs(url.query)["_launch"] == ["1"]
 
 
 async def test_player_profile_action_without_launch_links_keeps_placeholder() -> None:

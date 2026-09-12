@@ -3,7 +3,7 @@ import hmac
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from aiogram.types import Chat, Message, Update, User
@@ -188,15 +188,31 @@ def test_launch_reference_payload_is_compact_and_opaque() -> None:
         LaunchReferenceService.parse_telegram_payload("lobby:550e8400-e29b-41d4-a716-446655440000")
 
 
-def test_tournament_launch_url_contains_only_display_filters() -> None:
+def test_tournament_launch_url_preserves_display_filters() -> None:
     url = mini_app_route_url(
         "https://mini.example.test/app",
         "tournaments",
         query={"role": "manager", "relationship": "managed"},
     )
 
-    assert url == ("https://mini.example.test/app/tournaments?role=manager&relationship=managed")
+    parsed = urlsplit(url)
+    assert parsed.path == "/app/tournaments"
+    query = parse_qs(parsed.query)
+    assert query.pop("_launch") == ["1"]
+    assert query == {"role": ["manager"], "relationship": ["managed"]}
     assert "player_id" not in url
+
+
+@pytest.mark.parametrize("route", [
+    "tournaments", "players/00000000-0000-0000-0000-000000000001", "library",
+])
+def test_menu_launches_use_stable_transition_urls(route: str) -> None:
+    first = urlsplit(mini_app_route_url("https://mini.example.test", route))
+    second = urlsplit(mini_app_route_url("https://mini.example.test", route))
+
+    assert first.path == second.path == f"/{route}"
+    assert first == second
+    assert parse_qs(first.query) == {"_launch": ["1"]}
 
 
 def test_manager_settings_launch_url_uses_only_an_opaque_reference() -> None:
