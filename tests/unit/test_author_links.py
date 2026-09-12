@@ -191,6 +191,10 @@ class DecisionSession:
     async def scalar(self, _query: object) -> PlayerAuthorLinkRequestRecord:
         return self.request
 
+    async def scalars(self, _query: object) -> tuple[object, ...]:
+        # Approval burns the newly linked author's content; no persisted links exist yet.
+        return ()
+
     def add(self, value: object) -> None:
         self.added.append(value)
 

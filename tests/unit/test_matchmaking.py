@@ -70,6 +70,7 @@ def test_hybrid_matchmaking_requires_type_support_and_tournament_opt_in() -> Non
         "packets_discoverable_by_default": True,
         "packets_playable_by_default": False,
         "packets_readable_by_default": False,
+        "packets_released_by_default": False,
     }
 
 
