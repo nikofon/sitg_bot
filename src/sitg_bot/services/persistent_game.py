@@ -230,6 +230,8 @@ class PersistentGameService:
             raise ValueError("Participant IDs must be unique")
         async with self.database.transaction() as session:
             context = await self.tournaments.context(session, tournament_id)
+            if context.type_key == "classic":
+                raise ValueError("Classic games must start from a prescribed tournament lobby")
             if not context.assembly_open:
                 raise ValueError("tournament_stage_closed")
             minimum = int(context.type_rules.get("minimum_players", 1))
@@ -585,6 +587,7 @@ class PersistentGameService:
                     .where(
                         GameParticipantRecord.game_id == game.id,
                         GameParticipantRecord.joined.is_(True),
+                        GameParticipantRecord.is_chair.is_(False),
                     )
                 )
                 if joined == 1:
@@ -909,6 +912,7 @@ class PersistentGameService:
                 .where(
                     GameParticipantRecord.game_id == game.id,
                     GameParticipantRecord.joined.is_(True),
+                    GameParticipantRecord.is_chair.is_(False),
                 )
             )
             or 0
@@ -2976,6 +2980,8 @@ class PersistentGameService:
         if ruleset_version is None:
             raise RuntimeError("Game ruleset version is missing")
         for participant in participants:
+            if participant.is_chair:
+                continue
             if local_rating_enabled:
                 unresolved = await session.scalar(
                     select(GameRecord.id)
@@ -3040,7 +3046,13 @@ class PersistentGameService:
         rating_changes: list[dict[str, Any]] = []
         rating_confidence = confidence_model(game.rating_confidence_model)
         played_at = game.completed_at or datetime.now(UTC)
-        ordered = sorted(participants, key=lambda item: str(item.player_id))
+        ordered = sorted(
+            (p for p in participants if not p.is_chair), key=lambda item: str(item.player_id)
+        )
+        if len(ordered) < 2:
+            game.status = "finalized"
+            game.finalized_at = datetime.now(UTC)
+            return await self._finalized_event(session, game, participants, [])
         ruleset_version = await session.get(GameRulesetVersionRecord, game.game_ruleset_version_id)
         policy = await session.get(TournamentPolicyVersionRecord, game.tournament_policy_version_id)
         if ruleset_version is None or policy is None:

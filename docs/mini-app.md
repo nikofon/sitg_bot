@@ -51,14 +51,25 @@ use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
-management records. Authors can be searched, selected, removed, or registered. Typed editors
+management records. Registration has a schedule enable switch and a current-availability
+checkbox; changing current availability applies a manual override. Entered dates use the device timezone.
+Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
+Settings and the Management General section provide buttons to switch between these views.
 
 **Tournament management:** General, Registrations, Packet accessibility, and Packet management,
 with sections derived from the tournament type. Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights.
+General includes **Start tournament** for Ladder; Classic stage-start buttons start the
+tournament internally. Planned start dates send managers a reminder instead of starting play.
+Classic adds stage start buttons, first-stage/play-off round cards with packet switches and
+start deadlines, standings, and automatic/manual seeding. Its general packet-access table
+contains only read rights; stage types and first-stage scoring are configured in Settings.
+Round discovery/play switches display inherited packet defaults or explicit overrides and
+stay disabled with a warning until their stage starts. The all-player access row displays
+assignment defaults even when there are no participants yet.
 
 **Player profiles:** per-ruleset public profiles at `/players/{player_id}`, opened from the
 bot's player-mode "My profile" reply-keyboard button (own profile) or participant links on
@@ -86,6 +97,13 @@ and packet/publication years. View opens ruleset-defined pages (SI themes), with
 and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
 and request confirmation before burning fresh content.
 
+**Admin suspicion ledger:** `/admin/suspicion`, opened from the admin menu button and
+authorized for platform administrators only. Cards list player name, ID, current suspicion,
+rating and completed games per ruleset, and reports per category, ordered by suspicion;
+banned players are excluded. `Inspect` loads every event that increased the player's
+suspicion with linked evidence; `Clear suspicion` requests a review note and resets the
+value to zero through the existing administrator clearance ledger.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -100,10 +118,12 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
+| GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
-| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
 | `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
 | `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
 

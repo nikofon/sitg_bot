@@ -139,6 +139,33 @@ def test_registration_finish_is_enforced_only_when_late_registrations_are_ignore
     assert TournamentService._registration_is_open(tournament, now)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        ("2026-09-12T08:59:59+00:00", False),
+        ("2026-09-12T09:00:00+00:00", True),
+        ("2026-09-12T09:59:59+00:00", True),
+        ("2026-09-12T10:00:00+00:00", False),
+    ],
+)
+def test_registration_schedule_boundaries_and_timezone(timestamp, expected) -> None:
+    now = datetime.fromisoformat(timestamp)
+    tournament = SimpleNamespace(
+        status="active", finalized_at=now, registration_open=True,
+        registration_open_override=None, ignore_late_registrations=True,
+        registration_starts_at=datetime.fromisoformat("2026-09-12T12:00:00+03:00"),
+        registration_ends_at=datetime.fromisoformat("2026-09-12T13:00:00+03:00"),
+    )
+    assert TournamentService._scheduled_registration_is_open(tournament, now) is expected
+    assert TournamentService._registration_is_open(tournament, now) is expected
+    tournament.registration_open = False
+    assert not TournamentService._scheduled_registration_is_open(tournament, now)
+    tournament.registration_open_override = True
+    assert TournamentService._registration_is_open(tournament, now)
+    tournament.finalized_at = None
+    assert not TournamentService._registration_is_open(tournament, now)
+
+
 def test_author_telegram_link_is_normalized_for_account_matching() -> None:
     assert TournamentService._normalize_telegram_link("https://t.me/Example_User") == (
         "https://t.me/Example_User",

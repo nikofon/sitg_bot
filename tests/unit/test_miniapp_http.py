@@ -113,6 +113,29 @@ class FakeGateway:
                 "participants": [],
                 "themes": [],
             }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_LEDGER:
+            data = {
+                "items": [
+                    {
+                        "player_id": str(UUID(int=40)),
+                        "display_name": "Suspicious",
+                        "telegram_username": "suspicious",
+                        "suspicion": 3,
+                        "rulesets": [],
+                        "reports": [],
+                    }
+                ]
+            }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_INSPECT:
+            data = {
+                "player": {
+                    "id": str(UUID(int=40)),
+                    "display_name": "Suspicious",
+                    "telegram_username": "suspicious",
+                    "suspicion": 3,
+                },
+                "events": [],
+            }
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -191,16 +214,79 @@ async def test_packet_management_mutations_use_launch_scope_and_write_guards(com
     assert gateway.requests[0].metadata.idempotency_key == "packet-mutation-test"
 
 
-async def test_packet_management_rejects_settings_launch_reference():
-    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), launch_references=FakeLaunchReferences())
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_classic_mutation_binds_target_and_write_guards(references):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway, launch_references=references())
+    request = make_mocked_request(
+        "POST",
+        "/api/miniapp/manager/tournaments/opaque-reference/classic",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "classic-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps(
+        {
+            "tournament_id": str(UUID(int=99)),
+            "command": "start",
+            "kind": "first",
+            "expected_version": 5,
+            "values": {},
+        }
+    ).encode()
+    result = await http._update_classic(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_CLASSIC_UPDATE
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "classic-start"
+
+
+async def test_tournament_start_binds_target_and_write_guards():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences()
+    )
+    request = make_mocked_request(
+        "POST", "/api/miniapp/manager/tournaments/opaque-reference/start",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf", "X-Idempotency-Key": "tournament-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps({
+        "tournament_id": str(UUID(int=99)), "expected_version": 5,
+    }).encode()
+    result = await http._start_tournament(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_START
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "tournament-start"
+
+
+async def test_packet_management_rejects_lobby_launch_reference():
+    http = MiniAppHttpServer(
+        FakeAuth(), FakeGateway(), launch_references=FakeLobbyLaunchReferences()
+    )
     request = make_mocked_request(
         "GET",
-        f"/api/miniapp/manager/tournaments/opaque-reference/packets/{UUID(int=30)}",
+        f"/api/miniapp/manager/tournaments/opaque-lobby/packets/{UUID(int=30)}",
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
         },
-        match_info={"launch_ref": "opaque-reference", "assignment_id": str(UUID(int=30))},
+        match_info={"launch_ref": "opaque-lobby", "assignment_id": str(UUID(int=30))},
     )
     with pytest.raises(LookupError):
         await http._management_packet(request)
@@ -359,12 +445,13 @@ async def test_tournament_selection_pushes_updated_context_to_telegram() -> None
     assert notifier.closed
 
 
-async def test_manager_settings_route_resolves_an_actor_bound_launch_reference() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_settings_route_resolves_an_actor_bound_launch_reference(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",
@@ -411,12 +498,13 @@ async def test_manager_author_search_is_name_filtered_and_reference_bound() -> N
     assert operation.query == "Ada"
 
 
-async def test_manager_management_route_is_actor_bound() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_management_route_is_actor_bound(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeManagementLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",
@@ -494,3 +582,59 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
     assert result.status == 200
     assert json.loads(result.text)["selected"] is True
     assert [request.operation.action for request in gateway.requests] == [action]
+
+
+async def test_admin_suspicion_ledger_route_resolves_and_supports_events_and_clear():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request(
+        "GET",
+        "/api/miniapp/routes/resolve?path=/admin/suspicion",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "admin_suspicion_ledger"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["items"][0]["player_id"] == str(UUID(int=40))
+    assert gateway.requests[0].operation.action == ActionCode.ADMIN_SUSPICION_LEDGER
+
+    events_request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/events",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    response = await http._admin_suspicion_events(events_request)
+    assert response.status == 200
+    inspection = json.loads(response.text)
+    assert inspection["player"]["suspicion"] == 3
+    assert gateway.requests[-1].operation.action == ActionCode.ADMIN_SUSPICION_INSPECT
+
+    clear_request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/clear",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "suspicion-clear-test",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    clear_request._read_bytes = json.dumps({"note": "reviewed"}).encode()
+    response = await http._admin_suspicion_clear(clear_request)
+    assert response.status == 200
+    operation = gateway.requests[-1].operation
+    assert operation.action == ActionCode.ADMIN_SUSPICION_CLEAR
+    assert operation.player_id == UUID(int=40)
+    assert operation.note == "reviewed"

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.lobby_delivery import (
+    lobby_notice_delivery_handler,
     lobby_open_delivery_handler,
     notification_alert_delivery_handler,
     packet_draft_status_delivery_handler,
@@ -35,6 +36,24 @@ async def test_durable_lobby_delivery_builds_localized_reopenable_button() -> No
     assert markup.inline_keyboard[0][0].web_app.url == (
         "https://mini.example.test/app/lobbies/opaque-lobby?tgWebAppStartParam=lr_opaque-lobby"
     )
+
+
+async def test_classic_packet_notice_lists_prescribed_players_and_solo_rule() -> None:
+    bot = SimpleNamespace(send_message=AsyncMock())
+    handler = lobby_notice_delivery_handler(bot, LocalizationService())
+    payload = {
+        "recipient_telegram_user_id": 42,
+        "locale": "en",
+        "kind": "packet_selected",
+        "packet_name": "Round 1",
+        "classic_players": ["Alice <b>", "Chair"],
+    }
+    await handler(payload)
+    text = bot.send_message.await_args.args[1]
+    assert "Alice &lt;b&gt;, Chair" in text
+    assert "exactly these participants" in text
+    await handler({**payload, "classic_players": ["Alice"], "classic_solo": True})
+    assert "Play it alone" in bot.send_message.await_args.args[1]
 
 
 async def test_notification_alert_uses_matching_role_copy() -> None:

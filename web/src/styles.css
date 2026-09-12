@@ -990,7 +990,8 @@ p {
 
 .library-page + .pagination { flex-wrap: wrap; gap: .5rem; }
 
-.profile {
+.profile,
+.classic-rounds, .classic-seeding, .classic-settings {
   display: grid;
   gap: 1rem;
 }
@@ -1213,3 +1214,13 @@ p {
   gap: 0.75rem;
 }
 
+.classic-rounds label:not(.switch-label), .classic-seeding label {
+  display: block;
+  margin-block: .6rem;
+}
+
+.classic-rounds select, .classic-rounds input[type="datetime-local"], .classic-seeding select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}

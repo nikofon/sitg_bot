@@ -301,10 +301,13 @@ class GameDelivery:
                 edit=True,
                 markup=ReplyKeyboardRemove(),
             )
-            if any(p["self"] for p in view["participants"]) and len(view["participants"]) > 1:
+            if (
+                any(p["self"] for p in view["participants"])
+                and sum(not p.get("is_chair", False) for p in view["participants"]) > 1
+            ):
                 await self._send(chat, game, messages, "rate_title", MessageModel(t("flow.rate")))
                 for i, player in enumerate(view["participants"]):
-                    if not player["self"]:
+                    if not player["self"] and not player.get("is_chair", False):
                         await self._send(
                             chat,
                             game,

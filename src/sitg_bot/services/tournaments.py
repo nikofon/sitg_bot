@@ -22,6 +22,7 @@ from sitg_bot.domain.game_rulesets import (
 )
 from sitg_bot.domain.packet import normalize_language_tag
 from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
+from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -36,6 +37,7 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlatformAdministratorRecord,
     PlayerExposureClaimRecord,
+    PlayerNotificationRecord,
     PlayerRecord,
     PlayerTelegramNavigationRecord,
     PregameLobbyEventRecord,
@@ -172,6 +174,7 @@ class TournamentSnapshot:
     registration_ends_at: datetime | None
     finalized_at: datetime | None
     settings_version: int
+    actual_starts_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +206,7 @@ class TournamentListItem:
     available_actions: tuple[str, ...] = ()
     finalized_at: datetime | None = None
     settings_version: int = 1
+    actual_starts_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +269,7 @@ class TournamentManagerSettings:
     packet_assignment_count: int
     membership_count: int
     manager_count: int
+    classic: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +304,7 @@ class ManagementPacket:
     authors: tuple[str, ...] = ()
     released: bool = False
     packet_version_id: UUID | None = None
+    default_access: dict[str, bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +323,7 @@ class TournamentManagement:
     registrations: tuple[ManagementRegistration, ...]
     packets: tuple[ManagementPacket, ...]
     available_actions: tuple[str, ...]
+    classic: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,13 +525,6 @@ class TournamentService:
                 raise PermissionError("Tournament creation token belongs to another creator")
 
             type_version = await self._latest_type(session, type_key)
-            if type_version.rules.get("open_ended") is not True:
-                if registration_ends_at is None:
-                    raise ValueError("Registration end is required for a finite tournament")
-                if starts_at is None or planned_ends_at is None:
-                    raise ValueError(
-                        "Start and planned finish are required for a finite tournament"
-                    )
             normalized_policies = normalize_tournament_policies(type_version.rules, policies)
             ruleset_version = await self._latest_ruleset(session, game_ruleset_key)
             compatible = type_version.rules.get("compatible_rulesets")
@@ -899,6 +899,7 @@ class TournamentService:
         policies: dict[str, object],
         ignore_late_registrations: bool = True,
         author_ids: tuple[UUID, ...] = (),
+        registration_open_override: bool | None = None,
     ) -> TournamentManagerSettings:
         normalized_name = name.strip()
         normalized_slug = slug.strip().casefold()
@@ -958,13 +959,12 @@ class TournamentService:
             compatible = type_version.rules.get("compatible_rulesets")
             if compatible and ruleset_version.key not in compatible:
                 raise ValueError("Tournament type is incompatible with the selected game ruleset")
-            if type_version.rules.get("open_ended") is not True:
-                if registration_ends_at is None:
-                    raise ValueError("Registration end is required for a finite tournament")
-                if starts_at is None or planned_ends_at is None:
-                    raise ValueError(
-                        "Start and planned finish are required for a finite tournament"
-                    )
+            if (
+                tournament.finalized_at is not None
+                and type_version.rules.get("open_ended") is not True
+                and registration_ends_at is None
+            ):
+                raise ValueError("Registration end is required for a finite tournament")
             ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
@@ -988,6 +988,12 @@ class TournamentService:
             tournament.language = normalize_language_tag(language)
             tournament.payment_type = normalized_payment_type
             tournament.registration_open = registration_open
+            if registration_open_override is not None:
+                if not isinstance(registration_open_override, bool):
+                    raise ValueError("Registration override must be boolean")
+                if tournament.finalized_at is None:
+                    raise ValueError("Finalize tournament setup before changing availability")
+                tournament.registration_open_override = registration_open_override
             tournament.ignore_late_registrations = ignore_late_registrations
             tournament.registration_starts_at = registration_starts_at
             tournament.registration_ends_at = registration_ends_at
@@ -1073,13 +1079,11 @@ class TournamentService:
             compatible = type_version.rules.get("compatible_rulesets")
             if compatible and ruleset_version.key not in compatible:
                 raise ValueError("Tournament type is incompatible with the selected game ruleset")
-            if type_version.rules.get("open_ended") is not True:
-                if tournament.registration_ends_at is None:
-                    raise ValueError("Registration end is required for a finite tournament")
-                if tournament.starts_at is None or tournament.planned_ends_at is None:
-                    raise ValueError(
-                        "Start and planned finish are required for a finite tournament"
-                    )
+            if (
+                type_version.rules.get("open_ended") is not True
+                and tournament.registration_ends_at is None
+            ):
+                raise ValueError("Registration end is required for a finite tournament")
             tournament.finalized_at = datetime.now(UTC)
             tournament.settings_version += 1
             await session.flush()
@@ -1281,6 +1285,10 @@ class TournamentService:
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
             )
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+                if any(s.started_at for s in await ClassicService.stages(session, tournament_id)):
+                    raise ValueError("Classic participants are locked after a stage starts")
             membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
             if membership is None or membership.status != "registered":
                 raise ValueError("Only a pending registration can be approved")
@@ -1304,9 +1312,18 @@ class TournamentService:
     ) -> str:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            await self._active_tournament(session, tournament_id)
+            tournament = await self._active_tournament(session, tournament_id)
+            type_version = await session.get(
+                TournamentTypeVersionRecord, tournament.type_version_id
+            )
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+            classic_draft = type_version.key == "classic" and not any(
+                s.started_at for s in await ClassicService.stages(session, tournament_id)
+            )
             membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
-            if membership is None or membership.status != "registered":
+            allowed = {"registered", "approved", "active"} if classic_draft else {"registered"}
+            if membership is None or membership.status not in allowed:
                 raise ValueError("Only a pending registration can be rejected")
             membership.status = "rejected"
             membership.registration_rejected_at = datetime.now(UTC)
@@ -1328,6 +1345,10 @@ class TournamentService:
                 TournamentTypeVersionRecord, tournament.type_version_id
             )
             assert type_version is not None
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+                if any(s.started_at for s in await ClassicService.stages(session, tournament_id)):
+                    raise ValueError("Classic participants are locked after a stage starts")
             if type_version.rules.get("open_ended") is True:
                 raise ValueError(
                     "Open-ended tournaments admit players when registration is approved"
@@ -1552,13 +1573,12 @@ class TournamentService:
             self._validate_schedule(
                 new_registration_start, new_registration_end, new_start, new_planned_end
             )
-            if type_version.rules.get("open_ended") is not True:
-                if new_registration_end is None:
-                    raise ValueError("Registration end is required for a finite tournament")
-                if new_start is None or new_planned_end is None:
-                    raise ValueError(
-                        "Start and planned finish are required for a finite tournament"
-                    )
+            if (
+                tournament.finalized_at is not None
+                and type_version.rules.get("open_ended") is not True
+                and new_registration_end is None
+            ):
+                raise ValueError("Registration end is required for a finite tournament")
 
             if payment_type is not _UNSET or pricing_plans is not _UNSET:
                 raw_payment_type = (
@@ -1669,7 +1689,10 @@ class TournamentService:
                 raise StaleWriteError("Tournament settings have changed")
             if tournament.finalized_at is None:
                 raise ValueError("Finalize tournament setup before marking it finished")
-            if tournament.starts_at is not None and finished_at < tournament.starts_at:
+            if (
+                tournament.actual_starts_at is not None
+                and finished_at < tournament.actual_starts_at
+            ):
                 raise ValueError("Actual finish cannot precede tournament start")
             tournament.actual_ends_at = finished_at
             tournament.status = "completed"
@@ -1677,6 +1700,66 @@ class TournamentService:
             tournament.registration_open_override = False
             tournament.settings_version += 1
             await self._invalidate_assembling_lobbies(session, tournament_id)
+
+    async def start_tournament(
+        self, tournament_id: UUID, manager_id: UUID, *, expected_version: int,
+    ) -> TournamentManagement:
+        async with self.database.transaction() as session:
+            await self._require_manager(session, tournament_id, manager_id)
+            tournament = await session.get(TournamentRecord, tournament_id, with_for_update=True)
+            if tournament is None or tournament.status != "active":
+                raise LookupError("Active tournament not found")
+            if tournament.settings_version != expected_version:
+                raise StaleWriteError("Tournament settings have changed")
+            if tournament.finalized_at is None:
+                raise ValueError("Finalize tournament setup before starting it")
+            type_version = await session.get(
+                TournamentTypeVersionRecord, tournament.type_version_id
+            )
+            if type_version.key == "classic":
+                raise ValueError("Start a Classic stage to start the tournament")
+            if tournament.actual_starts_at is not None:
+                raise ValueError("Tournament has already started")
+            tournament.actual_starts_at = datetime.now(UTC)
+            tournament.settings_version += 1
+            await self._invalidate_assembling_lobbies(session, tournament_id)
+            await session.flush()
+            return await self._manager_management_snapshot(session, tournament_id, manager_id)
+
+    async def remind_scheduled_starts(self, *, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        async with self.database.transaction() as session:
+            tournaments = list(await session.scalars(
+                select(TournamentRecord).where(
+                    TournamentRecord.status == "active",
+                    TournamentRecord.actual_starts_at.is_(None),
+                    TournamentRecord.starts_at <= now,
+                    TournamentRecord.start_reminded_for.is_distinct_from(TournamentRecord.starts_at),
+                ).with_for_update(skip_locked=True)
+            ))
+            for tournament in tournaments:
+                managers = await session.scalars(
+                    select(TournamentManagerRecord.player_id).where(
+                        TournamentManagerRecord.tournament_id == tournament.id,
+                        TournamentManagerRecord.revoked_at.is_(None),
+                    ).order_by(TournamentManagerRecord.player_id)
+                )
+                for manager_id in managers:
+                    key = (
+                        f"tournament-start:{tournament.id}:"
+                        f"{tournament.starts_at.isoformat()}:{manager_id}"
+                    )
+                    if await session.scalar(select(PlayerNotificationRecord.id).where(
+                        PlayerNotificationRecord.deduplication_key == key
+                    )):
+                        continue
+                    await NotificationWriter.create_for_player(
+                        session, recipient_player_id=manager_id, audience="manager",
+                        kind="tournament.start_due",
+                        deduplication_key=key,
+                        payload={"tournament_id": str(tournament.id), "name": tournament.name},
+                    )
+                tournament.start_reminded_for = tournament.starts_at
 
     async def manager_management(
         self, tournament_id: UUID, manager_id: UUID
@@ -1803,6 +1886,14 @@ class TournamentService:
                     )
                 entitlement.granted_by_id = manager_id
                 entitlement.revoked_at = None
+            if player_id is None:
+                setattr(assignment, assignment_field, enabled)
+                if right == "playable":
+                    assignment.access_level_by_members = (
+                        assignment.access_level_by_members
+                        if enabled and assignment.access_level_by_members in PLAYABLE_ACCESS_LEVELS
+                        else "play-only" if enabled else "no-access"
+                    )
             await self._invalidate_assembling_lobbies(session, tournament_id)
             await session.flush()
             return await self._manager_management_snapshot(session, tournament_id, manager_id)
@@ -2151,6 +2242,9 @@ class TournamentService:
             packet_assignment_count=counts[0],
             membership_count=counts[1],
             manager_count=counts[2],
+            classic=await ClassicService(self.database).snapshot(session, tournament_id)
+            if item.type_key == "classic"
+            else None,
         )
 
     async def _manager_management_snapshot(
@@ -2186,6 +2280,10 @@ class TournamentService:
                 )
             ).all()
         )
+        classic_started = item.type_key == "classic" and any(
+            s.started_at for s in await ClassicService.stages(session, tournament_id)
+        )
+        classic_draft = item.type_key == "classic" and not classic_started
         registrations = tuple(
             ManagementRegistration(
                 player_id=membership.player_id,
@@ -2194,7 +2292,13 @@ class TournamentService:
                 status=membership.status,
                 registered_at=membership.registered_at,
                 available_actions=("approve", "reject")
-                if membership.status == "registered" and tournament.status == "active"
+                if membership.status == "registered"
+                and tournament.status == "active"
+                and not classic_started
+                else ("reject",)
+                if classic_draft
+                and membership.status in {"approved", "active"}
+                and tournament.status == "active"
                 else (),
             )
             for membership, player in registration_rows
@@ -2282,6 +2386,11 @@ class TournamentService:
                     )).all()) if version else (),
                     released=bool(version and version.library_released_at),
                     packet_version_id=version.id if version else None,
+                    default_access={
+                        "discoverable": assignment.discoverable_by_members,
+                        "playable": assignment.playable_by_members,
+                        "readable": assignment.content_visible_by_members,
+                    },
                 )
             )
 
@@ -2301,6 +2410,8 @@ class TournamentService:
             if isinstance(configured_sections, list)
             else supported_sections
         )
+        if item.type_key == "classic":
+            sections += ("first_stage", "playoff_stage", "first_round_seeding")
         scheduled_open = self._scheduled_registration_is_open(tournament, datetime.now(UTC))
         actions: list[str] = ["packet_management"]
         if tournament.status == "active":
@@ -2309,6 +2420,8 @@ class TournamentService:
                 actions.append("finalize")
             else:
                 actions.extend(("registration_override", "mark_finished"))
+                if tournament.actual_starts_at is None and item.type_key != "classic":
+                    actions.append("start_tournament")
         return TournamentManagement(
             tournament=item,
             sections=sections,
@@ -2326,6 +2439,9 @@ class TournamentService:
             registrations=registrations,
             packets=tuple(packets),
             available_actions=tuple(actions),
+            classic=await ClassicService(self.database).snapshot(session, tournament_id)
+            if item.type_key == "classic"
+            else None,
         )
 
     async def update_policy(
@@ -2693,6 +2809,19 @@ class TournamentService:
         )
         if membership is None or membership.status != "active":
             return False
+        if right in {"playable", "discoverable"}:
+            type_key = await session.scalar(
+                select(TournamentTypeVersionRecord.key)
+                .join(
+                    TournamentRecord,
+                    TournamentRecord.type_version_id == TournamentTypeVersionRecord.id,
+                )
+                .where(TournamentRecord.id == assignment.tournament_id)
+            )
+            if type_key == "classic":
+                return await ClassicService.assignment_access(
+                    session, assignment.id, player_id, right
+                )
         entitlement = await session.get(
             TournamentPacketEntitlementRecord, (assignment.id, player_id)
         )
@@ -2777,11 +2906,10 @@ class TournamentService:
         )
         assert type_version is not None and ruleset_version is not None and policy is not None
         ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
-        now = datetime.now(UTC)
         assembly_open = bool(
             tournament.status == "active"
             and tournament.finalized_at is not None
-            and (tournament.starts_at is None or tournament.starts_at <= now)
+            and tournament.actual_starts_at is not None
             and (
                 type_version.rules.get("open_ended") is True
                 or tournament.participants_finalized_at is not None
@@ -2948,6 +3076,7 @@ class TournamentService:
             starts_at=tournament.starts_at,
             planned_ends_at=tournament.planned_ends_at,
             actual_ends_at=tournament.actual_ends_at,
+            actual_starts_at=tournament.actual_starts_at,
             language=tournament.language,
             payment_type=tournament.payment_type,
             pricing_plans=await self.pricing_plans(session, tournament.id),
@@ -3273,6 +3402,7 @@ class TournamentService:
                     starts_at=tournament.starts_at,
                     planned_ends_at=tournament.planned_ends_at,
                     actual_ends_at=tournament.actual_ends_at,
+                    actual_starts_at=tournament.actual_starts_at,
                     language=tournament.language,
                     payment_type=tournament.payment_type,
                     pricing_plans=await cls.pricing_plans(session, tournament.id),
@@ -3333,9 +3463,7 @@ class TournamentService:
             return "past"
         if tournament.actual_ends_at is not None:
             return "past"
-        if tournament.starts_at is not None and tournament.starts_at > now:
-            return "future"
-        return "ongoing"
+        return "ongoing" if tournament.actual_starts_at is not None else "future"
 
     @staticmethod
     def _reference_time(now: datetime | None) -> datetime:
@@ -3703,6 +3831,7 @@ class TournamentService:
             starts_at=tournament.starts_at,
             planned_ends_at=tournament.planned_ends_at,
             actual_ends_at=tournament.actual_ends_at,
+            actual_starts_at=tournament.actual_starts_at,
             language=tournament.language,
             payment_type=tournament.payment_type,
             pricing_plans=pricing_plans,

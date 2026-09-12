@@ -22,9 +22,12 @@ from sitg_bot.bot.handlers.admin import (
 )
 from sitg_bot.bot.handlers.common import resume_registration
 from sitg_bot.bot.handlers.manager import (
+    _creation_prompt,
     delivered_token_message,
     handle_manager_tournament_action,
     handle_token_request_commentary,
+    handle_tournament_ruleset,
+    handle_tournament_type,
     handle_tournament_visibility,
     token_inventory_message,
     token_request_result,
@@ -763,6 +766,35 @@ async def test_back_in_creation_wizard_returns_to_previous_step() -> None:
     assert "ruleset" in message.answer.await_args.args[0].lower()
 
 
+@pytest.mark.parametrize("value", ["Ladder", "Classical", "classic"])
+async def test_creation_type_skips_dates_and_back_returns_to_type(value: str) -> None:
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"type_key": "classic"}),
+        set_state=AsyncMock(), update_data=AsyncMock(),
+    )
+    message = SimpleNamespace(text=value, answer=AsyncMock())
+    localization = LocalizationService()
+    await handle_tournament_type(message, localization, "en", state)
+    state.update_data.assert_awaited_once_with(
+        type_key="ladder" if value == "Ladder" else "classic"
+    )
+    state.set_state.assert_awaited_once_with(TournamentCreationState.entering_ruleset)
+    message.text = "Back"
+    await handle_tournament_ruleset(message, localization, "en", state)
+    state.set_state.assert_awaited_with(TournamentCreationState.entering_type)
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_creation_keyboard_offers_types_and_visibilities(locale: str) -> None:
+    localization = LocalizationService()
+    for field, choices in [
+        ("type", ("Ladder", "Classical")), ("visibility", ("Private", "Public"))
+    ]:
+        model = _creation_prompt(field, choices[0], localization, locale)
+        assert isinstance(model.keyboard, ReplyKeyboardModel)
+        assert model.keyboard.rows == (choices, (localization.text("button.back", locale),))
+
+
 def test_tournament_language_choices_are_localized_and_extensible() -> None:
     localization = LocalizationService()
 
@@ -783,6 +815,15 @@ def test_tournament_language_choices_are_localized_and_extensible() -> None:
     )
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_tournament_start_reminder_is_localized_and_escapes_name(locale):
+    text = notification_text(
+        "tournament.start_due", {"name": "Cup <test>"}, LocalizationService(), locale,
+    )
+    assert "Cup &lt;test&gt;" in text
+    assert "<test>" not in text
+
+
 def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
     state = navigation(
         available_modes=["player", "manager", "admin"],
@@ -790,6 +831,7 @@ def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
         allowed_actions=[
             "admin.menu",
             "admin.token_requests.pending",
+            "admin.suspicion_ledger",
             "admin.ban",
             "admin.unban",
             "notifications",
@@ -802,6 +844,7 @@ def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
     assert isinstance(model.keyboard, ReplyKeyboardModel)
     assert tuple(label for row in model.keyboard.rows for label in row) == (
         "Pending token requests",
+        "Suspicion ledger",
         "Ban",
         "Unban",
         "Notifications",
@@ -1268,6 +1311,195 @@ async def test_readiness_error_in_telegram_displays_the_specific_condition() -> 
         }
     )
     with patch.object(Message, "answer", new=AsyncMock()) as answer:
-        await ErrorMappingMiddleware(LocalizationService())(handler, update, {"locale": "ru"})
+        await ErrorMappingMiddleware(LocalizationService())(
+            handler, update, {"locale": "ru"}
+        )
         assert "доступно 1, требуется 3" in answer.await_args.args[0]
         assert "Проверьте введённое значение" not in answer.await_args.args[0]
+
+
+async def test_banned_player_middleware_blocks_interaction_but_allows_library(
+    monkeypatch,
+) -> None:
+    from sitg_bot.bot.middleware import ban as ban_middleware_module
+    from sitg_bot.bot.middleware.ban import BannedPlayerMiddleware
+
+    localization = LocalizationService()
+    banned = navigation(
+        allowed_actions=["start", "menu", "help", "language", "player.library"],
+        ban_reason="cheating",
+    )
+    send = AsyncMock()
+    monkeypatch.setattr(ban_middleware_module, "send_message_model", send)
+
+    def update(text: str) -> Update:
+        return Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": 0,
+                    "chat": {"id": 42, "type": "private"},
+                    "text": text,
+                },
+            }
+        )
+
+    middleware = BannedPlayerMiddleware()
+    handler = AsyncMock()
+
+    with pytest.raises(CancelHandler):
+        await middleware(
+            handler,
+            update("/start"),
+            {"navigation": banned, "localization": localization, "locale": "en"},
+        )
+    assert send.await_count == 1
+    assert "You have been banned!" in send.await_args.args[1].text
+    assert "cheating" in send.await_args.args[1].text
+
+    await middleware(
+        handler,
+        update("Library"),
+        {"navigation": banned, "localization": localization, "locale": "en"},
+    )
+    handler.assert_awaited_once()
+    assert send.await_count == 1
+
+
+async def test_admin_ban_flow_collects_target_reason_and_receipt() -> None:
+    from sitg_bot.bot.handlers.admin import handle_admin_ban_reason, handle_admin_ban_target
+
+    localization = LocalizationService()
+    state = SimpleNamespace(
+        clear=AsyncMock(),
+        update_data=AsyncMock(),
+        set_state=AsyncMock(),
+        get_data=AsyncMock(return_value={"ban_target": "@cheater"}),
+    )
+    message = SimpleNamespace(answer=AsyncMock(), text="@cheater")
+
+    await handle_admin_ban_target(
+        message,  # type: ignore[arg-type]
+        localization=localization,
+        locale="en",
+        navigation=navigation(active_mode="admin"),
+        state=state,  # type: ignore[arg-type]
+    )
+    assert state.update_data.await_args.kwargs == {"ban_target": "@cheater"}
+    reason_prompt = message.answer.await_args.args[0]
+    assert "reason" in reason_prompt.lower()
+
+    backend = SimpleNamespace(
+        ban_player=AsyncMock(
+            return_value={
+                "player_id": str(UUID(int=2)),
+                "display_name": "Cheater",
+                "telegram_username": "cheater",
+                "reason": "Cheating in games",
+                "banned_at": "2026-09-12T10:00:00+00:00",
+            }
+        )
+    )
+    reason_message = SimpleNamespace(answer=AsyncMock(), text="Cheating in games")
+    await handle_admin_ban_reason(
+        reason_message,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=localization,
+        locale="en",
+        state=state,  # type: ignore[arg-type]
+    )
+    backend.ban_player.assert_awaited_once()
+    assert backend.ban_player.await_args.kwargs["target"] == "@cheater"
+    assert backend.ban_player.await_args.kwargs["reason"] == "Cheating in games"
+    receipt = reason_message.answer.await_args.args[0]
+    assert "Player banned" in receipt
+    assert "Cheating in games" in receipt
+
+
+async def test_admin_unban_reports_missing_players() -> None:
+    from sitg_bot.application.contracts import ErrorCode, GatewayError
+    from sitg_bot.bot.handlers.admin import handle_admin_unban_target
+
+    localization = LocalizationService()
+    error_response = GatewayResponse(
+        action=ActionCode.PLAYER_UNBAN,
+        correlation_id=UUID(int=7),
+        ok=False,
+        error=GatewayError(code=ErrorCode.NOT_FOUND, message_key="error.not_found"),
+    )
+    backend = SimpleNamespace(
+        unban_player=AsyncMock(side_effect=GatewayCallError(error_response))
+    )
+    message = SimpleNamespace(answer=AsyncMock(), text=str(UUID(int=2)))
+    state = SimpleNamespace(clear=AsyncMock())
+
+    await handle_admin_unban_target(
+        message,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=localization,
+        locale="en",
+        navigation=navigation(active_mode="admin"),
+        state=state,  # type: ignore[arg-type]
+    )
+    assert "not found" in message.answer.await_args.args[0]
+
+
+async def test_bug_command_submits_commentary_and_prompts_without_one() -> None:
+    from sitg_bot.bot.handlers.player import handle_bug_report
+
+    localization = LocalizationService()
+    backend = SimpleNamespace(submit_bug_report=AsyncMock(return_value={"report_id": "1"}))
+    state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
+
+    submitted = SimpleNamespace(
+        answer=AsyncMock(), text="/bug The scoreboard shows wrong scores"
+    )
+    await handle_bug_report(
+        submitted,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=localization,
+        locale="en",
+        navigation=navigation(),
+        state=state,  # type: ignore[arg-type]
+    )
+    backend.submit_bug_report.assert_awaited_once()
+    assert (
+        backend.submit_bug_report.await_args.kwargs["commentary"]
+        == "The scoreboard shows wrong scores"
+    )
+    assert "Thank you" in submitted.answer.await_args.args[0]
+
+    pending = SimpleNamespace(answer=AsyncMock(), text="/bug")
+    await handle_bug_report(
+        pending,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=localization,
+        locale="en",
+        navigation=navigation(),
+        state=state,  # type: ignore[arg-type]
+    )
+    state.set_state.assert_awaited_once()
+    assert "Describe what exactly happened" in pending.answer.await_args.args[0]
+
+
+def test_notification_text_renders_bug_reports() -> None:
+    text = notification_text(
+        "bug_report",
+        {
+            "reporter_nickname": "Reporter",
+            "reporter_telegram_username": "reporter",
+            "commentary": "The answer prompt disappeared",
+            "created_at": "2026-09-12T10:00:00+00:00",
+        },
+        LocalizationService(),
+        "en",
+    )
+    assert "Bug report" in text
+    assert "Reporter" in text
+    assert "The answer prompt disappeared" in text
+    assert "2026-09-12" in text

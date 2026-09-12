@@ -15,6 +15,9 @@ from pydantic import ValidationError
 from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminSuspicionClearOperation,
+    AdminSuspicionInspectOperation,
+    AdminSuspicionLedgerOperation,
     AuthorsSearchOperation,
     GatewayOperation,
     GatewayResponse,
@@ -38,6 +41,7 @@ from sitg_bot.application.contracts import (
     PlayerGameResultsOperation,
     PlayerProfileOperation,
     TournamentAuthorCreateOperation,
+    TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentFinalizeOperation,
     TournamentInfoOperation,
@@ -49,6 +53,7 @@ from sitg_bot.application.contracts import (
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
+    TournamentStartOperation,
 )
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.services.launch_references import LaunchReferenceService
@@ -135,6 +140,10 @@ class MiniAppHttpServer:
             "/api/miniapp/manager/tournaments/{launch_ref}/settings",
             self._update_manager_settings,
         )
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/classic",
+            self._update_classic,
+        )
         app.router.add_get(
             "/api/miniapp/manager/tournaments/{launch_ref}/authors",
             self._search_manager_authors,
@@ -163,6 +172,10 @@ class MiniAppHttpServer:
             "/api/miniapp/manager/tournaments/{launch_ref}/complete",
             self._complete_tournament,
         )
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/start",
+            self._start_tournament,
+        )
         app.router.add_get("/api/miniapp/manager/packets/{launch_ref}", self._packet_draft)
         app.router.add_get(
             "/api/miniapp/manager/tournaments/{launch_ref}/packets/{assignment_id}",
@@ -182,6 +195,17 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/manager/packets/{launch_ref}/{decision}",
             self._decide_packet_draft,
+        )
+        app.router.add_get(
+            "/api/miniapp/admin/suspicion/ledger", self._admin_suspicion_ledger
+        )
+        app.router.add_get(
+            "/api/miniapp/admin/suspicion/ledger/{player_id}/events",
+            self._admin_suspicion_events,
+        )
+        app.router.add_post(
+            "/api/miniapp/admin/suspicion/ledger/{player_id}/clear",
+            self._admin_suspicion_clear,
         )
         if self.web_dist is not None:
             app.router.add_get("/{path:.*}", self._static)
@@ -296,6 +320,25 @@ class MiniAppHttpServer:
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
+        if normalized_path == "/admin/suspicion":
+            session, result = await self._query(
+                request, AdminSuspicionLedgerOperation(action=ActionCode.ADMIN_SUSPICION_LEDGER)
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            items = result.data.get("items", [])
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "admin_suspicion_ledger",
+                        "state": "ready" if items else "empty",
+                        **result.data,
+                    },
+                }
+            )
         management_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/management", normalized_path
         )
@@ -711,6 +754,27 @@ class MiniAppHttpServer:
         )
         return self._gateway_response(result)
 
+    async def _update_classic(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, tournament_id = await self._resolve_manager_reference(
+            request,
+            request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_CLASSIC_UPDATE,
+            mutation=True,
+        )
+        operation = TournamentClassicUpdateOperation.model_validate(
+            {
+                **body,
+                "action": ActionCode.TOURNAMENT_CLASSIC_UPDATE,
+                "tournament_id": tournament_id,
+            }
+        )
+        return self._gateway_response(
+            await self.gateway.execute(
+                session, operation, correlation_id=self._correlation_id(request)
+            )
+        )
+
     async def _set_registration_availability(self, request: web.Request) -> web.Response:
         body = await self._json_body(request)
         session, tournament_id = await self._resolve_manager_reference(
@@ -770,6 +834,21 @@ class MiniAppHttpServer:
                 **body,
             }
         )
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request)
+        )
+        return self._gateway_response(result)
+
+    async def _start_tournament(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, tournament_id = await self._resolve_manager_reference(
+            request, request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_START, mutation=True,
+            expected_routes={"manager_management"},
+        )
+        operation = TournamentStartOperation.model_validate({
+            **body, "action": ActionCode.TOURNAMENT_START, "tournament_id": tournament_id,
+        })
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
@@ -949,6 +1028,9 @@ class MiniAppHttpServer:
             raise MiniAppAuthenticationError("Player identity is missing")
         resolved = await self.launch_references.resolve(raw_reference, player_id=player_id)
         routes = expected_routes or {"manager_settings"}
+        # Both views manage the same tournament under the same current manager role.
+        if routes & {"manager_settings", "manager_management"}:
+            routes = routes | {"manager_settings", "manager_management"}
         if resolved.route not in routes:
             raise LookupError("Manager tournament launch reference not found")
         return session, resolved.target_id
@@ -1029,6 +1111,39 @@ class MiniAppHttpServer:
         operation = LibraryAccessOperation.model_validate({
             **body, "action": actions[command], "version_id": request.match_info["version_id"],
         })
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_ledger(self, request: web.Request) -> web.Response:
+        raw_limit = request.query.get("limit", "50")
+        operation = AdminSuspicionLedgerOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_LEDGER,
+                "limit": int(raw_limit),
+            }
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_events(self, request: web.Request) -> web.Response:
+        operation = AdminSuspicionInspectOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_INSPECT,
+                "player_id": request.match_info["player_id"],
+            }
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_suspicion_clear(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        operation = AdminSuspicionClearOperation.model_validate(
+            {
+                "action": ActionCode.ADMIN_SUSPICION_CLEAR,
+                "player_id": request.match_info["player_id"],
+                "note": body.get("note"),
+            }
+        )
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 

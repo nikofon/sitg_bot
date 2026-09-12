@@ -11,6 +11,7 @@ export type RouteId =
   | "player_profile"
   | "player_game"
   | "report"
+  | "admin_suspicion"
   | "manager_appeals"
   | "manager_settings"
   | "manager_management"
@@ -106,6 +107,13 @@ const routes: RouteDefinition[] = [
     parameterNames: ["launch_ref"],
     titleKey: "route.report.title",
     emptyKey: "route.report.empty",
+  },
+  {
+    id: "admin_suspicion",
+    pattern: /^\/admin\/suspicion\/?$/,
+    titleKey: "route.admin_suspicion.title",
+    emptyKey: "route.admin_suspicion.empty",
+    isRoot: true,
   },
   {
     id: "manager_appeals",
