@@ -98,6 +98,7 @@ from sitg_bot.application.contracts import (
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
+    TournamentStartOperation,
 )
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.author_links import AuthorLinkService
@@ -272,6 +273,9 @@ ACTION_POLICIES.update(
             mutation=True,
             idempotency_required=True,
             stale_write_field="expected_version",
+        ),
+        ActionCode.TOURNAMENT_START: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.LIBRARY_VIEW: ActionPolicy(
@@ -695,6 +699,7 @@ class ApplicationGateway:
                 pricing_plans=operation.pricing_plans,
                 registration_open=operation.registration_open,
                 ignore_late_registrations=operation.ignore_late_registrations,
+                registration_open_override=operation.registration_open_override,
                 registration_starts_at=operation.registration_starts_at,
                 registration_ends_at=operation.registration_ends_at,
                 starts_at=operation.starts_at,
@@ -801,6 +806,13 @@ class ApplicationGateway:
                 expected_version=operation.expected_version,
             )
             return await self.tournaments.manager_management(tournament_id, player_id)
+        if isinstance(operation, TournamentStartOperation):
+            tournament_id = await self._manager_tournament_id(
+                telegram_user_id, operation.tournament_id
+            )
+            return await self.tournaments.start_tournament(
+                tournament_id, player_id, expected_version=operation.expected_version,
+            )
         if isinstance(operation, PacketUploadEligibilityOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id

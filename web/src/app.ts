@@ -898,6 +898,14 @@ export class MiniAppShell {
     });
     const finalized = resource.finalized_at != null;
     const finished = resource.tournament.status === "completed";
+    const startButton = resource.tournament.type_key === "classic" ? null : element("button", {
+      type: "button", className: "primary-button",
+      disabled: !can("start_tournament"),
+      onclick: (() => void this.mutateManagerManagement(route, "/start", {
+        expected_version: resource.settings_version,
+      })) as EventListener,
+    }, this.i18n.t(resource.tournament.actual_starts_at
+      ? "manager_management.started" : "manager_management.start"));
     const finalizeButton = element(
       "button",
       {
@@ -950,7 +958,7 @@ export class MiniAppShell {
             : "manager_management.registration_scheduled_closed",
         )),
       ),
-      element("div", { className: "settings-actions" }, finalizeButton, finishButton),
+      element("div", { className: "settings-actions" }, startButton, finalizeButton, finishButton),
     );
     if (resource.classic) {
       for (const kind of ["first", "playoff"] as const) {
@@ -1186,7 +1194,9 @@ export class MiniAppShell {
         const selected = packet.player_access.filter((player) => player[right]).length;
         return element("td", {}, accessCheckbox(
           right,
-          packet.player_access.length > 0 && selected === packet.player_access.length,
+          packet.player_access.length > 0
+            ? selected === packet.player_access.length
+            : packet.default_access?.[right] ?? false,
           undefined,
           selected > 0 && selected < packet.player_access.length,
         ));
@@ -1432,6 +1442,11 @@ export class MiniAppShell {
       group(
         "manager_settings.registration",
         element("label", { className: "checkbox-label" }, element("input", {
+          name: "registration_available", type: "checkbox", checked: item.registration_open,
+          disabled: resource.finalized_at == null,
+        }), this.i18n.t("manager_management.registration_available")),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_override_help")),
+        element("label", { className: "checkbox-label" }, element("input", {
           name: "registration_open", type: "checkbox", checked: resource.registration_enabled,
         }), this.i18n.t("manager_settings.registration_enabled")),
         element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_help")),
@@ -1442,6 +1457,7 @@ export class MiniAppShell {
         }), this.i18n.t("manager_settings.ignore_late_registrations")),
         input("tournament.starts", "starts_at", dateTimeLocal(item.starts_at), "datetime-local"),
         input("tournament.ends", "planned_ends_at", dateTimeLocal(item.planned_ends_at), "datetime-local"),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.schedule_help")),
       ),
       group(
         "manager_settings.gameplay",
@@ -1545,8 +1561,11 @@ export class MiniAppShell {
       const packet = element("select", {}, element("option", { value: "" }, "—"),
         ...resource.packets.map((p) => element("option", { value: p.assignment_id, selected: p.assignment_id === round.assignment_id }, p.name)));
       packet.disabled = round.packet_locked;
-      const discoverable = element("input", { type: "checkbox", role: "switch", checked: stageStarted && round.discoverable, disabled: !stageStarted });
-      const playable = element("input", { type: "checkbox", role: "switch", checked: stageStarted && round.playable, disabled: !stageStarted });
+      const discoverable = element("input", { type: "checkbox", role: "switch", checked: round.discoverable, disabled: !stageStarted });
+      const playable = element("input", { type: "checkbox", role: "switch", checked: round.playable, disabled: !stageStarted });
+      const accessChanges: Record<string, boolean> = {};
+      discoverable.addEventListener("change", () => { accessChanges.discoverable = discoverable.checked; });
+      playable.addEventListener("change", () => { accessChanges.playable = playable.checked; });
       const deadline = element("input", { type: "datetime-local", value: dateTimeLocal(round.start_deadline) });
       container.append(element("article", { className: "resource-card" },
         element("h3", {}, `${this.i18n.t("classic.round")} ${round.number}`),
@@ -1557,9 +1576,15 @@ export class MiniAppShell {
         element("p", { className: "field-help" }, this.i18n.t("classic.deadline_help")),
         element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
           onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
-            round_id: round.id, assignment_id: packet.value || null, discoverable: stageStarted && discoverable.checked,
-            playable: stageStarted && playable.checked, start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
+            round_id: round.id, assignment_id: packet.value || null,
+            ...(stageStarted ? accessChanges : {}),
+            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
           })) as EventListener }, this.i18n.t("classic.save_round")),
+        element("button", { type: "button", className: "secondary-button", disabled: resource.tournament.status !== "active",
+          onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
+            round_id: round.id, assignment_id: packet.value || null, discoverable: null, playable: null,
+            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
+          })) as EventListener }, this.i18n.t("classic.use_packet_defaults")),
         ...round.matches.map((m) => {
           const results = m.results?.map((r) => `${r.place}. ${r.seat.startsWith("chair:") ? this.i18n.t("classic.chair") : names.get(r.seat) ?? r.seat} (${r.score})`).join("; ");
           return element("p", {},
@@ -1862,6 +1887,8 @@ export class MiniAppShell {
             payment_type: value("payment_type"),
             pricing_plans: value("payment_type") === "free" ? [] : this.pricingPlans(form),
             registration_open: value("registration_open") === "on",
+            ...(resource.finalized_at != null && data.has("registration_available") !== resource.tournament.registration_open
+              ? { registration_open_override: data.has("registration_available") } : {}),
             ignore_late_registrations: data.has("ignore_late_registrations"),
             registration_starts_at: timestamp("registration_starts_at"),
             registration_ends_at: timestamp("registration_ends_at"),

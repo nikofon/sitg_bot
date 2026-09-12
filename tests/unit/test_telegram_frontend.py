@@ -774,6 +774,15 @@ def test_tournament_language_choices_are_localized_and_extensible() -> None:
     )
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_tournament_start_reminder_is_localized_and_escapes_name(locale):
+    text = notification_text(
+        "tournament.start_due", {"name": "Cup <test>"}, LocalizationService(), locale,
+    )
+    assert "Cup &lt;test&gt;" in text
+    assert "<test>" not in text
+
+
 def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
     state = navigation(
         available_modes=["player", "manager", "admin"],

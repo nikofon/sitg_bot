@@ -42,6 +42,9 @@ constraints. Migration procedure belongs in the operations guide.
 
 - Every game belongs to one tournament and pins its tournament-type, game-ruleset, and
   tournament-policy versions.
+- Tournament play requires an actual manual start; planned dates do not open or close play.
+  Starting a Classic stage also records the tournament's actual start. Durable reminders
+  use the planned start date and persist recipient deduplication in notifications.
 - A game stores its effective ruleset parameters, immutable assignment plan, random seed,
   adopted packet versions, and the exact content revisions selected for play.
 - Changes to tournament policy, ruleset registration, packet assignments, or published

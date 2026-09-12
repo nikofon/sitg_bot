@@ -34,6 +34,7 @@ from sitg_bot.storage.models import (
     RulesetRatingRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
+    TournamentPolicyVersionRecord,
     TournamentRecord,
 )
 
@@ -309,13 +310,15 @@ class ClassicService:
             if not isinstance(deadline, datetime) or deadline.tzinfo is None:
                 raise ValueError("Round start deadline must include a timezone")
         for field in ("discoverable", "playable"):
-            if not isinstance(values.get(field, False), bool):
+            if field not in values:
+                continue
+            if values[field] is not None and not isinstance(values[field], bool):
                 raise ValueError("Packet switches must be boolean")
-            if values.get(field, False) and stage.started_at is None:
+            if values[field] and stage.started_at is None:
                 raise ValueError(
                     "Start the stage before making its packets discoverable or playable"
                 )
-            setattr(round_record, field, values.get(field, False))
+            setattr(round_record, field, values[field])
         round_record.assignment_id, round_record.start_deadline = assignment_id, deadline
 
     async def _start(
@@ -361,6 +364,8 @@ class ClassicService:
                 membership.participation_confirmed_at = now
                 membership.participation_confirmed_by_id = manager_id
         stage.started_at = now
+        if tournament.actual_starts_at is None:
+            tournament.actual_starts_at = now
         tournament.registration_open_override = False
         tournament.participants_finalized_at = now
         rounds = {r.number: r for r in await self.rounds(session, stage.id)}
@@ -531,6 +536,29 @@ class ClassicService:
             )
         match.results = order_results(results, seed=f"{stage.random_seed}:{match.id}")
 
+    @staticmethod
+    async def round_access(
+        session: AsyncSession, stage: ClassicStageRecord,
+        round_record: ClassicRoundRecord, right: str,
+    ) -> bool:
+        override = getattr(round_record, right)
+        if override is not None:
+            return override
+        if round_record.assignment_id:
+            assignment = await session.get(
+                TournamentPacketAssignmentRecord, round_record.assignment_id
+            )
+            if assignment is not None:
+                return bool(getattr(assignment, f"{right}_by_members"))
+        policy = await session.scalar(
+            select(TournamentPolicyVersionRecord)
+            .where(TournamentPolicyVersionRecord.tournament_id == stage.tournament_id)
+            .order_by(TournamentPolicyVersionRecord.version.desc()).limit(1)
+        )
+        return bool(policy and policy.policies.get(
+            f"packets_{right}_by_default", right == "discoverable"
+        ))
+
     @classmethod
     async def assignment_access(
         cls, session: AsyncSession, assignment_id: UUID, player_id: UUID, right: str
@@ -550,11 +578,13 @@ class ClassicService:
         for round_record, stage, match in rows:
             if str(player_id) not in match.seats:
                 continue
-            if right == "discoverable" and round_record.discoverable:
+            if right == "discoverable" and await cls.round_access(
+                session, stage, round_record, right
+            ):
                 return True
             if (
                 right == "playable"
-                and round_record.playable
+                and await cls.round_access(session, stage, round_record, "playable")
                 and not stage.completed_at
                 and match.results is None
                 and match.game_id is None
@@ -595,7 +625,7 @@ class ClassicService:
                 or match.results is not None
                 or match.game_id
                 or stage.completed_at
-                or not round_record.playable
+                or not await cls.round_access(session, stage, round_record, "playable")
                 or (round_record.start_deadline and now >= round_record.start_deadline)
             ):
                 continue
@@ -664,8 +694,10 @@ class ClassicService:
                             "id": str(r.id),
                             "number": r.number,
                             "assignment_id": str(r.assignment_id) if r.assignment_id else None,
-                            "discoverable": r.discoverable,
-                            "playable": r.playable,
+                            "discoverable": await self.round_access(
+                                session, stage, r, "discoverable"
+                            ),
+                            "playable": await self.round_access(session, stage, r, "playable"),
                             "start_deadline": r.start_deadline,
                             "packet_locked": any(
                                 m.game_id or (m.results and any(not is_chair(s) for s in m.seats))

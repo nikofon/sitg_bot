@@ -5,6 +5,7 @@ from aiogram.filters import Command, Filter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.keyboards.common import (
@@ -18,7 +19,6 @@ from sitg_bot.bot.keyboards.common import (
 )
 from sitg_bot.bot.miniapps import mini_app_route_url, website_url
 from sitg_bot.bot.presenters.common import menu_message
-from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
     InlineKeyboardModel,
@@ -110,6 +110,10 @@ def other_menu_message(
 def notification_text(
     kind: str, payload: dict[str, object], localization: LocalizationService, locale: str
 ) -> str:
+    if kind == "tournament.start_due":
+        return localization.text(
+            "notification.tournament.start_due", locale, name=payload.get("name", ""),
+        )
     if kind == "packet.substituted":
         return localization.text(
             "notification.packet.substituted", locale,
@@ -160,7 +164,9 @@ def notification_text(
         return localization.text(
             "notification.bug_report",
             locale,
-            nickname=payload.get("reporter_nickname") or payload.get("reporter_telegram_username") or "",
+            nickname=(
+                payload.get("reporter_nickname") or payload.get("reporter_telegram_username") or ""
+            ),
             created_at=created_at,
             commentary=payload.get("commentary", ""),
         )

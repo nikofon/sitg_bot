@@ -281,6 +281,7 @@
   "tournament_token.request_decided": "Ваш запрос токена турнира рассмотрен со статусом: {status}.",
   "notification.author_link.decided": "Запрос на привязку автора рассмотрен со статусом: {status}.",
   "notification.packet.substituted": "Организатор {manager_name} сделал замену в пакете «{packet_name}» в другом турнире. В вашем турнире сохраняется текущая версия.",
+  "notification.tournament.start_due": "Пора начинать турнир «{name}»! Откройте управление турниром и запустите его вручную (для классического турнира — начните этап).",
   "notification.generic": "Уведомление: {kind}",
   "tournament.info": "<b>{tournament}</b>\nСтатус: {status}",
   "lobby.created": "Лобби создано.",

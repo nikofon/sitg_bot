@@ -222,6 +222,33 @@ async def test_classic_mutation_binds_target_and_write_guards(references):
     assert gateway.requests[0].metadata.idempotency_key == "classic-start"
 
 
+async def test_tournament_start_binds_target_and_write_guards():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences()
+    )
+    request = make_mocked_request(
+        "POST", "/api/miniapp/manager/tournaments/opaque-reference/start",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf", "X-Idempotency-Key": "tournament-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps({
+        "tournament_id": str(UUID(int=99)), "expected_version": 5,
+    }).encode()
+    result = await http._start_tournament(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_START
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "tournament-start"
+
+
 async def test_packet_management_rejects_lobby_launch_reference():
     http = MiniAppHttpServer(
         FakeAuth(), FakeGateway(), launch_references=FakeLobbyLaunchReferences()

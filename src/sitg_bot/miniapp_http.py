@@ -51,6 +51,7 @@ from sitg_bot.application.contracts import (
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
+    TournamentStartOperation,
 )
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.services.launch_references import LaunchReferenceService
@@ -163,6 +164,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/complete",
             self._complete_tournament,
+        )
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/start",
+            self._start_tournament,
         )
         app.router.add_get("/api/miniapp/manager/packets/{launch_ref}", self._packet_draft)
         app.router.add_get(
@@ -752,6 +757,21 @@ class MiniAppHttpServer:
                 **body,
             }
         )
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request)
+        )
+        return self._gateway_response(result)
+
+    async def _start_tournament(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, tournament_id = await self._resolve_manager_reference(
+            request, request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_START, mutation=True,
+            expected_routes={"manager_management"},
+        )
+        operation = TournamentStartOperation.model_validate({
+            **body, "action": ActionCode.TOURNAMENT_START, "tournament_id": tournament_id,
+        })
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )

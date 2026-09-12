@@ -91,19 +91,25 @@ or more positive two-decimal prices in distinct three-letter ISO currencies. For
 `Students: 10 USD / 9 EUR` and `Adults: 15 USD / 13 EUR`. Free tournaments have no pricing
 plans.
 
-Registration start/end, tournament start, planned finish, and actual finish are separate
+Registration start/end, planned start/finish, and actual start/finish are separate
 timezone-aware facts. Without a manual override, the enabled registration flag is bounded
 by its dates (the end is enforced when late registrations are disabled). The manager's
 explicit open/closed override takes precedence over that window. Settings exposes the
-date-based registration enable switch; dates use the manager's device timezone in the Mini App.
+date-based registration enable switch and a current-availability checkbox. Changing current
+availability and saving applies a manual override. Dates use the device timezone in the Mini App.
 The creation wizard omits dates for both types; managers set them later in Settings. Finite
-tournaments require registration end, start, and planned finish at setup finalization;
-unfinalized drafts may omit them. Open-ended types may omit
-registration end and planned finish. Completion records actual finish and closes
-registration. Player-facing server listings
-separate tournaments into future, ongoing, and past groups. Completed and archived
-tournaments are always past; otherwise schedule boundaries determine the group. An
-unscheduled active tournament is ongoing.
+tournaments require registration end at setup finalization; unfinalized drafts may omit it.
+Tournament start and planned finish dates are optional guidance. Ladder managers use
+**Start tournament** in Management → General; starting either Classic stage also starts its
+tournament. Until then, lobby assembly is closed regardless of dates. Starting Ladder does
+not change registration. Completion records actual finish and closes registration.
+Listings classify unstarted tournaments as future, manually started ones as ongoing, and
+completed/archived ones as past.
+
+When a planned start arrives, a durable job sends each current manager a notification to
+start manually. Started or closed tournaments are skipped. Reminders survive restarts and
+are deduplicated per tournament, scheduled date, and recipient; rescheduling can trigger a
+new reminder. The migration preserves tournaments with existing stages or games as started.
 
 Creation requires a confirmation token issued by an administrator. Tokens are hashed,
 expiring, single-use, optionally bound to a creator, and revocable before use. Successful
@@ -148,6 +154,9 @@ Settings. Each stage must be explicitly configured and started. Starting activat
 participants, closes registration, and permanently locks that stage's type, scheme, scoring,
 and seeding. Managers can change the unstarted play-off while the first stage runs. Swiss is
 not implemented. Overall tournament completion remains a manager action.
+The first explicit Classic stage start records the tournament's actual start and opens
+lobby assembly. Round packet permissions, prescribed rosters, and deadlines
+continue to govern game starts.
 
 The bundled scheme library contains nine group schedules, Top-8/16/32/64 play-offs, and
 Top-8/16/32 double elimination. It transcribes the supplied CSVs. In Top-32 DE round 4,
@@ -180,8 +189,12 @@ to the first stage and are omitted from play-off settings.
 
 Each round selects one published tournament packet and independent discoverability/playability
 switches for its prescribed participants. A packet cannot serve two rounds in the same
-tournament. Discovery and play switches can only be enabled after the relevant stage starts;
-unstarted stages show a warning and disabled switches. Packets and deadlines can be prepared
+tournament. Round discovery/play switches inherit the assigned packet's member defaults
+(or tournament defaults before packet selection), unless explicitly overridden. Unstarted
+rounds from older setups inherit defaults after migration; existing started-round choices
+are preserved. **Use packet defaults** restores inheritance for either switch. Unstarted
+stages show these configured values with a warning and disabled switches; actual access
+still requires a started stage. Packets and deadlines can be prepared
 before starting. After a human game starts or resolves, the round's packet is locked. General packet
 accessibility controls only reading. Reading still requires the existing release/access rules.
 Selecting a round packet sends lobby members its roster or solo restriction. Readiness and

@@ -110,6 +110,7 @@ async def tournament_fixture(
     type_key: str = "ladder",
     hybrid_matchmaking_enabled: bool = True,
     finalized: bool = True,
+    started: bool = True,
 ) -> TournamentFixture:
     suffix = int(secrets.token_hex(4), 16)
     inputs = tuple(
@@ -158,6 +159,7 @@ async def tournament_fixture(
             game_ruleset_version_id=ruleset_version.id,
             created_by_id=manager.id,
             finalized_at=datetime.now(UTC) if finalized else None,
+            actual_starts_at=datetime.now(UTC) if finalized and started else None,
             participants_finalized_at=(datetime.now(UTC) if type_key == "classic" else None),
         )
         session.add(tournament)

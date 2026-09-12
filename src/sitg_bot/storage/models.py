@@ -241,6 +241,8 @@ class TournamentRecord(Base, TimestampMixin):
         Boolean, nullable=False, default=True, server_default=text("true")
     )
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_reminded_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     planned_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     actual_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -271,7 +273,9 @@ class TournamentRecord(Base, TimestampMixin):
             "planned_ends_at IS NULL OR starts_at IS NULL OR planned_ends_at > starts_at"
         ),
         CheckConstraint(
-            "actual_ends_at IS NULL OR starts_at IS NULL OR actual_ends_at >= starts_at"
+            "actual_ends_at IS NULL OR actual_starts_at IS NULL "
+            "OR actual_ends_at >= actual_starts_at",
+            name="ck_tournaments_actual_finish_after_start",
         ),
         CheckConstraint("settings_version >= 1"),
         Index("ix_tournaments_listing", "visibility", "status", "starts_at"),
@@ -1202,8 +1206,8 @@ class ClassicRoundRecord(Base):
     assignment_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tournament_packet_assignments.id")
     )
-    discoverable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    playable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discoverable: Mapped[bool | None] = mapped_column(Boolean)
+    playable: Mapped[bool | None] = mapped_column(Boolean)
     start_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (UniqueConstraint("stage_id", "number"), CheckConstraint("number >= 1"))

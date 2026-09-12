@@ -51,8 +51,8 @@ use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
-management records. Registration has an explicit schedule enable switch; entered dates use
-the device timezone, and manual availability overrides the schedule.
+management records. Registration has a schedule enable switch and a current-availability
+checkbox; changing current availability applies a manual override. Entered dates use the device timezone.
 Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
@@ -62,10 +62,14 @@ Settings and the Management General section provide buttons to switch between th
 with sections derived from the tournament type. Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights.
+General includes **Start tournament** for Ladder; Classic stage-start buttons start the
+tournament internally. Planned start dates send managers a reminder instead of starting play.
 Classic adds stage start buttons, first-stage/play-off round cards with packet switches and
 start deadlines, standings, and automatic/manual seeding. Its general packet-access table
 contains only read rights; stage types and first-stage scoring are configured in Settings.
-Round discovery/play switches stay disabled with a warning until their stage starts.
+Round discovery/play switches display inherited packet defaults or explicit overrides and
+stay disabled with a warning until their stage starts. The all-player access row displays
+assignment defaults even when there are no participants yet.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
 retirement, version release, and correction/substitution editing. Published fields stay locked
@@ -103,7 +107,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
-| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |
 | `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
 | `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
 | `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |

@@ -467,7 +467,7 @@ describe("MiniAppShell", () => {
                   { amount: 2, currency: "USD" },
                 ],
               }],
-              registration_open: false,
+              registration_open: true,
               authors: ["Author One"],
               type_key: "classic",
               type_version: 1,
@@ -493,6 +493,9 @@ describe("MiniAppShell", () => {
     expect(root.querySelectorAll(".classic-settings fieldset")).toHaveLength(2);
     expect(root.textContent).toContain("Tournament type and ruleset were locked");
     const registration = root.querySelector<HTMLInputElement>("[name=registration_open]")!;
+    const availability = root.querySelector<HTMLInputElement>("[name=registration_available]")!;
+    expect(availability.checked).toBe(true);
+    availability.checked = false;
     expect(registration.checked).toBe(false);
     registration.checked = true;
     root.querySelector<HTMLInputElement>("[name=registration_starts_at]")!.value = "2026-09-12T12:00";
@@ -536,6 +539,7 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
     const saved = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
     expect(saved.registration_open).toBe(true);
+    expect(saved.registration_open_override).toBe(false);
     expect(saved.registration_starts_at).toBe(new Date("2026-09-12T12:00").toISOString());
     expect(saved.registration_ends_at).toBe(new Date("2026-09-12T13:00").toISOString());
     expect(saved.policies).toMatchObject({
@@ -706,7 +710,7 @@ describe("MiniAppShell", () => {
     window.history.replaceState({}, "", "/manager/tournaments/ref/management");
     const stage = { kind: "first", stage_type: "groups", scheme_key: "groups-9-4", started_at: null as string | null,
       completed_at: null, seeds: [] as Array<Array<string | null>>, place_points: ["4", "3", "2", "1"], score_multiplier: "0.02", standings: [],
-      rounds: [{ id: "round-1", number: 1, assignment_id: null, discoverable: false, playable: false, start_deadline: null, packet_locked: false, matches: [] }] };
+      rounds: [{ id: "round-1", number: 1, assignment_id: null, discoverable: true, playable: true, start_deadline: null, packet_locked: false, matches: [] }] };
     const resource = { kind: "manager_management", state: "ready", settings_version: 4, finalized_at: "2026-09-01",
       registration_scheduled_open: false, registration_open: false, registration_open_override: false,
       registration_count: 1, approved_count: 1, participant_count: 1, packet_count: 1, registrations: [],
@@ -738,7 +742,7 @@ describe("MiniAppShell", () => {
     button("First stage management").click();
     root.querySelector<HTMLSelectElement>(".classic-rounds select")!.value = "packet-1";
     const switches = root.querySelectorAll<HTMLInputElement>(".classic-rounds input[type=checkbox]");
-    switches.forEach((s) => { expect(s.disabled).toBe(true); });
+    switches.forEach((s) => { expect(s.disabled).toBe(true); expect(s.checked).toBe(true); });
     expect(root.querySelector(".classic-rounds [role=status]")?.textContent).toBe(
       "Start this stage before making its packets discoverable or playable.",
     );
@@ -747,7 +751,7 @@ describe("MiniAppShell", () => {
     button("Save round").click();
     await vi.waitFor(() => expect(mutations).toHaveLength(1));
     expect(mutations[0]).toMatchObject({ expected_version: 4, command: "round", kind: "first",
-      values: { round_id: "round-1", assignment_id: "packet-1", discoverable: false, playable: false,
+      values: { round_id: "round-1", assignment_id: "packet-1",
         start_deadline: new Date("2026-10-01T12:00").toISOString() } });
     await vi.waitFor(() => expect(button("First round seeding")?.disabled).toBe(false));
     button("First round seeding").click();
@@ -771,11 +775,68 @@ describe("MiniAppShell", () => {
     root.querySelectorAll<HTMLInputElement>(".classic-rounds input[type=checkbox]").forEach((s) => {
       expect(s.disabled).toBe(false);
       s.checked = true;
+      s.dispatchEvent(new Event("change"));
     });
     button("Save round").click();
     await vi.waitFor(() => expect(mutations).toHaveLength(5));
     expect(mutations[4]).toMatchObject({ expected_version: 8, command: "round", kind: "first",
       values: { discoverable: true, playable: true } });
+    await vi.waitFor(() => expect(button("Use packet defaults")?.disabled).toBe(false));
+    button("Use packet defaults").click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(6));
+    expect(mutations[5]).toMatchObject({ command: "round", kind: "first",
+      values: { discoverable: null, playable: null } });
+  });
+
+  it.each(["classic", "ladder"])("shows current registration and packet defaults for %s", async (typeKey) => {
+    window.history.replaceState({}, "", "/manager/tournaments/ref/management");
+    const resource = {
+      kind: "manager_management", state: "ready", settings_version: 1, finalized_at: "2026-09-01",
+      registration_open: true, registration_scheduled_open: true, registration_open_override: null,
+      registration_count: 0, approved_count: 0, participant_count: 0, packet_count: 1,
+      registrations: [], sections: ["general", "packet_accessibility"],
+      available_actions: ["registration_override", "packet_access", ...(typeKey === "ladder" ? ["start_tournament"] : [])],
+      tournament: { id: "cup", name: "Cup", type_key: typeKey, status: "active", actual_starts_at: null as string | null },
+      packets: [{ assignment_id: "packet-1", packet_id: "logical-1", name: "Packet", player_access: [],
+        default_access: { playable: true, discoverable: true, readable: true } }],
+    };
+    const mutations: Array<{ url: string; body: any }> = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      if (options?.method === "POST") {
+        const body = JSON.parse(String(options.body));
+        mutations.push({ url: String(url), body });
+        resource.settings_version++;
+        if (String(url).endsWith("/start")) {
+          resource.tournament.actual_starts_at = "2026-09-12";
+          resource.available_actions = resource.available_actions.filter((a) => a !== "start_tournament");
+        } else resource.registration_open = body.registration_open;
+        return response(resource);
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    const button = (label: string) => Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent === label);
+    await vi.waitFor(() => expect(root.querySelector("[role=switch]")).not.toBeNull());
+    expect(root.querySelector<HTMLInputElement>("[role=switch]")!.checked).toBe(true);
+    if (typeKey === "ladder") {
+      button("Start tournament")!.click();
+      await vi.waitFor(() => expect(button("Tournament started")?.disabled).toBe(true));
+      expect(mutations[0]).toMatchObject({ url: "/api/miniapp/manager/tournaments/ref/start", body: { expected_version: 1 } });
+    } else expect(button("Start tournament")).toBeUndefined();
+    const toggle = root.querySelector<HTMLInputElement>("[role=switch]")!;
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(resource.registration_open).toBe(false));
+    await vi.waitFor(() => expect(button("Packet accessibility")?.disabled).toBe(false));
+    expect(mutations.at(-1)?.body.registration_open).toBe(false);
+    button("Packet accessibility")!.click();
+    const defaults = root.querySelectorAll<HTMLInputElement>(".set-all-row input");
+    expect(defaults).toHaveLength(typeKey === "classic" ? 1 : 3);
+    defaults.forEach((input) => expect(input.checked).toBe(true));
   });
 
   it("associates packet authors, creates a lead author, and preserves theme edits", async () => {

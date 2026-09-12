@@ -46,7 +46,8 @@ async def mutate(database, fixture, command, kind="first", **values):
 
 async def setup(database, count, stage_type="groups", scheme="groups-9-4", kind="first"):
     fixture = await tournament_fixture(
-        database, player_count=count, type_key="classic", hybrid_matchmaking_enabled=False
+        database, player_count=count, type_key="classic", hybrid_matchmaking_enabled=False,
+        started=False,
     )
     await mutate(database, fixture, "configure", kind, stage_type=stage_type, scheme_key=scheme)
     return fixture
@@ -116,6 +117,16 @@ async def test_classic_creation_defers_dates_and_settings_enable_registration(da
         management = await tournaments.manager_management(created.id, fixture.manager.id)
         assert management.registration_scheduled_open and management.registration_open
         await tournaments.register(created.id, fixture.players[0].id)
+        settings = await tournaments.manager_settings(created.id, fixture.manager.id)
+        assert settings.tournament.registration_open
+        await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=settings.settings_version,
+            registration_open_override=False, **values,
+        )
+        management = await tournaments.manager_management(created.id, fixture.manager.id)
+        assert management.registration_scheduled_open and not management.registration_open
+        settings = await tournaments.manager_settings(created.id, fixture.manager.id)
+        assert not settings.tournament.registration_open
     finally:
         await database.close()
 
@@ -129,18 +140,21 @@ async def test_round_access_cannot_be_enabled_before_stage_start(database_url, k
             scheme=None if kind == "first" else "playoff-8", kind=kind,
         )
         round_record, assignment_id = await first_round(database, fixture, kind)
+        assert round_record["discoverable"] is True
+        assert round_record["playable"] is False
         values = {"round_id": round_record["id"], "assignment_id": str(assignment_id)}
         for flag in ("discoverable", "playable"):
             with pytest.raises(ValueError, match="Start the stage"):
                 await mutate(database, fixture, "round", kind, **values, **{flag: True})
         await mutate(database, fixture, "round", kind, **values)
+        inherited, _ = await first_round(database, fixture, kind)
+        assert inherited["discoverable"] is True and inherited["playable"] is True
         async with database.sessions() as session:
             for flag in ("discoverable", "playable"):
                 assert not await ClassicService.assignment_access(
                     session, assignment_id, fixture.players[0].id, flag,
                 )
         await mutate(database, fixture, "start", kind)
-        await mutate(database, fixture, "round", kind, **values, discoverable=True, playable=True)
         async with database.sessions() as session:
             for flag in ("discoverable", "playable"):
                 assert await ClassicService.assignment_access(
@@ -149,14 +163,38 @@ async def test_round_access_cannot_be_enabled_before_stage_start(database_url, k
             stage = (await ClassicService.stages(session, fixture.tournament_id))[0]
             if kind == "playoff":
                 assert stage.place_points == [] and stage.score_multiplier == 0
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            assert tournament.actual_starts_at == stage.started_at
+        await mutate(database, fixture, "round", kind, **values, discoverable=False, playable=False)
+        async with database.sessions() as session:
+            for flag in ("discoverable", "playable"):
+                assert not await ClassicService.assignment_access(
+                    session, assignment_id, fixture.players[0].id, flag,
+                )
+        disabled, _ = await first_round(database, fixture, kind)
+        assert not disabled["discoverable"] and not disabled["playable"]
+        await mutate(database, fixture, "round", kind, **values, discoverable=None, playable=None)
+        inherited, _ = await first_round(database, fixture, kind)
+        assert inherited["discoverable"] and inherited["playable"]
     finally:
         await database.close()
 
 
-async def test_classic_prescribed_game_chairs_scoring_and_no_replay(database_url):
+@pytest.mark.parametrize("scheduled_in_future", [False, True])
+async def test_classic_prescribed_game_chairs_scoring_and_no_replay(
+    database_url, scheduled_in_future,
+):
     database = Database(database_url)
     try:
         fixture = await setup(database, 2)
+        if scheduled_in_future:
+            async with database.transaction() as session:
+                tournament = await session.get(TournamentRecord, fixture.tournament_id)
+                tournament.starts_at = datetime.now(UTC) + timedelta(days=7)
+            with pytest.raises(ValueError, match="tournament_stage_closed"):
+                await InvitationMatchmakingService(database).create_lobby(
+                    fixture.inputs[0], tournament_id=fixture.tournament_id,
+                )
         ids = [str(p.id) for p in fixture.players]
         await mutate(database, fixture, "seed", mode="manual", seeds=[ids + [None] * 7])
         await mutate(database, fixture, "start")

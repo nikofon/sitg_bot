@@ -63,6 +63,7 @@ export interface TournamentListItem {
   starts_at?: string | null;
   planned_ends_at?: string | null;
   actual_ends_at?: string | null;
+  actual_starts_at?: string | null;
   language: string;
   payment_type: string;
   pricing_plans: TournamentPricingPlan[];
@@ -159,6 +160,7 @@ export interface ManagementPacketPlayerAccess {
 }
 
 export interface ManagementPacket {
+  default_access?: Record<"playable" | "discoverable" | "readable", boolean> | null;
   assignment_id: string;
   packet_id: string;
   packet_version_id?: string | null;

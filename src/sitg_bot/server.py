@@ -150,6 +150,7 @@ class ConsoleApplicationServer:
                 "rating.settlement": self._job_rating_settlement,
                 "matchmaking.scan": self._job_matchmaking,
                 "classic.reconcile": self._job_classic,
+                "tournament.start_reminder": self._job_tournament_start_reminder,
                 "suspicion.tick": self._job_suspicion,
             },
             poll_interval=poll_interval,
@@ -1509,6 +1510,9 @@ class ConsoleApplicationServer:
         del payload
         for game_id in await self.games.settle_pending_ratings():
             await self._broadcast_game(game_id)
+
+    async def _job_tournament_start_reminder(self, payload: dict[str, Any]) -> None:
+        await self.tournaments.remind_scheduled_starts()
 
     async def _job_classic(self, payload: dict[str, Any]) -> None:
         from sitg_bot.services.classic import ClassicService

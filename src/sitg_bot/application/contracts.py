@@ -59,6 +59,7 @@ class ActionCode(StrEnum):
     PACKET_MANAGEMENT_DELETE = "packets.management.delete.v1"
     PACKET_MANAGEMENT_RELEASE = "packets.management.release.v1"
     TOURNAMENT_COMPLETE = "tournaments.manager.complete.v1"
+    TOURNAMENT_START = "tournaments.manager.start.v1"
     PACKET_UPLOAD_ELIGIBILITY = "packets.upload.eligibility.v1"
     PACKET_UPLOAD = "packets.upload.v1"
     PACKET_DRAFT_GET = "packets.drafts.get.v1"
@@ -334,6 +335,7 @@ class TournamentManagerSettingsUpdateOperation(ContractModel):
     payment_type: Literal["free", "one-time", "per-stage"]
     pricing_plans: list[dict[str, JsonValue]] = Field(default_factory=list)
     registration_open: bool
+    registration_open_override: bool | None = Field(default=None, strict=True)
     ignore_late_registrations: bool = True
     registration_starts_at: datetime | None = None
     registration_ends_at: datetime | None = None
@@ -388,8 +390,8 @@ class ClassicSeedingValues(ContractModel):
 class ClassicRoundValues(ContractModel):
     round_id: UUID
     assignment_id: UUID | None = None
-    discoverable: bool = Field(default=False, strict=True)
-    playable: bool = Field(default=False, strict=True)
+    discoverable: bool | None = Field(default=None, strict=True)
+    playable: bool | None = Field(default=None, strict=True)
     start_deadline: datetime | None = None
 
 
@@ -410,7 +412,9 @@ class TournamentClassicUpdateOperation(ContractModel):
             "start": ContractModel,
         }[self.command]
         parsed = schema.model_validate(self.values)
-        object.__setattr__(self, "values", parsed.model_dump(mode="json"))
+        object.__setattr__(
+            self, "values", parsed.model_dump(mode="json", exclude_unset=self.command == "round")
+        )
         return self
 
 
@@ -439,6 +443,12 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
 
 class TournamentCompleteOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_COMPLETE]
+    tournament_id: UUID | None = None
+    expected_version: int = Field(ge=1)
+
+
+class TournamentStartOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_START]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
 
@@ -781,6 +791,7 @@ GatewayOperation = Annotated[
     | PacketManagementUpdateOperation
     | PacketManagementActionOperation
     | TournamentCompleteOperation
+    | TournamentStartOperation
     | PacketUploadEligibilityOperation
     | PacketUploadOperation
     | PacketDraftGetOperation
