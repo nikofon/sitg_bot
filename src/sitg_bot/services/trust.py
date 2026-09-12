@@ -531,7 +531,10 @@ class TrustService:
         participant_count = (
             select(func.count())
             .select_from(counted_participant)
-            .where(counted_participant.game_id == GameRecord.id)
+            .where(
+                counted_participant.game_id == GameRecord.id,
+                counted_participant.is_chair.is_(False),
+            )
             .scalar_subquery()
         )
         unresolved_appeal = (
@@ -582,7 +585,10 @@ class TrustService:
         participants = list(
             (
                 await session.execute(
-                    select(GameParticipantRecord).where(GameParticipantRecord.game_id == game.id)
+                    select(GameParticipantRecord).where(
+                        GameParticipantRecord.game_id == game.id,
+                        GameParticipantRecord.is_chair.is_(False),
+                    )
                 )
             ).scalars()
         )

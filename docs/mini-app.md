@@ -54,11 +54,15 @@ pricing plans, registration/schedule, policies, ruleset defaults, mutability gra
 management records. Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
+Settings and the Management General section provide buttons to switch between these views.
 
 **Tournament management:** General, Registrations, Packet accessibility, and Packet management,
 with sections derived from the tournament type. Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights.
+Classic adds stage start buttons, first-stage/play-off round cards with packet switches and
+start deadlines, standings, and automatic/manual seeding. Its general packet-access table
+contains only read rights; stage types and scoring are configured in Settings.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
 retirement, version release, and correction/substitution editing. Published fields stay locked
@@ -89,6 +93,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
 | `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
 | `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
 | `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
 

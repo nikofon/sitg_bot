@@ -165,16 +165,52 @@ async def test_packet_management_mutations_use_launch_scope_and_write_guards(com
     assert gateway.requests[0].metadata.idempotency_key == "packet-mutation-test"
 
 
-async def test_packet_management_rejects_settings_launch_reference():
-    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), launch_references=FakeLaunchReferences())
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_classic_mutation_binds_target_and_write_guards(references):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway, launch_references=references())
+    request = make_mocked_request(
+        "POST",
+        "/api/miniapp/manager/tournaments/opaque-reference/classic",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "classic-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps(
+        {
+            "tournament_id": str(UUID(int=99)),
+            "command": "start",
+            "kind": "first",
+            "expected_version": 5,
+            "values": {},
+        }
+    ).encode()
+    result = await http._update_classic(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_CLASSIC_UPDATE
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "classic-start"
+
+
+async def test_packet_management_rejects_lobby_launch_reference():
+    http = MiniAppHttpServer(
+        FakeAuth(), FakeGateway(), launch_references=FakeLobbyLaunchReferences()
+    )
     request = make_mocked_request(
         "GET",
-        f"/api/miniapp/manager/tournaments/opaque-reference/packets/{UUID(int=30)}",
+        f"/api/miniapp/manager/tournaments/opaque-lobby/packets/{UUID(int=30)}",
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
         },
-        match_info={"launch_ref": "opaque-reference", "assignment_id": str(UUID(int=30))},
+        match_info={"launch_ref": "opaque-lobby", "assignment_id": str(UUID(int=30))},
     )
     with pytest.raises(LookupError):
         await http._management_packet(request)
@@ -276,12 +312,13 @@ async def test_tournament_selection_pushes_updated_context_to_telegram() -> None
     assert notifier.closed
 
 
-async def test_manager_settings_route_resolves_an_actor_bound_launch_reference() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_settings_route_resolves_an_actor_bound_launch_reference(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",
@@ -328,12 +365,13 @@ async def test_manager_author_search_is_name_filtered_and_reference_bound() -> N
     assert operation.query == "Ada"
 
 
-async def test_manager_management_route_is_actor_bound() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_management_route_is_actor_bound(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeManagementLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",

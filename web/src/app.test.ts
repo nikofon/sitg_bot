@@ -448,6 +448,9 @@ describe("MiniAppShell", () => {
             packet_assignment_count: 2,
             membership_count: 10,
             manager_count: 2,
+            classic: { players: [], schemes: [{ id: "groups-9-4", kind: "groups", size: 9, round_count: 4 }],
+              stages: [{ kind: "first", stage_type: "groups", scheme_key: "groups-9-4", started_at: "2026-09-01", completed_at: null,
+                seeds: [], place_points: ["4", "3", "2", "1"], score_multiplier: "0.02", rounds: [], standings: [] }] },
             tournament: {
               id: "00000000-0000-0000-0000-000000000003",
               name: "Managed Cup",
@@ -486,6 +489,8 @@ describe("MiniAppShell", () => {
 
     await vi.waitFor(() => expect(root.querySelector("form.settings-form")).not.toBeNull());
     expect(root.querySelector<HTMLSelectElement>("[name=type_key]")?.disabled).toBe(true);
+    expect(root.querySelector<HTMLFieldSetElement>(".classic-settings fieldset")?.disabled).toBe(true);
+    expect(root.querySelectorAll(".classic-settings fieldset")).toHaveLength(2);
     expect(root.textContent).toContain("Tournament type and ruleset were locked");
     expect(root.querySelector("[name=registration_open]")).toBeNull();
     expect(root.querySelector<HTMLInputElement>("[name=ignore_late_registrations]")?.checked).toBe(true);
@@ -527,9 +532,14 @@ describe("MiniAppShell", () => {
       packets_playable_by_default: true,
       packets_readable_by_default: true,
     });
+    const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Tournament management")!;
+    expect(managementButton.type).toBe("button");
+    managementButton.click();
+    expect(window.location.pathname).toBe("/manager/tournaments/opaque-reference/management");
   });
 
-  it("renders capability-derived tournament management sections and packet access", async () => {
+  it.each(["classic", "ladder"])("renders %s tournament management sections and packet access", async (typeKey) => {
     window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
     const fetcher = vi
       .fn<typeof fetch>()
@@ -587,7 +597,7 @@ describe("MiniAppShell", () => {
               pricing_plans: [],
               registration_open: false,
               authors: [],
-              type_key: "classic",
+              type_key: typeKey,
               type_version: 1,
               ruleset_key: "si",
               ruleset_version: 1,
@@ -609,6 +619,13 @@ describe("MiniAppShell", () => {
     expect(root.querySelectorAll(".management-section")).toHaveLength(1);
     expect(root.querySelector("[data-section=general]")).not.toBeNull();
     expect(root.textContent).not.toContain("Ada Lovelace");
+    const settingsButton = Array.from(root.querySelectorAll<HTMLButtonElement>("[data-section=general] button"))
+      .find((button) => button.textContent === "Tournament settings")!;
+    expect(settingsButton.type).toBe("button");
+    const navigate = vi.spyOn(Router.prototype, "navigate").mockImplementation(() => {});
+    settingsButton.click();
+    expect(navigate).toHaveBeenCalledWith("/manager/tournaments/opaque-reference/settings");
+    navigate.mockRestore();
 
     const registrationsButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
       .find((button) => button.textContent === "Registrations");
@@ -624,7 +641,7 @@ describe("MiniAppShell", () => {
     expect(root.querySelector("[data-section=packet_accessibility]")).not.toBeNull();
     expect(root.textContent).toContain("Final packet · v2");
     expect(root.textContent).toContain("Set for all");
-    expect(root.querySelectorAll(".packet-access-table input[type=checkbox]")).toHaveLength(6);
+    expect(root.querySelectorAll(".packet-access-table input[type=checkbox]")).toHaveLength(typeKey === "classic" ? 2 : 6);
 
     const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
       .find((button) => button.textContent === "Packet management");
@@ -672,6 +689,67 @@ describe("MiniAppShell", () => {
     expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution" });
     expect(saved.content.themes[0].questions[0].answer).toBe("Replacement answer");
     expect(saved.field_author_ids["themes.0.questions.0.author"]).toBe("ada");
+  });
+
+  it("saves Classic round access, manual seeding, and stage starts with current versions", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/ref/management");
+    const stage = { kind: "first", stage_type: "groups", scheme_key: "groups-9-4", started_at: null as string | null,
+      completed_at: null, seeds: [] as Array<Array<string | null>>, place_points: ["4", "3", "2", "1"], score_multiplier: "0.02", standings: [],
+      rounds: [{ id: "round-1", number: 1, assignment_id: null, discoverable: false, playable: false, start_deadline: null, packet_locked: false, matches: [] }] };
+    const resource = { kind: "manager_management", state: "ready", settings_version: 4, finalized_at: "2026-09-01",
+      registration_scheduled_open: false, registration_open: false, registration_open_override: false,
+      registration_count: 1, approved_count: 1, participant_count: 1, packet_count: 1, registrations: [],
+      sections: ["general", "packet_accessibility", "packet_management", "first_stage", "playoff_stage", "first_round_seeding"],
+      available_actions: ["packet_access", "registration_override", "mark_finished"],
+      tournament: { id: "cup", name: "Cup", status: "active", type_key: "classic", ruleset_key: "si" },
+      packets: [{ assignment_id: "packet-1", packet_id: "logical-1", name: "Round packet", version: 1, player_access: [] }],
+      classic: { stages: [stage], players: [{ id: "player-1", name: "Ada" }], schemes: [{ id: "groups-9-4", kind: "groups", size: 9, round_count: 4 }] } };
+    const mutations: Array<Record<string, any>> = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      if (String(url).endsWith("/classic")) {
+        const body = JSON.parse(String(options?.body));
+        mutations.push(body);
+        resource.settings_version++;
+        if (body.command === "seed") stage.seeds = body.values.mode === "automatic" ? [["player-1", ...Array(8).fill(null)]] : body.values.seeds;
+        if (body.command === "start") stage.started_at = "2026-09-11";
+        return response(resource);
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    const button = (label: string) => Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent === label)!;
+    shell.start();
+    await vi.waitFor(() => expect(button("Start first stage")).toBeDefined());
+    expect(button("Start first stage").disabled).toBe(false);
+    button("First stage management").click();
+    root.querySelector<HTMLSelectElement>(".classic-rounds select")!.value = "packet-1";
+    const switches = root.querySelectorAll<HTMLInputElement>(".classic-rounds input[type=checkbox]");
+    switches.forEach((s) => { s.checked = true; });
+    root.querySelector<HTMLInputElement>(".classic-rounds input[type=datetime-local]")!.value = "2026-10-01T12:00";
+    button("Save round").click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(1));
+    expect(mutations[0]).toMatchObject({ expected_version: 4, command: "round", kind: "first",
+      values: { round_id: "round-1", assignment_id: "packet-1", discoverable: true, playable: true,
+        start_deadline: new Date("2026-10-01T12:00").toISOString() } });
+    await vi.waitFor(() => expect(button("First round seeding")?.disabled).toBe(false));
+    button("First round seeding").click();
+    button("Automatic seeding").click();
+    await vi.waitFor(() => expect(root.querySelectorAll(".classic-seeding select")).toHaveLength(9));
+    const slots = root.querySelectorAll<HTMLSelectElement>(".classic-seeding select");
+    slots[0]!.value = "";
+    slots[1]!.value = "player-1";
+    button("Save manual seeding").click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(3));
+    expect(mutations[2]).toMatchObject({ expected_version: 6, command: "seed", values: { mode: "manual", seeds: [[null, "player-1", ...Array(7).fill(null)]] } });
+    await vi.waitFor(() => expect(button("General")?.disabled).toBe(false));
+    button("General").click();
+    button("Start first stage").click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(4));
+    expect(mutations[3]).toMatchObject({ command: "start", kind: "first", expected_version: 7 });
+    await vi.waitFor(() => expect(button("Start first stage")?.disabled).toBe(true));
   });
 
   it("associates packet authors, creates a lead author, and preserves theme edits", async () => {

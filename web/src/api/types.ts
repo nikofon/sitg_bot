@@ -108,6 +108,7 @@ export interface TournamentDetailsPayload {
 }
 
 export interface TournamentManagerSettingsResource {
+  classic?: ClassicTournament | null;
   kind: "manager_settings";
   state: "ready";
   tournament: TournamentListItem;
@@ -132,6 +133,9 @@ export interface TournamentManagerSettingsResource {
 }
 
 export type ManagementSection =
+  | "first_stage"
+  | "playoff_stage"
+  | "first_round_seeding"
   | "general"
   | "registrations"
   | "packet_accessibility"
@@ -169,6 +173,7 @@ export interface ManagementPacket {
 }
 
 export interface TournamentManagerManagementResource {
+  classic?: ClassicTournament | null;
   kind: "manager_management";
   state: "ready";
   tournament: TournamentListItem;
@@ -185,6 +190,32 @@ export interface TournamentManagerManagementResource {
   registrations: ManagementRegistration[];
   packets: ManagementPacket[];
   available_actions: string[];
+}
+
+export interface ClassicStage {
+  kind: "first" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "playoff";
+  scheme_key: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  seeds: Array<Array<string | null>>;
+  place_points: string[];
+  score_multiplier: string;
+  standings: Array<{ seat: string; name: string; points: string; score: string }>;
+  rounds: Array<{
+    id: string; number: number; assignment_id: string | null;
+    discoverable: boolean; playable: boolean; start_deadline: string | null;
+    packet_locked: boolean;
+    matches: Array<{ id: string; group: number; number: number; players: string[];
+      results: Array<{ seat: string; place: string; score: string }> | null;
+      randomized: boolean; game_id: string | null }>;
+  }>;
+}
+
+export interface ClassicTournament {
+  schemes: Array<{ id: string; kind: string; size: number; round_count: number }>;
+  players: Array<{ id: string; name: string }>;
+  stages: ClassicStage[];
 }
 
 export interface ManagerSettingDescriptor {

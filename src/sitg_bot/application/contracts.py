@@ -48,6 +48,7 @@ class ActionCode(StrEnum):
     TOURNAMENT_MANAGER_MANAGEMENT = "tournaments.manager.management.v1"
     TOURNAMENT_MANAGER_MANAGEMENT_LINK = "tournaments.manager.management.link.v1"
     TOURNAMENT_REGISTRATION_OVERRIDE = "tournaments.manager.registration.override.v1"
+    TOURNAMENT_CLASSIC_UPDATE = "tournaments.manager.classic.update.v1"
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
@@ -362,6 +363,49 @@ class TournamentManagerManagementOperation(ContractModel):
 
 class TournamentManagerManagementLinkOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_MANAGER_MANAGEMENT_LINK]
+
+
+class ClassicConfigurationValues(ContractModel):
+    stage_type: Literal["none", "groups", "quiz", "playoff"]
+    scheme_key: str | None = None
+    place_points: list[str | float] = Field(
+        default_factory=lambda: ["4", "3", "2", "1"], min_length=1, max_length=12
+    )
+    score_multiplier: str | float = "0.02"
+
+
+class ClassicSeedingValues(ContractModel):
+    mode: Literal["automatic", "random", "manual"] = "automatic"
+    seeds: list[list[UUID | None]] | None = None
+
+
+class ClassicRoundValues(ContractModel):
+    round_id: UUID
+    assignment_id: UUID | None = None
+    discoverable: bool = Field(default=False, strict=True)
+    playable: bool = Field(default=False, strict=True)
+    start_deadline: datetime | None = None
+
+
+class TournamentClassicUpdateOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CLASSIC_UPDATE]
+    tournament_id: UUID
+    expected_version: int = Field(ge=1)
+    command: Literal["configure", "seed", "round", "start"]
+    kind: Literal["first", "playoff"]
+    values: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_values(self):
+        schema = {
+            "configure": ClassicConfigurationValues,
+            "seed": ClassicSeedingValues,
+            "round": ClassicRoundValues,
+            "start": ContractModel,
+        }[self.command]
+        parsed = schema.model_validate(self.values)
+        object.__setattr__(self, "values", parsed.model_dump(mode="json"))
+        return self
 
 
 class TournamentRegistrationOverrideOperation(ContractModel):
@@ -689,6 +733,7 @@ GatewayOperation = Annotated[
     | TournamentManagerManagementOperation
     | TournamentManagerManagementLinkOperation
     | TournamentRegistrationOverrideOperation
+    | TournamentClassicUpdateOperation
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation

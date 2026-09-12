@@ -914,9 +914,6 @@ async def test_classic_rejects_hybrid_matchmaking_policy_and_search(
     lobby = await matchmaking.create_lobby(
         fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=1
     )
-    lobby = await matchmaking.select_packet(
-        lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
-    )
     assert not lobby.hybrid_matchmaking_available
     with pytest.raises(ValueError, match="does not support hybrid matchmaking"):
         await matchmaking.find_players(lobby.id, fixture.inputs[0].telegram_user_id)

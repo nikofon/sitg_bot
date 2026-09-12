@@ -77,6 +77,7 @@ from sitg_bot.application.contracts import (
     TokenRequestCreateOperation,
     TokenRequestQueueOperation,
     TournamentAuthorCreateOperation,
+    TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentCreateOperation,
     TournamentFinalizeOperation,
@@ -237,6 +238,11 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.TOURNAMENT_REGISTRATION_OVERRIDE: ActionPolicy(
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
+        ),
+        ActionCode.TOURNAMENT_CLASSIC_UPDATE: ActionPolicy(
             mutation=True,
             idempotency_required=True,
             stale_write_field="expected_version",
@@ -714,6 +720,18 @@ class ApplicationGateway:
                 telegram_user_id, operation.tournament_id
             )
             return await self.tournaments.manager_management(tournament_id, player_id)
+        if isinstance(operation, TournamentClassicUpdateOperation):
+            from sitg_bot.services.classic import ClassicService
+
+            await ClassicService(self.tournaments.database).mutate(
+                operation.tournament_id,
+                player_id,
+                expected_version=operation.expected_version,
+                command=operation.command,
+                kind=operation.kind,
+                values=dict(operation.values),
+            )
+            return await self.tournaments.manager_management(operation.tournament_id, player_id)
         if isinstance(operation, TournamentRegistrationOverrideOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -1410,6 +1428,7 @@ class ApplicationGateway:
                 "tournament_capacity_restriction",
                 "tournament_packet_limit_exceeded",
                 "tournament_membership_required",
+                "classic_participants_required",
             }
             reason = error.reason if error.reason in known_reasons else "invalid"
             return GatewayError(

@@ -7,8 +7,8 @@ Telegram Mini App handles tournament, lobby, and packet management.
 ## Product baseline
 
 - **Tournaments** organize participation, managers, game settings, packet access, and ratings.
-  Ladder supports ongoing competition; Classic has a finite schedule, with stages and
-  brackets still planned.
+  Ladder supports ongoing competition; Classic supports groups, solo quizzes, play-offs,
+  and double elimination with prescribed participants and round deadlines.
 - **Lobbies** let players assemble by invitation or, where enabled, find other players.
   Observers can join when tournament policy permits.
 - **Games** currently use the SI ruleset: questions revealed progressively, buzzing,

@@ -1110,6 +1110,9 @@ class GameParticipantRecord(Base, TimestampMixin):
     global_game_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     joined: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_chair: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     abandoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1129,6 +1132,65 @@ class GameParticipantRecord(Base, TimestampMixin):
             unique=True,
             postgresql_where=text("active"),
         ),
+    )
+
+
+class ClassicStageRecord(Base, TimestampMixin):
+    __tablename__ = "classic_stages"
+
+    id: Mapped[UUID] = uuid_column()
+    tournament_id: Mapped[UUID] = mapped_column(ForeignKey("tournaments.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scheme_key: Mapped[str | None] = mapped_column(String(40))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    seeds: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    place_points: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=lambda: ["4", "3", "2", "1"]
+    )
+    score_multiplier: Mapped[Any] = mapped_column(Numeric(24, 8), nullable=False, default="0.02")
+    random_seed: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tournament_id", "kind"),
+        CheckConstraint("kind IN ('first', 'playoff')"),
+        CheckConstraint("stage_type IN ('none', 'groups', 'quiz', 'playoff')"),
+    )
+
+
+class ClassicRoundRecord(Base):
+    __tablename__ = "classic_rounds"
+
+    id: Mapped[UUID] = uuid_column()
+    stage_id: Mapped[UUID] = mapped_column(ForeignKey("classic_stages.id"), nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tournament_packet_assignments.id")
+    )
+    discoverable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    playable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    start_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (UniqueConstraint("stage_id", "number"), CheckConstraint("number >= 1"))
+
+
+class ClassicMatchRecord(Base):
+    __tablename__ = "classic_matches"
+
+    id: Mapped[UUID] = uuid_column()
+    round_id: Mapped[UUID] = mapped_column(ForeignKey("classic_rounds.id"), nullable=False)
+    group_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sources: Mapped[list] = mapped_column(JSONB, nullable=False)
+    seats: Mapped[list] = mapped_column(JSONB, nullable=False)
+    results: Mapped[list | None] = mapped_column(JSONB)
+    randomized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    game_id: Mapped[UUID | None] = mapped_column(ForeignKey("games.id"), unique=True)
+
+    __table_args__ = (
+        UniqueConstraint("round_id", "group_number", "number"),
+        CheckConstraint("group_number >= 1 AND number >= 1"),
     )
 
 

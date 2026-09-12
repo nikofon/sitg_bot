@@ -36,6 +36,7 @@ from sitg_bot.application.contracts import (
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
     TournamentAuthorCreateOperation,
+    TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentFinalizeOperation,
     TournamentInfoOperation,
@@ -127,6 +128,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/settings",
             self._update_manager_settings,
+        )
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/classic",
+            self._update_classic,
         )
         app.router.add_get(
             "/api/miniapp/manager/tournaments/{launch_ref}/authors",
@@ -634,6 +639,27 @@ class MiniAppHttpServer:
         )
         return self._gateway_response(result)
 
+    async def _update_classic(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, tournament_id = await self._resolve_manager_reference(
+            request,
+            request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_CLASSIC_UPDATE,
+            mutation=True,
+        )
+        operation = TournamentClassicUpdateOperation.model_validate(
+            {
+                **body,
+                "action": ActionCode.TOURNAMENT_CLASSIC_UPDATE,
+                "tournament_id": tournament_id,
+            }
+        )
+        return self._gateway_response(
+            await self.gateway.execute(
+                session, operation, correlation_id=self._correlation_id(request)
+            )
+        )
+
     async def _set_registration_availability(self, request: web.Request) -> web.Response:
         body = await self._json_body(request)
         session, tournament_id = await self._resolve_manager_reference(
@@ -872,6 +898,9 @@ class MiniAppHttpServer:
             raise MiniAppAuthenticationError("Player identity is missing")
         resolved = await self.launch_references.resolve(raw_reference, player_id=player_id)
         routes = expected_routes or {"manager_settings"}
+        # Both views manage the same tournament under the same current manager role.
+        if routes & {"manager_settings", "manager_management"}:
+            routes = routes | {"manager_settings", "manager_management"}
         if resolved.route not in routes:
             raise LookupError("Manager tournament launch reference not found")
         return session, resolved.target_id

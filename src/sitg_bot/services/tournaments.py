@@ -21,6 +21,7 @@ from sitg_bot.domain.game_rulesets import (
     RulesetParameters,
 )
 from sitg_bot.domain.packet import normalize_language_tag
+from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -264,6 +265,7 @@ class TournamentManagerSettings:
     packet_assignment_count: int
     membership_count: int
     manager_count: int
+    classic: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +318,7 @@ class TournamentManagement:
     registrations: tuple[ManagementRegistration, ...]
     packets: tuple[ManagementPacket, ...]
     available_actions: tuple[str, ...]
+    classic: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1280,6 +1283,10 @@ class TournamentService:
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
             )
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+                if any(s.started_at for s in await ClassicService.stages(session, tournament_id)):
+                    raise ValueError("Classic participants are locked after a stage starts")
             membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
             if membership is None or membership.status != "registered":
                 raise ValueError("Only a pending registration can be approved")
@@ -1303,9 +1310,18 @@ class TournamentService:
     ) -> str:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            await self._active_tournament(session, tournament_id)
+            tournament = await self._active_tournament(session, tournament_id)
+            type_version = await session.get(
+                TournamentTypeVersionRecord, tournament.type_version_id
+            )
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+            classic_draft = type_version.key == "classic" and not any(
+                s.started_at for s in await ClassicService.stages(session, tournament_id)
+            )
             membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
-            if membership is None or membership.status != "registered":
+            allowed = {"registered", "approved", "active"} if classic_draft else {"registered"}
+            if membership is None or membership.status not in allowed:
                 raise ValueError("Only a pending registration can be rejected")
             membership.status = "rejected"
             membership.registration_rejected_at = datetime.now(UTC)
@@ -1327,6 +1343,10 @@ class TournamentService:
                 TournamentTypeVersionRecord, tournament.type_version_id
             )
             assert type_version is not None
+            if type_version.key == "classic":
+                await session.refresh(tournament, with_for_update=True)
+                if any(s.started_at for s in await ClassicService.stages(session, tournament_id)):
+                    raise ValueError("Classic participants are locked after a stage starts")
             if type_version.rules.get("open_ended") is True:
                 raise ValueError(
                     "Open-ended tournaments admit players when registration is approved"
@@ -2127,6 +2147,9 @@ class TournamentService:
             packet_assignment_count=counts[0],
             membership_count=counts[1],
             manager_count=counts[2],
+            classic=await ClassicService(self.database).snapshot(session, tournament_id)
+            if item.type_key == "classic"
+            else None,
         )
 
     async def _manager_management_snapshot(
@@ -2162,6 +2185,10 @@ class TournamentService:
                 )
             ).all()
         )
+        classic_started = item.type_key == "classic" and any(
+            s.started_at for s in await ClassicService.stages(session, tournament_id)
+        )
+        classic_draft = item.type_key == "classic" and not classic_started
         registrations = tuple(
             ManagementRegistration(
                 player_id=membership.player_id,
@@ -2170,7 +2197,13 @@ class TournamentService:
                 status=membership.status,
                 registered_at=membership.registered_at,
                 available_actions=("approve", "reject")
-                if membership.status == "registered" and tournament.status == "active"
+                if membership.status == "registered"
+                and tournament.status == "active"
+                and not classic_started
+                else ("reject",)
+                if classic_draft
+                and membership.status in {"approved", "active"}
+                and tournament.status == "active"
                 else (),
             )
             for membership, player in registration_rows
@@ -2277,6 +2310,8 @@ class TournamentService:
             if isinstance(configured_sections, list)
             else supported_sections
         )
+        if item.type_key == "classic":
+            sections += ("first_stage", "playoff_stage", "first_round_seeding")
         scheduled_open = self._scheduled_registration_is_open(tournament, datetime.now(UTC))
         actions: list[str] = ["packet_management"]
         if tournament.status == "active":
@@ -2302,6 +2337,9 @@ class TournamentService:
             registrations=registrations,
             packets=tuple(packets),
             available_actions=tuple(actions),
+            classic=await ClassicService(self.database).snapshot(session, tournament_id)
+            if item.type_key == "classic"
+            else None,
         )
 
     async def update_policy(
@@ -2653,6 +2691,19 @@ class TournamentService:
         )
         if membership is None or membership.status != "active":
             return False
+        if right in {"playable", "discoverable"}:
+            type_key = await session.scalar(
+                select(TournamentTypeVersionRecord.key)
+                .join(
+                    TournamentRecord,
+                    TournamentRecord.type_version_id == TournamentTypeVersionRecord.id,
+                )
+                .where(TournamentRecord.id == assignment.tournament_id)
+            )
+            if type_key == "classic":
+                return await ClassicService.assignment_access(
+                    session, assignment.id, player_id, right
+                )
         entitlement = await session.get(
             TournamentPacketEntitlementRecord, (assignment.id, player_id)
         )

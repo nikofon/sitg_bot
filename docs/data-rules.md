@@ -18,6 +18,7 @@ concurrent operations or commit halfway through an atomic assignment/publication
 | --- | --- |
 | Identity | `players`, `platform_administrators`, `player_telegram_navigation`, author-link records |
 | Organization | `tournaments` references type/ruleset/policy versions; managers, memberships, registration attempts, pricing and authors are related records |
+| Classic competition | `classic_stages` owns seeds/scoring; `classic_rounds` owns packets/deadlines; `classic_matches` stores prescribed seats, advancement, assigned game, and final results |
 | Content | `logical_packets` → `packet_versions`; `themes` → `theme_revisions`; `logical_questions` → `question_revisions`; `packet_questions` stores placements |
 | Access | `tournament_packet_assignments` joins tournaments to content; `tournament_packet_entitlements` stores player overrides; drafts retain intended tournaments |
 | Assembly | `pregame_lobbies` owns member, packet, and event rows and references its assigned game |
@@ -72,6 +73,8 @@ The SI mapping and its disclosure boundary are defined in
 ## Lobby and participant lifecycle
 
 - A player may belong to at most one active lobby or active game and never both at once.
+- Classic Chair participants have `is_chair=true`, are inactive and automatically joined,
+  and receive no gameplay actions or rating changes. They retain zero scores in game results.
 - Lobby observers do not count toward player capacity, readiness, content selection, or
   hybrid matchmaking. Game observers are stored separately from participants and never
   enter score, result, rating, appeal electorate, buzz, or answer state.

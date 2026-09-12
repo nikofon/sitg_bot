@@ -454,7 +454,9 @@ async def handle_game_command(
     if command == "players":
         for index, player in enumerate(view["participants"], 1):
             status = (
-                "playing"
+                "chair"
+                if player.get("is_chair")
+                else "playing"
                 if player.get("active") and player.get("joined")
                 else ("waiting" if player.get("active") else "left")
             )
@@ -673,6 +675,7 @@ async def handle_game_rating(
         or "reputation" not in view["actions"]
         or not 0 <= index < len(view["participants"])
         or view["participants"][index]["self"]
+        or view["participants"][index].get("is_chair", False)
     ):
         await callback.answer(localization.text("game.unavailable", locale), show_alert=True)
         return

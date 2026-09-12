@@ -149,6 +149,7 @@ class ConsoleApplicationServer:
                 "lobby.expire": self._job_lobby_expire,
                 "rating.settlement": self._job_rating_settlement,
                 "matchmaking.scan": self._job_matchmaking,
+                "classic.reconcile": self._job_classic,
                 "suspicion.tick": self._job_suspicion,
             },
             poll_interval=poll_interval,
@@ -1508,6 +1509,11 @@ class ConsoleApplicationServer:
         del payload
         for game_id in await self.games.settle_pending_ratings():
             await self._broadcast_game(game_id)
+
+    async def _job_classic(self, payload: dict[str, Any]) -> None:
+        from sitg_bot.services.classic import ClassicService
+
+        await ClassicService(self.database).reconcile()
 
     async def _job_matchmaking(self, payload: dict[str, Any]) -> None:
         del payload

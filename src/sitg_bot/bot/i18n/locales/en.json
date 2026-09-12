@@ -388,6 +388,10 @@
   "lobby.invitation": "{sender} invites you to a lobby for {tournament}. Tournament membership is required to join.",
   "lobby.observer_confirm": "Observing may expose fresh questions and affect packet eligibility. Continue?",
   "lobby.packet_selected": "Packet “{packet_name}” was added successfully. Readiness has been reset.",
+  "lobby.classic_solo": "This is a solo tournament game for {players}. Play it alone.",
+  "game.player_status.chair": "Chair (zero score)",
+  "lobby.classic_players": "This tournament game requires exactly these participants: {players}. Chairs remain at zero and take no actions.",
+  "lobby.reason.classic_participants_required": "The round must be open and the lobby must contain exactly the scheduled players.",
   "lobby.packet_rejected": "Packet “{packet_name}” could not be added: {reason}.",
   "lobby.reason.packet_not_playable": "no permission to play this packet in the tournament",
   "lobby.reason.packet_unavailable": "the packet is unavailable for selection",
@@ -430,5 +434,6 @@
   "lobby.readiness.tournament_capacity_restriction": "The player count does not meet the tournament limits.",
   "lobby.readiness.tournament_packet_limit_exceeded": "The selected packet count does not meet the tournament limits.",
   "lobby.readiness.tournament_membership_required": "Active tournament membership is required to become ready.",
-  "lobby.readiness.invalid": "The lobby does not yet meet the conditions for starting. Check packets and settings."
+  "lobby.readiness.invalid": "The lobby does not yet meet the conditions for starting. Check packets and settings.",
+  "lobby.readiness.classic_participants_required": "The round must be open and the lobby must contain exactly the scheduled players."
 }

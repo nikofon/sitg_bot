@@ -6,6 +6,9 @@
 
 - [services/tournaments.py](../src/sitg_bot/services/tournaments.py): type descriptors,
   creation, settings, registration, roles, policy, assignments, and entitlements.
+- [services/classic.py](../src/sitg_bot/services/classic.py): Classic stages, prescribed games,
+  standings, deadlines, and round entitlements. [domain/classic.py](../src/sitg_bot/domain/classic.py)
+  owns scheme validation, balanced seeding, and point aggregation.
 - [services/token_requests.py](../src/sitg_bot/services/token_requests.py): creation-token
   requests, rulings, and inventory; shared identity contracts are in [application.md](application.md).
 - [storage/models.py](../src/sitg_bot/storage/models.py): tournament, version, membership,
@@ -126,13 +129,59 @@ The database registers two type descriptors:
   capable of hybrid matchmaking. Hybrid matchmaking remains disabled until that
   tournament's managers enable it in policy.
 - **Classic**: scheduled, finite-packet, SI-compatible, limited to 1–12 players per game,
-  and unable to use hybrid matchmaking by design. Classic matches are intended to be preset
-  or derived from prior results; until that type-specific assembly is implemented, the
-  generic lobby service permits invitation assembly only.
+  and unable to use hybrid matchmaking. Its prescribed games follow a group, solo quiz,
+  play-off, or double-elimination scheme. Invitation lobbies must match the prescribed roster.
 
-The descriptors already constrain lobby assembly and tournament-rating eligibility. Classic
-seeding, advancement, bracket, stage, and packet-count algorithms are not implemented; they
-are indexed in [future-work.md](future-work.md).
+The descriptors constrain lobby assembly and tournament-rating eligibility.
+
+### Classic competition
+
+Managers configure an optional first stage (groups or solo quiz) and optional play-off in
+Settings. Each stage must be explicitly configured and started. Starting activates the approved
+participants, closes registration, and permanently locks that stage's type, scheme, scoring,
+and seeding. Managers can change the unstarted play-off while the first stage runs. Swiss is
+not implemented. Overall tournament completion remains a manager action.
+
+The bundled scheme library contains nine group schedules, Top-8/16/32/64 play-offs, and
+Top-8/16/32 double elimination. It transcribes the supplied CSVs. In Top-32 DE round 4,
+references to round 3 games 5–6 places 1–2 are corrected to games 1–2 places 3–4.
+Advancement references are validated and copied into persistent match records at stage start.
+
+A group scheme fixes group size and games per player. There is no built-in limit on group
+count. Automatic seeding uses ruleset ratings (1000 for unrated players), snake distribution,
+then swaps players to reduce differences between group medians. Managers can randomize or
+edit every slot before starting. They can change the scheme or revoke approved registrations
+before any stage starts. Any unfilled slots become **Chairs**.
+
+Chairs are passive game participants: automatically joined, always at zero, excluded from
+actions, ratings, and suspicion calculations. They occupy places, including finishing above
+negative-scoring humans. They can advance through brackets. Games containing only Chairs
+resolve automatically. Chairs are excluded from first-stage qualification standings.
+
+Each group game awards configurable place points (default 4, 3, 2, 1), plus the player's
+score multiplied by the configurable coefficient (default 0.02). Shared places receive the
+mean of the occupied place awards. First-stage standings sum these points across all games
+and groups. Quiz entrants play one solo game and rank by score. SI stage ties compare summed
+score without penalties, then correct-answer counts at descending question values. Remaining
+equality is resolved by a persisted random seed for reproducible qualification and bracket slots.
+
+Play-off takes the highest first-stage finishers in order, up to the scheme's capacity, with
+Chairs filling vacancies. Without a first stage, managers seed approved players randomly or
+manually; excess registrations must be revoked or accommodated by another scheme.
+
+Each round selects one published tournament packet and independent discoverability/playability
+switches for its prescribed participants. A packet cannot serve two rounds in the same
+tournament. After a human game starts or resolves, the round's packet is locked. General packet
+accessibility controls only reading. Reading still requires the existing release/access rules.
+Selecting a round packet sends lobby members its roster or solo restriction. Readiness and
+game assignment recheck exact human membership, round access, and the deadline. A prescribed
+game can be assigned only once; failed or cancelled attempts can retry subject to exposure rules.
+
+Round deadlines are **game start** cutoffs: successful lobby assignment counts as starting.
+Assigned games retain normal join deadlines and finish normally. Unstarted games receive
+random places, zero scores, and the corresponding place awards. A durable reconciliation job
+records results once, resolves bracket dependencies, and completes stages after all results
+are final, including appeals. Restarting or retrying a job does not reroll results.
 
 ## Tournament settings
 
@@ -218,9 +267,9 @@ within that tournament-packet assignment. At minimum, the model distinguishes:
 - access to the packet's question content; and
 - manager/editor access to drafts, validation reports, and revisions.
 
-The current access decision composes active membership, manager role, assignment-wide
-member flags, and explicit per-player grants. Stage- and advancement-aware entitlement
-automation belongs to the unimplemented Classic tournament algorithm.
+The access decision composes active membership, manager role, assignment-wide member flags,
+and explicit per-player grants. Classic play/discovery rights instead come from the round
+and its prescribed participants; general grants cannot bypass the schedule.
 
 Authorization is checked whenever content is listed, previewed, downloaded, selected,
 assigned, or administered; hiding a command in the interface is not sufficient.
