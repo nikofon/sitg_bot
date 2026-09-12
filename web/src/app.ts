@@ -13,6 +13,8 @@ import type {
   ManagementPacket,
   ManagerSettingDescriptor,
   PacketDraftResource,
+  PlayerGameResource,
+  PlayerProfileResource,
   RegisteredAuthor,
   TournamentRegistrationPayload,
   TournamentRouteResource,
@@ -27,6 +29,7 @@ import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
+import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -169,6 +172,14 @@ export class MiniAppShell {
           (tournament) => void this.openLibraryTournament(tournament),
         ));
       }
+      return;
+    }
+    if (route.id === "player_profile" && isPlayerProfileResource(payload.resource)) {
+      this.renderPlayerProfileRoute(route, payload.resource);
+      return;
+    }
+    if (route.id === "player_game" && isPlayerGameResource(payload.resource)) {
+      this.renderPlayerGameRoute(route, payload.resource);
       return;
     }
     if (route.id === "tournaments" && isTournamentResource(payload.resource)) {
@@ -834,6 +845,42 @@ export class MiniAppShell {
       list,
     );
     if (page?.previous || page?.next) content.append(this.pagination(route, page));
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderPlayerProfileRoute(route: RouteMatch, resource: PlayerProfileResource): void {
+    const content = renderPlayerProfile(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        selectRuleset: (ruleset) =>
+          this.router.navigate(`${route.path}?ruleset=${encodeURIComponent(ruleset)}`),
+        openPlayer: (playerId) =>
+          this.router.navigate(`/players/${encodeURIComponent(playerId)}`),
+        openGame: (gameId) =>
+          this.router.navigate(
+            `/players/${encodeURIComponent(route.params.player_id ?? "")}/games/${encodeURIComponent(gameId)}`,
+          ),
+      },
+    );
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderPlayerGameRoute(route: RouteMatch, resource: PlayerGameResource): void {
+    const content = renderPlayerGame(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        back: () =>
+          this.router.navigate(`/players/${encodeURIComponent(route.params.player_id ?? "")}`),
+        openPlayer: (playerId) =>
+          this.router.navigate(`/players/${encodeURIComponent(playerId)}`),
+      },
+    );
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
@@ -2029,6 +2076,14 @@ function isLobbyResource(value: RoutePayload["resource"]): value is LobbyResourc
 
 function isPacketDraftResource(value: RoutePayload["resource"]): value is PacketDraftResource {
   return "kind" in value && value.kind === "packet_draft";
+}
+
+function isPlayerProfileResource(value: RoutePayload["resource"]): value is PlayerProfileResource {
+  return "kind" in value && value.kind === "player_profile";
+}
+
+function isPlayerGameResource(value: RoutePayload["resource"]): value is PlayerGameResource {
+  return "kind" in value && value.kind === "player_game";
 }
 
 function isTournamentAction(value: string): value is TournamentAction {

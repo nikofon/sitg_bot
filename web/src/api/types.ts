@@ -355,10 +355,113 @@ export type LibraryAccess =
   | { confirmation_required: false; name: string; pages: LibraryPage[] }
   | { confirmation_required: false; queued: true };
 
+export interface PlayerProfileIdentity {
+  id: string;
+  nickname: string | null;
+  real_name?: string | null;
+  telegram_username?: string | null;
+  telegram_public?: boolean;
+  viewer_privileged: boolean;
+}
+
+export interface PlayerRuleset {
+  key: string;
+  name: string;
+}
+
+export interface PlayerRating {
+  value: number;
+  history: Array<{ played_at: string; rating: number }>;
+}
+
+export type PlayerPlacementKind =
+  | "place_1"
+  | "place_2"
+  | "place_3"
+  | "place_4"
+  | "draw"
+  | "below_4";
+
+export interface PlayerPlacement {
+  kind: PlayerPlacementKind;
+  count: number;
+  percent: number;
+}
+
+export interface PlayerProfileGameParticipant {
+  participant_id: string;
+  player_id: string;
+  nickname: string | null;
+  score: number;
+  place: number | null;
+}
+
+export interface PlayerProfileGame {
+  game_id: string;
+  tournament_id: string;
+  tournament_name: string | null;
+  stage: string | null;
+  played_at: string | null;
+  participants: PlayerProfileGameParticipant[];
+}
+
+export interface PlayerQuestionStat {
+  value: number;
+  correct: number;
+  incorrect: number;
+}
+
+export interface PlayerProfileResource {
+  kind: "player_profile";
+  state: "ready" | "empty";
+  player: PlayerProfileIdentity;
+  rulesets: PlayerRuleset[];
+  ruleset_key: string | null;
+  rating: PlayerRating;
+  stats: {
+    games: number;
+    wins: number;
+    win_rate: number;
+    placements: PlayerPlacement[];
+  };
+  si_question_stats: PlayerQuestionStat[] | null;
+  games: PlayerProfileGame[];
+}
+
+export interface PlayerGameTheme {
+  index: number;
+  questions: Array<{
+    value: number;
+    answers: Record<string, "correct" | "incorrect">;
+  }>;
+}
+
+export interface PlayerGameResource {
+  kind: "player_game";
+  state: "ready" | "empty";
+  game_id: string;
+  player_id: string;
+  tournament_name: string | null;
+  tournament_visible: boolean;
+  stage: string | null;
+  played_at: string | null;
+  participants: PlayerProfileGameParticipant[];
+  themes: PlayerGameTheme[];
+}
+
 export interface RoutePayload {
   locale: Locale;
   authorization: RouteAuthorization;
-  resource: RouteResource | TournamentRouteResource | TournamentManagerSettingsResource | TournamentManagerManagementResource | LobbyResource | PacketDraftResource | LibraryResource;
+  resource:
+    | RouteResource
+    | TournamentRouteResource
+    | TournamentManagerSettingsResource
+    | TournamentManagerManagementResource
+    | LobbyResource
+    | PacketDraftResource
+    | LibraryResource
+    | PlayerProfileResource
+    | PlayerGameResource;
   pagination?: PageCursor;
 }
 

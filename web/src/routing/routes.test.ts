@@ -22,6 +22,23 @@ describe("route matching", () => {
     expect(route.query.get("view")).toBe("players");
   });
 
+  it("matches player profile and per-game result routes", () => {
+    const profile = matchRoute({
+      pathname: "/players/00000000-0000-0000-0000-000000000001",
+      search: "?ruleset=si",
+    });
+    expect(profile.id).toBe("player_profile");
+    expect(profile.params.player_id).toBe("00000000-0000-0000-0000-000000000001");
+    expect(profile.query.get("ruleset")).toBe("si");
+    const detail = matchRoute({
+      pathname: "/players/00000000-0000-0000-0000-000000000001/games/00000000-0000-0000-0000-000000000002",
+      search: "",
+    });
+    expect(detail.id).toBe("player_game");
+    expect(detail.params.player_id).toBe("00000000-0000-0000-0000-000000000001");
+    expect(detail.params.game_id).toBe("00000000-0000-0000-0000-000000000002");
+  });
+
   it("matches tournament management with an opaque launch reference", () => {
     const route = matchRoute({
       pathname: "/manager/tournaments/opaque-reference/management",

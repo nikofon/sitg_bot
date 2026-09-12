@@ -8,6 +8,8 @@ export type RouteId =
   | "library_reader"
   | "authors_link"
   | "lobby"
+  | "player_profile"
+  | "player_game"
   | "report"
   | "manager_appeals"
   | "manager_settings"
@@ -83,6 +85,20 @@ const routes: RouteDefinition[] = [
     parameterNames: ["launch_ref"],
     titleKey: "route.lobby.title",
     emptyKey: "route.lobby.empty",
+  },
+  {
+    id: "player_profile",
+    pattern: /^\/players\/([0-9a-fA-F-]{36})\/?$/,
+    parameterNames: ["player_id"],
+    titleKey: "route.player_profile.title",
+    emptyKey: "route.player_profile.empty",
+  },
+  {
+    id: "player_game",
+    pattern: /^\/players\/([0-9a-fA-F-]{36})\/games\/([0-9a-fA-F-]{36})\/?$/,
+    parameterNames: ["player_id", "game_id"],
+    titleKey: "route.player_game.title",
+    emptyKey: "route.player_game.empty",
   },
   {
     id: "report",
