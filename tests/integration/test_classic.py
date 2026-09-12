@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -21,6 +22,7 @@ from sitg_bot.storage.models import (
     OutboxEventRecord,
     RulesetRatingLedgerRecord,
     ScoreLedgerRecord,
+    TournamentCreationTokenRecord,
     TournamentRecord,
 )
 
@@ -56,6 +58,99 @@ async def first_round(database, fixture, kind="first"):
     )
     stage = next(s for s in view.classic["stages"] if s["kind"] == kind)
     return stage["rounds"][0], view.packets[0].assignment_id
+
+
+async def test_classic_creation_defers_dates_and_settings_enable_registration(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        tournaments = TournamentService(database)
+        raw_token = secrets.token_urlsafe(32)
+        now = datetime.now(UTC)
+        async with database.transaction() as session:
+            digest = tournaments._token_digest(raw_token)
+            session.add(TournamentCreationTokenRecord(
+                token_digest=digest, fingerprint=digest[:12], issued_by_id=fixture.manager.id,
+                expires_at=now + timedelta(hours=1),
+            ))
+        created = await tournaments.create_tournament(
+            raw_token=raw_token, creator_id=fixture.manager.id, name="Classical cup",
+            slug=f"classic-{secrets.token_hex(8)}", type_key="classic", visibility="public",
+        )
+        settings = await tournaments.manager_settings(created.id, fixture.manager.id)
+        assert settings.tournament.registration_ends_at is None
+        assert settings.tournament.starts_at is None
+        assert settings.tournament.planned_ends_at is None
+        values = dict(
+            name=created.name, slug=created.slug, type_key="classic", game_ruleset_key="si",
+            visibility="public", language="en", payment_type="free", pricing_plans=[],
+            registration_open=False, registration_starts_at=None, registration_ends_at=None,
+            starts_at=None, planned_ends_at=None, author_names=(),
+            default_parameters=settings.default_parameters, player_mutable_parameters=set(),
+            policies=settings.policies,
+        )
+        settings = await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=settings.settings_version, **values,
+        )
+        with pytest.raises(ValueError, match="Registration end is required"):
+            await tournaments.finalize_tournament_setup(
+                created.id, fixture.manager.id, expected_version=settings.settings_version,
+            )
+        values.update(
+            registration_starts_at=now - timedelta(hours=1),
+            registration_ends_at=now + timedelta(hours=1),
+            starts_at=now + timedelta(hours=2), planned_ends_at=now + timedelta(days=1),
+        )
+        settings = await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=settings.settings_version, **values,
+        )
+        settings = await tournaments.finalize_tournament_setup(
+            created.id, fixture.manager.id, expected_version=settings.settings_version,
+        )
+        management = await tournaments.manager_management(created.id, fixture.manager.id)
+        assert not management.registration_scheduled_open
+        values["registration_open"] = True
+        await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=settings.settings_version, **values,
+        )
+        management = await tournaments.manager_management(created.id, fixture.manager.id)
+        assert management.registration_scheduled_open and management.registration_open
+        await tournaments.register(created.id, fixture.players[0].id)
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("kind", ["first", "playoff"])
+async def test_round_access_cannot_be_enabled_before_stage_start(database_url, kind):
+    database = Database(database_url)
+    try:
+        fixture = await setup(
+            database, 1, stage_type="quiz" if kind == "first" else "playoff",
+            scheme=None if kind == "first" else "playoff-8", kind=kind,
+        )
+        round_record, assignment_id = await first_round(database, fixture, kind)
+        values = {"round_id": round_record["id"], "assignment_id": str(assignment_id)}
+        for flag in ("discoverable", "playable"):
+            with pytest.raises(ValueError, match="Start the stage"):
+                await mutate(database, fixture, "round", kind, **values, **{flag: True})
+        await mutate(database, fixture, "round", kind, **values)
+        async with database.sessions() as session:
+            for flag in ("discoverable", "playable"):
+                assert not await ClassicService.assignment_access(
+                    session, assignment_id, fixture.players[0].id, flag,
+                )
+        await mutate(database, fixture, "start", kind)
+        await mutate(database, fixture, "round", kind, **values, discoverable=True, playable=True)
+        async with database.sessions() as session:
+            for flag in ("discoverable", "playable"):
+                assert await ClassicService.assignment_access(
+                    session, assignment_id, fixture.players[0].id, flag,
+                )
+            stage = (await ClassicService.stages(session, fixture.tournament_id))[0]
+            if kind == "playoff":
+                assert stage.place_points == [] and stage.score_multiplier == 0
+    finally:
+        await database.close()
 
 
 async def test_classic_prescribed_game_chairs_scoring_and_no_replay(database_url):
@@ -248,6 +343,7 @@ async def test_brackets_advance_once_after_deadlines(database_url, scheme):
             matches = await ClassicService.matches(session, stage.id)
             results = [m.results for m in matches]
             assert all(results)
+            assert all(Decimal(r["points"]) == 0 for m in matches for r in m.results)
             assert (await session.get(type(stage), stage.id)).completed_at is not None
             rounds = {r.id: r.number for r in await ClassicService.rounds(session, stage.id)}
             lookup = {(rounds[m.round_id], m.number): m for m in matches}

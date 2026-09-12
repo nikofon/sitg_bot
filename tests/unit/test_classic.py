@@ -1,5 +1,7 @@
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
@@ -11,6 +13,24 @@ from sitg_bot.domain.classic import (
     standings,
     validate_scheme,
 )
+from sitg_bot.services.classic import ClassicService
+
+
+@pytest.mark.parametrize("kind,expected", [("first", "6"), ("playoff", "0")])
+async def test_result_points_apply_only_to_first_stage(kind, expected):
+    participant = SimpleNamespace(id=uuid4(), seat=1, final_place=1, score=100)
+    session = SimpleNamespace(scalars=AsyncMock(side_effect=[[participant], []]))
+    stage = SimpleNamespace(
+        kind=kind, place_points=["4", "3", "2", "1"], score_multiplier=Decimal("0.02"),
+        random_seed="test",
+    )
+    match = SimpleNamespace(id=uuid4(), seats=[str(uuid4())])
+    game = SimpleNamespace(id=uuid4(), assignment_plan={
+        "ruleset_key": "si", "ruleset_version": 1, "parameters": {},
+    })
+    await ClassicService._collect_results(session, stage, match, game)
+    assert Decimal(match.results[0]["points"]) == Decimal(expected)
+    assert match.results[0]["score"] == "100"
 
 
 @pytest.mark.parametrize("scheme", SCHEMES.values(), ids=SCHEMES.keys())

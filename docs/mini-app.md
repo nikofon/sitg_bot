@@ -51,7 +51,9 @@ use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
-management records. Authors can be searched, selected, removed, or registered. Typed editors
+management records. Registration has an explicit schedule enable switch; entered dates use
+the device timezone, and manual availability overrides the schedule.
+Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
 Settings and the Management General section provide buttons to switch between these views.
@@ -62,7 +64,8 @@ registration availability, completion, pending-registration decisions, and per-p
 all-player packet rights.
 Classic adds stage start buttons, first-stage/play-off round cards with packet switches and
 start deadlines, standings, and automatic/manual seeding. Its general packet-access table
-contains only read rights; stage types and scoring are configured in Settings.
+contains only read rights; stage types and first-stage scoring are configured in Settings.
+Round discovery/play switches stay disabled with a warning until their stage starts.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
 retirement, version release, and correction/substitution editing. Published fields stay locked

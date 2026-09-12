@@ -995,7 +995,7 @@ p {
   gap: 1rem;
 }
 
-.classic-rounds label, .classic-seeding label {
+.classic-rounds label:not(.switch-label), .classic-seeding label {
   display: block;
   margin-block: .6rem;
 }

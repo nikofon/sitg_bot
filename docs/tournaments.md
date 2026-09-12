@@ -94,8 +94,11 @@ plans.
 Registration start/end, tournament start, planned finish, and actual finish are separate
 timezone-aware facts. Without a manual override, the enabled registration flag is bounded
 by its dates (the end is enforced when late registrations are disabled). The manager's
-explicit open/closed override takes precedence over that window. Finite
-tournaments require registration end, start, and planned finish; open-ended types may omit
+explicit open/closed override takes precedence over that window. Settings exposes the
+date-based registration enable switch; dates use the manager's device timezone in the Mini App.
+The creation wizard omits dates for both types; managers set them later in Settings. Finite
+tournaments require registration end, start, and planned finish at setup finalization;
+unfinalized drafts may omit them. Open-ended types may omit
 registration end and planned finish. Completion records actual finish and closes
 registration. Player-facing server listings
 separate tournaments into future, ongoing, and past groups. Completed and archived
@@ -172,10 +175,14 @@ equality is resolved by a persisted random seed for reproducible qualification a
 Play-off takes the highest first-stage finishers in order, up to the scheme's capacity, with
 Chairs filling vacancies. Without a first stage, managers seed approved players randomly or
 manually; excess registrations must be revoked or accommodated by another scheme.
+Play-off advancement uses game ranking only; place points and score multipliers apply only
+to the first stage and are omitted from play-off settings.
 
 Each round selects one published tournament packet and independent discoverability/playability
 switches for its prescribed participants. A packet cannot serve two rounds in the same
-tournament. After a human game starts or resolves, the round's packet is locked. General packet
+tournament. Discovery and play switches can only be enabled after the relevant stage starts;
+unstarted stages show a warning and disabled switches. Packets and deadlines can be prepared
+before starting. After a human game starts or resolves, the round's packet is locked. General packet
 accessibility controls only reading. Reading still requires the existing release/access rules.
 Selecting a round packet sends lobby members its roster or solo restriction. Readiness and
 game assignment recheck exact human membership, round access, and the deadline. A prescribed

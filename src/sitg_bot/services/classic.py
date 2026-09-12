@@ -199,11 +199,15 @@ class ClassicService:
         scheme = SCHEMES.get(scheme_key)
         if stage_type in {"groups", "playoff"} and (scheme is None or scheme["kind"] != stage_type):
             raise ValueError("Choose a scheme from the stage library")
-        points = values.get("place_points", ["4", "3", "2", "1"])
-        if not isinstance(points, list) or not 1 <= len(points) <= 12:
-            raise ValueError("Provide between one and twelve place awards")
-        stage.place_points = [str(self._decimal(p)) for p in points]
-        stage.score_multiplier = self._decimal(values.get("score_multiplier", "0.02"))
+        if stage.kind == "first":
+            points = values.get("place_points", ["4", "3", "2", "1"])
+            if not isinstance(points, list) or not 1 <= len(points) <= 12:
+                raise ValueError("Provide between one and twelve place awards")
+            stage.place_points = [str(self._decimal(p)) for p in points]
+            stage.score_multiplier = self._decimal(values.get("score_multiplier", "0.02"))
+        else:
+            stage.place_points = []
+            stage.score_multiplier = Decimal(0)
         changed = stage.stage_type != stage_type or stage.scheme_key != scheme_key
         stage.stage_type, stage.scheme_key = stage_type, scheme_key
         if changed:
@@ -307,6 +311,10 @@ class ClassicService:
         for field in ("discoverable", "playable"):
             if not isinstance(values.get(field, False), bool):
                 raise ValueError("Packet switches must be boolean")
+            if values.get(field, False) and stage.started_at is None:
+                raise ValueError(
+                    "Start the stage before making its packets discoverable or playable"
+                )
             setattr(round_record, field, values.get(field, False))
         round_record.assignment_id, round_record.start_deadline = assignment_id, deadline
 
@@ -436,7 +444,10 @@ class ClassicService:
                             "seat": s,
                             "score": "0",
                             "place": str(i),
-                            "points": str(competition_points(Decimal(i), 1, stage.place_points)),
+                            "points": str(
+                                competition_points(Decimal(i), 1, stage.place_points)
+                                if stage.kind == "first" else Decimal(0)
+                            ),
                             "correct_values": [],
                             "key": [str(-i)],
                         }
@@ -502,7 +513,7 @@ class ClassicService:
                     stage.place_points,
                 )
                 + Decimal(participant.score) * stage.score_multiplier
-            )
+            ) if stage.kind == "first" else Decimal(0)
             results.append(
                 {
                     "seat": match.seats[participant.seat - 1],

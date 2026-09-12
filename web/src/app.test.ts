@@ -492,7 +492,15 @@ describe("MiniAppShell", () => {
     expect(root.querySelector<HTMLFieldSetElement>(".classic-settings fieldset")?.disabled).toBe(true);
     expect(root.querySelectorAll(".classic-settings fieldset")).toHaveLength(2);
     expect(root.textContent).toContain("Tournament type and ruleset were locked");
-    expect(root.querySelector("[name=registration_open]")).toBeNull();
+    const registration = root.querySelector<HTMLInputElement>("[name=registration_open]")!;
+    expect(registration.checked).toBe(false);
+    registration.checked = true;
+    root.querySelector<HTMLInputElement>("[name=registration_starts_at]")!.value = "2026-09-12T12:00";
+    root.querySelector<HTMLInputElement>("[name=registration_ends_at]")!.value = "2026-09-12T13:00";
+    const playoffSettings = root.querySelectorAll(".classic-settings fieldset")[1]!;
+    expect(playoffSettings.textContent).not.toContain("Place points");
+    expect(playoffSettings.querySelectorAll("input")).toHaveLength(0);
+    expect(playoffSettings.querySelector("button")!.classList.contains("primary-button")).toBe(true);
     expect(root.querySelector<HTMLInputElement>("[name=ignore_late_registrations]")?.checked).toBe(true);
     expect(root.querySelector("textarea")).toBeNull();
     expect(root.querySelector("[name='setting:theme_count']")).not.toBeNull();
@@ -527,6 +535,9 @@ describe("MiniAppShell", () => {
     root.querySelector<HTMLFormElement>("form.settings-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
     const saved = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
+    expect(saved.registration_open).toBe(true);
+    expect(saved.registration_starts_at).toBe(new Date("2026-09-12T12:00").toISOString());
+    expect(saved.registration_ends_at).toBe(new Date("2026-09-12T13:00").toISOString());
     expect(saved.policies).toMatchObject({
       packets_discoverable_by_default: false,
       packets_playable_by_default: true,
@@ -727,15 +738,20 @@ describe("MiniAppShell", () => {
     button("First stage management").click();
     root.querySelector<HTMLSelectElement>(".classic-rounds select")!.value = "packet-1";
     const switches = root.querySelectorAll<HTMLInputElement>(".classic-rounds input[type=checkbox]");
-    switches.forEach((s) => { s.checked = true; });
+    switches.forEach((s) => { expect(s.disabled).toBe(true); });
+    expect(root.querySelector(".classic-rounds [role=status]")?.textContent).toBe(
+      "Start this stage before making its packets discoverable or playable.",
+    );
+    expect(button("Save round").classList.contains("primary-button")).toBe(true);
     root.querySelector<HTMLInputElement>(".classic-rounds input[type=datetime-local]")!.value = "2026-10-01T12:00";
     button("Save round").click();
     await vi.waitFor(() => expect(mutations).toHaveLength(1));
     expect(mutations[0]).toMatchObject({ expected_version: 4, command: "round", kind: "first",
-      values: { round_id: "round-1", assignment_id: "packet-1", discoverable: true, playable: true,
+      values: { round_id: "round-1", assignment_id: "packet-1", discoverable: false, playable: false,
         start_deadline: new Date("2026-10-01T12:00").toISOString() } });
     await vi.waitFor(() => expect(button("First round seeding")?.disabled).toBe(false));
     button("First round seeding").click();
+    expect(button("Automatic seeding").classList.contains("secondary-button")).toBe(true);
     button("Automatic seeding").click();
     await vi.waitFor(() => expect(root.querySelectorAll(".classic-seeding select")).toHaveLength(9));
     const slots = root.querySelectorAll<HTMLSelectElement>(".classic-seeding select");
@@ -750,6 +766,16 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(mutations).toHaveLength(4));
     expect(mutations[3]).toMatchObject({ command: "start", kind: "first", expected_version: 7 });
     await vi.waitFor(() => expect(button("Start first stage")?.disabled).toBe(true));
+    button("First stage management").click();
+    expect(root.querySelector(".classic-rounds [role=status]")).toBeNull();
+    root.querySelectorAll<HTMLInputElement>(".classic-rounds input[type=checkbox]").forEach((s) => {
+      expect(s.disabled).toBe(false);
+      s.checked = true;
+    });
+    button("Save round").click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(5));
+    expect(mutations[4]).toMatchObject({ expected_version: 8, command: "round", kind: "first",
+      values: { discoverable: true, playable: true } });
   });
 
   it("associates packet authors, creates a lead author, and preserves theme edits", async () => {

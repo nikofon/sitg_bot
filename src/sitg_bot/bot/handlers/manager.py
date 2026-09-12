@@ -1,6 +1,5 @@
 import re
-from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from uuid import UUID
 
 from aiogram import F, Router
@@ -244,9 +243,14 @@ def _is_label(value: str, key: str, localization: LocalizationService) -> bool:
 def _creation_prompt(
     field: str, suggested: str, localization: LocalizationService, locale: str
 ) -> MessageModel:
+    choices = {"type": ("Ladder", "Classical"), "visibility": ("Private", "Public")}
     return MessageModel(
         localization.text(f"tournament_create.{field}.prompt", locale, suggested=suggested),
-        suggested_value_keyboard(suggested, localization, locale),
+        ReplyKeyboardModel(
+            rows=(choices[field], (localization.text("button.back", locale),)), one_time=True
+        )
+        if field in choices
+        else suggested_value_keyboard(suggested, localization, locale),
     )
 
 
@@ -554,9 +558,10 @@ async def handle_tournament_type(
     localization: LocalizationService,
     locale: str,
     state: FSMContext,
-    clock: Callable[[], datetime],
 ) -> None:
     value = (message.text or "").strip().casefold()
+    if value == "classical":
+        value = "classic"
     if _is_label(message.text or "", "button.back", localization):
         data = await state.get_data()
         await state.set_state(TournamentCreationState.entering_slug)
@@ -576,116 +581,6 @@ async def handle_tournament_type(
         )
         return
     await state.update_data(type_key=value)
-    if value == "classic":
-        suggested = (
-            (clock().astimezone(UTC) + timedelta(days=7))
-            .replace(second=0, microsecond=0)
-            .isoformat()
-        )
-        await state.set_state(TournamentCreationState.entering_registration_end)
-        await send_message_model(
-            message,
-            _creation_prompt("registration_end", suggested, localization, locale),
-        )
-        return
-    await state.update_data(
-        registration_ends_at=None,
-        starts_at=None,
-        planned_ends_at=None,
-    )
-    await state.set_state(TournamentCreationState.entering_ruleset)
-    await send_message_model(message, _creation_prompt("ruleset", "si", localization, locale))
-
-
-def _scheduled_datetime(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value.strip())
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed
-
-
-@router.message(StateFilter(TournamentCreationState.entering_registration_end), F.text)
-async def handle_tournament_registration_end(
-    message: Message, localization: LocalizationService, locale: str, state: FSMContext
-) -> None:
-    value = message.text or ""
-    if _is_label(value, "button.back", localization):
-        data = await state.get_data()
-        await state.set_state(TournamentCreationState.entering_type)
-        await send_message_model(
-            message,
-            _creation_prompt("type", str(data.get("type_key") or "classic"), localization, locale),
-        )
-        return
-    parsed = _scheduled_datetime(value)
-    if parsed is None:
-        await send_message_model(
-            message, MessageModel(localization.text("tournament_create.datetime.invalid", locale))
-        )
-        return
-    await state.update_data(registration_ends_at=parsed.isoformat())
-    suggested = (parsed + timedelta(days=1)).isoformat()
-    await state.set_state(TournamentCreationState.entering_start)
-    await send_message_model(message, _creation_prompt("start", suggested, localization, locale))
-
-
-@router.message(StateFilter(TournamentCreationState.entering_start), F.text)
-async def handle_tournament_start(
-    message: Message, localization: LocalizationService, locale: str, state: FSMContext
-) -> None:
-    value = message.text or ""
-    data = await state.get_data()
-    if _is_label(value, "button.back", localization):
-        await state.set_state(TournamentCreationState.entering_registration_end)
-        await send_message_model(
-            message,
-            _creation_prompt(
-                "registration_end",
-                str(data.get("registration_ends_at") or ""),
-                localization,
-                locale,
-            ),
-        )
-        return
-    parsed = _scheduled_datetime(value)
-    registration_end = _scheduled_datetime(str(data["registration_ends_at"]))
-    if parsed is None or registration_end is None or parsed < registration_end:
-        await send_message_model(
-            message, MessageModel(localization.text("tournament_create.datetime.invalid", locale))
-        )
-        return
-    await state.update_data(starts_at=parsed.isoformat())
-    suggested = (parsed + timedelta(days=1)).isoformat()
-    await state.set_state(TournamentCreationState.entering_planned_end)
-    await send_message_model(
-        message, _creation_prompt("planned_end", suggested, localization, locale)
-    )
-
-
-@router.message(StateFilter(TournamentCreationState.entering_planned_end), F.text)
-async def handle_tournament_planned_end(
-    message: Message, localization: LocalizationService, locale: str, state: FSMContext
-) -> None:
-    value = message.text or ""
-    data = await state.get_data()
-    if _is_label(value, "button.back", localization):
-        await state.set_state(TournamentCreationState.entering_start)
-        await send_message_model(
-            message,
-            _creation_prompt("start", str(data.get("starts_at") or ""), localization, locale),
-        )
-        return
-    parsed = _scheduled_datetime(value)
-    starts_at = _scheduled_datetime(str(data["starts_at"]))
-    if parsed is None or starts_at is None or parsed < starts_at:
-        await send_message_model(
-            message, MessageModel(localization.text("tournament_create.datetime.invalid", locale))
-        )
-        return
-    await state.update_data(planned_ends_at=parsed.isoformat())
     await state.set_state(TournamentCreationState.entering_ruleset)
     await send_message_model(message, _creation_prompt("ruleset", "si", localization, locale))
 
@@ -697,25 +592,13 @@ async def handle_tournament_ruleset(
     value = (message.text or "").strip().casefold()
     if _is_label(message.text or "", "button.back", localization):
         data = await state.get_data()
-        if data.get("type_key") == "classic":
-            await state.set_state(TournamentCreationState.entering_planned_end)
-            await send_message_model(
-                message,
-                _creation_prompt(
-                    "planned_end",
-                    str(data.get("planned_ends_at") or ""),
-                    localization,
-                    locale,
-                ),
-            )
-        else:
-            await state.set_state(TournamentCreationState.entering_type)
-            await send_message_model(
-                message,
-                _creation_prompt(
-                    "type", str(data.get("type_key") or "ladder"), localization, locale
-                ),
-            )
+        await state.set_state(TournamentCreationState.entering_type)
+        await send_message_model(
+            message,
+            _creation_prompt(
+                "type", str(data.get("type_key") or "ladder"), localization, locale
+            ),
+        )
         return
     if value != "si":
         await send_message_model(
@@ -865,17 +748,6 @@ async def _finish_tournament_creation(
         game_ruleset_key=str(data["game_ruleset_key"]),
         visibility=str(data["visibility"]),
         language=language,
-        registration_ends_at=(
-            _scheduled_datetime(str(data["registration_ends_at"]))
-            if data.get("registration_ends_at")
-            else None
-        ),
-        starts_at=(_scheduled_datetime(str(data["starts_at"])) if data.get("starts_at") else None),
-        planned_ends_at=(
-            _scheduled_datetime(str(data["planned_ends_at"]))
-            if data.get("planned_ends_at")
-            else None
-        ),
     )
     await state.clear()
     await send_message_model(

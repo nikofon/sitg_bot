@@ -521,13 +521,6 @@ class TournamentService:
                 raise PermissionError("Tournament creation token belongs to another creator")
 
             type_version = await self._latest_type(session, type_key)
-            if type_version.rules.get("open_ended") is not True:
-                if registration_ends_at is None:
-                    raise ValueError("Registration end is required for a finite tournament")
-                if starts_at is None or planned_ends_at is None:
-                    raise ValueError(
-                        "Start and planned finish are required for a finite tournament"
-                    )
             normalized_policies = normalize_tournament_policies(type_version.rules, policies)
             ruleset_version = await self._latest_ruleset(session, game_ruleset_key)
             compatible = type_version.rules.get("compatible_rulesets")
@@ -961,7 +954,10 @@ class TournamentService:
             compatible = type_version.rules.get("compatible_rulesets")
             if compatible and ruleset_version.key not in compatible:
                 raise ValueError("Tournament type is incompatible with the selected game ruleset")
-            if type_version.rules.get("open_ended") is not True:
+            if (
+                tournament.finalized_at is not None
+                and type_version.rules.get("open_ended") is not True
+            ):
                 if registration_ends_at is None:
                     raise ValueError("Registration end is required for a finite tournament")
                 if starts_at is None or planned_ends_at is None:
@@ -1572,7 +1568,10 @@ class TournamentService:
             self._validate_schedule(
                 new_registration_start, new_registration_end, new_start, new_planned_end
             )
-            if type_version.rules.get("open_ended") is not True:
+            if (
+                tournament.finalized_at is not None
+                and type_version.rules.get("open_ended") is not True
+            ):
                 if new_registration_end is None:
                     raise ValueError("Registration end is required for a finite tournament")
                 if new_start is None or new_planned_end is None:

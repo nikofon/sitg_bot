@@ -22,9 +22,12 @@ from sitg_bot.bot.handlers.admin import (
 )
 from sitg_bot.bot.handlers.common import resume_registration
 from sitg_bot.bot.handlers.manager import (
+    _creation_prompt,
     delivered_token_message,
     handle_manager_tournament_action,
     handle_token_request_commentary,
+    handle_tournament_ruleset,
+    handle_tournament_type,
     handle_tournament_visibility,
     token_inventory_message,
     token_request_result,
@@ -720,6 +723,35 @@ async def test_back_in_creation_wizard_returns_to_previous_step() -> None:
 
     state.set_state.assert_awaited_once_with(TournamentCreationState.entering_ruleset)
     assert "ruleset" in message.answer.await_args.args[0].lower()
+
+
+@pytest.mark.parametrize("value", ["Ladder", "Classical", "classic"])
+async def test_creation_type_skips_dates_and_back_returns_to_type(value: str) -> None:
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"type_key": "classic"}),
+        set_state=AsyncMock(), update_data=AsyncMock(),
+    )
+    message = SimpleNamespace(text=value, answer=AsyncMock())
+    localization = LocalizationService()
+    await handle_tournament_type(message, localization, "en", state)
+    state.update_data.assert_awaited_once_with(
+        type_key="ladder" if value == "Ladder" else "classic"
+    )
+    state.set_state.assert_awaited_once_with(TournamentCreationState.entering_ruleset)
+    message.text = "Back"
+    await handle_tournament_ruleset(message, localization, "en", state)
+    state.set_state.assert_awaited_with(TournamentCreationState.entering_type)
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_creation_keyboard_offers_types_and_visibilities(locale: str) -> None:
+    localization = LocalizationService()
+    for field, choices in [
+        ("type", ("Ladder", "Classical")), ("visibility", ("Private", "Public"))
+    ]:
+        model = _creation_prompt(field, choices[0], localization, locale)
+        assert isinstance(model.keyboard, ReplyKeyboardModel)
+        assert model.keyboard.rows == (choices, (localization.text("button.back", locale),))
 
 
 def test_tournament_language_choices_are_localized_and_extensible() -> None:

@@ -1431,6 +1431,10 @@ export class MiniAppShell {
       ),
       group(
         "manager_settings.registration",
+        element("label", { className: "checkbox-label" }, element("input", {
+          name: "registration_open", type: "checkbox", checked: resource.registration_enabled,
+        }), this.i18n.t("manager_settings.registration_enabled")),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_help")),
         input("tournament.registration_starts", "registration_starts_at", dateTimeLocal(item.registration_starts_at), "datetime-local"),
         input("tournament.registration_ends", "registration_ends_at", dateTimeLocal(item.registration_ends_at), "datetime-local"),
         element("label", { className: "checkbox-label" }, element("input", {
@@ -1513,11 +1517,13 @@ export class MiniAppShell {
         element("legend", {}, this.i18n.t(kind === "first" ? "manager_management.first_stage" : "manager_management.playoff_stage")),
         element("label", {}, this.i18n.t("classic.type"), type),
         element("label", {}, this.i18n.t("classic.scheme"), scheme),
-        element("label", {}, this.i18n.t("classic.points"), points),
-        element("label", {}, this.i18n.t("classic.multiplier"), multiplier),
-        element("button", { type: "button", onclick: (() => void this.mutateClassic(route, version, "configure", kind, {
+        kind === "first" ? element("label", {}, this.i18n.t("classic.points"), points) : null,
+        kind === "first" ? element("label", {}, this.i18n.t("classic.multiplier"), multiplier) : null,
+        element("button", { type: "button", className: "primary-button", onclick: (() => void this.mutateClassic(route, version, "configure", kind, {
           stage_type: type.value, scheme_key: scheme.value || null,
-          place_points: points.value.split(",").map((p) => p.trim()), score_multiplier: multiplier.value,
+          ...(kind === "first" ? {
+            place_points: points.value.split(",").map((p) => p.trim()), score_multiplier: multiplier.value,
+          } : {}),
         })) as EventListener }, this.i18n.t("classic.save_stage")),
         locked ? element("p", {}, this.i18n.t("classic.locked")) : null,
       ));
@@ -1532,24 +1538,27 @@ export class MiniAppShell {
       container.append(element("p", {}, this.i18n.t("classic.configure_first")));
       return container;
     }
+    const stageStarted = !!stage.started_at;
+    if (!stageStarted) container.append(element("p", { className: "packet-warnings", role: "status" },
+      this.i18n.t("classic.packet_access_requires_start")));
     for (const round of stage.rounds) {
       const packet = element("select", {}, element("option", { value: "" }, "—"),
         ...resource.packets.map((p) => element("option", { value: p.assignment_id, selected: p.assignment_id === round.assignment_id }, p.name)));
       packet.disabled = round.packet_locked;
-      const discoverable = element("input", { type: "checkbox", role: "switch", checked: round.discoverable });
-      const playable = element("input", { type: "checkbox", role: "switch", checked: round.playable });
+      const discoverable = element("input", { type: "checkbox", role: "switch", checked: stageStarted && round.discoverable, disabled: !stageStarted });
+      const playable = element("input", { type: "checkbox", role: "switch", checked: stageStarted && round.playable, disabled: !stageStarted });
       const deadline = element("input", { type: "datetime-local", value: dateTimeLocal(round.start_deadline) });
       container.append(element("article", { className: "resource-card" },
         element("h3", {}, `${this.i18n.t("classic.round")} ${round.number}`),
         element("label", {}, this.i18n.t("manager_management.packet_select"), packet),
-        element("label", {}, discoverable, this.i18n.t("manager_management.discoverable")),
-        element("label", {}, playable, this.i18n.t("manager_management.playable")),
+        element("label", { className: "switch-label" }, discoverable, this.i18n.t("manager_management.discoverable")),
+        element("label", { className: "switch-label" }, playable, this.i18n.t("manager_management.playable")),
         element("label", {}, this.i18n.t("classic.deadline"), deadline),
         element("p", { className: "field-help" }, this.i18n.t("classic.deadline_help")),
-        element("button", { type: "button", disabled: resource.tournament.status !== "active",
+        element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
           onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
-            round_id: round.id, assignment_id: packet.value || null, discoverable: discoverable.checked,
-            playable: playable.checked, start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
+            round_id: round.id, assignment_id: packet.value || null, discoverable: stageStarted && discoverable.checked,
+            playable: stageStarted && playable.checked, start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
           })) as EventListener }, this.i18n.t("classic.save_round")),
         ...round.matches.map((m) => {
           const results = m.results?.map((r) => `${r.place}. ${r.seat.startsWith("chair:") ? this.i18n.t("classic.chair") : names.get(r.seat) ?? r.seat} (${r.score})`).join("; ");
@@ -1573,7 +1582,7 @@ export class MiniAppShell {
     const locked = !!stage.started_at || resource.tournament.status !== "active";
     container.append(element("p", {}, this.i18n.t("classic.seeding_help")));
     for (const mode of ["automatic", "random"] as const) container.append(element("button", {
-      type: "button", disabled: locked,
+      type: "button", className: "secondary-button", disabled: locked,
       onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, { mode })) as EventListener,
     }, this.i18n.t(`classic.${mode}`)));
     const groups: HTMLSelectElement[][] = [];
@@ -1585,7 +1594,7 @@ export class MiniAppShell {
       container.append(element("fieldset", {}, element("legend", {}, `${this.i18n.t("classic.group")} ${i + 1}`),
         ...selectors.map((select, index) => element("label", {}, `${this.i18n.t("classic.seat")} ${index + 1}`, select))));
     });
-    if (groups.length) container.append(element("button", { type: "button", disabled: locked,
+    if (groups.length) container.append(element("button", { type: "button", className: "primary-button", disabled: locked,
       onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, {
         mode: "manual", seeds: groups.map((group) => group.map((select) => select.value || null)),
       })) as EventListener }, this.i18n.t("classic.save_seeding")));
@@ -1852,7 +1861,7 @@ export class MiniAppShell {
             language: value("language"),
             payment_type: value("payment_type"),
             pricing_plans: value("payment_type") === "free" ? [] : this.pricingPlans(form),
-            registration_open: resource.registration_enabled,
+            registration_open: value("registration_open") === "on",
             ignore_late_registrations: data.has("ignore_late_registrations"),
             registration_starts_at: timestamp("registration_starts_at"),
             registration_ends_at: timestamp("registration_ends_at"),
