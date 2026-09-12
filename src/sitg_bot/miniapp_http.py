@@ -35,6 +35,8 @@ from sitg_bot.application.contracts import (
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
+    PlayerGameResultsOperation,
+    PlayerProfileOperation,
     TournamentAuthorCreateOperation,
     TournamentCompleteOperation,
     TournamentFinalizeOperation,
@@ -108,6 +110,11 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/routes/resolve", self._resolve_route)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/tournaments/{tournament_id}", self._tournament_info)
+        app.router.add_get("/api/miniapp/players/{player_id}", self._player_profile)
+        app.router.add_get(
+            "/api/miniapp/players/{player_id}/games/{game_id}",
+            self._player_game,
+        )
         app.router.add_post(
             "/api/miniapp/tournaments/{tournament_id}/register",
             self._register,
@@ -282,6 +289,10 @@ class MiniAppHttpServer:
                 "locale": session.preferred_locale, "authorization": {"allowed": True},
                 "resource": {"kind": "library", "state": "ready", **result.data},
             })
+        player_game_match = re.fullmatch(
+            r"/players/([0-9a-fA-F-]{36})/games/([0-9a-fA-F-]{36})", normalized_path
+        )
+        player_match = re.fullmatch(r"/players/([0-9a-fA-F-]{36})", normalized_path)
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
@@ -290,6 +301,54 @@ class MiniAppHttpServer:
         )
         packet_match = re.fullmatch(r"/manager/packets/([A-Za-z0-9_-]+)/edit", normalized_path)
         lobby_match = re.fullmatch(r"/lobbies/([A-Za-z0-9_-]+)", normalized_path)
+        if player_game_match is not None:
+            session, result = await self._query(
+                request,
+                PlayerGameResultsOperation(
+                    action=ActionCode.PLAYER_GAME_RESULTS,
+                    player_id=UUID(player_game_match.group(1)),
+                    game_id=UUID(player_game_match.group(2)),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "player_game",
+                        "state": "ready",
+                        **result.data,
+                    },
+                }
+            )
+        if player_match is not None:
+            raw_query = parse_qs(parsed.query, keep_blank_values=False)
+            query = {key: values[-1] for key, values in raw_query.items() if values}
+            session, result = await self._query(
+                request,
+                PlayerProfileOperation(
+                    action=ActionCode.PLAYER_PROFILE,
+                    player_id=UUID(player_match.group(1)),
+                    ruleset_key=query.get("ruleset") or None,
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "player_profile",
+                        "state": "ready",
+                        **result.data,
+                    },
+                }
+            )
         if packet_match is not None:
             session, draft_id = await self._resolve_packet_reference(
                 request, packet_match.group(1), action=ActionCode.PACKET_DRAFT_GET
@@ -448,6 +507,24 @@ class MiniAppHttpServer:
             action=ActionCode.TOURNAMENT_INFO,
             tournament_id=self._tournament_id(request),
             role=request.query.get("role", "player"),  # type: ignore[arg-type]
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _player_profile(self, request: web.Request) -> web.Response:
+        operation = PlayerProfileOperation(
+            action=ActionCode.PLAYER_PROFILE,
+            player_id=self._path_uuid(request, "player_id"),
+            ruleset_key=request.query.get("ruleset") or None,
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _player_game(self, request: web.Request) -> web.Response:
+        operation = PlayerGameResultsOperation(
+            action=ActionCode.PLAYER_GAME_RESULTS,
+            player_id=self._path_uuid(request, "player_id"),
+            game_id=self._path_uuid(request, "game_id"),
         )
         _, result = await self._query(request, operation)
         return self._gateway_response(result)
@@ -1034,6 +1111,13 @@ class MiniAppHttpServer:
             return UUID(request.match_info["tournament_id"])
         except (KeyError, ValueError) as error:
             raise ValueError("Tournament ID is invalid") from error
+
+    @staticmethod
+    def _path_uuid(request: web.Request, name: str) -> UUID:
+        try:
+            return UUID(request.match_info[name])
+        except (KeyError, ValueError) as error:
+            raise ValueError(f"Path identifier {name} is invalid") from error
 
     @staticmethod
     def _correlation_id(request: web.Request) -> UUID:

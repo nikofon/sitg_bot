@@ -36,6 +36,7 @@ from sitg_bot.application.contracts import (
     PacketDraftTelegramBindOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
+    PlayerResolveOperation,
     RegistrationCompleteOperation,
     RegistrationStartOperation,
     RegistrationStepSaveOperation,
@@ -514,6 +515,18 @@ class BotBackend:
                 action=ActionCode.TOURNAMENT_INFO,
                 tournament_id=tournament_id,
                 role="player",
+            ),
+        )
+        return cast(dict[str, object], response.data)
+
+    async def resolve_player(
+        self, claim: TelegramUpdateClaim, *, reference: str
+    ) -> dict[str, object]:
+        response = await self._execute(
+            claim,
+            PlayerResolveOperation(
+                action=ActionCode.PLAYER_RESOLVE,
+                reference=reference,
             ),
         )
         return cast(dict[str, object], response.data)

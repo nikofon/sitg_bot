@@ -1,6 +1,9 @@
+import re
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from sitg_bot.services.launch_references import LaunchReference
+
+_PLAYER_PROFILE_ROUTE = re.compile(r"players/[0-9a-fA-F-]{36}")
 
 
 def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | None = None) -> str:
@@ -8,7 +11,9 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("Mini App base URL must be HTTPS")
     normalized_route = route.strip("/")
-    if normalized_route not in {"tournaments", "history", "library"}:
+    if normalized_route not in {"tournaments", "history", "library"} and (
+        _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
+    ):
         raise ValueError("Unsupported Mini App route")
     path = f"{parsed.path.rstrip('/')}/{normalized_route}"
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query or {}), ""))

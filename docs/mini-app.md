@@ -60,6 +60,20 @@ with sections derived from the tournament type. Supports setup finalization, man
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights.
 
+**Player profiles:** per-ruleset public profiles at `/players/{player_id}`, opened from the
+bot's player-mode "My profile" reply-keyboard button (own profile) or participant links on
+game cards. A ruleset dropdown
+lists only rulesets with at least one settled result. Each view shows the global ruleset rating
+with a recent-history graph, win rate with place distribution (places 1–4, shared places,
+worse), SI per-question-value correct/incorrect counts (custom tournament scales are mapped
+onto canonical 10–50 values), and recent game cards with tournament name, stage placeholder,
+participants, scores, and places. Private tournament names are replaced with a neutral label
+for viewers without membership, manager, or admin access. Real names and non-public Telegram
+usernames are visible only to the player themself or platform administrators. The
+`/players/{player_id}/games/{game_id}` sub-view shows per-theme answer grids (value columns ×
+participant rows, green/red/neutral marks) with theme pagination and a back button; it never
+exposes theme names, question text, or answers.
+
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
 retirement, version release, and correction/substitution editing. Published fields stay locked
 until an edit classification is selected; save validates actual changes atomically.
@@ -83,6 +97,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | Routes | Purpose |
 | --- | --- |
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
+| GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |

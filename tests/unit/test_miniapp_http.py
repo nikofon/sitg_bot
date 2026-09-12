@@ -87,6 +87,32 @@ class FakeGateway:
                 ],
                 "next_cursor": None,
             }
+        elif operation.action == ActionCode.PLAYER_PROFILE:
+            data = {
+                "player": {"id": str(UUID(int=5)), "nickname": "Sample <b>Player</b>"},
+                "rulesets": [{"key": "si", "name": "Своя игра"}],
+                "ruleset_key": "si",
+                "rating": {"value": 1010.5, "history": []},
+                "stats": {
+                    "games": 1,
+                    "wins": 1,
+                    "win_rate": 100.0,
+                    "placements": [],
+                },
+                "si_question_stats": [],
+                "games": [],
+            }
+        elif operation.action == ActionCode.PLAYER_GAME_RESULTS:
+            data = {
+                "game_id": str(UUID(int=40)),
+                "player_id": str(UUID(int=5)),
+                "tournament_name": None,
+                "tournament_visible": False,
+                "stage": None,
+                "played_at": "2026-09-01T10:00:00+00:00",
+                "participants": [],
+                "themes": [],
+            }
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -225,6 +251,63 @@ async def test_tournament_route_resolves_role_filters_and_pagination() -> None:
     assert operation.relationship == "managed"
     assert operation.search == "cup"
     assert operation.order == "name_asc"
+
+
+async def test_player_profile_route_resolves_ruleset_selection() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    player_id = UUID(int=5)
+    request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/routes/resolve?path=/players/{player_id}%3Fruleset=si",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["authorization"] == {"allowed": True}
+    assert payload["resource"]["kind"] == "player_profile"
+    assert payload["resource"]["player"]["id"] == str(player_id)
+    assert payload["resource"]["ruleset_key"] == "si"
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.PLAYER_PROFILE
+    assert operation.player_id == player_id
+    assert operation.ruleset_key == "si"
+
+
+async def test_player_game_route_resolves_theme_grids_without_content() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    player_id = UUID(int=5)
+    game_id = UUID(int=40)
+    request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/routes/resolve?path=/players/{player_id}/games/{game_id}",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "player_game"
+    assert payload["resource"]["game_id"] == str(game_id)
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.PLAYER_GAME_RESULTS
+    assert operation.player_id == player_id
+    assert operation.game_id == game_id
 
 
 async def test_mini_app_http_rejects_missing_origin_before_exposing_data() -> None:

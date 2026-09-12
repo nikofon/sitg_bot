@@ -65,7 +65,10 @@ from sitg_bot.application.contracts import (
     PacketManagementUpdateOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
+    PlayerGameResultsOperation,
+    PlayerProfileOperation,
     PlayerReportOperation,
+    PlayerResolveOperation,
     RegistrationCompleteOperation,
     RegistrationStartOperation,
     RegistrationStepSaveOperation,
@@ -102,6 +105,7 @@ from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
 from sitg_bot.services.players import PlayerAccountService, ProfileVersionConflict
+from sitg_bot.services.profiles import PlayerProfileService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.token_requests import (
     TokenPlaintextUnavailable,
@@ -373,6 +377,7 @@ class ApplicationGateway:
         self.launch_references = launch_references
         self.packets = packets or PacketAdminService(database)
         self.library = PacketLibraryService(database)
+        self.profiles = PlayerProfileService(database)
         self.minimum_client_version = minimum_client_version
         self.idempotency_lease = idempotency_lease
 
@@ -510,6 +515,18 @@ class ApplicationGateway:
             )
 
         player_id = await self._require_active_principal(principal)
+        if isinstance(operation, PlayerProfileOperation):
+            return await self.profiles.profile(
+                player_id,
+                operation.player_id,
+                ruleset_key=operation.ruleset_key,
+            )
+        if isinstance(operation, PlayerGameResultsOperation):
+            return await self.profiles.game_results(
+                player_id, operation.player_id, operation.game_id
+            )
+        if isinstance(operation, PlayerResolveOperation):
+            return await self.profiles.resolve_reference(operation.reference)
         if isinstance(operation, AdminAuthenticateOperation):
             await self._admin_authenticator().authenticate(
                 player_id,
@@ -1458,6 +1475,7 @@ class ApplicationGateway:
             "tournament_id",
             "lobby_id",
             "game_id",
+            "player_id",
             "request_id",
             "author_id",
             "token_id",

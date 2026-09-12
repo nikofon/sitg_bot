@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from aiogram import F, Router
-from aiogram.filters import Command, Filter, StateFilter
+from aiogram.filters import Command, CommandObject, Filter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.keyboards.common import (
@@ -24,7 +25,13 @@ from sitg_bot.bot.presenters.models import (
     MessageModel,
 )
 from sitg_bot.bot.presenters.render import send_message_model
-from sitg_bot.bot.state import BotBackend, NavigationState, SettingsState, SettingState
+from sitg_bot.bot.state import (
+    BotBackend,
+    GatewayCallError,
+    NavigationState,
+    SettingsState,
+    SettingState,
+)
 from sitg_bot.bot.state.settings import SettingEditState
 
 router = Router(name=__name__)
@@ -36,7 +43,6 @@ PLAYER_ACTIONS = tuple(
 )
 PLACEHOLDER_ACTIONS = {
     "player.rating",
-    "player.profile",
     "player.history",
     "player.author_link",
     "player.ongoing",
@@ -210,6 +216,68 @@ async def _save_setting(
                 other_menu_keyboard(navigation, localization, locale)
                 if return_to_other
                 else navigation_keyboard(navigation, localization, locale)
+            ),
+        ),
+    )
+
+
+@router.message(Command("profile"))
+async def handle_profile_command(
+    message: Message,
+    command: CommandObject,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState | None,
+    launch_links: str | None,
+) -> None:
+    if navigation is None or navigation.account.registration_status != "active":
+        await send_message_model(
+            message,
+            MessageModel(localization.text("error.authentication_required", locale)),
+        )
+        return
+    reference = (command.args or "").strip()
+    if not reference:
+        await send_message_model(
+            message,
+            MessageModel(localization.text("profile.command.usage", locale)),
+        )
+        return
+    try:
+        resolved = await backend.resolve_player(telegram_update_claim, reference=reference)
+    except GatewayCallError as error:
+        if error.error.code not in {ErrorCode.VALIDATION_FAILED, ErrorCode.NOT_FOUND}:
+            raise
+        key = (
+            "profile.command.not_found"
+            if error.error.code == ErrorCode.NOT_FOUND
+            else "profile.command.invalid"
+        )
+        await send_message_model(message, MessageModel(localization.text(key, locale)))
+        return
+    if launch_links is None:
+        await send_message_model(
+            message,
+            MessageModel(localization.text("error.capability_unavailable", locale)),
+        )
+        return
+    nickname = str(resolved.get("nickname") or resolved["player_id"])
+    url = mini_app_route_url(launch_links, f"players/{resolved['player_id']}")
+    await send_message_model(
+        message,
+        MessageModel(
+            localization.text("profile.command.prompt", locale, nickname=nickname),
+            InlineKeyboardModel(
+                rows=(
+                    (
+                        InlineButtonModel(
+                            localization.text("miniapp.players.open", locale),
+                            web_app_url=url,
+                        ),
+                    ),
+                )
             ),
         ),
     )
@@ -490,6 +558,39 @@ async def handle_player_menu_action(
             MessageModel(
                 localization.text("settings.choose", locale),
                 setting_names_keyboard(settings, localization, locale),
+            ),
+        )
+        return
+    if player_action == "player.profile":
+        if launch_links is None:
+            await send_message_model(
+                message,
+                MessageModel(
+                    localization.text(
+                        "feature.placeholder",
+                        locale,
+                        feature=localization.text("button.player.profile", locale),
+                    )
+                ),
+            )
+            return
+        url = mini_app_route_url(
+            launch_links, f"players/{navigation.account.player_id}"
+        )
+        await send_message_model(
+            message,
+            MessageModel(
+                localization.text("miniapp.players.prompt", locale),
+                InlineKeyboardModel(
+                    rows=(
+                        (
+                            InlineButtonModel(
+                                localization.text("miniapp.players.open", locale),
+                                web_app_url=url,
+                            ),
+                        ),
+                    )
+                ),
             ),
         )
         return

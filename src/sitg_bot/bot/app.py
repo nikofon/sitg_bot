@@ -109,6 +109,7 @@ async def configure_bot_commands(bot: Bot, localization: LocalizationService) ->
         "cancel",
         "language",
         "set",
+        "profile",
         "admin",
         "join",
         "reconnect",

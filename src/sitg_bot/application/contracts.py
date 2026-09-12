@@ -54,6 +54,9 @@ class ActionCode(StrEnum):
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
+    PLAYER_PROFILE = "players.profile.get.v1"
+    PLAYER_GAME_RESULTS = "players.game_results.get.v1"
+    PLAYER_RESOLVE = "players.resolve.v1"
     PACKET_MANAGEMENT_UPDATE = "packets.management.update.v1"
     PACKET_MANAGEMENT_DELETE = "packets.management.delete.v1"
     PACKET_MANAGEMENT_RELEASE = "packets.management.release.v1"
@@ -403,6 +406,23 @@ class LibraryAccessOperation(ContractModel):
     confirm: bool = Field(default=False, strict=True)
 
 
+class PlayerProfileOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_PROFILE]
+    player_id: UUID
+    ruleset_key: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class PlayerGameResultsOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_GAME_RESULTS]
+    player_id: UUID
+    game_id: UUID
+
+
+class PlayerResolveOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_RESOLVE]
+    reference: str = Field(min_length=2, max_length=66)
+
+
 class PacketManagementGetOperation(ContractModel):
     action: Literal[ActionCode.PACKET_MANAGEMENT_GET]
     tournament_id: UUID
@@ -694,6 +714,9 @@ GatewayOperation = Annotated[
     | PacketManagementGetOperation
     | LibraryListOperation
     | LibraryAccessOperation
+    | PlayerProfileOperation
+    | PlayerGameResultsOperation
+    | PlayerResolveOperation
     | PacketManagementUpdateOperation
     | PacketManagementActionOperation
     | TournamentCompleteOperation

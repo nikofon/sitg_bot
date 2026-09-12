@@ -2,7 +2,10 @@
 
 Pairwise Elo, rating projections, reputation/report ledgers, and SI suspicion evaluations are
 implemented. The metric definitions below also guide planned general statistics views; a
-defined metric does not imply an existing endpoint. See [planned features](future-work.md).
+defined metric does not imply an existing endpoint. The Mini App [player profile](mini-app.md)
+already serves per-ruleset rating history, win-rate/placement distribution, SI per-question-value
+statistics, and privacy-aware game result grids from these facts. See
+[planned features](future-work.md).
 
 ## Source map
 
