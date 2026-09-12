@@ -42,12 +42,20 @@ Unknown tournament action descriptors are ignored and logged.
 - Player registration, profile settings (`/set` and buttons), mode switching, tournament
   discovery/registration/selection, information, invitation lobbies, readiness, observers,
   settings, packet selection, hybrid search, and native SI gameplay.
+- `/bug` reports: `/bug <description>` submits a bug report to the administrators; a bare
+  `/bug` prompts for the description. Reports store the reporter, commentary, and timestamp,
+  and notify every active administrator through the admin notification audience and the
+  throttled Telegram alert.
 - Manager token requests, inventory, token-backed tournament creation, anonymous appeal
   review, selected tournament management/settings, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
+- Administrator moderation: `Ban` prompts for a player ID or Telegram username and an
+  optional reason, then records a reversible ban; `Unban` lifts it. Banned players receive
+  "You have been banned! Reason: … You can still use your library" on every interaction
+  except opening their packet library, which stays available in both the bot and the Mini App.
 - Mini App buttons for tournament lists, lobby packet/settings views, manager settings,
-  management, and packet draft/editing flows.
+  management, packet draft/editing flows, and the administrator suspicion ledger.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,

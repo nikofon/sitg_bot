@@ -33,6 +33,7 @@ from sitg_bot.bot.lobby_delivery import (
     run_outbox_consumer,
 )
 from sitg_bot.bot.middleware import (
+    BannedPlayerMiddleware,
     CorrelationLoggingMiddleware,
     ErrorMappingMiddleware,
     LocaleMiddleware,
@@ -95,6 +96,7 @@ def create_dispatcher(
     middleware(PrivateTelegramIdentityMiddleware())
     middleware(PlayerContextMiddleware(dependencies.backend))
     middleware(LocaleMiddleware(dependencies.localization))
+    middleware(BannedPlayerMiddleware())
     middleware(ErrorMappingMiddleware(dependencies.localization))
     dispatcher.include_router(root_router)
     dispatcher["callback_references"] = dependencies.callback_references
@@ -125,6 +127,7 @@ async def configure_bot_commands(bot: Bot, localization: LocalizationService) ->
         "abandon",
         "results",
         "report",
+        "bug",
         "quit",
     )
     scope = BotCommandScopeAllPrivateChats()

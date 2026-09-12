@@ -16,6 +16,9 @@ import type {
   RegisteredAuthor,
   TournamentRegistrationPayload,
   TournamentRouteResource,
+  AdminSuspicionInspectionPayload,
+  AdminSuspicionLedgerResource,
+  SuspicionLedgerCard,
 } from "./api/types";
 import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
@@ -183,6 +186,10 @@ export class MiniAppShell {
     }
     if (route.id === "manager_management" && isManagerManagementResource(payload.resource)) {
       this.renderManagerManagement(route, payload.resource);
+      return;
+    }
+    if (route.id === "admin_suspicion" && isSuspicionLedgerResource(payload.resource)) {
+      this.renderSuspicionLedger(route, payload.resource);
       return;
     }
     if (route.id === "lobby" && isLobbyResource(payload.resource)) {
@@ -1893,6 +1900,58 @@ export class MiniAppShell {
     else dialog.setAttribute("open", "");
   }
 
+  private promptSuspicionClear(route: RouteMatch, card: SuspicionLedgerCard): void {
+    const note = element("textarea", { rows: "3" }) as HTMLTextAreaElement;
+    const form = element(
+      "form",
+      { className: "settings-form" },
+      element("h2", {}, card.display_name ?? card.telegram_username ?? card.player_id),
+      element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${card.player_id}`),
+      element("p", {}, this.i18n.t("admin_suspicion.clear_prompt")),
+      element("label", {}, this.i18n.t("admin_suspicion.clear_note"), note),
+      element(
+        "div",
+        { className: "settings-actions" },
+        element("button", { type: "submit", className: "primary-button" }, this.i18n.t("admin_suspicion.clear_confirm")),
+        element(
+          "button",
+          {
+            type: "button",
+            className: "secondary-button",
+            onclick: (() => this.router.navigate("/admin/suspicion")) as EventListener,
+          },
+          this.i18n.t("admin_suspicion.clear_cancel"),
+        ),
+      ),
+    ) as HTMLFormElement;
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = note.value.trim();
+      if (!value) return;
+      void this.submitSuspicionClear(route, card, value);
+    });
+    this.renderFrame(route, element("section", { className: "route-content" }, form));
+  }
+
+  private async submitSuspicionClear(
+    route: RouteMatch,
+    card: SuspicionLedgerCard,
+    note: string,
+  ): Promise<void> {
+    this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
+    try {
+      await this.api.request(
+        `/api/miniapp/admin/suspicion/ledger/${encodeURIComponent(card.player_id)}/clear`,
+        { method: "POST", body: { note } },
+      );
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_suspicion.clear"), [this.i18n.t(`error.${code}`)]);
+      return;
+    }
+    this.router.navigate("/admin/suspicion");
+  }
+
   private showTextDialog(title: string, lines: string[]): void {
     const dialog = element(
       "dialog",
@@ -1918,6 +1977,143 @@ export class MiniAppShell {
 
   private badge(label: string, kind = "default"): HTMLElement {
     return element("span", { className: `badge badge-${kind}` }, label);
+  }
+
+  private renderSuspicionLedger(route: RouteMatch, resource: AdminSuspicionLedgerResource): void {
+    if (!resource.items.length) {
+      this.renderFrame(
+        route,
+        this.statusCard("empty", this.i18n.t("route.admin_suspicion.empty")),
+      );
+      return;
+    }
+    const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
+    for (const card of resource.items) {
+      const rulesetLines = card.rulesets.length
+        ? card.rulesets.map(
+            (stat) =>
+              `${stat.ruleset_key}: ${this.i18n.t("admin_suspicion.rating")} ${
+                stat.rating ?? "—"
+              }, ${this.i18n.t("admin_suspicion.games_played")} ${stat.games_played}`,
+          )
+        : [this.i18n.t("admin_suspicion.no_rulesets")];
+      const children: (Node | null)[] = [
+        element("h2", {}, card.display_name ?? card.telegram_username ?? card.player_id),
+        element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${card.player_id}`),
+        element("p", {}, `${this.i18n.t("admin_suspicion.suspicion")}: ${card.suspicion}`),
+        element("h3", {}, this.i18n.t("admin_suspicion.rulesets")),
+        ...rulesetLines.map((line) => element("p", {}, line)),
+      ];
+      if (card.reports.length) {
+        children.push(
+          element("h3", {}, this.i18n.t("admin_suspicion.reports")),
+          ...card.reports.map((report) => element("p", {}, `${report.kind}: ${report.count}`)),
+        );
+      }
+      children.push(
+        element(
+          "div",
+          { className: "settings-actions" },
+          element(
+            "button",
+            {
+              type: "button",
+              className: "primary-button",
+              onclick: (() => void this.inspectSuspicion(route, card)) as EventListener,
+            },
+            this.i18n.t("admin_suspicion.inspect"),
+          ),
+          element(
+            "button",
+            {
+              type: "button",
+              className: "secondary-button",
+              onclick: (() => this.promptSuspicionClear(route, card)) as EventListener,
+            },
+            this.i18n.t("admin_suspicion.clear"),
+          ),
+        ),
+      );
+      list.append(
+        element(
+          "article",
+          { className: "resource-card", "data-player-id": card.player_id },
+          ...children.filter((child): child is Node => child !== null),
+        ),
+      );
+    }
+    this.renderFrame(route, element("section", { className: "route-content" }, list));
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private async inspectSuspicion(route: RouteMatch, card: SuspicionLedgerCard): Promise<void> {
+    this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
+    try {
+      const payload = await this.api.request<AdminSuspicionInspectionPayload>(
+        `/api/miniapp/admin/suspicion/ledger/${encodeURIComponent(card.player_id)}/events`,
+      );
+      this.renderSuspicionInspection(route, payload);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.renderError(route, code);
+    }
+  }
+
+  private renderSuspicionInspection(
+    route: RouteMatch,
+    payload: AdminSuspicionInspectionPayload,
+  ): void {
+    const player = payload.player;
+    const events: Node[] = payload.events.length
+      ? payload.events.map((event) =>
+          element(
+            "article",
+            { className: "library-question" },
+            element(
+              "h3",
+              {},
+              `${event.reason}${event.ruleset_key ? ` · ${event.ruleset_key}` : ""} · ${this.formatDate(event.created_at)}`,
+            ),
+            element(
+              "p",
+              {},
+              `${this.i18n.t("admin_suspicion.event_delta")}: ${event.before} → ${event.after} (+${event.delta})`,
+            ),
+            event.note
+              ? element("p", {}, `${this.i18n.t("admin_suspicion.note")}: ${event.note}`)
+              : null,
+            ...event.evidence.map((evidence) =>
+              element(
+                "p",
+                {},
+                `${this.i18n.t("admin_suspicion.evidence")}: ${evidence.signal} · ${this.formatDate(evidence.created_at)}`,
+              ),
+            ),
+          ),
+        )
+      : [element("p", {}, this.i18n.t("admin_suspicion.no_events"))];
+    this.renderFrame(
+      route,
+      element(
+        "section",
+        { className: "route-content" },
+        element("h2", {}, player.display_name ?? player.telegram_username ?? player.id),
+        element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${player.id}`),
+        element("p", {}, `${this.i18n.t("admin_suspicion.suspicion")}: ${player.suspicion}`),
+        element("h3", {}, this.i18n.t("admin_suspicion.events_title")),
+        ...events,
+        element(
+          "button",
+          {
+            type: "button",
+            className: "secondary-button",
+            onclick: (() => this.router.navigate("/admin/suspicion")) as EventListener,
+          },
+          this.i18n.t("admin_suspicion.back_to_ledger"),
+        ),
+      ),
+    );
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
   private detail(label: string, value: string): HTMLElement {
@@ -2029,6 +2225,12 @@ function isLobbyResource(value: RoutePayload["resource"]): value is LobbyResourc
 
 function isPacketDraftResource(value: RoutePayload["resource"]): value is PacketDraftResource {
   return "kind" in value && value.kind === "packet_draft";
+}
+
+function isSuspicionLedgerResource(
+  value: RoutePayload["resource"],
+): value is AdminSuspicionLedgerResource {
+  return "kind" in value && value.kind === "admin_suspicion_ledger";
 }
 
 function isTournamentAction(value: string): value is TournamentAction {

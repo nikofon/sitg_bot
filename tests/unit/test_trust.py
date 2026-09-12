@@ -54,10 +54,8 @@ def test_compact_si_counts_raise_supported_outlier_signals() -> None:
         SignalCount(10, 10),
         SignalCount(10, 10),
         SignalCount(10, 10),
-        SignalCount(10, 10),
     )
     cohort = SISuspicionCounts(
-        SignalCount(0, 100),
         SignalCount(0, 100),
         SignalCount(0, 100),
         SignalCount(0, 100),
@@ -75,7 +73,6 @@ def test_compact_si_counts_raise_supported_outlier_signals() -> None:
     assert set(result.raised_signals) == {
         "very_early_buzz",
         "very_late_buzz",
-        "high_value_accuracy",
         "rare_question_accuracy",
     }
 
@@ -83,7 +80,6 @@ def test_compact_si_counts_raise_supported_outlier_signals() -> None:
 def test_early_buzz_signal_compares_average_reveal_fraction() -> None:
     empty_rates = SISuspicionCounts(
         SignalCount(0, 10),
-        SignalCount(0, 100),
         SignalCount(0, 100),
         SignalCount(0, 100),
     )
@@ -143,6 +139,5 @@ def test_si_evaluation_raises_all_supported_outlier_signals() -> None:
     assert set(result.raised_signals) == {
         "very_early_buzz",
         "very_late_buzz",
-        "high_value_accuracy",
         "rare_question_accuracy",
     }

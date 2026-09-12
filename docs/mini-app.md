@@ -72,6 +72,13 @@ and packet/publication years. View opens ruleset-defined pages (SI themes), with
 and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
 and request confirmation before burning fresh content.
 
+**Admin suspicion ledger:** `/admin/suspicion`, opened from the admin menu button and
+authorized for platform administrators only. Cards list player name, ID, current suspicion,
+rating and completed games per ruleset, and reports per category, ordered by suspicion;
+banned players are excluded. `Inspect` loads every event that increased the player's
+suspicion with linked evidence; `Clear suspicion` requests a review note and resets the
+value to zero through the existing administrator clearance ledger.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -85,6 +92,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
+| GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |

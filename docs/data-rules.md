@@ -148,6 +148,12 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
 - Every raised statistical signal snapshots its algorithm, baseline, decision statistics,
   and contributing game/round/question actions. Administrator clearance resets the current
   value but never deletes evaluations, evidence, reports, or ledger history.
+- Moderation bans are reversible rows keyed by the player with a reason and issuing
+  administrator; unban records the lifting administrator and time. Banned players keep only
+  their packet library; all other gateway actions are refused, and banned players are
+  excluded from the admin suspicion ledger. Platform administrators cannot be banned.
+- Bug reports are append-only facts carrying the reporter, commentary, and timestamp, and
+  fan out an admin-audience notification per active administrator.
 
 ## Published content and access
 

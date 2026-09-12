@@ -182,16 +182,15 @@ one game. A tournament type may impose narrower limits.
 
 SI records the fraction of question tokens revealed and, after the normal buzz timer has
 started, the fraction of that timer remaining when a buzz is accepted. Its queued suspicion
-evaluator processes completed weekly windows and owns four SI-specific signals:
+evaluator processes completed weekly windows and owns three SI-specific signals:
 
 - a player's average revealed fraction at accepted buzzes being substantially lower than the
   average for their established rating cohort;
 - buzzes accepted with no more than 10% of the normal buzz timer remaining;
-- correct answers on questions whose configured value is exactly 40 or 50;
 - correct answers on reliably measured questions in the lowest 20% of overall correct rates.
 
 The first signal compares mean reveal fractions; the second compares late-buzz rates among
-accepted buzzes. The latter two compare correct answers among eligible question exposures.
+accepted buzzes. The last compares correct answers among eligible question exposures.
 All comparisons use established players within
 200 points of the subject's current cross-tournament SI rating. The minimum sample, margin,
 and z-score thresholds are documented in

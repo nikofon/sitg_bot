@@ -32,6 +32,7 @@ from sitg_bot.storage.models import (
     GameThemeRecord,
     PacketQuestionRecord,
     PlatformAdministratorRecord,
+    PlayerBanRecord,
     PlayerQuestionStateRecord,
     PlayerRecord,
     PlayerReportRecord,
@@ -496,6 +497,200 @@ class TrustService:
                 )
             )
             return SuspicionClearanceReceipt(player.id, before, 0, administrator_id)
+
+    async def suspicion_ledger(
+        self,
+        administrator_id: UUID,
+        *,
+        limit: int = 50,
+    ) -> dict[str, object]:
+        """Project admin-reviewable player cards ordered by suspicion, bans excluded."""
+        if limit < 1 or limit > 100:
+            raise ValueError("Suspicion ledger limit must be between 1 and 100")
+        async with self.database.transaction() as session:
+            await self._require_administrator(session, administrator_id)
+            active_bans = (
+                select(PlayerBanRecord.player_id)
+                .where(PlayerBanRecord.lifted_at.is_(None))
+                .subquery()
+            )
+            players = list(
+                (
+                    await session.execute(
+                        select(PlayerRecord)
+                        .outerjoin(active_bans, active_bans.c.player_id == PlayerRecord.id)
+                        .where(
+                            PlayerRecord.suspicion > 0,
+                            active_bans.c.player_id.is_(None),
+                        )
+                        .order_by(PlayerRecord.suspicion.desc(), PlayerRecord.id)
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
+            player_ids = [item.id for item in players]
+            if not player_ids:
+                return {"items": []}
+            ratings = {
+                (row[0], row[1]): float(row[2])
+                for row in (
+                    await session.execute(
+                        select(
+                            RulesetRatingRecord.player_id,
+                            RulesetRatingRecord.ruleset_key,
+                            RulesetRatingRecord.rating,
+                        ).where(RulesetRatingRecord.player_id.in_(player_ids))
+                    )
+                ).all()
+            }
+            games = (
+                await session.execute(
+                    select(
+                        GameParticipantRecord.player_id,
+                        GameRulesetVersionRecord.key,
+                        func.count(GameRecord.id),
+                    )
+                    .select_from(GameParticipantRecord)
+                    .join(GameRecord, GameRecord.id == GameParticipantRecord.game_id)
+                    .join(
+                        GameRulesetVersionRecord,
+                        GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
+                    )
+                    .where(
+                        GameParticipantRecord.player_id.in_(player_ids),
+                        GameRecord.status.in_(("completed", "finalized")),
+                    )
+                    .group_by(GameParticipantRecord.player_id, GameRulesetVersionRecord.key)
+                )
+            ).all()
+            reports = (
+                await session.execute(
+                    select(
+                        PlayerReportRecord.reported_player_id,
+                        PlayerReportRecord.kind,
+                        func.count(),
+                    )
+                    .where(PlayerReportRecord.reported_player_id.in_(player_ids))
+                    .group_by(PlayerReportRecord.reported_player_id, PlayerReportRecord.kind)
+                )
+            ).all()
+            rulesets: dict[UUID, dict[str, dict[str, object]]] = {
+                player_id: {} for player_id in player_ids
+            }
+            for player_id, ruleset_key, games_played in games:
+                rulesets[player_id][ruleset_key] = {
+                    "rating": ratings.get((player_id, ruleset_key)),
+                    "games_played": int(games_played),
+                }
+            for (player_id, ruleset_key), rating in ratings.items():
+                rulesets[player_id].setdefault(
+                    ruleset_key, {"rating": rating, "games_played": 0}
+                )
+            report_counts: dict[UUID, dict[str, int]] = {player_id: {} for player_id in player_ids}
+            for player_id, kind, count in reports:
+                report_counts[player_id][kind] = int(count)
+            return {
+                "items": [
+                    {
+                        "player_id": player.id,
+                        "display_name": player.public_nickname,
+                        "telegram_username": player.telegram_username,
+                        "suspicion": player.suspicion,
+                        "rulesets": [
+                            {
+                                "ruleset_key": key,
+                                "rating": value["rating"],
+                                "games_played": value["games_played"],
+                            }
+                            for key, value in sorted(rulesets[player.id].items())
+                        ],
+                        "reports": [
+                            {"kind": kind, "count": count}
+                            for kind, count in sorted(report_counts[player.id].items())
+                        ],
+                    }
+                    for player in players
+                ]
+            }
+
+    async def suspicion_inspection(
+        self,
+        administrator_id: UUID,
+        player_id: UUID,
+        *,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        """Show every event that increased the player's suspicion level."""
+        if limit < 1 or limit > 100:
+            raise ValueError("Suspicion inspection limit must be between 1 and 100")
+        async with self.database.transaction() as session:
+            await self._require_administrator(session, administrator_id)
+            player = await session.get(PlayerRecord, player_id)
+            if player is None:
+                raise LookupError("Player not found")
+            ledgers = list(
+                (
+                    await session.execute(
+                        select(SuspicionLedgerRecord)
+                        .where(
+                            SuspicionLedgerRecord.player_id == player_id,
+                            SuspicionLedgerRecord.delta > 0,
+                        )
+                        .order_by(SuspicionLedgerRecord.created_at.desc(), SuspicionLedgerRecord.id)
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
+            evaluation_ids = [item.evaluation_id for item in ledgers if item.evaluation_id]
+            evidence_rows = list(
+                (
+                    await session.execute(
+                        select(SuspicionEvidenceRecord)
+                        .where(
+                            SuspicionEvidenceRecord.player_id == player_id,
+                            SuspicionEvidenceRecord.evaluation_id.in_(evaluation_ids),
+                        )
+                        .order_by(SuspicionEvidenceRecord.created_at.desc())
+                    )
+                ).scalars()
+            ) if evaluation_ids else []
+            evidence_by_evaluation: dict[UUID, list[dict[str, object]]] = {}
+            for evidence in evidence_rows:
+                assert evidence.evaluation_id is not None
+                evidence_by_evaluation.setdefault(evidence.evaluation_id, []).append(
+                    {
+                        "signal": evidence.signal,
+                        "ruleset_key": evidence.ruleset_key,
+                        "summary": evidence.summary,
+                        "created_at": evidence.created_at,
+                    }
+                )
+            return {
+                "player": {
+                    "id": player.id,
+                    "display_name": player.public_nickname,
+                    "telegram_username": player.telegram_username,
+                    "suspicion": player.suspicion,
+                },
+                "events": [
+                    {
+                        "id": item.id,
+                        "reason": item.reason,
+                        "ruleset_key": item.ruleset_key,
+                        "delta": item.delta,
+                        "before": item.suspicion_before,
+                        "after": item.suspicion_after,
+                        "note": item.note,
+                        "created_at": item.created_at,
+                        "evidence": (
+                            evidence_by_evaluation.get(item.evaluation_id, [])
+                            if item.evaluation_id
+                            else []
+                        ),
+                    }
+                    for item in ledgers
+                ],
+            }
 
     async def process_suspicion_tick(self, *, now: datetime | None = None) -> SuspicionTickSummary:
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -1162,12 +1357,6 @@ class TrustService:
                     ),
                     "threshold": 0.1,
                 }
-            elif signal == "high_value_accuracy":
-                qualifies = fact.correct and fact.question_value in {40, 50}
-                qualification = {
-                    "question_value": fact.question_value,
-                    "correct": fact.correct,
-                }
             elif signal == "rare_question_accuracy":
                 cutoff = baseline.rare_correct_rate_cutoff
                 qualifies = (
@@ -1363,10 +1552,6 @@ class TrustService:
                 "positive": sum(item.late_buzzes for item in aggregate_rows),
                 "eligible": sum(item.accepted_buzzes for item in aggregate_rows),
             },
-            "high_value_accuracy": {
-                "positive": sum(item.high_value_correct for item in aggregate_rows),
-                "eligible": sum(item.high_value_exposures for item in aggregate_rows),
-            },
             "rare_question_accuracy": {
                 "positive": int(rare_positive or 0),
                 "eligible": int(rare_eligible or 0),
@@ -1436,10 +1621,6 @@ class TrustService:
                 sum(item.late_buzzes for item in rows),
                 sum(item.accepted_buzzes for item in rows),
             ),
-            SignalCount(
-                sum(item.high_value_correct for item in rows),
-                sum(item.high_value_exposures for item in rows),
-            ),
             SignalCount(int(rare_positive or 0), int(rare_eligible or 0)),
         )
 
@@ -1484,7 +1665,6 @@ class TrustService:
         return SISuspicionCounts(
             count("very_early_buzz"),
             count("very_late_buzz"),
-            count("high_value_accuracy"),
             count("rare_question_accuracy"),
         )
 
@@ -1543,7 +1723,6 @@ class TrustService:
         return SISuspicionCounts(
             subtract(total.very_early_buzz, contribution.very_early_buzz),
             subtract(total.very_late_buzz, contribution.very_late_buzz),
-            subtract(total.high_value_accuracy, contribution.high_value_accuracy),
             subtract(total.rare_question_accuracy, contribution.rare_question_accuracy),
         )
 

@@ -12,6 +12,7 @@ from sitg_bot.storage.models import (
     GameParticipantRecord,
     GameRecord,
     PlatformAdministratorRecord,
+    PlayerBanRecord,
     PlayerRecord,
     PlayerTelegramNavigationRecord,
     PregameLobbyMemberRecord,
@@ -73,6 +74,7 @@ class NavigationSnapshot:
     active_lobby: NavigationLobby | None
     active_game: NavigationGame | None
     allowed_actions: tuple[str, ...]
+    ban_reason: str | None = None
 
 
 class TelegramNavigationService:
@@ -223,6 +225,28 @@ class TelegramNavigationService:
                 active_lobby=None,
                 active_game=None,
                 allowed_actions=actions,
+            )
+
+        ban_reason = await session.scalar(
+            select(PlayerBanRecord.reason).where(
+                PlayerBanRecord.player_id == account.player_id,
+                PlayerBanRecord.lifted_at.is_(None),
+            )
+        )
+        if ban_reason is not None:
+            # Banned players keep exactly one interaction: opening the packet library.
+            return NavigationSnapshot(
+                account=account,
+                available_modes=("player",),
+                active_mode="player",
+                context="menu",
+                navigation_version=0,
+                selected_player_tournament=None,
+                selected_manager_tournament=None,
+                active_lobby=None,
+                active_game=None,
+                allowed_actions=("start", "menu", "help", "language", "player.library"),
+                ban_reason=ban_reason,
             )
 
         navigation = await session.get(PlayerTelegramNavigationRecord, account.player_id)
@@ -559,6 +583,7 @@ class TelegramNavigationService:
                     "admin.token_requests.pending",
                     "admin.ban",
                     "admin.unban",
+                    "admin.suspicion_ledger",
                 )
             )
         return tuple(actions)
