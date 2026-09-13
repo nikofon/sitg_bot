@@ -580,7 +580,7 @@ async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:
     assert "Open the list of ongoing games" in message.answer.await_args.args[0]
     button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.text == "Open ongoing games"
-    assert button.web_app.url == "https://mini.example.test/app/ongoing"
+    assert button.web_app.url == "https://mini.example.test/app/ongoing?_launch=1"
 
 
 async def test_player_ongoing_action_without_launch_links_keeps_placeholder() -> None:
