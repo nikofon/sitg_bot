@@ -1402,6 +1402,8 @@ class InvitationMatchmakingService:
                     ):
                         raise PermissionError("Every player needs packet game eligibility")
             context = await self.tournaments.context(session, lobby.tournament_id, lock=True)
+            if not context.assembly_open:
+                raise ValueError("tournament_stage_closed")
             classic_match = None
             if context.type_key == "classic":
                 if len(selected_packets) != 1:

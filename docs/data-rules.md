@@ -157,7 +157,8 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
 - Moderation bans are reversible rows keyed by the player with a reason and issuing
   administrator; unban records the lifting administrator and time. Banned players keep only
   their packet library; all other gateway actions are refused, and banned players are
-  excluded from the admin suspicion ledger. Platform administrators cannot be banned.
+  excluded from the legacy suspicion ledger but included in Management's Players section.
+  Platform administrators cannot be banned.
 - Bug reports are append-only facts carrying the reporter, commentary, and timestamp, and
   fan out an admin-audience notification per active administrator.
 
@@ -165,6 +166,10 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
 
 - Published packet and question revisions are immutable. Historical and active games retain
   their pinned revisions.
+- Tournament halt preserves library rights and assigned games. Abolition revokes reads through
+  that tournament only, and appends global rating reversals without deleting historical facts.
+  Administrator Management packet reads bypass access gates and permanently burn content for
+  the administrator, including any live reservations.
 - A logical packet may be assigned independently to multiple tournaments. Rights granted by
   one assignment do not apply through another tournament's assignment.
 - Tournament membership alone does not grant packet access. Current authorization composes

@@ -205,6 +205,7 @@ def test_tournament_launch_url_preserves_display_filters() -> None:
 
 @pytest.mark.parametrize("route", [
     "tournaments", "players/00000000-0000-0000-0000-000000000001", "library",
+    "admin/management",
 ])
 def test_menu_launches_use_stable_transition_urls(route: str) -> None:
     first = urlsplit(mini_app_route_url("https://mini.example.test", route))

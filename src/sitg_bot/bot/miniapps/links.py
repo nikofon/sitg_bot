@@ -11,9 +11,9 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("Mini App base URL must be HTTPS")
     normalized_route = route.strip("/")
-    if normalized_route not in {"tournaments", "history", "library", "admin/suspicion"} and (
-        _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
-    ):
+    if normalized_route not in {
+        "tournaments", "history", "library", "admin/suspicion", "admin/management",
+    } and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None:
         raise ValueError("Unsupported Mini App route")
     path = f"{parsed.path.rstrip('/')}/{normalized_route}"
     # A stable transition URL bypasses pre-cache-policy HTML while permitting reuse.

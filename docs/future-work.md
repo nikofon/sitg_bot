@@ -22,6 +22,6 @@ before expanding the current behavior.
 
 Native Telegram SI gameplay, recovery, participant chat, appeals, token workflows, manager
 settings, packet uploads, corrections/substitutions, outbox delivery, durable jobs, player
-bans with bug reporting, and the admin suspicion ledger are
+bans with bug reporting, and administrator management with suspicion review are
 implemented. Live Telegram validation remains manual; extend automated coverage alongside
 each new feature.

@@ -456,6 +456,8 @@
   "admin.unban.receipt": "<b>Игрок разблокирован</b>\nИгрок: <b>{nickname}</b>\nID: <code>{player_id}</code>",
   "admin.unban.not_banned": "Этот игрок не заблокирован.",
   "button.admin.suspicion_ledger": "Журнал подозрений",
+  "button.admin.management": "Управление",
+  "miniapp.admin_management.prompt": "Откройте управление платформой.",
   "miniapp.admin_suspicion.prompt": "Откройте журнал подозрений, чтобы просмотреть игроков по уровню подозрений.",
   "miniapp.admin_suspicion.open": "Открыть журнал",
   "player.banned": "Вы заблокированы! Причина: {reason}. Вы всё ещё можете пользоваться библиотекой",

@@ -23,6 +23,8 @@ import type {
   AdminSuspicionInspectionPayload,
   AdminSuspicionLedgerResource,
   SuspicionLedgerCard,
+  AdminManagementResource,
+  AdminCard,
 } from "./api/types";
 import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
@@ -35,6 +37,7 @@ import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
+import { renderAdminManagement } from "./ui/admin-management";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -163,6 +166,10 @@ export class MiniAppShell {
   }
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
+    if ("kind" in payload.resource && payload.resource.kind === "admin_management") {
+      this.renderAdminManagementRoute(route, payload.resource);
+      return;
+    }
     if ("kind" in payload.resource && payload.resource.kind === "library") {
       if (route.id === "library_reader") {
         void this.accessLibrary(route, route.params.version_id ?? "", "view");
@@ -264,12 +271,16 @@ export class MiniAppShell {
     const signal = this.request?.signal;
     if (button) button.disabled = true;
     try {
-      const path = `/api/miniapp/library/${encodeURIComponent(version)}/${command}`;
+      const admin = route.id === "admin_management";
+      const back = admin ? "/admin/management?section=packets" : "/library";
+      const path = admin
+        ? `/api/miniapp/admin/management/packets/${encodeURIComponent(version)}/${command}`
+        : `/api/miniapp/library/${encodeURIComponent(version)}/${command}`;
       let result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: false }, signal });
       if (signal?.aborted) return;
       if (result.confirmation_required) {
         if (!window.confirm(this.i18n.t("library.confirm"))) {
-          if (command === "view") this.router.navigate("/library", { replace: true });
+          if (command === "view") this.router.navigate(back, { replace: true });
           return;
         }
         result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: true }, signal });
@@ -279,7 +290,7 @@ export class MiniAppShell {
         this.renderFrame(route, element("section", {},
           element("button", {
             type: "button", className: "secondary-button",
-            onclick: (() => this.router.navigate("/library")) as EventListener,
+            onclick: (() => this.router.navigate(back)) as EventListener,
           }, this.i18n.t("route.library.title")),
           renderLibraryReader(result.name, result.pages, this.i18n)));
       } else if ("queued" in result) {
@@ -2151,7 +2162,7 @@ export class MiniAppShell {
           {
             type: "button",
             className: "secondary-button",
-            onclick: (() => this.router.navigate("/admin/suspicion")) as EventListener,
+            onclick: (() => this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion")) as EventListener,
           },
           this.i18n.t("admin_suspicion.clear_cancel"),
         ),
@@ -2182,7 +2193,7 @@ export class MiniAppShell {
       this.showTextDialog(this.i18n.t("admin_suspicion.clear"), [this.i18n.t(`error.${code}`)]);
       return;
     }
-    this.router.navigate("/admin/suspicion");
+    this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion");
   }
 
   private showTextDialog(title: string, lines: string[]): void {
@@ -2279,6 +2290,52 @@ export class MiniAppShell {
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
+  private renderAdminManagementRoute(route: RouteMatch, resource: AdminManagementResource): void {
+    const filterKey = `admin_management_${resource.section}`;
+    this.renderFrame(route, renderAdminManagement(resource, this.i18n, this.filters.read(filterKey),
+      (filters) => this.filters.write(filterKey, filters),
+      (path) => this.router.navigate(path),
+      (card, command, button) => void this.adminManagementAction(route, resource, card, command, button)));
+  }
+
+  private async adminManagementAction(route: RouteMatch, resource: AdminManagementResource,
+    card: AdminCard, command: string, button: HTMLButtonElement): Promise<void> {
+    if (command === "view" || command === "download") {
+      await this.accessLibrary(route, card.id, command, button);
+      return;
+    }
+    const suspicionCard: SuspicionLedgerCard = {
+      player_id: card.id, display_name: typeof card.public_nickname === "string" ? card.public_nickname : null,
+      telegram_username: typeof card.telegram_username === "string" ? card.telegram_username : null,
+      suspicion: Number(card.suspicion ?? 0), rulesets: [], reports: [],
+    };
+    if (command === "review_suspicion") { await this.inspectSuspicion(route, suspicionCard); return; }
+    if (command === "clear_suspicion") { this.promptSuspicionClear(route, suspicionCard); return; }
+    const body: Record<string, unknown> = {};
+    if (resource.section === "tournaments") {
+      if (!window.confirm(this.i18n.t(`admin_management.${command}_confirm` as MessageKey))) return;
+      body.confirm = true; body.expected_version = card.settings_version;
+    } else if (command === "link") {
+      const target = window.prompt(this.i18n.t("admin_management.link_prompt"));
+      if (!target?.trim()) return;
+      body.target = target.trim();
+    } else if (command === "ban") {
+      const reason = window.prompt(this.i18n.t("admin_management.ban_prompt"));
+      if (reason === null) return;
+      body.reason = reason.trim() || null;
+    } else if (!window.confirm(this.i18n.t("admin_management.unban_confirm"))) return;
+    button.disabled = true;
+    try {
+      await this.api.request(`/api/miniapp/admin/management/${resource.section}/${encodeURIComponent(card.id)}/${command}`,
+        { method: "POST", body, signal: this.request?.signal });
+      await this.load(route);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
+      if (code === "stale_write") await this.load(route);
+    } finally { button.disabled = false; }
+  }
+
   private async inspectSuspicion(route: RouteMatch, card: SuspicionLedgerCard): Promise<void> {
     this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
     try {
@@ -2340,7 +2397,7 @@ export class MiniAppShell {
           {
             type: "button",
             className: "secondary-button",
-            onclick: (() => this.router.navigate("/admin/suspicion")) as EventListener,
+            onclick: (() => this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion")) as EventListener,
           },
           this.i18n.t("admin_suspicion.back_to_ledger"),
         ),

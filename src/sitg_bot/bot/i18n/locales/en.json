@@ -456,6 +456,8 @@
   "admin.unban.receipt": "<b>Player unbanned</b>\nPlayer: <b>{nickname}</b>\nID: <code>{player_id}</code>",
   "admin.unban.not_banned": "This player is not banned.",
   "button.admin.suspicion_ledger": "Suspicion ledger",
+  "button.admin.management": "Management",
+  "miniapp.admin_management.prompt": "Open platform management.",
   "miniapp.admin_suspicion.prompt": "Open the suspicion ledger to review players ordered by suspicion.",
   "miniapp.admin_suspicion.open": "Open ledger",
   "player.banned": "You have been banned! Reason: {reason}. You can still use your library",

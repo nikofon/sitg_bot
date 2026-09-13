@@ -65,8 +65,7 @@ MANAGER_TOURNAMENT_ACTIONS = (
 
 ADMIN_MENU_ACTIONS = (
     ("admin.token_requests.pending",),
-    ("admin.suspicion_ledger",),
-    ("admin.ban", "admin.unban"),
+    ("admin.management",),
     ("notifications",),
     ("mode.switch",),
 )

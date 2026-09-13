@@ -1,0 +1,457 @@
+"""Administrator-only catalogue and audited tournament/author actions."""
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import UUID
+
+from sqlalchemy import func, select
+
+from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_links import AuthorLinkService
+from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.moderation import _require_administrator, _resolve_player
+from sitg_bot.storage.database import Database
+from sitg_bot.storage.models import (
+    AuthorRecord,
+    GameParticipantRecord,
+    GameRecord,
+    GameRulesetVersionRecord,
+    LogicalPacketRecord,
+    PacketQuestionRecord,
+    PacketVersionRecord,
+    PlatformAdministratorRecord,
+    PlayerAuthorLinkRecord,
+    PlayerAuthorLinkRequestRecord,
+    PlayerBanRecord,
+    PlayerRecord,
+    PlayerReportRecord,
+    QuestionRevisionRecord,
+    RulesetRatingLedgerRecord,
+    RulesetRatingRecord,
+    ThemeRevisionRecord,
+    TournamentAuthorRecord,
+    TournamentManagerRecord,
+    TournamentMembershipRecord,
+    TournamentPacketAssignmentRecord,
+    TournamentPolicyVersionRecord,
+    TournamentPricingPlanPriceRecord,
+    TournamentPricingPlanRecord,
+    TournamentRecord,
+    TournamentRegistrationRequirementRecord,
+    TournamentTypeVersionRecord,
+)
+
+
+def fields(record) -> dict:
+    """Full metadata is confined to the administrator projection."""
+    return {column.key: getattr(record, column.key) for column in record.__table__.columns}
+
+
+class AdminManagementService:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    async def catalogue(self, administrator_id: UUID, section: str) -> dict:
+        if section not in {"tournaments", "authors", "players", "packets"}:
+            raise ValueError("Unknown management section")
+        async with self.database.sessions() as session:
+            await _require_administrator(session, administrator_id)
+            items = []
+            model = {
+                "tournaments": TournamentRecord,
+                "authors": AuthorRecord,
+                "players": PlayerRecord,
+                "packets": PacketVersionRecord,
+            }[section]
+            for record in await session.scalars(select(model).order_by(model.id)):
+                card = fields(record)
+                if section == "players":
+                    card = await self._player(session, record)
+                elif section == "tournaments":
+                    card["managers"] = [
+                        fields(p)
+                        for p in await session.scalars(
+                            select(PlayerRecord)
+                            .join(
+                                TournamentManagerRecord,
+                                TournamentManagerRecord.player_id == PlayerRecord.id,
+                            )
+                            .where(
+                                TournamentManagerRecord.tournament_id == record.id,
+                                TournamentManagerRecord.revoked_at.is_(None),
+                            )
+                        )
+                    ]
+                    card["participants"] = await session.scalar(
+                        select(func.count())
+                        .select_from(TournamentMembershipRecord)
+                        .where(
+                            TournamentMembershipRecord.tournament_id == record.id,
+                            TournamentMembershipRecord.status == "active",
+                        )
+                    )
+                    card["packets"] = [
+                        fields(a)
+                        for a in await session.scalars(
+                            select(TournamentPacketAssignmentRecord).where(
+                                TournamentPacketAssignmentRecord.tournament_id == record.id
+                            )
+                        )
+                    ]
+                    for assignment in card["packets"]:
+                        version = await session.scalar(
+                            select(PacketVersionRecord)
+                            .where(PacketVersionRecord.packet_id == assignment["packet_id"])
+                            .order_by(PacketVersionRecord.version_number.desc())
+                            .limit(1)
+                        )
+                        assignment["name"] = version.name if version else ""
+                    policy = await session.scalar(
+                        select(TournamentPolicyVersionRecord)
+                        .where(TournamentPolicyVersionRecord.tournament_id == record.id)
+                        .order_by(TournamentPolicyVersionRecord.version.desc())
+                        .limit(1)
+                    )
+                    card["settings"] = fields(policy) if policy else {}
+                    card["authors"] = [
+                        fields(a)
+                        for a in await session.scalars(
+                            select(AuthorRecord)
+                            .join(
+                                TournamentAuthorRecord,
+                                TournamentAuthorRecord.author_id == AuthorRecord.id,
+                            )
+                            .where(TournamentAuthorRecord.tournament_id == record.id)
+                        )
+                    ]
+                    card["requirements"] = [
+                        fields(r)
+                        for r in await session.scalars(
+                            select(TournamentRegistrationRequirementRecord).where(
+                                TournamentRegistrationRequirementRecord.tournament_id == record.id
+                            )
+                        )
+                    ]
+                    card["pricing_plans"] = []
+                    for plan in await session.scalars(
+                        select(TournamentPricingPlanRecord).where(
+                            TournamentPricingPlanRecord.tournament_id == record.id
+                        )
+                    ):
+                        card["pricing_plans"].append(
+                            {
+                                **fields(plan),
+                                "prices": [
+                                    fields(price)
+                                    for price in await session.scalars(
+                                        select(TournamentPricingPlanPriceRecord).where(
+                                            TournamentPricingPlanPriceRecord.pricing_plan_id
+                                            == plan.id
+                                        )
+                                    )
+                                ],
+                            }
+                        )
+                    card["type"] = (
+                        await session.get(TournamentTypeVersionRecord, record.type_version_id)
+                    ).key
+                    card["ruleset"] = (
+                        await session.get(GameRulesetVersionRecord, record.game_ruleset_version_id)
+                    ).key
+                elif section == "packets":
+                    packet = await session.get(LogicalPacketRecord, record.packet_id)
+                    card["packet"] = fields(packet)
+                    card["tournaments"] = [
+                        fields(t)
+                        for t in await session.scalars(
+                            select(TournamentRecord)
+                            .join(TournamentPacketAssignmentRecord)
+                            .where(TournamentPacketAssignmentRecord.packet_id == record.packet_id)
+                        )
+                    ]
+                    card["assignments"] = [
+                        fields(a)
+                        for a in await session.scalars(
+                            select(TournamentPacketAssignmentRecord).where(
+                                TournamentPacketAssignmentRecord.packet_id == record.packet_id
+                            )
+                        )
+                    ]
+                    card["themes"] = await session.scalar(
+                        select(func.count())
+                        .select_from(ThemeRevisionRecord)
+                        .where(ThemeRevisionRecord.packet_version_id == record.id)
+                    )
+                    card["questions"] = await session.scalar(
+                        select(func.count())
+                        .select_from(PacketQuestionRecord)
+                        .where(PacketQuestionRecord.packet_version_id == record.id)
+                    )
+                    author_ids = (
+                        select(ThemeRevisionRecord.author_id)
+                        .where(ThemeRevisionRecord.packet_version_id == record.id)
+                        .union(
+                            select(QuestionRevisionRecord.author_id)
+                            .join(
+                                PacketQuestionRecord,
+                                PacketQuestionRecord.question_revision_id
+                                == QuestionRevisionRecord.id,
+                            )
+                            .where(PacketQuestionRecord.packet_version_id == record.id)
+                        )
+                    )
+                    card["authors"] = [
+                        fields(a)
+                        for a in await session.scalars(
+                            select(AuthorRecord).where(
+                                AuthorRecord.id.in_(author_ids)
+                                | (AuthorRecord.id == record.lead_author_id)
+                            )
+                        )
+                    ]
+                else:
+                    versions = (
+                        select(ThemeRevisionRecord.packet_version_id)
+                        .where(ThemeRevisionRecord.author_id == record.id)
+                        .union(
+                            select(PacketQuestionRecord.packet_version_id)
+                            .join(
+                                QuestionRevisionRecord,
+                                QuestionRevisionRecord.id
+                                == PacketQuestionRecord.question_revision_id,
+                            )
+                            .where(QuestionRevisionRecord.author_id == record.id),
+                            select(PacketVersionRecord.id).where(
+                                PacketVersionRecord.lead_author_id == record.id
+                            ),
+                        )
+                    )
+                    packets = list(
+                        await session.scalars(
+                            select(PacketVersionRecord).where(PacketVersionRecord.id.in_(versions))
+                        )
+                    )
+                    card["packets"] = [fields(p) for p in packets]
+                    card["packet_count"] = len({p.packet_id for p in packets})
+                    card["questions"] = await session.scalar(
+                        select(func.count(func.distinct(QuestionRevisionRecord.question_id))).where(
+                            QuestionRevisionRecord.author_id == record.id
+                        )
+                    )
+                    card["themes"] = await session.scalar(
+                        select(func.count(func.distinct(ThemeRevisionRecord.theme_id))).where(
+                            ThemeRevisionRecord.author_id == record.id
+                        )
+                    )
+                    associated = select(TournamentPacketAssignmentRecord.tournament_id).where(
+                        TournamentPacketAssignmentRecord.packet_id.in_(
+                            {p.packet_id for p in packets}
+                        )
+                    )
+                    direct = select(TournamentAuthorRecord.tournament_id).where(
+                        TournamentAuthorRecord.author_id == record.id
+                    )
+                    card["tournaments"] = [
+                        fields(t)
+                        for t in await session.scalars(
+                            select(TournamentRecord).where(
+                                TournamentRecord.id.in_(associated.union(direct))
+                            )
+                        )
+                    ]
+                    card["players"] = [
+                        await self._player(session, p)
+                        for p in await session.scalars(
+                            select(PlayerRecord)
+                            .join(
+                                PlayerAuthorLinkRecord,
+                                PlayerAuthorLinkRecord.player_id == PlayerRecord.id,
+                            )
+                            .where(PlayerAuthorLinkRecord.author_id == record.id)
+                        )
+                    ]
+                items.append(card)
+            return {
+                "kind": "admin_management",
+                "state": "ready",
+                "section": section,
+                "items": items,
+            }
+
+    @staticmethod
+    async def _player(session, player) -> dict:
+        card = fields(player)
+        ban = await session.get(PlayerBanRecord, player.id)
+        admin = await session.get(PlatformAdministratorRecord, player.id)
+        card["ban"] = fields(ban) if ban and ban.lifted_at is None else None
+        card["administrator"] = bool(admin and admin.revoked_at is None)
+        card["tournaments"] = []
+        for membership, tournament in await session.execute(
+            select(TournamentMembershipRecord, TournamentRecord).join(
+                TournamentRecord, TournamentRecord.id == TournamentMembershipRecord.tournament_id
+            ).where(TournamentMembershipRecord.player_id == player.id)
+        ):
+            card["tournaments"].append({
+                **fields(membership), "id": tournament.id, "name": tournament.name,
+            })
+        card["authors"] = [fields(author) for author in await session.scalars(
+            select(AuthorRecord).join(PlayerAuthorLinkRecord,
+                PlayerAuthorLinkRecord.author_id == AuthorRecord.id).where(
+                PlayerAuthorLinkRecord.player_id == player.id))]
+        card["rulesets"] = [
+            fields(r)
+            for r in await session.scalars(
+                select(RulesetRatingRecord).where(RulesetRatingRecord.player_id == player.id)
+            )
+        ]
+        card["games_played"] = await session.scalar(
+            select(func.count())
+            .select_from(GameParticipantRecord)
+            .join(GameRecord, GameRecord.id == GameParticipantRecord.game_id)
+            .where(
+                GameParticipantRecord.player_id == player.id,
+                GameRecord.status.in_(("completed", "finalized")),
+            )
+        )
+        card["reports"] = [
+            {"kind": kind, "count": count}
+            for kind, count in (
+                await session.execute(
+                    select(PlayerReportRecord.kind, func.count())
+                    .where(PlayerReportRecord.reported_player_id == player.id)
+                    .group_by(PlayerReportRecord.kind)
+                )
+            )
+        ]
+        return card
+
+    async def moderate_tournament(
+        self,
+        administrator_id: UUID,
+        tournament_id: UUID,
+        *,
+        command: str,
+        expected_version: int,
+        confirm: bool,
+    ) -> dict:
+        if not confirm or command not in {"halt", "resume", "abolish"}:
+            raise ValueError("Explicit confirmation is required")
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            tournament = await session.get(TournamentRecord, tournament_id, with_for_update=True)
+            if tournament is None:
+                raise LookupError("Tournament not found")
+            if tournament.settings_version != expected_version:
+                raise StaleWriteError("Tournament changed")
+            if tournament.moderation_status == "abolished":
+                raise ValueError("Abolition is permanent")
+            if command == "halt" and not (
+                tournament.moderation_status == "normal"
+                and tournament.status == "active"
+                and tournament.actual_starts_at is not None
+                and tournament.actual_ends_at is None
+            ):
+                raise ValueError("Only ongoing tournaments can be halted")
+            if command == "resume" and tournament.moderation_status != "halted":
+                raise ValueError("Only halted tournaments can be resumed")
+            now = datetime.now(UTC)
+            tournament.moderation_status = {
+                "halt": "halted",
+                "resume": "normal",
+                "abolish": "abolished",
+            }[command]
+            tournament.moderated_by_id = administrator_id
+            tournament.moderated_at = now
+            tournament.settings_version += 1
+            if command == "abolish":
+                tournament.status = "completed"
+                tournament.actual_ends_at = now
+                tournament.registration_open = False
+                tournament.registration_open_override = False
+                entries = list(
+                    await session.scalars(
+                        select(RulesetRatingLedgerRecord)
+                        .where(
+                            RulesetRatingLedgerRecord.tournament_id == tournament_id,
+                            RulesetRatingLedgerRecord.reason == "pairwise_elo",
+                        )
+                        .order_by(RulesetRatingLedgerRecord.player_id, RulesetRatingLedgerRecord.id)
+                    )
+                )
+                for entry in entries:
+                    rating = await session.get(
+                        RulesetRatingRecord,
+                        (entry.ruleset_key, entry.player_id),
+                        with_for_update=True,
+                    )
+                    before = Decimal(rating.rating)
+                    delta = -Decimal(entry.delta)
+                    rating.rating = before + delta
+                    session.add(
+                        RulesetRatingLedgerRecord(
+                            ruleset_key=entry.ruleset_key,
+                            tournament_id=tournament_id,
+                            game_id=entry.game_id,
+                            player_id=entry.player_id,
+                            rating_before=before,
+                            delta=delta,
+                            rating_after=before + delta,
+                            confidence_before=entry.confidence_after,
+                            confidence_after=entry.confidence_after,
+                            k_factor=entry.k_factor,
+                            tournament_weight=entry.tournament_weight,
+                            rating_model=entry.rating_model,
+                            reason="admin_correction",
+                            played_at=now,
+                        )
+                    )
+            return fields(tournament)
+
+    async def link_author(self, administrator_id: UUID, author_id: UUID, target: str) -> dict:
+        # Use the same pair lock and approval records as player-requested links.
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            if not target.startswith("@"):
+                UUID(target)
+            player = await _resolve_player(session, target.removeprefix("@"))
+            author = await session.get(AuthorRecord, author_id)
+            if player is None or player.status != "active" or author is None:
+                raise LookupError("Active player or author not found")
+            await session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        AuthorLinkService._pair_lock_key(player.id, author_id)
+                    )
+                )
+            )
+            if await session.get(PlayerAuthorLinkRecord, (player.id, author_id)):
+                return {"linked": True}
+            request = await session.scalar(
+                select(PlayerAuthorLinkRequestRecord)
+                .where(
+                    PlayerAuthorLinkRequestRecord.player_id == player.id,
+                    PlayerAuthorLinkRequestRecord.author_id == author_id,
+                    PlayerAuthorLinkRequestRecord.status == "pending",
+                )
+                .with_for_update()
+            )
+            if request is None:
+                request = PlayerAuthorLinkRequestRecord(player_id=player.id, author_id=author_id)
+                session.add(request)
+            now = datetime.now(UTC)
+            request.status = "approved"
+            request.decided_by_id = administrator_id
+            request.decided_at = now
+            request.decision_note = "Linked through administrator management"
+            await session.flush()
+            session.add(
+                PlayerAuthorLinkRecord(
+                    player_id=player.id,
+                    author_id=author_id,
+                    approved_request_id=request.id,
+                    approved_by_id=administrator_id,
+                    approved_at=now,
+                )
+            )
+            await burn_author_content(session, author_id=author_id)
+            return {"linked": True}

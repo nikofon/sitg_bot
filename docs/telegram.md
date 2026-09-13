@@ -51,13 +51,13 @@ Unknown tournament action descriptors are ignored and logged.
   review, selected tournament management/settings, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
-- Administrator moderation: `Ban` prompts for a player ID or Telegram username and an
-  optional reason, then records a reversible ban; `Unban` lifts it. Banned players receive
+- Administrator moderation is opened through the **Management** keyboard button. Player
+  cards provide Ban/Unban and suspicion review/clearance. Banned players receive
   "You have been banned! Reason: … You can still use your library" on every interaction
   except opening their packet library, which stays available in both the bot and the Mini App.
 - Mini App buttons for tournament lists, the player profile ("My profile"), lobby
   packet/settings views, manager settings, management, packet draft/editing flows,
-  and the administrator suspicion ledger.
+  and administrator management (Tournaments, Authors, Players, Packets).
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,

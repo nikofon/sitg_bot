@@ -15,9 +15,13 @@ from sitg_bot.application.contracts import (
     AccountLookupOperation,
     ActionCode,
     AdminAuthenticateOperation,
+    AdminAuthorLinkOperation,
+    AdminManagementListOperation,
+    AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
+    AdminTournamentModerateOperation,
     ApplicationPrincipal,
     AuthorLinkAdminDecideOperation,
     AuthorLinkAdminPendingOperation,
@@ -104,6 +108,7 @@ from sitg_bot.application.contracts import (
     TournamentStartOperation,
 )
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
+from sitg_bot.services.admin_management import AdminManagementService
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.launch_references import LaunchReferenceService
@@ -312,6 +317,14 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
+        ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
         ActionCode.PLAYER_UNBAN: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.BUG_REPORT_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(
@@ -1153,6 +1166,27 @@ class ApplicationGateway:
             return await self.bug_reports.submit(player_id, operation.commentary)
         if isinstance(operation, AdminSuspicionLedgerOperation):
             return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
+        if isinstance(operation, AdminManagementListOperation):
+            return await AdminManagementService(self.database).catalogue(
+                player_id, operation.section
+            )
+        if isinstance(operation, AdminTournamentModerateOperation):
+            return await AdminManagementService(self.database).moderate_tournament(
+                player_id, operation.tournament_id, command=operation.command,
+                expected_version=operation.expected_version, confirm=operation.confirm,
+            )
+        if isinstance(operation, AdminAuthorLinkOperation):
+            return await AdminManagementService(self.database).link_author(
+                player_id, operation.author_id, operation.target
+            )
+        if isinstance(operation, AdminPacketAccessOperation):
+            return await self.library.access(
+                player_id, operation.version_id, confirm=operation.confirm,
+                download=operation.command == "download", administrator=True,
+                request_key=hashlib.sha256(
+                    (request.metadata.idempotency_key or "").encode()
+                ).hexdigest(),
+            )
         if isinstance(operation, AdminSuspicionInspectOperation):
             return await self.trust.suspicion_inspection(
                 player_id, operation.player_id, limit=operation.limit

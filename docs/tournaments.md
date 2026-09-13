@@ -44,6 +44,19 @@ in their tournament — is permanently burnt for them, and granting a manager ro
 burns the versions currently assigned to that tournament. Removing a role or an assignment
 never resets burns.
 
+Platform administrators moderate tournaments through the Management Mini App. Halt applies
+only after an actual start and before completion. It prevents new game assignments, uploads
+and publication, tournament edits, and new managers. Existing games may finish, and existing
+library entitlements remain readable. Resume removes the halt restrictions.
+
+Abolish is permanent: the tournament finishes, registration closes, and library access through
+its assignments is revoked even for tournament managers. Shared packets remain accessible
+through other tournaments. Existing games may finish with local results but produce no further
+global ruleset rating changes. Prior global deltas are reversed with append-only correction
+entries; original results and ledgers remain intact. Abolished games no longer contribute to
+global rating confidence. All three actions require explicit warning confirmation and the
+current tournament settings version. Settlement and moderation serialize on the tournament row.
+
 Tournament discovery is independent from membership. A finalized public tournament may be listed
 by every authenticated player, while a private tournament appears only in the membership
 listing of its participants. Public visibility does not grant a right to enroll or play;

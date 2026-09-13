@@ -15,9 +15,13 @@ from pydantic import ValidationError
 from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminAuthorLinkOperation,
+    AdminManagementListOperation,
+    AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
+    AdminTournamentModerateOperation,
     AuthorsSearchOperation,
     GatewayOperation,
     GatewayResponse,
@@ -38,8 +42,10 @@ from sitg_bot.application.contracts import (
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
+    PlayerBanOperation,
     PlayerGameResultsOperation,
     PlayerProfileOperation,
+    PlayerUnbanOperation,
     TournamentAuthorCreateOperation,
     TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
@@ -199,6 +205,10 @@ class MiniAppHttpServer:
         app.router.add_get(
             "/api/miniapp/admin/suspicion/ledger", self._admin_suspicion_ledger
         )
+        app.router.add_post(
+            "/api/miniapp/admin/management/{section}/{resource_id}/{command}",
+            self._admin_management_action,
+        )
         app.router.add_get(
             "/api/miniapp/admin/suspicion/ledger/{player_id}/events",
             self._admin_suspicion_events,
@@ -320,6 +330,18 @@ class MiniAppHttpServer:
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
+        if normalized_path == "/admin/management":
+            operation = AdminManagementListOperation.model_validate({
+                "action": ActionCode.ADMIN_MANAGEMENT_LIST,
+                "section": parse_qs(parsed.query).get("section", ["tournaments"])[0],
+            })
+            session, result = await self._query(request, operation)
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": result.data,
+            })
         if normalized_path == "/admin/suspicion":
             session, result = await self._query(
                 request, AdminSuspicionLedgerOperation(action=ActionCode.ADMIN_SUSPICION_LEDGER)
@@ -1111,6 +1133,34 @@ class MiniAppHttpServer:
         operation = LibraryAccessOperation.model_validate({
             **body, "action": actions[command], "version_id": request.match_info["version_id"],
         })
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_management_action(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        section = request.match_info["section"]
+        command = request.match_info["command"]
+        resource_id = request.match_info["resource_id"]
+        if section == "tournaments":
+            operation = AdminTournamentModerateOperation.model_validate({
+                **body, "action": ActionCode.ADMIN_TOURNAMENT_MODERATE,
+                "tournament_id": resource_id, "command": command,
+            })
+        elif section == "authors" and command == "link":
+            operation = AdminAuthorLinkOperation.model_validate({
+                **body, "action": ActionCode.ADMIN_AUTHOR_LINK, "author_id": resource_id,
+            })
+        elif section == "packets":
+            operation = AdminPacketAccessOperation.model_validate({
+                **body, "action": ActionCode.ADMIN_PACKET_ACCESS,
+                "version_id": resource_id, "command": command,
+            })
+        elif section == "players" and command in {"ban", "unban"}:
+            contract, action = ((PlayerBanOperation, ActionCode.PLAYER_BAN) if command == "ban"
+                               else (PlayerUnbanOperation, ActionCode.PLAYER_UNBAN))
+            operation = contract.model_validate({**body, "action": action, "target": resource_id})
+        else:
+            raise web.HTTPNotFound()
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 

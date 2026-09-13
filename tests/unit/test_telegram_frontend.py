@@ -17,6 +17,7 @@ from sitg_bot.bot.handlers.admin import (
     TOKEN_DECISION_SCOPE,
     handle_admin_authentication_credential,
     handle_admin_authentication_start,
+    handle_admin_menu_action,
     pending_token_requests_message,
     token_decision_confirmation,
     token_decision_receipt,
@@ -834,9 +835,7 @@ def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
         allowed_actions=[
             "admin.menu",
             "admin.token_requests.pending",
-            "admin.suspicion_ledger",
-            "admin.ban",
-            "admin.unban",
+            "admin.management",
             "notifications",
             "mode.switch",
         ],
@@ -847,12 +846,39 @@ def test_admin_menu_keyboard_is_derived_from_allowed_actions() -> None:
     assert isinstance(model.keyboard, ReplyKeyboardModel)
     assert tuple(label for row in model.keyboard.rows for label in row) == (
         "Pending token requests",
-        "Suspicion ledger",
-        "Ban",
-        "Unban",
+        "Management",
         "Notifications",
         "Switch mode",
     )
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_admin_management_menu_action_opens_mini_app(locale: str) -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+    state = SimpleNamespace(clear=AsyncMock())
+    localization = LocalizationService()
+
+    await handle_admin_menu_action(
+        message,  # type: ignore[arg-type]
+        admin_action="admin.management",
+        backend=SimpleNamespace(),  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        callback_references=CallbackReferenceStore(),
+        localization=localization,
+        locale=locale,
+        navigation=navigation(active_mode="admin", allowed_actions=["admin.management"]),
+        state=state,  # type: ignore[arg-type]
+        launch_links="https://mini.example.test/app",
+    )
+
+    state.clear.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    assert message.answer.await_args.args[0] == localization.text(
+        "miniapp.admin_management.prompt", locale
+    )
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == localization.text("button.admin.management", locale)
+    assert button.web_app.url == "https://mini.example.test/app/admin/management?_launch=1"
 
 
 async def test_admin_authentication_prompts_then_deletes_credential() -> None:

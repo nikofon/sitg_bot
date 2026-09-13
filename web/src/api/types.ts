@@ -522,6 +522,19 @@ export interface AdminSuspicionLedgerResource {
   items: SuspicionLedgerCard[];
 }
 
+export type AdminSection = "tournaments" | "authors" | "players" | "packets";
+export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
+export interface AdminCard {
+  id: string;
+  [key: string]: AdminValue;
+}
+export interface AdminManagementResource {
+  kind: "admin_management";
+  state: "ready";
+  section: AdminSection;
+  items: AdminCard[];
+}
+
 export interface AdminSuspicionInspectionPayload {
   player: {
     id: string;
@@ -545,7 +558,8 @@ export interface RoutePayload {
     | LibraryResource
     | PlayerProfileResource
     | PlayerGameResource
-    | AdminSuspicionLedgerResource;
+    | AdminSuspicionLedgerResource
+    | AdminManagementResource;
   pagination?: PageCursor;
 }
 

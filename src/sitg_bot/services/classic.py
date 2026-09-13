@@ -117,6 +117,7 @@ class ClassicService:
             if tournament is None:
                 raise LookupError("Tournament not found")
             await TournamentService._require_manager(session, tournament_id, manager_id)
+            await TournamentService.require_modifiable(session, tournament_id)
             context = await TournamentService(self.database).context(session, tournament_id)
             if context.type_key != "classic":
                 raise ValueError("Classic tournament required")

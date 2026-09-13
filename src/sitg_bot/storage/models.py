@@ -230,6 +230,11 @@ class TournamentRecord(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    moderation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="normal", server_default=text("'normal'")
+    )
+    moderated_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     visibility: Mapped[str] = mapped_column(String(24), nullable=False, default="private")
     language: Mapped[str] = mapped_column(String(35), nullable=False, default="und")
     payment_type: Mapped[str] = mapped_column(String(24), nullable=False, default="free")
@@ -260,6 +265,7 @@ class TournamentRecord(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'active', 'completed', 'archived')"),
+        CheckConstraint("moderation_status IN ('normal', 'halted', 'abolished')"),
         CheckConstraint("visibility IN ('public', 'private')"),
         CheckConstraint("payment_type IN ('free', 'one-time', 'per-stage')"),
         CheckConstraint(
@@ -1517,7 +1523,7 @@ class RulesetRatingLedgerRecord(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("game_id", "player_id"),
+        UniqueConstraint("game_id", "player_id", "reason"),
         CheckConstraint("rating_after = rating_before + delta"),
         CheckConstraint("confidence_before BETWEEN 0 AND 1"),
         CheckConstraint("confidence_after BETWEEN 0 AND 1"),

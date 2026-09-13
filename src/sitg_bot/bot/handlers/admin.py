@@ -396,24 +396,24 @@ async def handle_admin_menu_action(
             locale=locale,
         )
         return
-    if admin_action == "admin.suspicion_ledger":
+    if admin_action == "admin.management":
         if launch_links is None:
             await send_message_model(
                 message,
                 MessageModel(localization.text("error.capability_unavailable", locale)),
             )
             return
-        url = mini_app_route_url(launch_links, "admin/suspicion")
+        url = mini_app_route_url(launch_links, "admin/management")
         await send_message_model(
             message,
             MessageModel(
-                localization.text("miniapp.admin_suspicion.prompt", locale),
+                localization.text("miniapp.admin_management.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
                                 localization.text(
-                                    "miniapp.admin_suspicion.open", locale
+                                    "button.admin.management", locale
                                 ),
                                 web_app_url=url,
                             ),

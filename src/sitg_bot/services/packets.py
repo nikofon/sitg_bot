@@ -55,6 +55,7 @@ class PacketAdminService:
         actor_id: UUID,
     ) -> tuple[TournamentPacketAssignmentRecord, PacketVersionRecord]:
         await self.tournaments._require_manager(session, tournament_id, actor_id)
+        await self.tournaments.require_modifiable(session, tournament_id)
         assignment = await session.get(TournamentPacketAssignmentRecord, assignment_id)
         if assignment is None or assignment.tournament_id != tournament_id:
             raise LookupError("Tournament packet not found")
@@ -470,6 +471,7 @@ class PacketAdminService:
         except (json.JSONDecodeError, TypeError, ValueError) as error:
             async with self.database.transaction() as session:
                 context = await self.tournaments.context(session, tournament_id)
+                await self.tournaments.require_modifiable(session, tournament_id)
                 if uploader_id is not None:
                     await self._require_upload_access(session, context, uploader_id)
                 draft = PacketDraftRecord(
@@ -598,6 +600,7 @@ class PacketAdminService:
         content = asdict(packet)
         encoded = json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
         async with self.database.transaction() as session:
+            await self.tournaments.require_modifiable(session, tournament_id)
             context = await self.tournaments.context(session, tournament_id)
             if uploader_id is not None:
                 await self._require_upload_access(session, context, uploader_id)
@@ -948,6 +951,7 @@ class PacketAdminService:
                 ).scalars()
             ) or (draft.creation_tournament_id,)
             for tournament_id in intended_tournaments:
+                await self.tournaments.require_modifiable(session, tournament_id)
                 context = await self.tournaments.context(session, tournament_id)
                 access_defaults = {
                     name: context.policies.get(name, default)
@@ -1207,6 +1211,7 @@ class PacketAdminService:
 
     @staticmethod
     async def _require_upload_access(session, context, player_id: UUID) -> None:
+        await TournamentService.require_modifiable(session, context.tournament_id)
         administrator = await session.get(PlatformAdministratorRecord, player_id)
         if administrator is not None and administrator.revoked_at is None:
             return

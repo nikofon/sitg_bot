@@ -64,6 +64,7 @@ from sitg_bot.storage.models import (
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentPolicyVersionRecord,
+    TournamentRecord,
     TournamentTypeVersionRecord,
 )
 
@@ -229,7 +230,7 @@ class PersistentGameService:
         if len(telegram_ids) != len(set(telegram_ids)):
             raise ValueError("Participant IDs must be unique")
         async with self.database.transaction() as session:
-            context = await self.tournaments.context(session, tournament_id)
+            context = await self.tournaments.context(session, tournament_id, lock=True)
             if context.type_key == "classic":
                 raise ValueError("Classic games must start from a prescribed tournament lobby")
             if not context.assembly_open:
@@ -2976,6 +2977,7 @@ class PersistentGameService:
         participants: list[GameParticipantRecord],
     ) -> bool:
         local_rating_enabled = await self._rating_enabled(session, game)
+        tournament = await session.get(TournamentRecord, game.tournament_id)
         ruleset_version = await session.get(GameRulesetVersionRecord, game.game_ruleset_version_id)
         if ruleset_version is None:
             raise RuntimeError("Game ruleset version is missing")
@@ -3009,8 +3011,11 @@ class PersistentGameService:
                 )
                 if unresolved is not None:
                     return False
+            if tournament is not None and tournament.moderation_status == "abolished":
+                continue
             unresolved_ruleset = await session.scalar(
                 select(GameRecord.id)
+                .join(TournamentRecord, TournamentRecord.id == GameRecord.tournament_id)
                 .join(GameParticipantRecord, GameParticipantRecord.game_id == GameRecord.id)
                 .join(
                     GameRulesetVersionRecord,
@@ -3026,6 +3031,7 @@ class PersistentGameService:
                 .where(
                     GameParticipantRecord.player_id == participant.player_id,
                     GameRecord.id != game.id,
+                    TournamentRecord.moderation_status != "abolished",
                     GameRulesetVersionRecord.key == ruleset_version.key,
                     GameParticipantRecord.global_game_sequence < participant.global_game_sequence,
                     GameRecord.status.in_(("lobby", "active", "completed")),
@@ -3043,6 +3049,12 @@ class PersistentGameService:
         game: GameRecord,
         participants: list[GameParticipantRecord],
     ) -> dict[str, Any]:
+        # Serialize settlement with abolition so no global delta escapes reversal.
+        tournament = await session.scalar(
+            select(TournamentRecord).where(TournamentRecord.id == game.tournament_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        assert tournament is not None
         rating_changes: list[dict[str, Any]] = []
         rating_confidence = confidence_model(game.rating_confidence_model)
         played_at = game.completed_at or datetime.now(UTC)
@@ -3134,6 +3146,15 @@ class PersistentGameService:
                         rating_model=rating_confidence.key,
                     )
                 )
+
+        if tournament.moderation_status == "abolished":
+            for participant in ordered:
+                result = await session.get(GameResultRecord, (game.id, participant.player_id))
+                if result is not None:
+                    result.settled_at = datetime.now(UTC)
+            game.status = "finalized"
+            game.finalized_at = datetime.now(UTC)
+            return await self._finalized_event(session, game, participants, rating_changes)
 
         ruleset_states: dict[UUID, RulesetRatingRecord] = {}
         ruleset_histories: dict[UUID, list[RatingHistoryEntry]] = {}
@@ -3248,7 +3269,10 @@ class PersistentGameService:
         rows = (
             await session.execute(
                 select(RulesetRatingLedgerRecord.delta, RulesetRatingLedgerRecord.played_at)
+                .join(TournamentRecord,
+                      TournamentRecord.id == RulesetRatingLedgerRecord.tournament_id)
                 .where(
+                    TournamentRecord.moderation_status != "abolished",
                     RulesetRatingLedgerRecord.ruleset_key == ruleset_key,
                     RulesetRatingLedgerRecord.player_id == player_id,
                 )

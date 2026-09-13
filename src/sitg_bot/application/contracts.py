@@ -108,6 +108,10 @@ class ActionCode(StrEnum):
     ADMIN_SUSPICION_LEDGER = "platform.admin.suspicion.ledger.v1"
     ADMIN_SUSPICION_INSPECT = "platform.admin.suspicion.inspect.v1"
     ADMIN_SUSPICION_CLEAR = "platform.admin.suspicion.clear.v1"
+    ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
+    ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
+    ADMIN_AUTHOR_LINK = "platform.admin.authors.link.v1"
+    ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
 
 
 class ErrorCode(StrEnum):
@@ -749,6 +753,32 @@ class BugReportCreateOperation(ContractModel):
     commentary: str = Field(min_length=1, max_length=4000)
 
 
+class AdminManagementListOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
+    section: Literal["tournaments", "authors", "players", "packets"] = "tournaments"
+
+
+class AdminTournamentModerateOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TOURNAMENT_MODERATE]
+    tournament_id: UUID
+    command: Literal["halt", "resume", "abolish"]
+    expected_version: int = Field(ge=1)
+    confirm: bool = Field(default=False, strict=True)
+
+
+class AdminAuthorLinkOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AUTHOR_LINK]
+    author_id: UUID
+    target: str = Field(min_length=1, max_length=200)
+
+
+class AdminPacketAccessOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_PACKET_ACCESS]
+    version_id: UUID
+    command: Literal["view", "download"]
+    confirm: bool = Field(default=False, strict=True)
+
+
 class AdminSuspicionLedgerOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_SUSPICION_LEDGER]
     limit: int = Field(default=50, ge=1, le=100)
@@ -851,7 +881,11 @@ GatewayOperation = Annotated[
     | BugReportCreateOperation
     | AdminSuspicionLedgerOperation
     | AdminSuspicionInspectOperation
-    | AdminSuspicionClearOperation,
+    | AdminSuspicionClearOperation
+    | AdminManagementListOperation
+    | AdminTournamentModerateOperation
+    | AdminAuthorLinkOperation
+    | AdminPacketAccessOperation,
     Field(discriminator="action"),
 ]
 

@@ -1224,3 +1224,18 @@ p {
   width: 100%;
   max-width: 100%;
 }
+.admin-metadata { overflow-wrap: anywhere; }
+.admin-metadata > div { margin-block: .5rem; }
+.admin-metadata dt { font-weight: 600; }
+.admin-metadata dd { margin-inline-start: 0; }
+.admin-related { border-inline-start: 2px solid var(--tg-theme-hint-color, #888); padding-inline-start: .75rem; margin-block: .75rem; }
+.admin-card summary { cursor: pointer; font-weight: 600; }
+.admin-card > details { margin-block-end: 1rem; }
+.admin-card .warning-button {
+  border-color: #d5a321;
+  background: #fff0b3;
+  color: #664d03;
+}
+.admin-card .danger-button {
+  background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 12%, var(--tg-theme-section-bg-color));
+}

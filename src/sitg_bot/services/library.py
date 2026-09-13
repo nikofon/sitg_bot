@@ -5,8 +5,14 @@ from sqlalchemy import or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.moderation import _require_administrator
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
-from sitg_bot.services.ruleset_content import DEFAULT_CONTENT_ADAPTERS, PacketSelection
+from sitg_bot.services.ruleset_content import (
+    DEFAULT_CONTENT_ADAPTERS,
+    PacketSelection,
+    SIContentAdapter,
+)
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
@@ -52,6 +58,11 @@ class PacketLibraryService:
                 select(PacketVersionRecord.packet_id).where(PacketVersionRecord.id == version_id)
             ))
         if lock:
+            # Match manager mutation ordering: tournament before its assignments.
+            await session.scalars(select(TournamentRecord).where(TournamentRecord.id.in_(
+                query.with_only_columns(TournamentPacketAssignmentRecord.tournament_id)
+                .order_by(None)
+            )).order_by(TournamentRecord.id).with_for_update())
             query = query.with_for_update()
         result = []
         for assignment in await session.scalars(query):
@@ -148,13 +159,16 @@ class PacketLibraryService:
     async def access(
         self, player_id: UUID, version_id: UUID, *,
         confirm: bool = False, download: bool = False, request_key: str,
+        administrator: bool = False,
     ) -> dict[str, object]:
         async with self.database.transaction() as session:
+            if administrator:
+                await _require_administrator(session, player_id)
             candidates = [
                 (assignment, version)
-                for assignment, version in await self._assignments(
+                for assignment, version in ([] if administrator else await self._assignments(
                     session, player_id, lock=True, version_id=version_id
-                )
+                ))
                 if version.id == version_id
             ]
             authorized = None
@@ -164,11 +178,17 @@ class PacketLibraryService:
                 ):
                     authorized = (assignment, version)
                     break
-            if authorized is None:
+            if administrator:
+                version = await session.get(PacketVersionRecord, version_id)
+                if version is None:
+                    raise LookupError("Packet version not found")
+                adapter = SIContentAdapter()
+            elif authorized is None:
                 raise PermissionError("Packet release and read prerequisites are required")
-            assignment, version = authorized
-            context = await self.tournaments.context(session, assignment.tournament_id)
-            adapter = DEFAULT_CONTENT_ADAPTERS.get(context.ruleset_key, context.ruleset_version)
+            else:
+                assignment, version = authorized
+                context = await self.tournaments.context(session, assignment.tournament_id)
+                adapter = DEFAULT_CONTENT_ADAPTERS.get(context.ruleset_key, context.ruleset_version)
             units = await adapter.available_play_units(
                 session, [PacketSelection(version_id, 0)], []
             )
@@ -184,15 +204,18 @@ class PacketLibraryService:
                 PlayerExposureClaimRecord.claim_namespace, PlayerExposureClaimRecord.claim_id
             )
             existing = list(await session.scalars(query.with_for_update()))
-            if any(claim.state == "reserved" for claim in existing):
+            if not administrator and any(claim.state == "reserved" for claim in existing):
                 raise PermissionError("Packet content is reserved for an undisclosed game")
-            burnt = {(claim.claim_namespace, claim.claim_id) for claim in existing}
+            burnt = {(claim.claim_namespace, claim.claim_id) for claim in existing
+                     if claim.state == "burnt"}
             fresh_count = sum(
                 any((claim.namespace, claim.identity) not in burnt for claim in unit.claims)
                 for unit in units
             )
             if fresh_count and not confirm:
                 return {"confirmation_required": True, "fresh_unit_count": fresh_count}
+            if administrator:
+                await burn_author_content(session, version_id=version_id, player_ids=[player_id])
             pages = await adapter.library_pages(session, version_id)
             for namespace, claim_id in sorted(claims - burnt):
                 await session.execute(insert(PlayerExposureClaimRecord).values(
@@ -212,7 +235,9 @@ class PacketLibraryService:
                 for claim in current if claim.state == "burnt"
             }
             if persisted_burns != claims:
-                raise PermissionError("Packet exposure changed during reading; retry after the game")
+                raise PermissionError(
+                    "Packet exposure changed during reading; retry after the game"
+                )
             result = {"confirmation_required": False, "name": version.name, "pages": pages}
             if download:
                 player = await session.get(PlayerRecord, player_id)

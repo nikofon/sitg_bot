@@ -581,9 +581,7 @@ class TelegramNavigationService:
                 (
                     "admin.menu",
                     "admin.token_requests.pending",
-                    "admin.ban",
-                    "admin.unban",
-                    "admin.suspicion_ledger",
+                    "admin.management",
                 )
             )
         return tuple(actions)

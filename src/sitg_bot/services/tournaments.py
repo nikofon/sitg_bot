@@ -820,6 +820,7 @@ class TournamentService:
         display_name = " ".join(part for part in (first, second, family) if part)
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.get(TournamentRecord, tournament_id)
             if tournament is None or tournament.status != "active":
                 raise LookupError("Active tournament not found")
@@ -922,6 +923,7 @@ class TournamentService:
         )
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.scalar(
                 select(TournamentRecord)
                 .where(TournamentRecord.id == tournament_id)
@@ -1058,6 +1060,7 @@ class TournamentService:
     ) -> TournamentManagerSettings:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.scalar(
                 select(TournamentRecord)
                 .where(TournamentRecord.id == tournament_id)
@@ -1092,6 +1095,7 @@ class TournamentService:
     async def invite(self, tournament_id: UUID, player_id: UUID, *, invited_by_id: UUID) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, invited_by_id)
+            await self.require_modifiable(session, tournament_id)
             await self._active_tournament(session, tournament_id)
             player = await session.get(PlayerRecord, player_id)
             if player is None or player.status != "active":
@@ -1184,6 +1188,7 @@ class TournamentService:
             raise ValueError("Registration failure message supports at most 500 characters")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             await self._active_tournament(session, tournament_id)
             target_tournament_id: UUID | None = None
             target_packet_id: UUID | None = None
@@ -1226,6 +1231,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             requirement = await session.get(TournamentRegistrationRequirementRecord, requirement_id)
             if (
                 requirement is None
@@ -1281,6 +1287,7 @@ class TournamentService:
     ) -> str:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await self._active_tournament(session, tournament_id)
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
@@ -1312,6 +1319,7 @@ class TournamentService:
     ) -> str:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await self._active_tournament(session, tournament_id)
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
@@ -1340,6 +1348,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await self._active_tournament(session, tournament_id)
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
@@ -1417,6 +1426,7 @@ class TournamentService:
         async with self.database.transaction() as session:
             if enrolled_by_id is not None:
                 await self._require_manager(session, tournament_id, enrolled_by_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await self._active_tournament(session, tournament_id)
             del tournament
             player = await session.get(PlayerRecord, player_id)
@@ -1452,6 +1462,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, granted_by_id)
+            await self.require_modifiable(session, tournament_id)
             manager = await session.get(TournamentManagerRecord, (tournament_id, player_id))
             if manager is not None and manager.revoked_at is None:
                 return
@@ -1502,6 +1513,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, removed_by_id)
+            await self.require_modifiable(session, tournament_id)
             managers = tuple(
                 (
                     await session.execute(
@@ -1538,6 +1550,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.scalar(
                 select(TournamentRecord)
                 .where(
@@ -1684,6 +1697,7 @@ class TournamentService:
             raise ValueError("actual_ends_at must include a timezone")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await self._active_tournament(session, tournament_id)
             if expected_version is not None and tournament.settings_version != expected_version:
                 raise StaleWriteError("Tournament settings have changed")
@@ -1706,6 +1720,7 @@ class TournamentService:
     ) -> TournamentManagement:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.get(TournamentRecord, tournament_id, with_for_update=True)
             if tournament is None or tournament.status != "active":
                 raise LookupError("Active tournament not found")
@@ -1778,6 +1793,7 @@ class TournamentService:
     ) -> TournamentManagement:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             tournament = await session.scalar(
                 select(TournamentRecord)
                 .where(TournamentRecord.id == tournament_id)
@@ -1814,6 +1830,7 @@ class TournamentService:
         entitlement_field, assignment_field = right_map[right]
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             assignment = await session.scalar(
                 select(TournamentPacketAssignmentRecord)
                 .where(
@@ -2456,6 +2473,7 @@ class TournamentService:
         AppealPolicy.from_mapping(policies)
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             context = await self.context(session, tournament_id, lock=True)
             tournament = await session.get(TournamentRecord, tournament_id)
             assert tournament is not None
@@ -2592,6 +2610,7 @@ class TournamentService:
             raise ValueError(f"Unknown packet access level: {normalized_access}")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
+            await self.require_modifiable(session, tournament_id)
             if await session.get(LogicalPacketRecord, packet_id) is None:
                 raise LookupError("Packet not found")
             if adopted_version_id is not None:
@@ -2666,6 +2685,7 @@ class TournamentService:
             if assignment is None:
                 raise LookupError("Tournament packet assignment not found")
             await self._require_manager(session, assignment.tournament_id, manager_id)
+            await self.require_modifiable(session, assignment.tournament_id)
             entitlement = await session.get(
                 TournamentPacketEntitlementRecord, (assignment_id, player_id)
             )
@@ -2754,6 +2774,9 @@ class TournamentService:
     ) -> bool:
         if assignment.status != "active" or version.state != "published":
             return False
+        tournament = await session.get(TournamentRecord, assignment.tournament_id)
+        if tournament is None or tournament.moderation_status == "abolished":
+            return False
         if await cls._is_manager(session, assignment.tournament_id, player_id):
             return True
         if version.library_released_at is None or not await cls.has_assignment_access(
@@ -2801,6 +2824,11 @@ class TournamentService:
         if right not in PACKET_RIGHTS:
             raise ValueError(f"Unknown packet entitlement: {right}")
         if assignment.status != "active":
+            return False
+        tournament = await session.get(TournamentRecord, assignment.tournament_id)
+        if tournament is None or tournament.moderation_status == "abolished":
+            return False
+        if right in {"playable", "editable"} and tournament.moderation_status == "halted":
             return False
         if await cls._is_manager(session, assignment.tournament_id, player_id):
             return True
@@ -2890,7 +2918,7 @@ class TournamentService:
     ) -> TournamentContext:
         query = select(TournamentRecord).where(TournamentRecord.id == tournament_id)
         if lock:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         tournament = await session.scalar(query)
         if tournament is None:
             raise LookupError("Tournament not found")
@@ -2908,6 +2936,7 @@ class TournamentService:
         ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
         assembly_open = bool(
             tournament.status == "active"
+            and tournament.moderation_status == "normal"
             and tournament.finalized_at is not None
             and tournament.actual_starts_at is not None
             and (
@@ -3924,3 +3953,15 @@ class TournamentService:
     ) -> None:
         if not await cls._is_manager(session, tournament_id, player_id):
             raise PermissionError("Tournament manager role is required")
+
+    @staticmethod
+    async def require_modifiable(session: AsyncSession, tournament_id: UUID) -> TournamentRecord:
+        tournament = await session.scalar(
+            select(TournamentRecord).where(TournamentRecord.id == tournament_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if tournament is None:
+            raise LookupError("Tournament not found")
+        if tournament.moderation_status != "normal":
+            raise PermissionError("Tournament is halted or abolished")
+        return tournament
