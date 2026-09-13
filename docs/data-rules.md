@@ -18,6 +18,7 @@ concurrent operations or commit halfway through an atomic assignment/publication
 | --- | --- |
 | Identity | `players`, `platform_administrators`, `player_telegram_navigation`, author-link records |
 | Organization | `tournaments` references type/ruleset/policy versions; managers, memberships, registration attempts, pricing and authors are related records |
+| Classic competition | `classic_stages` owns seeds/scoring; `classic_rounds` owns packets/deadlines; `classic_matches` stores prescribed seats, advancement, assigned game, and final results |
 | Content | `logical_packets` → `packet_versions`; `themes` → `theme_revisions`; `logical_questions` → `question_revisions`; `packet_questions` stores placements |
 | Access | `tournament_packet_assignments` joins tournaments to content; `tournament_packet_entitlements` stores player overrides; drafts retain intended tournaments |
 | Assembly | `pregame_lobbies` owns member, packet, and event rows and references its assigned game |
@@ -41,6 +42,9 @@ constraints. Migration procedure belongs in the operations guide.
 
 - Every game belongs to one tournament and pins its tournament-type, game-ruleset, and
   tournament-policy versions.
+- Tournament play requires an actual manual start; planned dates do not open or close play.
+  Starting a Classic stage also records the tournament's actual start. Durable reminders
+  use the planned start date and persist recipient deduplication in notifications.
 - A game stores its effective ruleset parameters, immutable assignment plan, random seed,
   adopted packet versions, and the exact content revisions selected for play.
 - Changes to tournament policy, ruleset registration, packet assignments, or published
@@ -72,6 +76,8 @@ The SI mapping and its disclosure boundary are defined in
 ## Lobby and participant lifecycle
 
 - A player may belong to at most one active lobby or active game and never both at once.
+- Classic Chair participants have `is_chair=true`, are inactive and automatically joined,
+  and receive no gameplay actions or rating changes. They retain zero scores in game results.
 - Lobby observers do not count toward player capacity, readiness, content selection, or
   hybrid matchmaking. Game observers are stored separately from participants and never
   enter score, result, rating, appeal electorate, buzz, or answer state.
@@ -148,11 +154,22 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
 - Every raised statistical signal snapshots its algorithm, baseline, decision statistics,
   and contributing game/round/question actions. Administrator clearance resets the current
   value but never deletes evaluations, evidence, reports, or ledger history.
+- Moderation bans are reversible rows keyed by the player with a reason and issuing
+  administrator; unban records the lifting administrator and time. Banned players keep only
+  their packet library; all other gateway actions are refused, and banned players are
+  excluded from the legacy suspicion ledger but included in Management's Players section.
+  Platform administrators cannot be banned.
+- Bug reports are append-only facts carrying the reporter, commentary, and timestamp, and
+  fan out an admin-audience notification per active administrator.
 
 ## Published content and access
 
 - Published packet and question revisions are immutable. Historical and active games retain
   their pinned revisions.
+- Tournament halt preserves library rights and assigned games. Abolition revokes reads through
+  that tournament only, and appends global rating reversals without deleting historical facts.
+  Administrator Management packet reads bypass access gates and permanently burn content for
+  the administrator, including any live reservations.
 - A logical packet may be assigned independently to multiple tournaments. Rights granted by
   one assignment do not apply through another tournament's assignment.
 - Tournament membership alone does not grant packet access. Current authorization composes

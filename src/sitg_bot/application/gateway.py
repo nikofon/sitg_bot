@@ -15,6 +15,13 @@ from sitg_bot.application.contracts import (
     AccountLookupOperation,
     ActionCode,
     AdminAuthenticateOperation,
+    AdminAuthorLinkOperation,
+    AdminManagementListOperation,
+    AdminPacketAccessOperation,
+    AdminSuspicionClearOperation,
+    AdminSuspicionInspectOperation,
+    AdminSuspicionLedgerOperation,
+    AdminTournamentModerateOperation,
     ApplicationPrincipal,
     AuthorLinkAdminDecideOperation,
     AuthorLinkAdminPendingOperation,
@@ -22,6 +29,7 @@ from sitg_bot.application.contracts import (
     AuthorLinkCreateOperation,
     AuthorLinkMineOperation,
     AuthorsSearchOperation,
+    BugReportCreateOperation,
     CapabilityAction,
     CapabilityPayload,
     ChatMembersOperation,
@@ -67,10 +75,12 @@ from sitg_bot.application.contracts import (
     PacketManagementUpdateOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
+    PlayerBanOperation,
     PlayerGameResultsOperation,
     PlayerProfileOperation,
     PlayerReportOperation,
     PlayerResolveOperation,
+    PlayerUnbanOperation,
     RegistrationCompleteOperation,
     RegistrationStartOperation,
     RegistrationStepSaveOperation,
@@ -82,6 +92,7 @@ from sitg_bot.application.contracts import (
     TokenRequestCreateOperation,
     TokenRequestQueueOperation,
     TournamentAuthorCreateOperation,
+    TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentCreateOperation,
     TournamentFinalizeOperation,
@@ -96,13 +107,16 @@ from sitg_bot.application.contracts import (
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
+    TournamentStartOperation,
 )
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
+from sitg_bot.services.admin_management import AdminManagementService
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.launch_references import LaunchReferenceService
 from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
+from sitg_bot.services.moderation import BugReportService, PlayerModerationService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
@@ -169,6 +183,14 @@ class _SecretAlreadyDelivered(ValueError):
 
 
 ACTION_POLICIES: dict[ActionCode, ActionPolicy] = {action: ActionPolicy() for action in ActionCode}
+# Banned players keep read access to their packet library; every other action is refused.
+BAN_EXEMPT_ACTIONS = frozenset(
+    {
+        ActionCode.LIBRARY_LIST,
+        ActionCode.LIBRARY_VIEW,
+        ActionCode.LIBRARY_DOWNLOAD,
+    }
+)
 ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
@@ -248,6 +270,11 @@ ACTION_POLICIES.update(
             idempotency_required=True,
             stale_write_field="expected_version",
         ),
+        ActionCode.TOURNAMENT_CLASSIC_UPDATE: ActionPolicy(
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
+        ),
         ActionCode.TOURNAMENT_REGISTRATION_DECIDE: ActionPolicy(
             mutation=True, idempotency_required=True
         ),
@@ -258,6 +285,9 @@ ACTION_POLICIES.update(
             mutation=True,
             idempotency_required=True,
             stale_write_field="expected_version",
+        ),
+        ActionCode.TOURNAMENT_START: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.LIBRARY_VIEW: ActionPolicy(
@@ -287,6 +317,20 @@ ACTION_POLICIES.update(
         ActionCode.NOTIFICATIONS_READ: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.NOTIFICATIONS_READ_ALL: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.NOTIFICATION_ALERTS_CLAIM: ActionPolicy(
+            mutation=True, idempotency_required=True
+        ),
+        ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
+        ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.PLAYER_UNBAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.BUG_REPORT_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(
             mutation=True, idempotency_required=True
         ),
         ActionCode.NAVIGATION_CONTEXT_SET: ActionPolicy(
@@ -370,6 +414,8 @@ class ApplicationGateway:
             database, player_accounts=self.player_accounts
         )
         self.trust = trust or TrustService(database)
+        self.moderation = PlayerModerationService(database)
+        self.bug_reports = BugReportService(database)
         from sitg_bot.services.telegram_game import TelegramGameService
 
         self.telegram_games = TelegramGameService(database)
@@ -518,6 +564,7 @@ class ApplicationGateway:
             )
 
         player_id = await self._require_active_principal(principal)
+        await self._reject_banned_player(player_id, action)
         if isinstance(operation, PlayerProfileOperation):
             return await self.profiles.profile(
                 player_id,
@@ -685,6 +732,7 @@ class ApplicationGateway:
                 pricing_plans=operation.pricing_plans,
                 registration_open=operation.registration_open,
                 ignore_late_registrations=operation.ignore_late_registrations,
+                registration_open_override=operation.registration_open_override,
                 registration_starts_at=operation.registration_starts_at,
                 registration_ends_at=operation.registration_ends_at,
                 starts_at=operation.starts_at,
@@ -734,6 +782,18 @@ class ApplicationGateway:
                 telegram_user_id, operation.tournament_id
             )
             return await self.tournaments.manager_management(tournament_id, player_id)
+        if isinstance(operation, TournamentClassicUpdateOperation):
+            from sitg_bot.services.classic import ClassicService
+
+            await ClassicService(self.tournaments.database).mutate(
+                operation.tournament_id,
+                player_id,
+                expected_version=operation.expected_version,
+                command=operation.command,
+                kind=operation.kind,
+                values=dict(operation.values),
+            )
+            return await self.tournaments.manager_management(operation.tournament_id, player_id)
         if isinstance(operation, TournamentRegistrationOverrideOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -779,6 +839,13 @@ class ApplicationGateway:
                 expected_version=operation.expected_version,
             )
             return await self.tournaments.manager_management(tournament_id, player_id)
+        if isinstance(operation, TournamentStartOperation):
+            tournament_id = await self._manager_tournament_id(
+                telegram_user_id, operation.tournament_id
+            )
+            return await self.tournaments.start_tournament(
+                tournament_id, player_id, expected_version=operation.expected_version,
+            )
         if isinstance(operation, PacketUploadEligibilityOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -1106,6 +1173,45 @@ class ApplicationGateway:
                 details=operation.details,
                 expected_game_version=operation.expected_version,
             )
+        if isinstance(operation, PlayerBanOperation):
+            return await self.moderation.ban_player(
+                player_id, operation.target, reason=operation.reason
+            )
+        if isinstance(operation, PlayerUnbanOperation):
+            return await self.moderation.unban_player(player_id, operation.target)
+        if isinstance(operation, BugReportCreateOperation):
+            return await self.bug_reports.submit(player_id, operation.commentary)
+        if isinstance(operation, AdminSuspicionLedgerOperation):
+            return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
+        if isinstance(operation, AdminManagementListOperation):
+            return await AdminManagementService(self.database).catalogue(
+                player_id, operation.section
+            )
+        if isinstance(operation, AdminTournamentModerateOperation):
+            return await AdminManagementService(self.database).moderate_tournament(
+                player_id, operation.tournament_id, command=operation.command,
+                expected_version=operation.expected_version, confirm=operation.confirm,
+            )
+        if isinstance(operation, AdminAuthorLinkOperation):
+            return await AdminManagementService(self.database).link_author(
+                player_id, operation.author_id, operation.target
+            )
+        if isinstance(operation, AdminPacketAccessOperation):
+            return await self.library.access(
+                player_id, operation.version_id, confirm=operation.confirm,
+                download=operation.command == "download", administrator=True,
+                request_key=hashlib.sha256(
+                    (request.metadata.idempotency_key or "").encode()
+                ).hexdigest(),
+            )
+        if isinstance(operation, AdminSuspicionInspectOperation):
+            return await self.trust.suspicion_inspection(
+                player_id, operation.player_id, limit=operation.limit
+            )
+        if isinstance(operation, AdminSuspicionClearOperation):
+            return await self.trust.clear_player_suspicion(
+                player_id, operation.player_id, note=operation.note
+            )
         raise _CapabilityUnavailable
 
     def capabilities(self) -> CapabilityPayload:
@@ -1163,6 +1269,14 @@ class ApplicationGateway:
         if account.registration_status != "active":
             raise _AuthenticationRequired
         return account.player_id
+
+    async def _reject_banned_player(self, player_id: UUID, action: ActionCode) -> None:
+        if action in BAN_EXEMPT_ACTIONS:
+            return
+        async with self.database.transaction() as session:
+            reason = await PlayerModerationService.active_ban_reason(session, player_id)
+        if reason is not None:
+            raise PermissionError("Banned players can only use their library")
 
     async def _require_lobby_member(self, lobby_id: UUID, player_id: UUID) -> None:
         async with self.database.transaction() as session:
@@ -1444,6 +1558,7 @@ class ApplicationGateway:
                 "tournament_capacity_restriction",
                 "tournament_packet_limit_exceeded",
                 "tournament_membership_required",
+                "classic_participants_required",
             }
             reason = error.reason if error.reason in known_reasons else "invalid"
             return GatewayError(

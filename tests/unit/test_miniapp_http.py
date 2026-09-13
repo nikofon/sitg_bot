@@ -1,10 +1,12 @@
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from aiohttp.test_utils import make_mocked_request
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from sitg_bot.application.contracts import (
     ActionCode,
@@ -13,6 +15,95 @@ from sitg_bot.application.contracts import (
 )
 from sitg_bot.miniapp_http import MiniAppHttpServer
 from sitg_bot.services.miniapp_auth import MiniAppSecurityPolicy, MiniAppSessionContext
+
+
+@pytest.mark.parametrize("path", [
+    "tournaments?role=player", "players/00000000-0000-0000-0000-000000000005",
+    "library", "manager/tournaments/ref/settings", "index.html",
+])
+async def test_miniapp_entry_pages_require_revalidation(tmp_path: Path, path: str) -> None:
+    (tmp_path / "index.html").write_text('<script src="/assets/current.js"></script>')
+    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), web_dist=tmp_path)
+    request = make_mocked_request("GET", f"/{path}", match_info={"path": path.split("?")[0]})
+
+    response = await http._headers(request, http._static)
+
+    assert isinstance(response, web.FileResponse)
+    assert response.headers["Cache-Control"] == "no-cache"
+
+
+@pytest.mark.parametrize(("path", "cache_control"), [
+    ("assets/index-DVTqsAUJ.js", "public, max-age=31536000, immutable"),
+    ("assets/index-Dy3l3TP3.css", "public, max-age=31536000, immutable"),
+    ("assets/logo-Abc123_-.svg", "public, max-age=31536000, immutable"),
+    ("assets/config.js", "no-cache"),
+    ("assets/page-12345678.html", "no-cache"),
+    ("index-12345678.js", "no-cache"),
+    ("favicon.ico", "no-cache"),
+    ("index.html", "no-cache"),
+])
+async def test_static_file_cache_policy(tmp_path: Path, path: str, cache_control: str) -> None:
+    asset = tmp_path / path
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    asset.write_text("test content")
+    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), web_dist=tmp_path)
+    request = make_mocked_request("GET", f"/{path}", match_info={"path": path})
+
+    response = await http._headers(request, http._static)
+
+    assert response.headers["Cache-Control"] == cache_control
+
+
+async def test_html_revalidation_and_new_build(tmp_path: Path) -> None:
+    index = tmp_path / "index.html"
+    index.write_text('<script src="/assets/old-12345678.js"></script>')
+    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), web_dist=tmp_path)
+    async with TestClient(TestServer(http.application)) as client:
+        first = await client.get("/tournaments?role=player&_launch=1")
+        assert first.status == 200
+        assert first.headers["Cache-Control"] == "no-cache"
+        assert "old-12345678.js" in await first.text()
+        etag = first.headers["ETag"]
+
+        cached = await client.get(
+            "/tournaments?role=player&_launch=1", headers={"If-None-Match": etag}
+        )
+        assert cached.status == 304
+        assert cached.headers["Cache-Control"] == "no-cache"
+        assert await cached.read() == b""
+
+        index.write_text('<script src="/assets/current-87654321.js"></script>')
+        updated = await client.get(
+            "/tournaments?role=player&_launch=1", headers={"If-None-Match": etag}
+        )
+        assert updated.status == 200
+        assert updated.headers["ETag"] != etag
+        assert "current-87654321.js" in await updated.text()
+
+        api = await client.get("/api/miniapp/routes/resolve?path=/tournaments", headers={
+            "Origin": "https://mini.example.test", "Cookie": "__Host-sitg_session=test-session",
+        })
+        assert api.status == 200
+        assert api.headers["Cache-Control"] == "no-store"
+
+
+async def test_missing_build_assets_do_not_fall_back_to_html(tmp_path: Path) -> None:
+    (tmp_path / "index.html").write_text('<script src="/assets/current.js"></script>')
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "current.js").write_text("document.body.dataset.loaded = 'true';")
+    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), web_dist=tmp_path)
+    current = make_mocked_request(
+        "GET", "/assets/current.js", match_info={"path": "assets/current.js"}
+    )
+    assert isinstance(await http._static(current), web.FileResponse)
+
+    for name in ("previous.js", "previous.css"):
+        request = make_mocked_request(
+            "GET", f"/assets/{name}", match_info={"path": f"assets/{name}"}
+        )
+        with pytest.raises(web.HTTPNotFound):
+            await http._static(request)
 
 
 class FakeAuth:
@@ -158,6 +249,29 @@ class FakeGateway:
                     }
                 ],
             }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_LEDGER:
+            data = {
+                "items": [
+                    {
+                        "player_id": str(UUID(int=40)),
+                        "display_name": "Suspicious",
+                        "telegram_username": "suspicious",
+                        "suspicion": 3,
+                        "rulesets": [],
+                        "reports": [],
+                    }
+                ]
+            }
+        elif operation.action == ActionCode.ADMIN_SUSPICION_INSPECT:
+            data = {
+                "player": {
+                    "id": str(UUID(int=40)),
+                    "display_name": "Suspicious",
+                    "telegram_username": "suspicious",
+                    "suspicion": 3,
+                },
+                "events": [],
+            }
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -236,16 +350,79 @@ async def test_packet_management_mutations_use_launch_scope_and_write_guards(com
     assert gateway.requests[0].metadata.idempotency_key == "packet-mutation-test"
 
 
-async def test_packet_management_rejects_settings_launch_reference():
-    http = MiniAppHttpServer(FakeAuth(), FakeGateway(), launch_references=FakeLaunchReferences())
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_classic_mutation_binds_target_and_write_guards(references):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway, launch_references=references())
+    request = make_mocked_request(
+        "POST",
+        "/api/miniapp/manager/tournaments/opaque-reference/classic",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "classic-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps(
+        {
+            "tournament_id": str(UUID(int=99)),
+            "command": "start",
+            "kind": "first",
+            "expected_version": 5,
+            "values": {},
+        }
+    ).encode()
+    result = await http._update_classic(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_CLASSIC_UPDATE
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "classic-start"
+
+
+async def test_tournament_start_binds_target_and_write_guards():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences()
+    )
+    request = make_mocked_request(
+        "POST", "/api/miniapp/manager/tournaments/opaque-reference/start",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf", "X-Idempotency-Key": "tournament-start",
+        },
+        match_info={"launch_ref": "opaque-reference"},
+    )
+    request._read_bytes = json.dumps({
+        "tournament_id": str(UUID(int=99)), "expected_version": 5,
+    }).encode()
+    result = await http._start_tournament(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.action == ActionCode.TOURNAMENT_START
+    assert operation.expected_version == 5
+    assert gateway.requests[0].metadata.idempotency_key == "tournament-start"
+
+
+async def test_packet_management_rejects_lobby_launch_reference():
+    http = MiniAppHttpServer(
+        FakeAuth(), FakeGateway(), launch_references=FakeLobbyLaunchReferences()
+    )
     request = make_mocked_request(
         "GET",
-        f"/api/miniapp/manager/tournaments/opaque-reference/packets/{UUID(int=30)}",
+        f"/api/miniapp/manager/tournaments/opaque-lobby/packets/{UUID(int=30)}",
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
         },
-        match_info={"launch_ref": "opaque-reference", "assignment_id": str(UUID(int=30))},
+        match_info={"launch_ref": "opaque-lobby", "assignment_id": str(UUID(int=30))},
     )
     with pytest.raises(LookupError):
         await http._management_packet(request)
@@ -494,12 +671,13 @@ async def test_tournament_selection_pushes_updated_context_to_telegram() -> None
     assert notifier.closed
 
 
-async def test_manager_settings_route_resolves_an_actor_bound_launch_reference() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_settings_route_resolves_an_actor_bound_launch_reference(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",
@@ -546,12 +724,13 @@ async def test_manager_author_search_is_name_filtered_and_reference_bound() -> N
     assert operation.query == "Ada"
 
 
-async def test_manager_management_route_is_actor_bound() -> None:
+@pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
+async def test_manager_management_route_is_actor_bound(references) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
         gateway,  # type: ignore[arg-type]
-        launch_references=FakeManagementLaunchReferences(),  # type: ignore[arg-type]
+        launch_references=references(),
     )
     request = make_mocked_request(
         "GET",
@@ -629,3 +808,59 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
     assert result.status == 200
     assert json.loads(result.text)["selected"] is True
     assert [request.operation.action for request in gateway.requests] == [action]
+
+
+async def test_admin_suspicion_ledger_route_resolves_and_supports_events_and_clear():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request(
+        "GET",
+        "/api/miniapp/routes/resolve?path=/admin/suspicion",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "admin_suspicion_ledger"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["items"][0]["player_id"] == str(UUID(int=40))
+    assert gateway.requests[0].operation.action == ActionCode.ADMIN_SUSPICION_LEDGER
+
+    events_request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/events",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    response = await http._admin_suspicion_events(events_request)
+    assert response.status == 200
+    inspection = json.loads(response.text)
+    assert inspection["player"]["suspicion"] == 3
+    assert gateway.requests[-1].operation.action == ActionCode.ADMIN_SUSPICION_INSPECT
+
+    clear_request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/admin/suspicion/ledger/{UUID(int=40)}/clear",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "suspicion-clear-test",
+        },
+        match_info={"player_id": str(UUID(int=40))},
+    )
+    clear_request._read_bytes = json.dumps({"note": "reviewed"}).encode()
+    response = await http._admin_suspicion_clear(clear_request)
+    assert response.status == 200
+    operation = gateway.requests[-1].operation
+    assert operation.action == ActionCode.ADMIN_SUSPICION_CLEAR
+    assert operation.player_id == UUID(int=40)
+    assert operation.note == "reviewed"

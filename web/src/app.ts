@@ -15,6 +15,8 @@ import type {
   TournamentManagerSettingsResource,
   TournamentManagerManagementResource,
   ManagementPacket,
+  ClassicStage,
+  ClassicTournament,
   ManagerSettingDescriptor,
   PacketDraftResource,
   PlayerGameResource,
@@ -22,6 +24,11 @@ import type {
   RegisteredAuthor,
   TournamentRegistrationPayload,
   TournamentRouteResource,
+  AdminSuspicionInspectionPayload,
+  AdminSuspicionLedgerResource,
+  SuspicionLedgerCard,
+  AdminManagementResource,
+  AdminCard,
 } from "./api/types";
 import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
@@ -34,6 +41,7 @@ import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
+import { renderAdminManagement } from "./ui/admin-management";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -162,6 +170,10 @@ export class MiniAppShell {
   }
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
+    if ("kind" in payload.resource && payload.resource.kind === "admin_management") {
+      this.renderAdminManagementRoute(route, payload.resource);
+      return;
+    }
     if ("kind" in payload.resource && payload.resource.kind === "library") {
       if (route.id === "library_reader") {
         void this.accessLibrary(route, route.params.version_id ?? "", "view");
@@ -202,6 +214,10 @@ export class MiniAppShell {
     }
     if (route.id === "manager_management" && isManagerManagementResource(payload.resource)) {
       this.renderManagerManagement(route, payload.resource);
+      return;
+    }
+    if (route.id === "admin_suspicion" && isSuspicionLedgerResource(payload.resource)) {
+      this.renderSuspicionLedger(route, payload.resource);
       return;
     }
     if (route.id === "lobby" && isLobbyResource(payload.resource)) {
@@ -263,12 +279,16 @@ export class MiniAppShell {
     const signal = this.request?.signal;
     if (button) button.disabled = true;
     try {
-      const path = `/api/miniapp/library/${encodeURIComponent(version)}/${command}`;
+      const admin = route.id === "admin_management";
+      const back = admin ? "/admin/management?section=packets" : "/library";
+      const path = admin
+        ? `/api/miniapp/admin/management/packets/${encodeURIComponent(version)}/${command}`
+        : `/api/miniapp/library/${encodeURIComponent(version)}/${command}`;
       let result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: false }, signal });
       if (signal?.aborted) return;
       if (result.confirmation_required) {
         if (!window.confirm(this.i18n.t("library.confirm"))) {
-          if (command === "view") this.router.navigate("/library", { replace: true });
+          if (command === "view") this.router.navigate(back, { replace: true });
           return;
         }
         result = await this.api.request<LibraryAccess>(path, { method: "POST", body: { confirm: true }, signal });
@@ -278,7 +298,7 @@ export class MiniAppShell {
         this.renderFrame(route, element("section", {},
           element("button", {
             type: "button", className: "secondary-button",
-            onclick: (() => this.router.navigate("/library")) as EventListener,
+            onclick: (() => this.router.navigate(back)) as EventListener,
           }, this.i18n.t("route.library.title")),
           renderLibraryReader(result.name, result.pages, this.i18n)));
       } else if ("queued" in result) {
@@ -909,6 +929,7 @@ export class MiniAppShell {
       tournament_capacity_restriction: "lobby.error.players",
       tournament_packet_limit_exceeded: "lobby.error.packet_count",
       tournament_membership_required: "lobby.error.membership",
+      classic_participants_required: "classic.participants_required",
     };
     const violations = lobby.validation_violations.length
       ? element("aside", { className: "lobby-warnings", role: "alert" },
@@ -1129,6 +1150,14 @@ export class MiniAppShell {
     });
     const finalized = resource.finalized_at != null;
     const finished = resource.tournament.status === "completed";
+    const startButton = resource.tournament.type_key === "classic" ? null : element("button", {
+      type: "button", className: "primary-button",
+      disabled: !can("start_tournament"),
+      onclick: (() => void this.mutateManagerManagement(route, "/start", {
+        expected_version: resource.settings_version,
+      })) as EventListener,
+    }, this.i18n.t(resource.tournament.actual_starts_at
+      ? "manager_management.started" : "manager_management.start"));
     const finalizeButton = element(
       "button",
       {
@@ -1169,6 +1198,7 @@ export class MiniAppShell {
     section(
       "general",
       counts,
+      this.managerNavigationButton(route, "settings"),
       element(
         "div",
         { className: "management-control" },
@@ -1180,8 +1210,21 @@ export class MiniAppShell {
             : "manager_management.registration_scheduled_closed",
         )),
       ),
-      element("div", { className: "settings-actions" }, finalizeButton, finishButton),
+      element("div", { className: "settings-actions" }, startButton, finalizeButton, finishButton),
     );
+    if (resource.classic) {
+      for (const kind of ["first", "playoff"] as const) {
+        const stage = resource.classic.stages.find((s) => s.kind === kind);
+        panels.get("general")?.append(element("button", {
+          type: "button", className: "primary-button",
+          disabled: !finalized || finished || !stage || stage.stage_type === "none" || !!stage.started_at,
+          onclick: (() => void this.mutateClassic(route, resource.settings_version, "start", kind, {})) as EventListener,
+        }, this.i18n.t(kind === "first" ? "classic.start_first" : "classic.start_playoff")));
+        section(kind === "first" ? "first_stage" : "playoff_stage",
+          this.classicRounds(route, resource, stage));
+      }
+      section("first_round_seeding", this.classicSeeding(route, resource));
+    }
 
     const registrationList = resource.registrations.length
       ? element(
@@ -1240,7 +1283,7 @@ export class MiniAppShell {
       );
       const tableContainer = element("div", { className: "packet-access-table-wrap" });
       const renderPacket = (packet: ManagementPacket): void => {
-        replaceChildren(tableContainer, this.packetAccessTable(route, packet, can("packet_access")));
+        replaceChildren(tableContainer, this.packetAccessTable(route, packet, can("packet_access"), resource.tournament.type_key === "classic"));
       };
       picker.addEventListener("change", () => {
         const selected = resource.packets.find((packet) => packet.assignment_id === picker.value);
@@ -1359,8 +1402,9 @@ export class MiniAppShell {
     route: RouteMatch,
     packet: ManagementPacket,
     enabled: boolean,
+    classic = false,
   ): HTMLElement {
-    const rights = ["playable", "discoverable", "readable"] as const;
+    const rights: Array<"playable" | "discoverable" | "readable"> = classic ? ["readable"] : ["playable", "discoverable", "readable"];
     const table = element("table", { className: "packet-access-table" });
     const head = element("thead", {}, element(
       "tr",
@@ -1402,7 +1446,9 @@ export class MiniAppShell {
         const selected = packet.player_access.filter((player) => player[right]).length;
         return element("td", {}, accessCheckbox(
           right,
-          packet.player_access.length > 0 && selected === packet.player_access.length,
+          packet.player_access.length > 0
+            ? selected === packet.player_access.length
+            : packet.default_access?.[right] ?? false,
           undefined,
           selected > 0 && selected < packet.player_access.length,
         ));
@@ -1417,7 +1463,7 @@ export class MiniAppShell {
       ));
     }
     if (!packet.player_access.length) {
-      body.append(element("tr", {}, element("td", { colspan: "4", className: "empty-table-cell" }, this.i18n.t("manager_management.players_empty"))));
+      body.append(element("tr", {}, element("td", { colspan: String(rights.length + 1), className: "empty-table-cell" }, this.i18n.t("manager_management.players_empty"))));
     }
     table.append(head, body);
     return table;
@@ -1612,6 +1658,8 @@ export class MiniAppShell {
     )));
 
     form.append(
+      this.managerNavigationButton(route, "management"),
+      ...(resource.classic ? [this.classicSettings(route, resource.settings_version, resource.classic)] : []),
       element(
         "p",
         { className: "setup-state" },
@@ -1645,6 +1693,15 @@ export class MiniAppShell {
       ),
       group(
         "manager_settings.registration",
+        element("label", { className: "checkbox-label" }, element("input", {
+          name: "registration_available", type: "checkbox", checked: item.registration_open,
+          disabled: resource.finalized_at == null,
+        }), this.i18n.t("manager_management.registration_available")),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_override_help")),
+        element("label", { className: "checkbox-label" }, element("input", {
+          name: "registration_open", type: "checkbox", checked: resource.registration_enabled,
+        }), this.i18n.t("manager_settings.registration_enabled")),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_help")),
         input("tournament.registration_starts", "registration_starts_at", dateTimeLocal(item.registration_starts_at), "datetime-local"),
         input("tournament.registration_ends", "registration_ends_at", dateTimeLocal(item.registration_ends_at), "datetime-local"),
         element("label", { className: "checkbox-label" }, element("input", {
@@ -1652,6 +1709,7 @@ export class MiniAppShell {
         }), this.i18n.t("manager_settings.ignore_late_registrations")),
         input("tournament.starts", "starts_at", dateTimeLocal(item.starts_at), "datetime-local"),
         input("tournament.ends", "planned_ends_at", dateTimeLocal(item.planned_ends_at), "datetime-local"),
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.schedule_help")),
       ),
       group(
         "manager_settings.gameplay",
@@ -1684,6 +1742,150 @@ export class MiniAppShell {
       void this.saveManagerSettings(route, resource, form);
     });
     this.renderFrame(route, form);
+  }
+
+  private async mutateClassic(route: RouteMatch, version: number, command: string,
+    kind: string, values: Record<string, unknown>): Promise<void> {
+    const controls = Array.from(this.root.querySelectorAll<HTMLButtonElement>("button"));
+    controls.forEach((button) => { button.disabled = true; });
+    try {
+      await this.api.request(`/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/classic`, {
+        method: "POST", body: { expected_version: version, command, kind, values },
+      });
+      this.platform.notifySuccess();
+      await this.load(route);
+    } catch (error) {
+      await this.load(route);
+      this.platform.notifyError();
+      this.showTextDialog(this.i18n.t(`error.${error instanceof ApiError ? error.code : "internal_error"}`), []);
+    }
+  }
+
+  private classicSettings(route: RouteMatch, version: number, classic: ClassicTournament): HTMLElement {
+    const container = element("div", { className: "classic-settings" });
+    for (const kind of ["first", "playoff"] as const) {
+      const stage = classic.stages.find((s) => s.kind === kind);
+      const locked = !!stage?.started_at || (kind === "first" && classic.stages.some((s) => s.kind === "playoff" && s.started_at));
+      const type = element("select", {}, ...(
+        kind === "first" ? ["none", "groups", "quiz"] : ["none", "playoff"]
+      ).map((value) => element("option", { value, selected: value === (stage?.stage_type ?? "none") },
+        this.i18n.t(`classic.${value}` as MessageKey))));
+      const scheme = element("select", {});
+      const refresh = (): void => {
+        replaceChildren(scheme, ...classic.schemes.filter((s) => s.kind === type.value).map((s) =>
+          element("option", { value: s.id, selected: s.id === stage?.scheme_key },
+            `${s.id} · ${s.size} ${this.i18n.t("classic.players")} · ${s.round_count} ${this.i18n.t("classic.rounds")}`)));
+        scheme.disabled = locked || !["groups", "playoff"].includes(type.value);
+      };
+      type.addEventListener("change", refresh);
+      refresh();
+      const points = element("input", { value: (stage?.place_points ?? ["4", "3", "2", "1"]).join(", ") });
+      const multiplier = element("input", { type: "number", step: "any", value: stage?.score_multiplier ?? "0.02" });
+      container.append(element("fieldset", { disabled: locked },
+        element("legend", {}, this.i18n.t(kind === "first" ? "manager_management.first_stage" : "manager_management.playoff_stage")),
+        element("label", {}, this.i18n.t("classic.type"), type),
+        element("label", {}, this.i18n.t("classic.scheme"), scheme),
+        kind === "first" ? element("label", {}, this.i18n.t("classic.points"), points) : null,
+        kind === "first" ? element("label", {}, this.i18n.t("classic.multiplier"), multiplier) : null,
+        element("button", { type: "button", className: "primary-button", onclick: (() => void this.mutateClassic(route, version, "configure", kind, {
+          stage_type: type.value, scheme_key: scheme.value || null,
+          ...(kind === "first" ? {
+            place_points: points.value.split(",").map((p) => p.trim()), score_multiplier: multiplier.value,
+          } : {}),
+        })) as EventListener }, this.i18n.t("classic.save_stage")),
+        locked ? element("p", {}, this.i18n.t("classic.locked")) : null,
+      ));
+    }
+    return container;
+  }
+
+  private classicRounds(route: RouteMatch, resource: TournamentManagerManagementResource, stage?: ClassicStage): HTMLElement {
+    const container = element("div", { className: "classic-rounds" });
+    const names = new Map(resource.classic?.players.map((p) => [p.id, p.name]));
+    if (!stage || stage.stage_type === "none") {
+      container.append(element("p", {}, this.i18n.t("classic.configure_first")));
+      return container;
+    }
+    const stageStarted = !!stage.started_at;
+    if (!stageStarted) container.append(element("p", { className: "packet-warnings", role: "status" },
+      this.i18n.t("classic.packet_access_requires_start")));
+    for (const round of stage.rounds) {
+      const packet = element("select", {}, element("option", { value: "" }, "—"),
+        ...resource.packets.map((p) => element("option", { value: p.assignment_id, selected: p.assignment_id === round.assignment_id }, p.name)));
+      packet.disabled = round.packet_locked;
+      const discoverable = element("input", { type: "checkbox", role: "switch", checked: round.discoverable, disabled: !stageStarted });
+      const playable = element("input", { type: "checkbox", role: "switch", checked: round.playable, disabled: !stageStarted });
+      const accessChanges: Record<string, boolean> = {};
+      discoverable.addEventListener("change", () => { accessChanges.discoverable = discoverable.checked; });
+      playable.addEventListener("change", () => { accessChanges.playable = playable.checked; });
+      const deadline = element("input", { type: "datetime-local", value: dateTimeLocal(round.start_deadline) });
+      container.append(element("article", { className: "resource-card" },
+        element("h3", {}, `${this.i18n.t("classic.round")} ${round.number}`),
+        element("label", {}, this.i18n.t("manager_management.packet_select"), packet),
+        element("label", { className: "switch-label" }, discoverable, this.i18n.t("manager_management.discoverable")),
+        element("label", { className: "switch-label" }, playable, this.i18n.t("manager_management.playable")),
+        element("label", {}, this.i18n.t("classic.deadline"), deadline),
+        element("p", { className: "field-help" }, this.i18n.t("classic.deadline_help")),
+        element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
+          onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
+            round_id: round.id, assignment_id: packet.value || null,
+            ...(stageStarted ? accessChanges : {}),
+            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
+          })) as EventListener }, this.i18n.t("classic.save_round")),
+        element("button", { type: "button", className: "secondary-button", disabled: resource.tournament.status !== "active",
+          onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
+            round_id: round.id, assignment_id: packet.value || null, discoverable: null, playable: null,
+            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
+          })) as EventListener }, this.i18n.t("classic.use_packet_defaults")),
+        ...round.matches.map((m) => {
+          const results = m.results?.map((r) => `${r.place}. ${r.seat.startsWith("chair:") ? this.i18n.t("classic.chair") : names.get(r.seat) ?? r.seat} (${r.score})`).join("; ");
+          return element("p", {},
+            `${this.i18n.t("classic.group")} ${m.group} · ${this.i18n.t("classic.game")} ${m.number}: ${results || m.players.join(", ") || this.i18n.t("classic.awaiting_results")} · ${this.i18n.t(m.randomized ? "classic.randomized" : m.results ? "classic.completed" : m.game_id ? "classic.running" : "classic.pending")}`);
+        }),
+      ));
+    }
+    if (stage.standings.length) container.append(element("table", {},
+      element("thead", {}, element("tr", {}, ...["classic.players", ...(stage.stage_type === "quiz" ? [] : ["classic.total_points"]), "classic.score"].map((k) => element("th", {}, this.i18n.t(k as MessageKey))))),
+      element("tbody", {}, ...stage.standings.map((row) => element("tr", {}, element("td", {}, row.name), stage.stage_type === "quiz" ? null : element("td", {}, row.points), element("td", {}, row.score))))));
+    return container;
+  }
+
+  private classicSeeding(route: RouteMatch, resource: TournamentManagerManagementResource): HTMLElement {
+    const classic = resource.classic!;
+    const container = element("div", { className: "classic-seeding" });
+    const first = classic.stages.find((s) => s.kind === "first" && s.stage_type !== "none");
+    const stage = first ?? classic.stages.find((s) => s.kind === "playoff" && s.stage_type !== "none");
+    if (!stage) return element("p", {}, this.i18n.t("classic.configure_first"));
+    const locked = !!stage.started_at || resource.tournament.status !== "active";
+    container.append(element("p", {}, this.i18n.t("classic.seeding_help")));
+    for (const mode of ["automatic", "random"] as const) container.append(element("button", {
+      type: "button", className: "secondary-button", disabled: locked,
+      onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, { mode })) as EventListener,
+    }, this.i18n.t(`classic.${mode}`)));
+    const groups: HTMLSelectElement[][] = [];
+    stage.seeds.forEach((group, i) => {
+      const selectors = group.map((seat) => element("select", { disabled: locked },
+        element("option", { value: "", selected: seat === null || seat.startsWith("chair:") }, this.i18n.t("classic.chair")),
+        ...classic.players.map((p) => element("option", { value: p.id, selected: p.id === seat }, p.name))));
+      groups.push(selectors);
+      container.append(element("fieldset", {}, element("legend", {}, `${this.i18n.t("classic.group")} ${i + 1}`),
+        ...selectors.map((select, index) => element("label", {}, `${this.i18n.t("classic.seat")} ${index + 1}`, select))));
+    });
+    if (groups.length) container.append(element("button", { type: "button", className: "primary-button", disabled: locked,
+      onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, {
+        mode: "manual", seeds: groups.map((group) => group.map((select) => select.value || null)),
+      })) as EventListener }, this.i18n.t("classic.save_seeding")));
+    return container;
+  }
+
+  private managerNavigationButton(route: RouteMatch, view: "settings" | "management"): HTMLButtonElement {
+    return element("button", {
+      type: "button",
+      className: "secondary-button",
+      onclick: (() => this.router.navigate(
+        `/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/${view}`,
+      )) as EventListener,
+    }, this.i18n.t(view === "settings" ? "route.manager_settings.title" : "route.manager_management.title"));
   }
 
   private renderDescriptorGroup(
@@ -1936,7 +2138,9 @@ export class MiniAppShell {
             language: value("language"),
             payment_type: value("payment_type"),
             pricing_plans: value("payment_type") === "free" ? [] : this.pricingPlans(form),
-            registration_open: resource.registration_enabled,
+            registration_open: value("registration_open") === "on",
+            ...(resource.finalized_at != null && data.has("registration_available") !== resource.tournament.registration_open
+              ? { registration_open_override: data.has("registration_available") } : {}),
             ignore_late_registrations: data.has("ignore_late_registrations"),
             registration_starts_at: timestamp("registration_starts_at"),
             registration_ends_at: timestamp("registration_ends_at"),
@@ -2134,6 +2338,58 @@ export class MiniAppShell {
     else dialog.setAttribute("open", "");
   }
 
+  private promptSuspicionClear(route: RouteMatch, card: SuspicionLedgerCard): void {
+    const note = element("textarea", { rows: "3" }) as HTMLTextAreaElement;
+    const form = element(
+      "form",
+      { className: "settings-form" },
+      element("h2", {}, card.display_name ?? card.telegram_username ?? card.player_id),
+      element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${card.player_id}`),
+      element("p", {}, this.i18n.t("admin_suspicion.clear_prompt")),
+      element("label", {}, this.i18n.t("admin_suspicion.clear_note"), note),
+      element(
+        "div",
+        { className: "settings-actions" },
+        element("button", { type: "submit", className: "primary-button" }, this.i18n.t("admin_suspicion.clear_confirm")),
+        element(
+          "button",
+          {
+            type: "button",
+            className: "secondary-button",
+            onclick: (() => this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion")) as EventListener,
+          },
+          this.i18n.t("admin_suspicion.clear_cancel"),
+        ),
+      ),
+    ) as HTMLFormElement;
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const value = note.value.trim();
+      if (!value) return;
+      void this.submitSuspicionClear(route, card, value);
+    });
+    this.renderFrame(route, element("section", { className: "route-content" }, form));
+  }
+
+  private async submitSuspicionClear(
+    route: RouteMatch,
+    card: SuspicionLedgerCard,
+    note: string,
+  ): Promise<void> {
+    this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
+    try {
+      await this.api.request(
+        `/api/miniapp/admin/suspicion/ledger/${encodeURIComponent(card.player_id)}/clear`,
+        { method: "POST", body: { note } },
+      );
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_suspicion.clear"), [this.i18n.t(`error.${code}`)]);
+      return;
+    }
+    this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion");
+  }
+
   private showTextDialog(title: string, lines: string[]): void {
     const dialog = element(
       "dialog",
@@ -2159,6 +2415,189 @@ export class MiniAppShell {
 
   private badge(label: string, kind = "default"): HTMLElement {
     return element("span", { className: `badge badge-${kind}` }, label);
+  }
+
+  private renderSuspicionLedger(route: RouteMatch, resource: AdminSuspicionLedgerResource): void {
+    if (!resource.items.length) {
+      this.renderFrame(
+        route,
+        this.statusCard("empty", this.i18n.t("route.admin_suspicion.empty")),
+      );
+      return;
+    }
+    const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
+    for (const card of resource.items) {
+      const rulesetLines = card.rulesets.length
+        ? card.rulesets.map(
+            (stat) =>
+              `${stat.ruleset_key}: ${this.i18n.t("admin_suspicion.rating")} ${
+                stat.rating ?? "—"
+              }, ${this.i18n.t("admin_suspicion.games_played")} ${stat.games_played}`,
+          )
+        : [this.i18n.t("admin_suspicion.no_rulesets")];
+      const children: (Node | null)[] = [
+        element("h2", {}, card.display_name ?? card.telegram_username ?? card.player_id),
+        element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${card.player_id}`),
+        element("p", {}, `${this.i18n.t("admin_suspicion.suspicion")}: ${card.suspicion}`),
+        element("h3", {}, this.i18n.t("admin_suspicion.rulesets")),
+        ...rulesetLines.map((line) => element("p", {}, line)),
+      ];
+      if (card.reports.length) {
+        children.push(
+          element("h3", {}, this.i18n.t("admin_suspicion.reports")),
+          ...card.reports.map((report) => element("p", {}, `${report.kind}: ${report.count}`)),
+        );
+      }
+      children.push(
+        element(
+          "div",
+          { className: "settings-actions" },
+          element(
+            "button",
+            {
+              type: "button",
+              className: "primary-button",
+              onclick: (() => void this.inspectSuspicion(route, card)) as EventListener,
+            },
+            this.i18n.t("admin_suspicion.inspect"),
+          ),
+          element(
+            "button",
+            {
+              type: "button",
+              className: "secondary-button",
+              onclick: (() => this.promptSuspicionClear(route, card)) as EventListener,
+            },
+            this.i18n.t("admin_suspicion.clear"),
+          ),
+        ),
+      );
+      list.append(
+        element(
+          "article",
+          { className: "resource-card", "data-player-id": card.player_id },
+          ...children.filter((child): child is Node => child !== null),
+        ),
+      );
+    }
+    this.renderFrame(route, element("section", { className: "route-content" }, list));
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderAdminManagementRoute(route: RouteMatch, resource: AdminManagementResource): void {
+    const filterKey = `admin_management_${resource.section}`;
+    this.renderFrame(route, renderAdminManagement(resource, this.i18n, this.filters.read(filterKey),
+      (filters) => this.filters.write(filterKey, filters),
+      (path) => this.router.navigate(path),
+      (card, command, button) => void this.adminManagementAction(route, resource, card, command, button)));
+  }
+
+  private async adminManagementAction(route: RouteMatch, resource: AdminManagementResource,
+    card: AdminCard, command: string, button: HTMLButtonElement): Promise<void> {
+    if (command === "view" || command === "download") {
+      await this.accessLibrary(route, card.id, command, button);
+      return;
+    }
+    const suspicionCard: SuspicionLedgerCard = {
+      player_id: card.id, display_name: typeof card.public_nickname === "string" ? card.public_nickname : null,
+      telegram_username: typeof card.telegram_username === "string" ? card.telegram_username : null,
+      suspicion: Number(card.suspicion ?? 0), rulesets: [], reports: [],
+    };
+    if (command === "review_suspicion") { await this.inspectSuspicion(route, suspicionCard); return; }
+    if (command === "clear_suspicion") { this.promptSuspicionClear(route, suspicionCard); return; }
+    const body: Record<string, unknown> = {};
+    if (resource.section === "tournaments") {
+      if (!window.confirm(this.i18n.t(`admin_management.${command}_confirm` as MessageKey))) return;
+      body.confirm = true; body.expected_version = card.settings_version;
+    } else if (command === "link") {
+      const target = window.prompt(this.i18n.t("admin_management.link_prompt"));
+      if (!target?.trim()) return;
+      body.target = target.trim();
+    } else if (command === "ban") {
+      const reason = window.prompt(this.i18n.t("admin_management.ban_prompt"));
+      if (reason === null) return;
+      body.reason = reason.trim() || null;
+    } else if (!window.confirm(this.i18n.t("admin_management.unban_confirm"))) return;
+    button.disabled = true;
+    try {
+      await this.api.request(`/api/miniapp/admin/management/${resource.section}/${encodeURIComponent(card.id)}/${command}`,
+        { method: "POST", body, signal: this.request?.signal });
+      await this.load(route);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
+      if (code === "stale_write") await this.load(route);
+    } finally { button.disabled = false; }
+  }
+
+  private async inspectSuspicion(route: RouteMatch, card: SuspicionLedgerCard): Promise<void> {
+    this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
+    try {
+      const payload = await this.api.request<AdminSuspicionInspectionPayload>(
+        `/api/miniapp/admin/suspicion/ledger/${encodeURIComponent(card.player_id)}/events`,
+      );
+      this.renderSuspicionInspection(route, payload);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.renderError(route, code);
+    }
+  }
+
+  private renderSuspicionInspection(
+    route: RouteMatch,
+    payload: AdminSuspicionInspectionPayload,
+  ): void {
+    const player = payload.player;
+    const events: Node[] = payload.events.length
+      ? payload.events.map((event) =>
+          element(
+            "article",
+            { className: "library-question" },
+            element(
+              "h3",
+              {},
+              `${event.reason}${event.ruleset_key ? ` · ${event.ruleset_key}` : ""} · ${this.formatDate(event.created_at)}`,
+            ),
+            element(
+              "p",
+              {},
+              `${this.i18n.t("admin_suspicion.event_delta")}: ${event.before} → ${event.after} (+${event.delta})`,
+            ),
+            event.note
+              ? element("p", {}, `${this.i18n.t("admin_suspicion.note")}: ${event.note}`)
+              : null,
+            ...event.evidence.map((evidence) =>
+              element(
+                "p",
+                {},
+                `${this.i18n.t("admin_suspicion.evidence")}: ${evidence.signal} · ${this.formatDate(evidence.created_at)}`,
+              ),
+            ),
+          ),
+        )
+      : [element("p", {}, this.i18n.t("admin_suspicion.no_events"))];
+    this.renderFrame(
+      route,
+      element(
+        "section",
+        { className: "route-content" },
+        element("h2", {}, player.display_name ?? player.telegram_username ?? player.id),
+        element("p", {}, `${this.i18n.t("admin_suspicion.player_id")}: ${player.id}`),
+        element("p", {}, `${this.i18n.t("admin_suspicion.suspicion")}: ${player.suspicion}`),
+        element("h3", {}, this.i18n.t("admin_suspicion.events_title")),
+        ...events,
+        element(
+          "button",
+          {
+            type: "button",
+            className: "secondary-button",
+            onclick: (() => this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion")) as EventListener,
+          },
+          this.i18n.t("admin_suspicion.back_to_ledger"),
+        ),
+      ),
+    );
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
   private detail(label: string, value: string): HTMLElement {
@@ -2282,6 +2721,12 @@ function isPlayerGameResource(value: RoutePayload["resource"]): value is PlayerG
 
 function isOngoingResource(value: RoutePayload["resource"]): value is OngoingResource {
   return "kind" in value && value.kind === "ongoing";
+}
+
+function isSuspicionLedgerResource(
+  value: RoutePayload["resource"],
+): value is AdminSuspicionLedgerResource {
+  return "kind" in value && value.kind === "admin_suspicion_ledger";
 }
 
 function isTournamentAction(value: string): value is TournamentAction {

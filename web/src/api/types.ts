@@ -63,6 +63,7 @@ export interface TournamentListItem {
   starts_at?: string | null;
   planned_ends_at?: string | null;
   actual_ends_at?: string | null;
+  actual_starts_at?: string | null;
   language: string;
   payment_type: string;
   pricing_plans: TournamentPricingPlan[];
@@ -108,6 +109,7 @@ export interface TournamentDetailsPayload {
 }
 
 export interface TournamentManagerSettingsResource {
+  classic?: ClassicTournament | null;
   kind: "manager_settings";
   state: "ready";
   tournament: TournamentListItem;
@@ -132,6 +134,9 @@ export interface TournamentManagerSettingsResource {
 }
 
 export type ManagementSection =
+  | "first_stage"
+  | "playoff_stage"
+  | "first_round_seeding"
   | "general"
   | "registrations"
   | "packet_accessibility"
@@ -155,6 +160,7 @@ export interface ManagementPacketPlayerAccess {
 }
 
 export interface ManagementPacket {
+  default_access?: Record<"playable" | "discoverable" | "readable", boolean> | null;
   assignment_id: string;
   packet_id: string;
   packet_version_id?: string | null;
@@ -169,6 +175,7 @@ export interface ManagementPacket {
 }
 
 export interface TournamentManagerManagementResource {
+  classic?: ClassicTournament | null;
   kind: "manager_management";
   state: "ready";
   tournament: TournamentListItem;
@@ -185,6 +192,32 @@ export interface TournamentManagerManagementResource {
   registrations: ManagementRegistration[];
   packets: ManagementPacket[];
   available_actions: string[];
+}
+
+export interface ClassicStage {
+  kind: "first" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "playoff";
+  scheme_key: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  seeds: Array<Array<string | null>>;
+  place_points: string[];
+  score_multiplier: string;
+  standings: Array<{ seat: string; name: string; points: string; score: string }>;
+  rounds: Array<{
+    id: string; number: number; assignment_id: string | null;
+    discoverable: boolean; playable: boolean; start_deadline: string | null;
+    packet_locked: boolean;
+    matches: Array<{ id: string; group: number; number: number; players: string[];
+      results: Array<{ seat: string; place: string; score: string }> | null;
+      randomized: boolean; game_id: string | null }>;
+  }>;
+}
+
+export interface ClassicTournament {
+  schemes: Array<{ id: string; kind: string; size: number; round_count: number }>;
+  players: Array<{ id: string; name: string }>;
+  stages: ClassicStage[];
 }
 
 export interface ManagerSettingDescriptor {
@@ -509,6 +542,69 @@ export interface PlayerGameResource {
   themes: PlayerGameTheme[];
 }
 
+export interface SuspicionRulesetStat {
+  ruleset_key: string;
+  rating: number | null;
+  games_played: number;
+}
+
+export interface SuspicionLedgerCard {
+  player_id: string;
+  display_name: string | null;
+  telegram_username: string | null;
+  suspicion: number;
+  rulesets: SuspicionRulesetStat[];
+  reports: Array<{ kind: string; count: number }>;
+}
+
+export interface SuspicionEvidence {
+  signal: string;
+  ruleset_key: string;
+  summary: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface SuspicionEvent {
+  id: number | string;
+  reason: string;
+  ruleset_key: string | null;
+  delta: number;
+  before: number;
+  after: number;
+  note: string | null;
+  created_at: string;
+  evidence: SuspicionEvidence[];
+}
+
+export interface AdminSuspicionLedgerResource {
+  kind: "admin_suspicion_ledger";
+  state: "ready" | "empty";
+  items: SuspicionLedgerCard[];
+}
+
+export type AdminSection = "tournaments" | "authors" | "players" | "packets";
+export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
+export interface AdminCard {
+  id: string;
+  [key: string]: AdminValue;
+}
+export interface AdminManagementResource {
+  kind: "admin_management";
+  state: "ready";
+  section: AdminSection;
+  items: AdminCard[];
+}
+
+export interface AdminSuspicionInspectionPayload {
+  player: {
+    id: string;
+    display_name: string | null;
+    telegram_username: string | null;
+    suspicion: number;
+  };
+  events: SuspicionEvent[];
+}
+
 export interface RoutePayload {
   locale: Locale;
   authorization: RouteAuthorization;
@@ -522,7 +618,9 @@ export interface RoutePayload {
     | PacketDraftResource
     | LibraryResource
     | PlayerProfileResource
-    | PlayerGameResource;
+    | PlayerGameResource
+    | AdminSuspicionLedgerResource
+    | AdminManagementResource;
   pagination?: PageCursor;
 }
 

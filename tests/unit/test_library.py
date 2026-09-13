@@ -95,5 +95,5 @@ def test_library_actions_require_csrf_and_idempotency_without_trusting_identity(
 
 def test_library_launch_link_uses_shared_mini_app():
     assert mini_app_route_url("https://mini.example.test/app", "library") == (
-        "https://mini.example.test/app/library"
+        "https://mini.example.test/app/library?_launch=1"
     )

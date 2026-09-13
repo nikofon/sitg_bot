@@ -205,6 +205,13 @@ def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService):
             text = localization.text(
                 "lobby.packet_selected", locale, packet_name=payload["packet_name"]
             )
+            if payload.get("classic_players"):
+                key = (
+                    "lobby.classic_solo" if payload.get("classic_solo") else "lobby.classic_players"
+                )
+                text += "\n" + localization.text(
+                    key, locale, players=", ".join(payload["classic_players"])
+                )
         try:
             await bot.send_message(
                 int(payload["recipient_telegram_user_id"]), text, reply_markup=keyboard

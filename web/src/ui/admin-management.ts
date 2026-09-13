@@ -1,0 +1,114 @@
+import type { AdminCard, AdminManagementResource, AdminValue } from "../api/types";
+import type { I18n } from "../i18n";
+import type { MessageKey } from "../i18n/en";
+import { element } from "./dom";
+
+export function renderAdminManagement(
+  resource: AdminManagementResource, i18n: I18n, filters: Record<string, string>,
+  save: (filters: Record<string, string>) => void,
+  navigate: (path: string) => void,
+  action: (card: AdminCard, command: string, button: HTMLButtonElement) => void,
+): HTMLElement {
+  const label = (key: string): string => {
+    const translated = `admin_management.${key}` as MessageKey;
+    const value = i18n.t(translated);
+    return value ?? key.replaceAll("_", " ");
+  };
+  const name = (card: Record<string, AdminValue>): string =>
+    String(card.name ?? card.display_name ?? card.public_nickname ?? card.telegram_username ?? card.id ?? "—");
+  const link = (path: string, text: string): HTMLAnchorElement => element("a", {
+    href: path, onclick: ((event: Event) => { event.preventDefault(); navigate(path); }) as EventListener,
+  }, text);
+  const metadata = (data: Record<string, AdminValue>): HTMLElement => element("dl", {
+    className: "admin-metadata",
+  }, ...Object.entries(data).flatMap(([key, value]) => {
+    if (value !== null && typeof value === "object") {
+      const entries = Array.isArray(value) ? value : [value];
+      return [element("div", {}, element("details", {},
+        element("summary", {}, `${label(key)}${Array.isArray(value) ? ` (${value.length})` : ""}`),
+        ...entries.map((entry) => {
+          if (entry === null || typeof entry !== "object") return element("p", {}, String(entry ?? "—"));
+          if (Array.isArray(entry)) return element("p", {}, entry.join(", "));
+          const profile = (key === "players" || key === "managers") && typeof entry.id === "string"
+            ? link(`/players/${entry.id}`, name(entry))
+            : key === "tournaments" && typeof entry.id === "string"
+              ? link(`/tournaments?role=admin&info=${entry.id}`, name(entry)) : null;
+          return element("section", { className: "admin-related" }, profile, metadata(entry));
+        })))];
+    }
+    return [element("div", {}, element("dt", {}, label(key)),
+      element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
+  }));
+  const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
+    ...(["tournaments", "authors", "players", "packets"] as const).map((section) => element("button", {
+      type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
+      "aria-current": resource.section === section ? "page" : undefined,
+      onclick: (() => navigate(`/admin/management?section=${section}`)) as EventListener,
+    }, label(section))));
+  const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
+  const card = (item: AdminCard): HTMLElement => {
+    const buttons = element("div", { className: "settings-actions" });
+    const add = (command: string): void => {
+      const className = command === "abolish" || command === "ban" ? "danger-button"
+        : command === "halt" ? "secondary-button warning-button" : "secondary-button";
+      const button = element("button", { type: "button", className }, label(command));
+      button.addEventListener("click", () => action(item, command, button));
+      buttons.append(button);
+    };
+    let profile: HTMLElement | null = null;
+    if (resource.section === "tournaments") {
+      profile = link(`/tournaments?role=admin&info=${item.id}`, label("profile"));
+      if (item.moderation_status === "halted") add("resume");
+      else if (item.moderation_status === "normal" && item.status === "active"
+        && item.actual_starts_at && !item.actual_ends_at) add("halt");
+      if (item.moderation_status !== "abolished") add("abolish");
+    } else if (resource.section === "authors") add("link");
+    else if (resource.section === "players") {
+      profile = link(`/players/${item.id}`, label("profile"));
+      if (!item.administrator) add(item.ban ? "unban" : "ban");
+      add("clear_suspicion"); add("review_suspicion");
+    } else { add("view"); add("download"); }
+    const essentialKeys = {
+      tournaments: ["id", "status", "moderation_status", "type", "ruleset", "language", "starts_at", "actual_starts_at", "actual_ends_at", "participants", "managers", "packets"],
+      authors: ["id", "questions", "themes", "packet_count", "players", "tournaments", "packets"],
+      players: ["id", "real_name", "telegram_username", "suspicion", "reputation", "ban", "games_played", "rulesets", "reports"],
+      packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
+    }[resource.section];
+    const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
+    const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)));
+    return element("article", { className: "resource-card admin-card", "data-resource-id": item.id },
+      element("h2", {}, name(item)), profile, metadata(essential),
+      element("details", {}, element("summary", {}, label("details")), metadata(remaining)), buttons);
+  };
+  const render = (): void => {
+    const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
+    const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc" : "name:asc");
+    const [key, direction] = order.split(":");
+    const items = resource.items.filter((item) => JSON.stringify(item).toLocaleLowerCase(i18n.locale).includes(search));
+    const value = (item: AdminCard): string | number => key === "name" ? name(item) :
+      typeof item[key!] === "number" ? item[key!] as number : String(item[key!] ?? "");
+    items.sort((a, b) => {
+      const first = value(a), second = value(b);
+      const comparison = typeof first === "number" && typeof second === "number"
+        ? first - second : String(first).localeCompare(String(second), i18n.locale, { numeric: true });
+      return comparison * (direction === "desc" ? -1 : 1) || a.id.localeCompare(b.id);
+    });
+    list.replaceChildren(...items.map(card));
+    if (!items.length) list.append(element("p", {}, label("empty")));
+  };
+  const search = element("input", { type: "search", value: filters.search ?? "", "aria-label": label("search") });
+  search.addEventListener("input", () => { filters.search = search.value; save(filters); render(); });
+  const sortKeys = ["name", "created_at", ...{
+    tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
+    players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
+  }[resource.section]];
+  const sort = element("select", { "aria-label": label("sort") }, ...sortKeys.flatMap((key) =>
+    ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
+      `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
+  sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc" : "name:asc");
+  sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
+  render();
+  return element("section", { className: "route-content" }, tabs,
+    element("div", { className: "lobby-packet-filters", role: "search" },
+      element("label", {}, label("search"), search), element("label", {}, label("sort"), sort)), list);
+}

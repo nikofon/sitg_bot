@@ -47,6 +47,8 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0005_manual_tournament_start` adds manual starts and scheduled reminders, preserving
+existing tournaments with games or started Classic stages. Others require a manual start.
 Revision `0002_token_delivery_pgcrypto` enables PostgreSQL `pgcrypto`, required for encrypted
 one-time token delivery when `SITG_TOKEN_DELIVERY_KEY` is configured. The migration role needs
 permission to create this extension. Downgrading preserves it because it may be shared.

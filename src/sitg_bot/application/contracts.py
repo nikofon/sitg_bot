@@ -48,6 +48,7 @@ class ActionCode(StrEnum):
     TOURNAMENT_MANAGER_MANAGEMENT = "tournaments.manager.management.v1"
     TOURNAMENT_MANAGER_MANAGEMENT_LINK = "tournaments.manager.management.link.v1"
     TOURNAMENT_REGISTRATION_OVERRIDE = "tournaments.manager.registration.override.v1"
+    TOURNAMENT_CLASSIC_UPDATE = "tournaments.manager.classic.update.v1"
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
@@ -61,6 +62,7 @@ class ActionCode(StrEnum):
     PACKET_MANAGEMENT_DELETE = "packets.management.delete.v1"
     PACKET_MANAGEMENT_RELEASE = "packets.management.release.v1"
     TOURNAMENT_COMPLETE = "tournaments.manager.complete.v1"
+    TOURNAMENT_START = "tournaments.manager.start.v1"
     PACKET_UPLOAD_ELIGIBILITY = "packets.upload.eligibility.v1"
     PACKET_UPLOAD = "packets.upload.v1"
     PACKET_DRAFT_GET = "packets.drafts.get.v1"
@@ -102,6 +104,16 @@ class ActionCode(StrEnum):
     CHAT_SEND = "chat.send.v1"
     GAME_APPEAL_TICKETS = "games.appeals.manager.list.v1"
     GAME_APPEAL_DECIDE = "games.appeals.manager.decide.v1"
+    PLAYER_BAN = "platform.players.ban.v1"
+    PLAYER_UNBAN = "platform.players.unban.v1"
+    BUG_REPORT_CREATE = "platform.bug_reports.create.v1"
+    ADMIN_SUSPICION_LEDGER = "platform.admin.suspicion.ledger.v1"
+    ADMIN_SUSPICION_INSPECT = "platform.admin.suspicion.inspect.v1"
+    ADMIN_SUSPICION_CLEAR = "platform.admin.suspicion.clear.v1"
+    ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
+    ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
+    ADMIN_AUTHOR_LINK = "platform.admin.authors.link.v1"
+    ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
 
 
 class ErrorCode(StrEnum):
@@ -332,6 +344,7 @@ class TournamentManagerSettingsUpdateOperation(ContractModel):
     payment_type: Literal["free", "one-time", "per-stage"]
     pricing_plans: list[dict[str, JsonValue]] = Field(default_factory=list)
     registration_open: bool
+    registration_open_override: bool | None = Field(default=None, strict=True)
     ignore_late_registrations: bool = True
     registration_starts_at: datetime | None = None
     registration_ends_at: datetime | None = None
@@ -369,6 +382,51 @@ class TournamentManagerManagementLinkOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_MANAGER_MANAGEMENT_LINK]
 
 
+class ClassicConfigurationValues(ContractModel):
+    stage_type: Literal["none", "groups", "quiz", "playoff"]
+    scheme_key: str | None = None
+    place_points: list[str | float] = Field(
+        default_factory=lambda: ["4", "3", "2", "1"], min_length=1, max_length=12
+    )
+    score_multiplier: str | float = "0.02"
+
+
+class ClassicSeedingValues(ContractModel):
+    mode: Literal["automatic", "random", "manual"] = "automatic"
+    seeds: list[list[UUID | None]] | None = None
+
+
+class ClassicRoundValues(ContractModel):
+    round_id: UUID
+    assignment_id: UUID | None = None
+    discoverable: bool | None = Field(default=None, strict=True)
+    playable: bool | None = Field(default=None, strict=True)
+    start_deadline: datetime | None = None
+
+
+class TournamentClassicUpdateOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CLASSIC_UPDATE]
+    tournament_id: UUID
+    expected_version: int = Field(ge=1)
+    command: Literal["configure", "seed", "round", "start"]
+    kind: Literal["first", "playoff"]
+    values: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_values(self):
+        schema = {
+            "configure": ClassicConfigurationValues,
+            "seed": ClassicSeedingValues,
+            "round": ClassicRoundValues,
+            "start": ContractModel,
+        }[self.command]
+        parsed = schema.model_validate(self.values)
+        object.__setattr__(
+            self, "values", parsed.model_dump(mode="json", exclude_unset=self.command == "round")
+        )
+        return self
+
+
 class TournamentRegistrationOverrideOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_REGISTRATION_OVERRIDE]
     tournament_id: UUID | None = None
@@ -394,6 +452,12 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
 
 class TournamentCompleteOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_COMPLETE]
+    tournament_id: UUID | None = None
+    expected_version: int = Field(ge=1)
+
+
+class TournamentStartOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_START]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
 
@@ -685,6 +749,65 @@ class PlayerReportOperation(ContractModel):
     details: str | None = Field(default=None, max_length=2000)
 
 
+class PlayerBanOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_BAN]
+    target: str = Field(min_length=1, max_length=200)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class PlayerUnbanOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_UNBAN]
+    target: str = Field(min_length=1, max_length=200)
+
+
+class BugReportCreateOperation(ContractModel):
+    action: Literal[ActionCode.BUG_REPORT_CREATE]
+    commentary: str = Field(min_length=1, max_length=4000)
+
+
+class AdminManagementListOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
+    section: Literal["tournaments", "authors", "players", "packets"] = "tournaments"
+
+
+class AdminTournamentModerateOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TOURNAMENT_MODERATE]
+    tournament_id: UUID
+    command: Literal["halt", "resume", "abolish"]
+    expected_version: int = Field(ge=1)
+    confirm: bool = Field(default=False, strict=True)
+
+
+class AdminAuthorLinkOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AUTHOR_LINK]
+    author_id: UUID
+    target: str = Field(min_length=1, max_length=200)
+
+
+class AdminPacketAccessOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_PACKET_ACCESS]
+    version_id: UUID
+    command: Literal["view", "download"]
+    confirm: bool = Field(default=False, strict=True)
+
+
+class AdminSuspicionLedgerOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_LEDGER]
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class AdminSuspicionInspectOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_INSPECT]
+    player_id: UUID
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class AdminSuspicionClearOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_SUSPICION_CLEAR]
+    player_id: UUID
+    note: str = Field(min_length=1, max_length=2000)
+
+
 GatewayOperation = Annotated[
     CapabilitiesOperation
     | AdminAuthenticateOperation
@@ -721,6 +844,7 @@ GatewayOperation = Annotated[
     | TournamentManagerManagementOperation
     | TournamentManagerManagementLinkOperation
     | TournamentRegistrationOverrideOperation
+    | TournamentClassicUpdateOperation
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation
@@ -732,6 +856,7 @@ GatewayOperation = Annotated[
     | PacketManagementUpdateOperation
     | PacketManagementActionOperation
     | TournamentCompleteOperation
+    | TournamentStartOperation
     | PacketUploadEligibilityOperation
     | PacketUploadOperation
     | PacketDraftGetOperation
@@ -764,7 +889,17 @@ GatewayOperation = Annotated[
     | GameAppealTicketsOperation
     | GameAppealDecideOperation
     | ReputationVoteOperation
-    | PlayerReportOperation,
+    | PlayerReportOperation
+    | PlayerBanOperation
+    | PlayerUnbanOperation
+    | BugReportCreateOperation
+    | AdminSuspicionLedgerOperation
+    | AdminSuspicionInspectOperation
+    | AdminSuspicionClearOperation
+    | AdminManagementListOperation
+    | AdminTournamentModerateOperation
+    | AdminAuthorLinkOperation
+    | AdminPacketAccessOperation,
     Field(discriminator="action"),
 ]
 

@@ -227,3 +227,4 @@ class NavigationState(FrontendState):
     active_lobby: NavigationLobbyState | None
     active_game: NavigationGameState | None
     allowed_actions: tuple[str, ...]
+    ban_reason: str | None = None

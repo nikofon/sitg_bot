@@ -17,6 +17,7 @@ from sitg_bot.domain.game_rulesets import (
     ValidationViolation,
 )
 from sitg_bot.domain.rating import DEFAULT_CONFIDENCE_MODEL_KEY, confidence_model
+from sitg_bot.services.classic import ClassicService, is_chair
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.persistent_game import GameSnapshot, ParticipantInput, PersistentGameService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -485,6 +486,26 @@ class InvitationMatchmakingService:
             if version is None:
                 raise LookupError("Packet has no published version")
             selected = await self._selected_packets(session, lobby.id)
+            context = await self.tournaments.context(session, lobby.tournament_id)
+            classic_notice = {}
+            if context.type_key == "classic":
+                if any(item.packet_id != packet.id for item in selected):
+                    raise ValueError("Classic games use exactly one round packet")
+                prescribed = await ClassicService.prescribed_match(
+                    session,
+                    lobby.tournament_id,
+                    assignment.id,
+                    [lobby.creator_player_id],
+                    exact=False,
+                )
+                names = []
+                for seat in prescribed.seats:
+                    player = None if is_chair(seat) else await session.get(PlayerRecord, UUID(seat))
+                    names.append("Chair" if player is None else player.public_nickname)
+                classic_notice = {
+                    "classic_players": names,
+                    "classic_solo": len(prescribed.seats) == 1,
+                }
             if not any(item.packet_id == packet.id for item in selected):
                 session.add(
                     PregameLobbyPacketRecord(
@@ -512,6 +533,7 @@ class InvitationMatchmakingService:
                     "packet_id": str(packet.id),
                     "packet_version_id": str(version.id),
                     "packet_name": version.name,
+                    **classic_notice,
                 },
             )
             self._bump(lobby)
@@ -1379,6 +1401,19 @@ class InvitationMatchmakingService:
                     ):
                         raise PermissionError("Every player needs packet game eligibility")
             context = await self.tournaments.context(session, lobby.tournament_id, lock=True)
+            if not context.assembly_open:
+                raise ValueError("tournament_stage_closed")
+            classic_match = None
+            if context.type_key == "classic":
+                if len(selected_packets) != 1:
+                    raise ValueError("Classic games use exactly one round packet")
+                classic_match = await ClassicService.prescribed_match(
+                    session,
+                    lobby.tournament_id,
+                    selected_packets[0].assignment_id,
+                    [m.player_id for m in members],
+                    exact=True,
+                )
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
             available_play_units = await self._available_play_units(
                 session, selected_packets, members, context
@@ -1412,7 +1447,10 @@ class InvitationMatchmakingService:
                 rating_confidence_model=self.rating_confidence_model,
                 host_player_id=members[0].player_id,
                 source_lobby_id=lobby.id,
-                assignment_plan=plan.to_dict(),
+                assignment_plan={
+                    **plan.to_dict(),
+                    **({"classic_match_id": str(classic_match.id)} if classic_match else {}),
+                },
                 join_deadline=now + INITIAL_PLAYER_JOIN_TIMEOUT,
             )
             session.add(game)
@@ -1427,6 +1465,8 @@ class InvitationMatchmakingService:
                     )
                 )
             for seat, member in enumerate(members, 1):
+                if classic_match is not None:
+                    seat = classic_match.seats.index(str(member.player_id)) + 1
                 membership = await session.get(
                     TournamentMembershipRecord,
                     (lobby.tournament_id, member.player_id),
@@ -1463,6 +1503,8 @@ class InvitationMatchmakingService:
                             )
                         )
                 member.active = False
+            if classic_match is not None:
+                await ClassicService.attach_chairs(session, classic_match, game)
             for observer in observers:
                 session.add(
                     GameObserverRecord(
@@ -1645,6 +1687,19 @@ class InvitationMatchmakingService:
         )
         if not context.assembly_open:
             violations.append(ValidationViolation("tournament_stage_closed", {}))
+        if context.type_key == "classic" and selected:
+            try:
+                if len(selected) != 1:
+                    raise ValueError("classic_participants_required")
+                await ClassicService.prescribed_match(
+                    session,
+                    lobby.tournament_id,
+                    selected[0].assignment_id,
+                    [m.player_id for m in members],
+                    exact=True,
+                )
+            except ValueError:
+                violations.append(ValidationViolation("classic_participants_required", {}))
         minimum = int(context.type_rules.get("minimum_players", 1))
         maximum = min(12, int(context.type_rules.get("maximum_players", 12)))
         if not minimum <= len(members) <= maximum:

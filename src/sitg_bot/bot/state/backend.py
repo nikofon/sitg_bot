@@ -7,6 +7,10 @@ from sitg_bot.application.adapters import TelegramGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthenticateOperation,
+    AdminSuspicionClearOperation,
+    AdminSuspicionInspectOperation,
+    AdminSuspicionLedgerOperation,
+    BugReportCreateOperation,
     CapabilitiesOperation,
     CapabilityPayload,
     ChatMembersOperation,
@@ -36,7 +40,9 @@ from sitg_bot.application.contracts import (
     PacketDraftTelegramBindOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
+    PlayerBanOperation,
     PlayerResolveOperation,
+    PlayerUnbanOperation,
     RegistrationCompleteOperation,
     RegistrationStartOperation,
     RegistrationStepSaveOperation,
@@ -661,6 +667,62 @@ class BotBackend:
             claim,
             GameAppealDecideOperation(
                 action=ActionCode.GAME_APPEAL_DECIDE, appeal_id=appeal_id, approve=approve
+            ),
+        )
+        return cast(dict, response.data)
+
+    async def ban_player(
+        self, claim: TelegramUpdateClaim, *, target: str, reason: str | None
+    ) -> dict:
+        response = await self._execute(
+            claim,
+            PlayerBanOperation(
+                action=ActionCode.PLAYER_BAN, target=target, reason=reason
+            ),
+        )
+        return cast(dict, response.data)
+
+    async def unban_player(self, claim: TelegramUpdateClaim, *, target: str) -> dict:
+        response = await self._execute(
+            claim,
+            PlayerUnbanOperation(action=ActionCode.PLAYER_UNBAN, target=target),
+        )
+        return cast(dict, response.data)
+
+    async def submit_bug_report(self, claim: TelegramUpdateClaim, *, commentary: str) -> dict:
+        response = await self._execute(
+            claim,
+            BugReportCreateOperation(
+                action=ActionCode.BUG_REPORT_CREATE, commentary=commentary
+            ),
+        )
+        return cast(dict, response.data)
+
+    async def admin_suspicion_ledger(self, claim: TelegramUpdateClaim) -> dict:
+        response = await self._execute(
+            claim,
+            AdminSuspicionLedgerOperation(action=ActionCode.ADMIN_SUSPICION_LEDGER),
+        )
+        return cast(dict, response.data)
+
+    async def admin_suspicion_inspect(
+        self, claim: TelegramUpdateClaim, player_id: UUID
+    ) -> dict:
+        response = await self._execute(
+            claim,
+            AdminSuspicionInspectOperation(
+                action=ActionCode.ADMIN_SUSPICION_INSPECT, player_id=player_id
+            ),
+        )
+        return cast(dict, response.data)
+
+    async def admin_suspicion_clear(
+        self, claim: TelegramUpdateClaim, player_id: UUID, *, note: str
+    ) -> dict:
+        response = await self._execute(
+            claim,
+            AdminSuspicionClearOperation(
+                action=ActionCode.ADMIN_SUSPICION_CLEAR, player_id=player_id, note=note
             ),
         )
         return cast(dict, response.data)

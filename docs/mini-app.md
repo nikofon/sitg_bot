@@ -18,6 +18,17 @@
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`.
+HTML and unversioned static files use `Cache-Control: no-cache`: browsers may store them
+but must revalidate before reuse; unchanged files return 304. Content-hashed files under
+`/assets/` use `public, max-age=31536000, immutable`. Missing assets return 404 instead of
+the HTML shell. Authenticated API responses use `no-store`.
+Bot menu links use a stable `_launch=1` transition value to bypass HTML cached before
+these policies were introduced. It carries no identity or permissions and permits reuse
+across launches. Existing messages keep their original URLs; request a new menu button.
+
+For deployments, build in a staging directory, publish new hashed assets before replacing
+`index.html`, and retain previous assets for the supported open-session window. Avoid
+rebuilding directly into the live directory: Vite cleans the output directory by default.
 
 ## Authentication and request flow
 
@@ -51,14 +62,25 @@ use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
-management records. Authors can be searched, selected, removed, or registered. Typed editors
+management records. Registration has a schedule enable switch and a current-availability
+checkbox; changing current availability applies a manual override. Entered dates use the device timezone.
+Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
+Settings and the Management General section provide buttons to switch between these views.
 
 **Tournament management:** General, Registrations, Packet accessibility, and Packet management,
 with sections derived from the tournament type. Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights.
+General includes **Start tournament** for Ladder; Classic stage-start buttons start the
+tournament internally. Planned start dates send managers a reminder instead of starting play.
+Classic adds stage start buttons, first-stage/play-off round cards with packet switches and
+start deadlines, standings, and automatic/manual seeding. Its general packet-access table
+contains only read rights; stage types and first-stage scoring are configured in Settings.
+Round discovery/play switches display inherited packet defaults or explicit overrides and
+stay disabled with a warning until their stage starts. The all-player access row displays
+assignment defaults even when there are no participants yet.
 
 **Player profiles:** per-ruleset public profiles at `/players/{player_id}`, opened from the
 bot's player-mode "My profile" reply-keyboard button (own profile) or participant links on
@@ -100,6 +122,24 @@ lobbies and games (lobby join actions are replaced by a managing note, since man
 cannot participate) and may observe games regardless of the tournament's observing policy,
 with fresh-content exposure claims still applying.
 
+**Admin management:** `/admin/management`, opened by **Management** in the admin keyboard.
+Every query and action requires an active platform administrator. Tournaments, Authors,
+Players, and Packets have searchable, sortable cards; filters persist per section. Detailed
+metadata, settings, and related records are collapsed initially. Tournament cards link profiles
+and offer confirmed Halt, Resume, and permanent Abolish actions (see [tournaments](tournaments.md)).
+Authors show contributions and linked player data; Link accepts a player UUID or `@username`
+and records an approved author link with permanent authorship exposure.
+
+Players include banned accounts, private profile details, ratings, reports, and suspicion.
+Ban/Unban and suspicion review/clearance replace the separate Telegram keyboard buttons.
+Review reuses the evidence inspection; clearance requires a note and preserves the ledger.
+The legacy `/admin/suspicion` route remains available for existing links.
+
+Packets include every version regardless of discoverability, release, retirement, or tournament
+access. View reuses the library reader and Download queues the same DOCX delivery. Fresh-content
+confirmation permanently burns the packet for the admin, including existing reserved claims.
+These administrative reads bypass normal library restrictions.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -115,10 +155,13 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
+| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, author links, player bans, unrestricted packet reads/downloads |
+| GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
-| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |
+| `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
 | `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
 | `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
 
@@ -126,6 +169,11 @@ Use the route registrations in `MiniAppHttpServer.application` as the complete H
 the table groups endpoints rather than duplicating their schemas.
 
 ## Development and verification
+
+Buttons for important, impactful, or irreversible actions must stand out from ordinary
+controls. Use yellow warning styling for cautionary actions such as Halt, and red danger
+styling for destructive or restrictive actions such as Abolish and Ban. Keep labels explicit
+and text legible; color supplements the label and any required confirmation.
 
 Run from `web/`:
 

@@ -87,7 +87,8 @@ send/ack gap: presentation message identities and idempotent handlers are requir
 assumption of exactly-once external delivery.
 
 The scheduler reconciles persisted deadlines into durable jobs for game progression,
-join/pause expiry, appeals, lobby expiry, rating settlement, matchmaking, and suspicion work.
+join/pause expiry, appeals, lobby expiry, rating settlement, matchmaking, scheduled tournament
+start reminders, and suspicion work.
 Workers lease jobs and invoke idempotent services. Stored deadlines and state govern recovery,
 not the lifetime of a worker task. Privacy maintenance helpers are not currently exposed or
 scheduled.

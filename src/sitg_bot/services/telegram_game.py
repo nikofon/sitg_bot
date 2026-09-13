@@ -660,6 +660,7 @@ class TelegramGameService:
                     "name": public.public_nickname,
                     "joined": item.joined,
                     "active": item.active,
+                    "is_chair": _participant.is_chair,
                     "score": item.score,
                     "correct_points": await self._correct_points(session, _participant.id),
                     "place": item.place,

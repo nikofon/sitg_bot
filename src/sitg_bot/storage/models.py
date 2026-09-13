@@ -104,6 +104,40 @@ class PlayerRecord(Base, TimestampMixin):
     )
 
 
+class PlayerBanRecord(Base):
+    """One reversible moderation ban per player; the reason is shown to the player."""
+
+    __tablename__ = "player_bans"
+
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    banned_by_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    banned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lifted_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    lifted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("length(reason) > 0"),
+        CheckConstraint("lifted_at IS NULL OR lifted_by_id IS NOT NULL"),
+    )
+
+
+class BugReportRecord(Base):
+    __tablename__ = "bug_reports"
+
+    id: Mapped[UUID] = uuid_column()
+    reporter_player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    commentary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(commentary) BETWEEN 1 AND 4000"),
+        Index("ix_bug_reports_created", "created_at"),
+    )
+
+
 class PlatformAdministratorRecord(Base, TimestampMixin):
     __tablename__ = "platform_administrators"
 
@@ -196,6 +230,11 @@ class TournamentRecord(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(300), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    moderation_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="normal", server_default=text("'normal'")
+    )
+    moderated_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     visibility: Mapped[str] = mapped_column(String(24), nullable=False, default="private")
     language: Mapped[str] = mapped_column(String(35), nullable=False, default="und")
     payment_type: Mapped[str] = mapped_column(String(24), nullable=False, default="free")
@@ -207,6 +246,8 @@ class TournamentRecord(Base, TimestampMixin):
         Boolean, nullable=False, default=True, server_default=text("true")
     )
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_reminded_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     planned_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     actual_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -224,6 +265,7 @@ class TournamentRecord(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'active', 'completed', 'archived')"),
+        CheckConstraint("moderation_status IN ('normal', 'halted', 'abolished')"),
         CheckConstraint("visibility IN ('public', 'private')"),
         CheckConstraint("payment_type IN ('free', 'one-time', 'per-stage')"),
         CheckConstraint(
@@ -237,7 +279,9 @@ class TournamentRecord(Base, TimestampMixin):
             "planned_ends_at IS NULL OR starts_at IS NULL OR planned_ends_at > starts_at"
         ),
         CheckConstraint(
-            "actual_ends_at IS NULL OR starts_at IS NULL OR actual_ends_at >= starts_at"
+            "actual_ends_at IS NULL OR actual_starts_at IS NULL "
+            "OR actual_ends_at >= actual_starts_at",
+            name="ck_tournaments_actual_finish_after_start",
         ),
         CheckConstraint("settings_version >= 1"),
         Index("ix_tournaments_listing", "visibility", "status", "starts_at"),
@@ -1110,6 +1154,9 @@ class GameParticipantRecord(Base, TimestampMixin):
     global_game_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     joined: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_chair: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     abandoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1129,6 +1176,65 @@ class GameParticipantRecord(Base, TimestampMixin):
             unique=True,
             postgresql_where=text("active"),
         ),
+    )
+
+
+class ClassicStageRecord(Base, TimestampMixin):
+    __tablename__ = "classic_stages"
+
+    id: Mapped[UUID] = uuid_column()
+    tournament_id: Mapped[UUID] = mapped_column(ForeignKey("tournaments.id"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scheme_key: Mapped[str | None] = mapped_column(String(40))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    seeds: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    place_points: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=lambda: ["4", "3", "2", "1"]
+    )
+    score_multiplier: Mapped[Any] = mapped_column(Numeric(24, 8), nullable=False, default="0.02")
+    random_seed: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("tournament_id", "kind"),
+        CheckConstraint("kind IN ('first', 'playoff')"),
+        CheckConstraint("stage_type IN ('none', 'groups', 'quiz', 'playoff')"),
+    )
+
+
+class ClassicRoundRecord(Base):
+    __tablename__ = "classic_rounds"
+
+    id: Mapped[UUID] = uuid_column()
+    stage_id: Mapped[UUID] = mapped_column(ForeignKey("classic_stages.id"), nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tournament_packet_assignments.id")
+    )
+    discoverable: Mapped[bool | None] = mapped_column(Boolean)
+    playable: Mapped[bool | None] = mapped_column(Boolean)
+    start_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (UniqueConstraint("stage_id", "number"), CheckConstraint("number >= 1"))
+
+
+class ClassicMatchRecord(Base):
+    __tablename__ = "classic_matches"
+
+    id: Mapped[UUID] = uuid_column()
+    round_id: Mapped[UUID] = mapped_column(ForeignKey("classic_rounds.id"), nullable=False)
+    group_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sources: Mapped[list] = mapped_column(JSONB, nullable=False)
+    seats: Mapped[list] = mapped_column(JSONB, nullable=False)
+    results: Mapped[list | None] = mapped_column(JSONB)
+    randomized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    game_id: Mapped[UUID | None] = mapped_column(ForeignKey("games.id"), unique=True)
+
+    __table_args__ = (
+        UniqueConstraint("round_id", "group_number", "number"),
+        CheckConstraint("group_number >= 1 AND number >= 1"),
     )
 
 
@@ -1417,7 +1523,7 @@ class RulesetRatingLedgerRecord(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("game_id", "player_id"),
+        UniqueConstraint("game_id", "player_id", "reason"),
         CheckConstraint("rating_after = rating_before + delta"),
         CheckConstraint("confidence_before BETWEEN 0 AND 1"),
         CheckConstraint("confidence_after BETWEEN 0 AND 1"),

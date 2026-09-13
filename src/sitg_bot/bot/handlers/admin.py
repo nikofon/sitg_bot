@@ -14,6 +14,7 @@ from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.callbacks import CallbackReferenceStore
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.keyboards.common import ADMIN_MENU_ACTIONS, optional_commentary_keyboard
+from sitg_bot.bot.miniapps import mini_app_route_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
@@ -29,12 +30,17 @@ from sitg_bot.bot.state import (
     TokenRequestPageState,
     TokenRequestState,
 )
-from sitg_bot.bot.state.settings import AdminAuthenticationState, AdminTokenDecisionState
+from sitg_bot.bot.state.settings import (
+    AdminAuthenticationState,
+    AdminBanState,
+    AdminTokenDecisionState,
+    AdminUnbanState,
+)
 
 router = Router(name=__name__)
 
 ADMIN_ACTIONS = tuple(action for row in ADMIN_MENU_ACTIONS for action in row)
-PLACEHOLDER_ACTIONS = {"admin.ban", "admin.unban"}
+PLACEHOLDER_ACTIONS: frozenset[str] = frozenset()
 TOKEN_DECISION_SCOPE = "admin.token.decision"
 
 
@@ -376,6 +382,7 @@ async def handle_admin_menu_action(
     locale: str,
     navigation: NavigationState,
     state: FSMContext,
+    launch_links: str | None,
 ) -> None:
     await state.clear()
     if admin_action == "admin.token_requests.pending":
@@ -387,6 +394,49 @@ async def handle_admin_menu_action(
             administrator_id=navigation.account.player_id,
             localization=localization,
             locale=locale,
+        )
+        return
+    if admin_action == "admin.management":
+        if launch_links is None:
+            await send_message_model(
+                message,
+                MessageModel(localization.text("error.capability_unavailable", locale)),
+            )
+            return
+        url = mini_app_route_url(launch_links, "admin/management")
+        await send_message_model(
+            message,
+            MessageModel(
+                localization.text("miniapp.admin_management.prompt", locale),
+                InlineKeyboardModel(
+                    rows=(
+                        (
+                            InlineButtonModel(
+                                localization.text(
+                                    "button.admin.management", locale
+                                ),
+                                web_app_url=url,
+                            ),
+                        ),
+                    )
+                ),
+            ),
+        )
+        return
+    if admin_action == "admin.ban":
+        await state.set_state(AdminBanState.entering_target)
+        await state.update_data(ban_administrator_id=navigation.account.player_id)
+        await send_message_model(
+            message,
+            MessageModel(localization.text("admin.ban.prompt_target", locale)),
+        )
+        return
+    if admin_action == "admin.unban":
+        await state.set_state(AdminUnbanState.entering_target)
+        await state.update_data(ban_administrator_id=navigation.account.player_id)
+        await send_message_model(
+            message,
+            MessageModel(localization.text("admin.unban.prompt_target", locale)),
         )
         return
     if admin_action in PLACEHOLDER_ACTIONS:
@@ -645,5 +695,129 @@ async def handle_token_final_decision(
             administrator_id=navigation.account.player_id,
             localization=localization,
             locale=locale,
+        ),
+    )
+
+
+def _is_back(value: str, localization: LocalizationService) -> bool:
+    return any(
+        value == localization.text("button.back", candidate) for candidate in localization.catalogs
+    )
+
+
+async def _send_moderation_error(
+    message: Message,
+    error: GatewayCallError,
+    localization: LocalizationService,
+    locale: str,
+    *,
+    ban_flow: bool,
+) -> None:
+    code = error.error.code
+    if code == ErrorCode.NOT_FOUND:
+        key = "admin.moderation.not_found"
+    elif code == ErrorCode.VALIDATION_FAILED:
+        key = "admin.ban.already_banned" if ban_flow else "admin.unban.not_banned"
+    elif code == ErrorCode.FORBIDDEN:
+        key = "admin.moderation.admin_target"
+    else:
+        raise error
+    await send_message_model(message, MessageModel(localization.text(key, locale)))
+
+
+@router.message(StateFilter(AdminBanState.entering_target), F.text)
+async def handle_admin_ban_target(
+    message: Message,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState,
+    state: FSMContext,
+) -> None:
+    value = (message.text or "").strip()
+    if _is_back(value, localization):
+        await state.clear()
+        await send_message_model(message, menu_message(navigation, localization, locale))
+        return
+    await state.update_data(ban_target=value)
+    await state.set_state(AdminBanState.entering_reason)
+    await send_message_model(
+        message,
+        MessageModel(
+            localization.text("admin.ban.prompt_reason", locale),
+            optional_commentary_keyboard(localization, locale),
+        ),
+    )
+
+
+@router.message(StateFilter(AdminBanState.entering_reason), F.text)
+async def handle_admin_ban_reason(
+    message: Message,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    state: FSMContext,
+) -> None:
+    value = (message.text or "").strip()
+    if _is_back(value, localization):
+        await state.clear()
+        await send_message_model(message, MessageModel(localization.text("admin.ban.cancelled", locale)))
+        return
+    skip = any(
+        value == localization.text("button.skip", candidate) for candidate in localization.catalogs
+    )
+    data = await state.get_data()
+    await state.clear()
+    try:
+        receipt = await backend.ban_player(
+            telegram_update_claim, target=str(data["ban_target"]), reason=None if skip else value
+        )
+    except GatewayCallError as error:
+        await _send_moderation_error(message, error, localization, locale, ban_flow=True)
+        return
+    await send_message_model(
+        message,
+        MessageModel(
+            localization.text(
+                "admin.ban.receipt",
+                locale,
+                player_id=receipt.get("player_id", ""),
+                nickname=receipt.get("display_name") or receipt.get("telegram_username") or "",
+                reason=receipt.get("reason", ""),
+            )
+        ),
+    )
+
+
+@router.message(StateFilter(AdminUnbanState.entering_target), F.text)
+async def handle_admin_unban_target(
+    message: Message,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState,
+    state: FSMContext,
+) -> None:
+    value = (message.text or "").strip()
+    if _is_back(value, localization):
+        await state.clear()
+        await send_message_model(message, menu_message(navigation, localization, locale))
+        return
+    await state.clear()
+    try:
+        receipt = await backend.unban_player(telegram_update_claim, target=value)
+    except GatewayCallError as error:
+        await _send_moderation_error(message, error, localization, locale, ban_flow=False)
+        return
+    await send_message_model(
+        message,
+        MessageModel(
+            localization.text(
+                "admin.unban.receipt",
+                locale,
+                player_id=receipt.get("player_id", ""),
+                nickname=receipt.get("display_name") or receipt.get("telegram_username") or "",
+            )
         ),
     )

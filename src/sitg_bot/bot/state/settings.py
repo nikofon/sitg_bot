@@ -10,6 +10,19 @@ class AdminAuthenticationState(StatesGroup):
     entering_credential = State()
 
 
+class AdminBanState(StatesGroup):
+    entering_target = State()
+    entering_reason = State()
+
+
+class AdminUnbanState(StatesGroup):
+    entering_target = State()
+
+
+class BugReportState(StatesGroup):
+    entering_commentary = State()
+
+
 class TournamentTokenRequestState(StatesGroup):
     entering_name = State()
     entering_commentary = State()
@@ -24,9 +37,6 @@ class TournamentCreationState(StatesGroup):
     entering_name = State()
     entering_slug = State()
     entering_type = State()
-    entering_registration_end = State()
-    entering_start = State()
-    entering_planned_end = State()
     entering_ruleset = State()
     entering_visibility = State()
     entering_language = State()

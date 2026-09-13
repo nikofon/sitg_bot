@@ -11,6 +11,8 @@ export type RouteId =
   | "player_profile"
   | "player_game"
   | "report"
+  | "admin_suspicion"
+  | "admin_management"
   | "manager_appeals"
   | "manager_settings"
   | "manager_management"
@@ -37,6 +39,13 @@ interface RouteDefinition {
 }
 
 const routes: RouteDefinition[] = [
+  {
+    id: "admin_management",
+    pattern: /^\/admin\/management\/?$/,
+    titleKey: "admin_management.title",
+    emptyKey: "admin_management.empty",
+    isRoot: true,
+  },
   {
     id: "tournaments",
     pattern: /^\/tournaments\/?$/,
@@ -106,6 +115,13 @@ const routes: RouteDefinition[] = [
     parameterNames: ["launch_ref"],
     titleKey: "route.report.title",
     emptyKey: "route.report.empty",
+  },
+  {
+    id: "admin_suspicion",
+    pattern: /^\/admin\/suspicion\/?$/,
+    titleKey: "route.admin_suspicion.title",
+    emptyKey: "route.admin_suspicion.empty",
+    isRoot: true,
   },
   {
     id: "manager_appeals",

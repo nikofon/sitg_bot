@@ -29,3 +29,5 @@ web/node_modules/
 web/.env.local
 packets-for-testing/
 rating-simulation-output/
+/Scheme Library - Groups.csv
+/Scheme Library - Play-off _ DE.csv
