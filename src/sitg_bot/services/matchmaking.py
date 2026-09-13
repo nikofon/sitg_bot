@@ -51,6 +51,7 @@ from sitg_bot.storage.models import (
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentPolicyVersionRecord,
+    TournamentRecord,
 )
 
 
@@ -367,8 +368,6 @@ class InvitationMatchmakingService:
                 select(PlayerRecord).where(PlayerRecord.telegram_user_id == telegram_user_id)
             )
             context = await self.tournaments.context(session, lobby.tournament_id)
-            from sitg_bot.storage.models import TournamentRecord
-
             tournament = await session.get(TournamentRecord, lobby.tournament_id)
             await TransactionalOutbox.enqueue(
                 session,
@@ -1555,6 +1554,75 @@ class InvitationMatchmakingService:
             if lobby is None:
                 raise LookupError("Lobby not found")
             return await self._snapshot(session, lobby)
+
+    async def ongoing_lobbies(self, player_id: UUID) -> tuple[dict[str, object], ...]:
+        """Project open lobbies from tournaments where the player is a member or manager."""
+        async with self.database.sessions() as session:
+            player = await session.get(PlayerRecord, player_id)
+            if player is None or player.status != "active":
+                raise PermissionError("Active player registration is required")
+            tournament_names, managed_ids = await self.tournaments.player_tournament_map(
+                session, player_id
+            )
+            if not tournament_names:
+                return ()
+            cards: list[dict[str, object]] = []
+            lobbies = (
+                await session.execute(
+                    select(PregameLobbyRecord)
+                    .where(
+                        PregameLobbyRecord.tournament_id.in_(tournament_names),
+                        PregameLobbyRecord.status == "assembling",
+                    )
+                    .order_by(PregameLobbyRecord.created_at)
+                )
+            ).scalars()
+            for lobby in lobbies:
+                snapshot = await self._snapshot(session, lobby)
+                viewer = next(
+                    (
+                        member
+                        for member in snapshot.members
+                        if member.telegram_user_id == player.telegram_user_id
+                    ),
+                    None,
+                )
+                cards.append(
+                    {
+                        "id": str(lobby.id),
+                        "version": lobby.version,
+                        "tournament_id": str(lobby.tournament_id),
+                        "tournament_name": tournament_names[lobby.tournament_id],
+                        "invitation_code": lobby.invitation_code,
+                        "max_players": lobby.max_players,
+                        "searching": lobby.searching,
+                        "expires_at": lobby.expires_at,
+                        "members": [
+                            {
+                                "display_name": member.display_name,
+                                "role": member.role,
+                                "ready": member.ready,
+                            }
+                            for member in snapshot.members
+                        ],
+                        "selected_packets": [
+                            {
+                                "packet_id": str(packet.packet_id),
+                                "name": packet.name,
+                                "lead_author": packet.lead_author,
+                                "year": packet.year,
+                                "fresh_play_unit_count": packet.fresh_play_unit_count,
+                                "total_play_unit_count": packet.total_play_unit_count,
+                                "playable_for_all": packet.playable_for_all,
+                            }
+                            for packet in snapshot.selected_packets
+                        ],
+                        "is_member": viewer is not None,
+                        "viewer_role": viewer.role if viewer is not None else None,
+                        "viewer_manages": lobby.tournament_id in managed_ids,
+                    }
+                )
+            return tuple(cards)
 
     async def _refresh_validation(
         self,

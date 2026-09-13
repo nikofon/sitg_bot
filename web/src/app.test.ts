@@ -773,4 +773,109 @@ describe("MiniAppShell", () => {
     expect(submitted.lead_author_id).toBe("new-lead");
     expect(submitted.content.lead_author).toBe("New Editor");
   });
+
+  function ongoingShell(confirm: boolean, managed = false) {
+    window.history.replaceState({}, "", "/ongoing");
+    vi.spyOn(window, "confirm").mockReturnValue(confirm);
+    const resource = {
+      kind: "ongoing",
+      state: "ready",
+      lobbies: [{
+        id: "lobby-1", version: 3, tournament_id: "cup-id", tournament_name: "Autumn Cup",
+        invitation_code: "invite-code", max_players: 4, searching: false,
+        expires_at: "2099-01-01T00:00:00Z",
+        members: [{ display_name: "Alice", role: "player", ready: true }],
+        selected_packets: [{
+          packet_id: "packet", name: "Selected packet", lead_author: null, year: 2020,
+          fresh_play_unit_count: 2, total_play_unit_count: 5, playable_for_all: true,
+        }],
+        is_member: false, viewer_role: null, viewer_manages: managed,
+      }],
+      games: [{
+        id: "game-1", tournament_id: "cup-id", tournament_name: "Autumn Cup",
+        status: "active", phase: "reading", participant_count: 2,
+        participants: ["Alice", "Bob"], observing: false, observing_policy: "forbidden",
+        managed, fresh_content_count: 2, confirmation_required: true, can_observe: true,
+      }],
+    };
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).endsWith("/ongoing/lobbies/join")) return response({ joined: true });
+      if (String(url).endsWith("/observe")) {
+        const body = JSON.parse(String(options?.body));
+        if (!body.confirm_fresh) {
+          return response({ game_id: "game-1", joined: false, confirmation_required: true, fresh_content_count: 2 });
+        }
+        return response({ game_id: "game-1", joined: true, confirmation_required: false, fresh_content_count: 2 });
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    const platform = new FakePlatform();
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), platform, false);
+    shell.start();
+    return { root, fetcher, platform };
+  }
+
+  function ongoingButton(root: HTMLElement, label: string): HTMLButtonElement {
+    const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.textContent === label);
+    expect(button).toBeDefined();
+    return button!;
+  }
+
+  it("renders ongoing lobby and game cards with join and observe actions", async () => {
+    const { root } = ongoingShell(true);
+    await vi.waitFor(() => expect(root.textContent).toContain("Autumn Cup"));
+    expect(root.textContent).toContain("Join as player");
+    expect(root.textContent).toContain("Join as observer");
+    expect(root.textContent).toContain("Watch as observer");
+    expect(root.textContent).toContain("Selected packet");
+    expect(root.textContent).toContain("Alice");
+    expect(root.querySelectorAll("article.resource-card")).toHaveLength(2);
+  });
+
+  it("joins an ongoing lobby and returns to the bot", async () => {
+    const { root, fetcher, platform } = ongoingShell(true);
+    await vi.waitFor(() => expect(root.textContent).toContain("Join as observer"));
+    ongoingButton(root, "Join as observer").click();
+    await vi.waitFor(() => {
+      const calls = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/ongoing/lobbies/join"));
+      expect(calls.map(([, options]) => JSON.parse(String(options?.body)))).toEqual([
+        { invitation_code: "invite-code", role: "observer" },
+      ]);
+    });
+    expect(platform.returnToBot).toHaveBeenCalled();
+  });
+
+  it("requires confirmation before burning fresh content to observe a game", async () => {
+    const { root, fetcher, platform } = ongoingShell(true);
+    await vi.waitFor(() => expect(root.textContent).toContain("Watch as observer"));
+    ongoingButton(root, "Watch as observer").click();
+    await vi.waitFor(() => expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("burn that content")));
+    const calls = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/observe"));
+    expect(calls.map(([, options]) => JSON.parse(String(options?.body)))).toEqual([
+      { confirm_fresh: false },
+      { confirm_fresh: true },
+    ]);
+    expect(platform.returnToBot).toHaveBeenCalled();
+  });
+
+  it("does not observe a game when the fresh-content warning is declined", async () => {
+    const { root, fetcher, platform } = ongoingShell(false);
+    await vi.waitFor(() => expect(root.textContent).toContain("Watch as observer"));
+    ongoingButton(root, "Watch as observer").click();
+    await vi.waitFor(() => expect(window.confirm).toHaveBeenCalled());
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/observe"))).toHaveLength(1);
+    expect(platform.returnToBot).not.toHaveBeenCalled();
+  });
+
+  it("shows a managing note instead of lobby join buttons for managers", async () => {
+    const { root } = ongoingShell(true, true);
+    await vi.waitFor(() => expect(root.textContent).toContain("You manage this tournament"));
+    expect(root.textContent).not.toContain("Join as player");
+    expect(root.textContent).not.toContain("Join as observer");
+    expect(root.textContent).toContain("Watch as observer");
+  });
 });

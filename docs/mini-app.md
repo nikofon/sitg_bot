@@ -86,6 +86,20 @@ and packet/publication years. View opens ruleset-defined pages (SI themes), with
 and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
 and request confirmation before burning fresh content.
 
+**Ongoing games:** active lobbies and observable games from the viewer's tournaments
+(opened from the player menu's "Ongoing games" button). Lobby cards show the tournament,
+members with roles/readiness, capacity, search state, expiry, and selected packets with
+fresh/total theme counts, plus join-as-player and join-as-observer buttons that reuse the
+invitation join operation and switch Telegram to the lobby context. Game cards show the
+tournament, status/phase, and participants with a watch-as-observer button; observing
+rechecks membership, participation, policy, and fresh-content claims and requests
+confirmation before burning fresh content. Joining sends the viewer back to the bot,
+where the full prior game history is replayed durably. The scope covers tournaments the
+viewer actively participates in **or manages**: managers see their managed tournaments'
+lobbies and games (lobby join actions are replaced by a managing note, since managers
+cannot participate) and may observe games regardless of the tournament's observing policy,
+with fresh-content exposure claims still applying.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -100,6 +114,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
+| POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |

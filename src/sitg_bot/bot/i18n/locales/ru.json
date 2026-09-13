@@ -247,6 +247,8 @@
   "miniapp.tournaments.open": "Открыть турниры",
   "miniapp.library.open": "Открыть библиотеку",
   "miniapp.library.prompt": "Откройте библиотеку, чтобы прочитать или скачать пакеты.",
+  "miniapp.ongoing.open": "Открыть текущие игры",
+  "miniapp.ongoing.prompt": "Откройте список текущих игр, чтобы присоединиться к лобби или наблюдать за игрой.",
   "miniapp.players.open": "Открыть профиль",
   "miniapp.players.prompt": "Откройте свой профиль, чтобы посмотреть рейтинг, статистику и результаты игр.",
   "profile.command.usage": "Использование: /profile ID_игрока — или — /profile @имя_пользователя",

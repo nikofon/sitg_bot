@@ -47,8 +47,9 @@ Unknown tournament action descriptors are ignored and logged.
   review, selected tournament management/settings, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
-- Mini App buttons for tournament lists, the player profile ("My profile"), lobby
-  packet/settings views, manager settings, management, and packet draft/editing flows.
+- Mini App buttons for tournament lists, ongoing games/lobbies ("Ongoing games"), the player
+  profile ("My profile"), lobby packet/settings views, manager settings, management, and
+  packet draft/editing flows.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,

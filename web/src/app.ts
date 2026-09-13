@@ -4,6 +4,10 @@ import type {
   LibraryAccess,
   RouteResource,
   LobbyResource,
+  GameObservation,
+  OngoingGame,
+  OngoingLobby,
+  OngoingResource,
   StableErrorCode,
   TournamentAction,
   TournamentDetailsPayload,
@@ -172,6 +176,10 @@ export class MiniAppShell {
           (tournament) => void this.openLibraryTournament(tournament),
         ));
       }
+      return;
+    }
+    if (route.id === "ongoing" && isOngoingResource(payload.resource)) {
+      this.renderOngoing(route, payload.resource);
       return;
     }
     if (route.id === "player_profile" && isPlayerProfileResource(payload.resource)) {
@@ -607,6 +615,192 @@ export class MiniAppShell {
     if (!modifying) refreshAuthors();
     renderPage();
     this.renderFrame(route, form);
+  }
+
+  private renderOngoing(route: RouteMatch, resource: OngoingResource): void {
+    if (resource.state === "empty" || (!resource.lobbies.length && !resource.games.length)) {
+      this.renderFrame(route, this.statusCard("empty", this.i18n.t(route.emptyKey)));
+      return;
+    }
+    let busy = false;
+    const joinLobby = async (lobby: OngoingLobby, role: "player" | "observer"): Promise<void> => {
+      if (busy) return;
+      busy = true;
+      try {
+        await this.api.request("/api/miniapp/ongoing/lobbies/join", {
+          method: "POST",
+          body: { invitation_code: lobby.invitation_code, role },
+          signal: this.request?.signal,
+        });
+        this.platform.notifySuccess();
+        this.platform.returnToBot();
+      } catch (error) {
+        this.platform.notifyError();
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        this.showTextDialog(this.i18n.t(`error.${code}`), []);
+      } finally {
+        busy = false;
+      }
+    };
+    const observeGame = async (game: OngoingGame): Promise<void> => {
+      if (busy) return;
+      busy = true;
+      const path = `/api/miniapp/ongoing/games/${encodeURIComponent(game.id)}/observe`;
+      try {
+        let result = await this.api.request<GameObservation>(path, {
+          method: "POST",
+          body: { confirm_fresh: false },
+          signal: this.request?.signal,
+        });
+        if (result.confirmation_required) {
+          if (!window.confirm(this.i18n.t("ongoing.observe_confirm"))) return;
+          result = await this.api.request<GameObservation>(path, {
+            method: "POST",
+            body: { confirm_fresh: true },
+            signal: this.request?.signal,
+          });
+        }
+        if (result.joined) {
+          this.platform.notifySuccess();
+          this.platform.returnToBot();
+        }
+      } catch (error) {
+        this.platform.notifyError();
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        this.showTextDialog(this.i18n.t(`error.${code}`), []);
+      } finally {
+        busy = false;
+      }
+    };
+    this.renderOngoingCards(route, resource, joinLobby, observeGame);
+  }
+
+  private renderOngoingCards(
+    route: RouteMatch,
+    resource: OngoingResource,
+    joinLobby: (lobby: OngoingLobby, role: "player" | "observer") => Promise<void>,
+    observeGame: (game: OngoingGame) => Promise<void>,
+  ): void {
+    const lobbyCards = resource.lobbies.map((lobby) => {
+      const players = lobby.members.filter((member) => member.role === "player");
+      const actions = element("div", { className: "lobby-actions" });
+      if (lobby.is_member) {
+        actions.append(element("p", { className: "resource-summary" }, this.i18n.t("ongoing.already_member")));
+      } else if (lobby.viewer_manages) {
+        actions.append(element("p", { className: "resource-summary" }, this.i18n.t("ongoing.managing")));
+      } else {
+        actions.append(
+          element("button", {
+            type: "button",
+            className: "primary-button",
+            onclick: (() => void joinLobby(lobby, "player")) as EventListener,
+          }, this.i18n.t("ongoing.join_player")),
+          element("button", {
+            type: "button",
+            className: "secondary-button",
+            onclick: (() => void joinLobby(lobby, "observer")) as EventListener,
+          }, this.i18n.t("ongoing.join_observer")),
+        );
+      }
+      return element(
+        "article",
+        { className: "resource-card" },
+        element("h2", {}, lobby.tournament_name),
+        element(
+          "p",
+          { className: "tournament-detail" },
+          element("strong", {}, `${this.i18n.t("lobby.capacity")}: `),
+          `${players.length}/${lobby.max_players}`,
+          lobby.searching ? ` · ${this.i18n.t("ongoing.searching")}` : "",
+        ),
+        this.detail(this.i18n.t("ongoing.expires"), dateTimeLocal(lobby.expires_at)),
+        element("h3", {}, this.i18n.t("lobby.members")),
+        element(
+          "ul",
+          { className: "detail-list" },
+          ...lobby.members.map((member) => element(
+            "li",
+            {},
+            `${member.display_name} · ${this.i18n.t(member.role === "observer" ? "lobby.observer" : "lobby.player")} · ${member.ready ? this.i18n.t("lobby.ready") : this.i18n.t("lobby.not_ready")}`,
+          )),
+        ),
+        element("h3", {}, this.i18n.t("lobby.packets")),
+        lobby.selected_packets.length
+          ? element(
+              "ul",
+              { className: "detail-list" },
+              ...lobby.selected_packets.map((packet) => element(
+                "li",
+                {},
+                `${packet.name} · ${this.i18n.t("lobby.packet_fresh")}: ${packet.fresh_play_unit_count}/${packet.total_play_unit_count}`,
+              )),
+            )
+          : element("p", { className: "resource-summary" }, this.i18n.t("lobby.packet_none")),
+        actions,
+      );
+    });
+    this.renderOngoingGameCards(route, resource, lobbyCards, observeGame);
+  }
+
+  private renderOngoingGameCards(
+    route: RouteMatch,
+    resource: OngoingResource,
+    lobbyCards: HTMLElement[],
+    observeGame: (game: OngoingGame) => Promise<void>,
+  ): void {
+    const gameCards = resource.games.map((game) => {
+      const actions = element("div", { className: "lobby-actions" });
+      if (game.observing) {
+        actions.append(element("p", { className: "resource-summary" }, this.i18n.t("ongoing.observing")));
+      } else if (game.can_observe) {
+        actions.append(element("button", {
+          type: "button",
+          className: "primary-button",
+          onclick: (() => void observeGame(game)) as EventListener,
+        }, this.i18n.t("ongoing.observe")));
+      } else {
+        actions.append(element("p", { className: "resource-summary" }, this.i18n.t("ongoing.observe_unavailable")));
+      }
+      return element(
+        "article",
+        { className: "resource-card" },
+        element("h2", {}, game.tournament_name),
+        this.detail(
+          this.i18n.t("ongoing.status"),
+          game.status === "active" ? `${game.status} · ${game.phase}` : game.status,
+        ),
+        element("h3", {}, this.i18n.t("ongoing.participants")),
+        element(
+          "ul",
+          { className: "detail-list" },
+          ...game.participants.map((name) => element("li", {}, name)),
+        ),
+        actions,
+      );
+    });
+    const sections: HTMLElement[] = [];
+    if (lobbyCards.length) {
+      sections.push(
+        element(
+          "section",
+          { className: "route-content" },
+          element("h2", {}, this.i18n.t("ongoing.lobbies")),
+          element("ul", { className: "resource-list" }, ...lobbyCards.map((card) => element("li", {}, card))),
+        ),
+      );
+    }
+    if (gameCards.length) {
+      sections.push(
+        element(
+          "section",
+          { className: "route-content" },
+          element("h2", {}, this.i18n.t("ongoing.games")),
+          element("ul", { className: "resource-list" }, ...gameCards.map((card) => element("li", {}, card))),
+        ),
+      );
+    }
+    this.renderFrame(route, element("section", { className: "route-content" }, ...sections));
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
   private renderLobby(route: RouteMatch, lobby: LobbyResource): void {
@@ -2084,6 +2278,10 @@ function isPlayerProfileResource(value: RoutePayload["resource"]): value is Play
 
 function isPlayerGameResource(value: RoutePayload["resource"]): value is PlayerGameResource {
   return "kind" in value && value.kind === "player_game";
+}
+
+function isOngoingResource(value: RoutePayload["resource"]): value is OngoingResource {
+  return "kind" in value && value.kind === "ongoing";
 }
 
 function isTournamentAction(value: string): value is TournamentAction {

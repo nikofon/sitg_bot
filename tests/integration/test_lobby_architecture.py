@@ -38,6 +38,7 @@ from sitg_bot.storage.models import (
     RatingLedgerRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
+    TelegramGameViewRecord,
     ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
@@ -1841,5 +1842,205 @@ async def test_readiness_reports_specific_conditions_and_allows_unready(database
             lobby.id, owner, ready=False, expected_version=lobby.version
         )
         assert not lobby.members[0].ready
+    finally:
+        await database.close()
+
+
+async def test_ongoing_overview_lists_lobbies_and_observable_games(
+    database_url: str,
+) -> None:
+    from sitg_bot.services.telegram_game import TelegramGameService
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=3)
+        matchmaking = InvitationMatchmakingService(database)
+        games = PersistentGameService(database)
+        tournaments = TournamentService(database)
+        telegram_games = TelegramGameService(database)
+
+        async with database.sessions() as session:
+            context = await tournaments.context(session, fixture.tournament_id)
+        await tournaments.update_policy(
+            fixture.tournament_id,
+            fixture.manager.id,
+            default_parameters=context.settings.to_dict(),
+            player_mutable_parameters=context.mutable_parameters,
+            policies={**context.policies, "observing": "unlimited"},
+        )
+
+        lobby = await matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=1
+        )
+        await matchmaking.select_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        await matchmaking.set_ready(lobby.id, fixture.inputs[0].telegram_user_id)
+        started = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
+        assert started.game is not None
+        game_id = started.game.id
+        await games.join(game_id, fixture.inputs[0].telegram_user_id)
+
+        open_lobby = await matchmaking.create_lobby(
+            fixture.inputs[2], tournament_id=fixture.tournament_id, max_players=2
+        )
+        lobby_cards = await matchmaking.ongoing_lobbies(fixture.players[1].id)
+        assert [card["id"] for card in lobby_cards] == [str(open_lobby.id)]
+        lobby_card = lobby_cards[0]
+        assert lobby_card["tournament_name"] == "Architecture tournament"
+        assert lobby_card["invitation_code"] == open_lobby.invitation_code
+        assert lobby_card["is_member"] is False
+        assert any(
+            member["display_name"] == fixture.players[2].public_nickname
+            for member in lobby_card["members"]
+        )
+
+        game_cards = await games.ongoing_games(fixture.players[1].id)
+        assert [str(card["id"]) for card in game_cards] == [str(game_id)]
+        game_card = game_cards[0]
+        assert game_card["tournament_name"] == "Architecture tournament"
+        assert game_card["can_observe"] is True
+        assert game_card["confirmation_required"] is True
+        assert game_card["observing"] is False
+        assert fixture.players[0].public_nickname in game_card["participants"]
+        assert await games.ongoing_games(fixture.players[0].id) == ()
+
+        warning = await telegram_games.observe(
+            fixture.inputs[1].telegram_user_id, game_id, confirm_fresh=False
+        )
+        assert warning["game_id"] == str(game_id)
+        assert warning["joined"] is False
+        assert warning["confirmation_required"] is True
+        assert warning["fresh_content_count"] > 0
+
+        joined = await telegram_games.observe(
+            fixture.inputs[1].telegram_user_id, game_id, confirm_fresh=True
+        )
+        assert joined["joined"] is True
+        assert joined["confirmation_required"] is False
+
+        assert (await games.ongoing_games(fixture.players[1].id))[0]["observing"] is True
+        async with database.sessions() as session:
+            cursor = await session.get(TelegramGameViewRecord, (game_id, fixture.players[1].id))
+            assert cursor is not None
+            assert cursor.dismissed_at is None
+            assert cursor.flow_sequence == 0
+            replay_event = await session.scalar(
+                select(OutboxEventRecord).where(
+                    OutboxEventRecord.topic == "game.event",
+                    OutboxEventRecord.deduplication_key.like(
+                        f"game:{game_id}:observe:{fixture.inputs[1].telegram_user_id}:%"
+                    ),
+                )
+            )
+            assert replay_event is not None
+            assert replay_event.payload["recipient_telegram_user_id"] == (
+                fixture.inputs[1].telegram_user_id
+            )
+            assert replay_event.payload["game_id"] == str(game_id)
+
+        again = await telegram_games.observe(
+            fixture.inputs[1].telegram_user_id, game_id, confirm_fresh=True
+        )
+        assert again["joined"] is True
+        async with database.sessions() as session:
+            replay_count = await session.scalar(
+                select(func.count())
+                .select_from(OutboxEventRecord)
+                .where(
+                    OutboxEventRecord.topic == "game.event",
+                    OutboxEventRecord.deduplication_key.like(
+                        f"game:{game_id}:observe:{fixture.inputs[1].telegram_user_id}:%"
+                    ),
+                )
+            )
+        assert replay_count == 1
+    finally:
+        await database.close()
+
+
+async def test_managers_bypass_observing_restrictions_in_managed_tournaments(
+    database_url: str,
+) -> None:
+    from sitg_bot.services.telegram_game import TelegramGameService
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        matchmaking = InvitationMatchmakingService(database)
+        games = PersistentGameService(database)
+        telegram_games = TelegramGameService(database)
+
+        # The fixture policy leaves observing forbidden.
+        lobby = await matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=1
+        )
+        await matchmaking.select_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        await matchmaking.set_ready(lobby.id, fixture.inputs[0].telegram_user_id)
+        started = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
+        assert started.game is not None
+        game_id = started.game.id
+        await games.join(game_id, fixture.inputs[0].telegram_user_id)
+
+        open_lobby = await matchmaking.create_lobby(
+            fixture.inputs[1], tournament_id=fixture.tournament_id, max_players=2
+        )
+
+        # Members are still blocked by the forbidden observing policy.
+        member_cards = await games.ongoing_games(fixture.players[1].id)
+        assert [str(card["id"]) for card in member_cards] == [str(game_id)]
+        assert member_cards[0]["can_observe"] is False
+        assert member_cards[0]["managed"] is False
+        with pytest.raises(PermissionError, match="forbidden"):
+            await games.observe(game_id, fixture.inputs[1].telegram_user_id)
+
+        # The manager sees lobbies and games from the managed tournament.
+        lobby_cards = await matchmaking.ongoing_lobbies(fixture.manager.id)
+        assert [card["id"] for card in lobby_cards] == [str(open_lobby.id)]
+        assert lobby_cards[0]["viewer_manages"] is True
+        assert lobby_cards[0]["is_member"] is False
+
+        manager_cards = await games.ongoing_games(fixture.manager.id)
+        assert [str(card["id"]) for card in manager_cards] == [str(game_id)]
+        assert manager_cards[0]["managed"] is True
+        assert manager_cards[0]["can_observe"] is True
+        # The manager authored the packet, so nothing fresh is burned.
+        assert manager_cards[0]["fresh_content_count"] == 0
+        assert manager_cards[0]["confirmation_required"] is False
+
+        joined = await telegram_games.observe(
+            fixture.manager.telegram_user_id, game_id, confirm_fresh=False
+        )
+        assert joined["joined"] is True
+        assert joined["confirmation_required"] is False
+        async with database.sessions() as session:
+            observer = await session.scalar(
+                select(GameObserverRecord).where(
+                    GameObserverRecord.game_id == game_id,
+                    GameObserverRecord.player_id == fixture.manager.id,
+                )
+            )
+            assert observer is not None and observer.active
+
+        # An unaffiliated player sees nothing and cannot observe.
+        async with database.transaction() as session:
+            outsider = PlayerRecord(
+                telegram_user_id=int(secrets.token_hex(4), 16),
+                real_name="Ongoing outsider",
+                public_nickname="Ongoing outsider",
+                registration_step="complete",
+                registration_completed_at=datetime.now(UTC),
+                status="active",
+            )
+            session.add(outsider)
+            await session.flush()
+            outsider_id = outsider.id
+            outsider_telegram_id = outsider.telegram_user_id
+        assert await games.ongoing_games(outsider_id) == ()
+        assert await matchmaking.ongoing_lobbies(outsider_id) == ()
+        with pytest.raises(PermissionError, match="membership"):
+            await games.observe(game_id, outsider_telegram_id)
     finally:
         await database.close()

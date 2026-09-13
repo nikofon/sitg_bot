@@ -554,6 +554,47 @@ async def test_player_profile_action_without_launch_links_keeps_placeholder() ->
     assert message.answer.await_args.kwargs["reply_markup"] is None
 
 
+async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+
+    await handle_player_menu_action(
+        message,  # type: ignore[arg-type]
+        player_action="player.ongoing",
+        backend=SimpleNamespace(),  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="en",
+        navigation=navigation(allowed_actions=["player.ongoing"]),
+        state=SimpleNamespace(),  # type: ignore[arg-type]
+        launch_links="https://mini.example.test/app",
+    )
+
+    assert message.answer.await_count == 1
+    assert "Open the list of ongoing games" in message.answer.await_args.args[0]
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Open ongoing games"
+    assert button.web_app.url == "https://mini.example.test/app/ongoing"
+
+
+async def test_player_ongoing_action_without_launch_links_keeps_placeholder() -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+
+    await handle_player_menu_action(
+        message,  # type: ignore[arg-type]
+        player_action="player.ongoing",
+        backend=SimpleNamespace(),  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="en",
+        navigation=navigation(allowed_actions=["player.ongoing"]),
+        state=SimpleNamespace(),  # type: ignore[arg-type]
+        launch_links=None,
+    )
+
+    assert "Ongoing games" in message.answer.await_args.args[0]
+    assert message.answer.await_args.kwargs["reply_markup"] is None
+
+
 async def test_manager_settings_action_uses_an_actor_bound_launch_reference() -> None:
     backend = SimpleNamespace(
         tournament_settings_link=AsyncMock(

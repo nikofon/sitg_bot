@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
 
@@ -71,6 +71,76 @@ class TelegramGameService:
             ):
                 raise LookupError("No game available for reconnection")
             return await self._view(session, player, game, member, observer)
+
+    async def observe(
+        self, telegram_user_id: int, game_id: UUID, *, confirm_fresh: bool = False
+    ) -> dict:
+        """Join an ongoing game as an observer and schedule a full Telegram replay."""
+        async with self.database.transaction() as session:
+            player = await session.scalar(
+                select(PlayerRecord).where(PlayerRecord.telegram_user_id == telegram_user_id)
+            )
+            if player is None or player.status != "active":
+                raise PermissionError("Active player registration is required")
+            game = await session.scalar(
+                select(GameRecord).where(GameRecord.id == game_id).with_for_update()
+            )
+            if game is None:
+                raise LookupError("Game not found")
+            participant = await session.scalar(
+                select(GameParticipantRecord.id).where(
+                    GameParticipantRecord.game_id == game.id,
+                    GameParticipantRecord.player_id == player.id,
+                )
+            )
+            if participant is not None:
+                raise PermissionError("Game participants cannot join their game as observers")
+            observer = await session.scalar(
+                select(GameObserverRecord)
+                .where(
+                    GameObserverRecord.game_id == game.id,
+                    GameObserverRecord.player_id == player.id,
+                )
+                .with_for_update()
+            )
+            already_active = observer is not None and observer.active
+            result = await PersistentGameService(_BoundDatabase(session)).observe(
+                game.id, telegram_user_id, confirm_fresh=confirm_fresh
+            )
+            if not result.joined:
+                return {
+                    "game_id": str(game.id),
+                    "joined": False,
+                    "confirmation_required": True,
+                    "fresh_content_count": result.fresh_content_count,
+                }
+            cursor = await self._cursor(session, game.id, player.id)
+            if not already_active or cursor.dismissed_at is not None:
+                cursor.dismissed_at = None
+                cursor.connected = False
+                cursor.messages = {}
+                cursor.flow_sequence = 0
+                await TransactionalOutbox.enqueue(
+                    session,
+                    topic="game.event",
+                    deduplication_key=(
+                        f"game:{game.id}:observe:{telegram_user_id}:{uuid4()}"
+                    ),
+                    partition_key=f"telegram:chat:{telegram_user_id}",
+                    aggregate_type="game",
+                    aggregate_id=game.id,
+                    payload={
+                        "recipient_telegram_user_id": telegram_user_id,
+                        "game_id": str(game.id),
+                    },
+                )
+            await session.flush()
+            return {
+                "game_id": str(game.id),
+                "joined": True,
+                "confirmation_required": False,
+                "fresh_content_count": result.fresh_content_count,
+            }
 
     async def act(self, telegram_user_id: int, operation: GameActOperation) -> dict:
         if operation.command in {"reputation", "report"}:

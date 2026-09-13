@@ -255,6 +255,66 @@ export interface LobbyResource {
   last_event_sequence: number;
 }
 
+export interface OngoingLobbyMember {
+  display_name: string;
+  role: "player" | "observer";
+  ready: boolean;
+}
+
+export interface OngoingLobby {
+  id: string;
+  version: number;
+  tournament_id: string;
+  tournament_name: string;
+  invitation_code: string;
+  max_players: number;
+  searching: boolean;
+  expires_at: string;
+  members: OngoingLobbyMember[];
+  selected_packets: Array<{
+    packet_id: string;
+    name: string;
+    lead_author: string | null;
+    year: number | null;
+    fresh_play_unit_count: number;
+    total_play_unit_count: number;
+    playable_for_all: boolean;
+  }>;
+  is_member: boolean;
+  viewer_role: "player" | "observer" | null;
+  viewer_manages: boolean;
+}
+
+export interface OngoingGame {
+  id: string;
+  tournament_id: string;
+  tournament_name: string;
+  status: string;
+  phase: string;
+  participant_count: number;
+  participants: string[];
+  observing: boolean;
+  observing_policy: string;
+  managed: boolean;
+  fresh_content_count: number;
+  confirmation_required: boolean;
+  can_observe: boolean;
+}
+
+export interface GameObservation {
+  game_id: string;
+  joined: boolean;
+  confirmation_required: boolean;
+  fresh_content_count: number;
+}
+
+export interface OngoingResource {
+  kind: "ongoing";
+  state: "ready" | "empty";
+  lobbies: OngoingLobby[];
+  games: OngoingGame[];
+}
+
 export interface TournamentRegistrationPayload {
   accepted: boolean;
   status: string;
@@ -458,6 +518,7 @@ export interface RoutePayload {
     | TournamentManagerSettingsResource
     | TournamentManagerManagementResource
     | LobbyResource
+    | OngoingResource
     | PacketDraftResource
     | LibraryResource
     | PlayerProfileResource

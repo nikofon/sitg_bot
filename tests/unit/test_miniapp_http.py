@@ -113,6 +113,51 @@ class FakeGateway:
                 "participants": [],
                 "themes": [],
             }
+        elif operation.action == ActionCode.ONGOING_LIST:
+            data = {
+                "lobbies": [
+                    {
+                        "id": str(UUID(int=20)),
+                        "version": 3,
+                        "tournament_id": str(UUID(int=10)),
+                        "tournament_name": "Autumn Cup",
+                        "invitation_code": "a" * 32,
+                        "max_players": 4,
+                        "searching": False,
+                        "members": [
+                            {"display_name": "Alice", "role": "player", "ready": True}
+                        ],
+                        "selected_packets": [
+                            {
+                                "packet_id": str(UUID(int=30)),
+                                "name": "Selected packet",
+                                "fresh_play_unit_count": 2,
+                                "total_play_unit_count": 5,
+                            }
+                        ],
+                        "is_member": False,
+                        "viewer_role": None,
+                        "viewer_manages": False,
+                    }
+                ],
+                "games": [
+                    {
+                        "id": str(UUID(int=21)),
+                        "tournament_id": str(UUID(int=10)),
+                        "tournament_name": "Autumn Cup",
+                        "status": "active",
+                        "phase": "reading",
+                        "participant_count": 2,
+                        "participants": ["Alice", "Bob"],
+                        "observing": False,
+                        "observing_policy": "unlimited",
+                        "managed": False,
+                        "fresh_content_count": 1,
+                        "confirmation_required": True,
+                        "can_observe": True,
+                    }
+                ],
+            }
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -308,6 +353,96 @@ async def test_player_game_route_resolves_theme_grids_without_content() -> None:
     assert operation.action == ActionCode.PLAYER_GAME_RESULTS
     assert operation.player_id == player_id
     assert operation.game_id == game_id
+
+
+async def test_ongoing_route_resolves_lobbies_and_games() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    request = make_mocked_request(
+        "GET",
+        "/api/miniapp/routes/resolve?path=/ongoing",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["authorization"] == {"allowed": True}
+    assert payload["resource"]["kind"] == "ongoing"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["lobbies"][0]["tournament_name"] == "Autumn Cup"
+    assert payload["resource"]["lobbies"][0]["invitation_code"] == "a" * 32
+    assert payload["resource"]["games"][0]["can_observe"] is True
+    assert payload["resource"]["games"][0]["confirmation_required"] is True
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.ONGOING_LIST
+
+
+async def test_ongoing_lobby_join_maps_write_operation_with_guards() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    request = make_mocked_request(
+        "POST",
+        "/api/miniapp/ongoing/lobbies/join",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "ongoing-join-test",
+        },
+    )
+    request._read_bytes = json.dumps(
+        {"invitation_code": "a" * 32, "role": "observer", "confirm_fresh": True}
+    ).encode()
+    response = await http._join_ongoing_lobby(request)
+
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.LOBBY_JOIN
+    assert operation.invitation_code == "a" * 32
+    assert operation.role == "observer"
+    assert operation.confirm_fresh is True
+    assert gateway.requests[0].metadata.idempotency_key == "ongoing-join-test"
+
+
+async def test_ongoing_game_observe_maps_write_operation_with_guards() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    game_id = UUID(int=21)
+    request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/ongoing/games/{game_id}/observe",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "ongoing-observe-test",
+        },
+        match_info={"game_id": str(game_id)},
+    )
+    request._read_bytes = json.dumps({"confirm_fresh": True}).encode()
+    response = await http._observe_ongoing_game(request)
+
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.GAME_OBSERVE
+    assert operation.game_id == game_id
+    assert operation.confirm_fresh is True
+    assert gateway.requests[0].metadata.idempotency_key == "ongoing-observe-test"
 
 
 async def test_mini_app_http_rejects_missing_origin_before_exposing_data() -> None:

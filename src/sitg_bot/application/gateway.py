@@ -30,6 +30,7 @@ from sitg_bot.application.contracts import (
     GameActOperation,
     GameAppealDecideOperation,
     GameAppealTicketsOperation,
+    GameObserveOperation,
     GameViewOperation,
     GatewayError,
     GatewayRequest,
@@ -55,6 +56,7 @@ from sitg_bot.application.contracts import (
     NotificationReadOperation,
     NotificationsListOperation,
     NotificationsReadAllOperation,
+    OngoingListOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
@@ -171,6 +173,7 @@ ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
         ActionCode.GAME_ACT: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.GAME_OBSERVE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.CHAT_SEND: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.GAME_APPEAL_DECIDE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHENTICATE: ActionPolicy(mutation=True, idempotency_required=True),
@@ -1062,6 +1065,20 @@ class ApplicationGateway:
             return await self.telegram_games.view(
                 telegram_user_id, operation.game_id, reconnect=operation.reconnect
             )
+        if isinstance(operation, GameObserveOperation):
+            if request.metadata.channel not in {"telegram_bot", "mini_app"}:
+                raise PermissionError("Telegram identity is required to observe")
+            return await self.telegram_games.observe(
+                telegram_user_id, operation.game_id, confirm_fresh=operation.confirm_fresh
+            )
+        if isinstance(operation, OngoingListOperation):
+            from sitg_bot.services.persistent_game import PersistentGameService
+
+            games = PersistentGameService(self.database)
+            return {
+                "lobbies": await self.matchmaking.ongoing_lobbies(player_id),
+                "games": await games.ongoing_games(player_id),
+            }
         if isinstance(operation, GameActOperation):
             return await self.telegram_games.act(telegram_user_id, operation)
         if isinstance(operation, ChatMembersOperation):

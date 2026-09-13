@@ -96,6 +96,8 @@ class ActionCode(StrEnum):
     PLAYER_REPORT = "games.players.report.v1"
     GAME_VIEW = "games.view.v1"
     GAME_ACT = "games.act.v1"
+    GAME_OBSERVE = "games.observe.join.v1"
+    ONGOING_LIST = "ongoing.list.v1"
     CHAT_MEMBERS = "chat.members.v1"
     CHAT_SEND = "chat.send.v1"
     GAME_APPEAL_TICKETS = "games.appeals.manager.list.v1"
@@ -656,6 +658,16 @@ class GameActOperation(ContractModel):
     report_kind: Literal["cheating", "toxicity"] | None = None
 
 
+class GameObserveOperation(ContractModel):
+    action: Literal[ActionCode.GAME_OBSERVE]
+    game_id: UUID
+    confirm_fresh: bool = False
+
+
+class OngoingListOperation(ContractModel):
+    action: Literal[ActionCode.ONGOING_LIST]
+
+
 class ReputationVoteOperation(ContractModel):
     action: Literal[ActionCode.REPUTATION_VOTE]
     game_id: UUID
@@ -745,6 +757,8 @@ GatewayOperation = Annotated[
     | LobbySimpleMutationOperation
     | GameViewOperation
     | GameActOperation
+    | GameObserveOperation
+    | OngoingListOperation
     | ChatMembersOperation
     | ChatSendOperation
     | GameAppealTicketsOperation

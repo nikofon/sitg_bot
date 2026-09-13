@@ -461,8 +461,17 @@ class PersistentGameService:
         self, tournament_id: UUID, player_id: UUID
     ) -> tuple[dict[str, Any], ...]:
         async with self.database.sessions() as session:
-            membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
-            if membership is None or membership.status != "active":
+            manages = await session.scalar(
+                select(TournamentManagerRecord.player_id).where(
+                    TournamentManagerRecord.tournament_id == tournament_id,
+                    TournamentManagerRecord.player_id == player_id,
+                    TournamentManagerRecord.revoked_at.is_(None),
+                )
+            )
+            membership = await session.get(
+                TournamentMembershipRecord, (tournament_id, player_id)
+            )
+            if manages is None and (membership is None or membership.status != "active"):
                 raise PermissionError("Active tournament membership is required")
             games = tuple(
                 (
@@ -478,52 +487,108 @@ class PersistentGameService:
             )
             result: list[dict[str, Any]] = []
             for game in games:
-                participant = await session.scalar(
-                    select(GameParticipantRecord.id).where(
-                        GameParticipantRecord.game_id == game.id,
-                        GameParticipantRecord.player_id == player_id,
-                    )
-                )
-                if participant is not None:
-                    continue
-                policy = await session.get(
-                    TournamentPolicyVersionRecord, game.tournament_policy_version_id
-                )
-                if policy is None:
-                    continue
-                mode = str(policy.policies.get("observing", "forbidden"))
-                fresh_count = len(
-                    await self._fresh_plan_claims(session, player_id, game.assignment_plan)
-                )
-                observing = await session.scalar(
-                    select(GameObserverRecord.active).where(
-                        GameObserverRecord.game_id == game.id,
-                        GameObserverRecord.player_id == player_id,
-                    )
-                )
-                participant_count = int(
-                    await session.scalar(
-                        select(func.count())
-                        .select_from(GameParticipantRecord)
-                        .where(GameParticipantRecord.game_id == game.id)
-                    )
-                    or 0
-                )
-                can_observe = mode == "unlimited" or (mode == "burnt-only" and fresh_count == 0)
-                result.append(
-                    {
-                        "id": game.id,
-                        "status": game.status,
-                        "phase": game.phase,
-                        "participant_count": participant_count,
-                        "observing": bool(observing),
-                        "observing_policy": mode,
-                        "fresh_content_count": fresh_count,
-                        "confirmation_required": can_observe and fresh_count > 0,
-                        "can_observe": can_observe,
-                    }
-                )
+                card = await self._observable_card(session, game, player_id)
+                if card is not None:
+                    result.append(card)
             return tuple(result)
+
+    async def ongoing_games(self, player_id: UUID) -> tuple[dict[str, Any], ...]:
+        """Project observable games from tournaments the player joins or manages."""
+        async with self.database.sessions() as session:
+            player = await session.get(PlayerRecord, player_id)
+            if player is None or player.status != "active":
+                raise PermissionError("Active player registration is required")
+            tournament_names, _ = await self.tournaments.player_tournament_map(
+                session, player_id
+            )
+            if not tournament_names:
+                return ()
+            games = tuple(
+                (
+                    await session.execute(
+                        select(GameRecord)
+                        .where(
+                            GameRecord.tournament_id.in_(tournament_names),
+                            GameRecord.status.in_(("lobby", "active")),
+                        )
+                        .order_by(GameRecord.created_at)
+                    )
+                ).scalars()
+            )
+            result: list[dict[str, Any]] = []
+            for game in games:
+                card = await self._observable_card(session, game, player_id)
+                if card is None:
+                    continue
+                card["tournament_id"] = str(game.tournament_id)
+                card["tournament_name"] = tournament_names[game.tournament_id]
+                result.append(card)
+            return tuple(result)
+
+    async def _observable_card(
+        self, session: AsyncSession, game: GameRecord, player_id: UUID
+    ) -> dict[str, Any] | None:
+        """Project one observable game for a player, or None when it must be skipped."""
+        participant = await session.scalar(
+            select(GameParticipantRecord.id).where(
+                GameParticipantRecord.game_id == game.id,
+                GameParticipantRecord.player_id == player_id,
+            )
+        )
+        if participant is not None:
+            return None
+        policy = await session.get(
+            TournamentPolicyVersionRecord, game.tournament_policy_version_id
+        )
+        if policy is None:
+            return None
+        manages = await session.scalar(
+            select(TournamentManagerRecord.player_id).where(
+                TournamentManagerRecord.tournament_id == game.tournament_id,
+                TournamentManagerRecord.player_id == player_id,
+                TournamentManagerRecord.revoked_at.is_(None),
+            )
+        )
+        mode = str(policy.policies.get("observing", "forbidden"))
+        fresh_count = len(
+            await self._fresh_plan_claims(session, player_id, game.assignment_plan)
+        )
+        observing = await session.scalar(
+            select(GameObserverRecord.active).where(
+                GameObserverRecord.game_id == game.id,
+                GameObserverRecord.player_id == player_id,
+            )
+        )
+        participant_rows = (
+            await session.execute(
+                select(PlayerRecord.public_nickname)
+                .join(
+                    GameParticipantRecord,
+                    GameParticipantRecord.player_id == PlayerRecord.id,
+                )
+                .where(GameParticipantRecord.game_id == game.id)
+                .order_by(PlayerRecord.public_nickname)
+            )
+        ).scalars()
+        participants = tuple(participant_rows)
+        can_observe = (
+            manages is not None
+            or mode == "unlimited"
+            or (mode == "burnt-only" and fresh_count == 0)
+        )
+        return {
+            "id": game.id,
+            "status": game.status,
+            "phase": game.phase,
+            "participant_count": len(participants),
+            "participants": participants,
+            "observing": bool(observing),
+            "observing_policy": mode,
+            "managed": manages is not None,
+            "fresh_content_count": fresh_count,
+            "confirmation_required": can_observe and fresh_count > 0,
+            "can_observe": can_observe,
+        }
 
     async def join(self, game_id: UUID, telegram_user_id: int) -> Transition:
         async with self.database.transaction() as session:
@@ -635,7 +700,14 @@ class PersistentGameService:
             membership = await session.get(
                 TournamentMembershipRecord, (game.tournament_id, player.id)
             )
-            if membership is None or membership.status != "active":
+            manages = await session.scalar(
+                select(TournamentManagerRecord.player_id).where(
+                    TournamentManagerRecord.tournament_id == game.tournament_id,
+                    TournamentManagerRecord.player_id == player.id,
+                    TournamentManagerRecord.revoked_at.is_(None),
+                )
+            )
+            if manages is None and (membership is None or membership.status != "active"):
                 raise PermissionError("Active tournament membership is required")
             participant = await session.scalar(
                 select(GameParticipantRecord.id).where(
@@ -662,7 +734,7 @@ class PersistentGameService:
             if policy is None:
                 raise RuntimeError("Tournament policy snapshot is missing")
             observing_policy = str(policy.policies.get("observing", "forbidden"))
-            if observing_policy == "forbidden":
+            if observing_policy == "forbidden" and manages is None:
                 raise PermissionError("Observing is forbidden by tournament policy")
             observer = await session.scalar(
                 select(GameObserverRecord).where(
@@ -679,7 +751,7 @@ class PersistentGameService:
                     await self._snapshot(session, game),
                 )
             fresh = await self._fresh_plan_claims(session, player.id, game.assignment_plan)
-            if fresh and observing_policy == "burnt-only":
+            if fresh and observing_policy == "burnt-only" and manages is None:
                 raise PermissionError(
                     "Burnt-only observing does not allow this player to see fresh content"
                 )

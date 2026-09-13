@@ -16,18 +16,21 @@ from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
     AuthorsSearchOperation,
+    GameObserveOperation,
     GatewayOperation,
     GatewayResponse,
     LibraryAccessOperation,
     LibraryListOperation,
     LobbyEventsOperation,
     LobbyInfoOperation,
+    LobbyJoinOperation,
     LobbyPacketOperation,
     LobbyReadyUpdateOperation,
     LobbyRoleUpdateOperation,
     LobbySettingsUpdateOperation,
     LobbySimpleMutationOperation,
     NavigationTournamentSetOperation,
+    OngoingListOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
@@ -130,6 +133,14 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/lobbies/{launch_ref}/{command}",
             self._mutate_lobby,
+        )
+        app.router.add_post(
+            "/api/miniapp/ongoing/lobbies/join",
+            self._join_ongoing_lobby,
+        )
+        app.router.add_post(
+            "/api/miniapp/ongoing/games/{game_id}/observe",
+            self._observe_ongoing_game,
         )
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/settings",
@@ -289,6 +300,29 @@ class MiniAppHttpServer:
                 "locale": session.preferred_locale, "authorization": {"allowed": True},
                 "resource": {"kind": "library", "state": "ready", **result.data},
             })
+        if normalized_path == "/ongoing":
+            session, result = await self._query(
+                request, OngoingListOperation(action=ActionCode.ONGOING_LIST)
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "ongoing",
+                        "state": (
+                            "ready"
+                            if result.data.get("lobbies") or result.data.get("games")
+                            else "empty"
+                        ),
+                        "lobbies": result.data.get("lobbies") or [],
+                        "games": result.data.get("games") or [],
+                    },
+                }
+            )
         player_game_match = re.fullmatch(
             r"/players/([0-9a-fA-F-]{36})/games/([0-9a-fA-F-]{36})", normalized_path
         )
@@ -615,6 +649,31 @@ class MiniAppHttpServer:
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
+        return self._gateway_response(result)
+
+    async def _join_ongoing_lobby(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        operation = LobbyJoinOperation.model_validate(
+            {
+                "action": ActionCode.LOBBY_JOIN,
+                "invitation_code": body.get("invitation_code"),
+                "role": body.get("role", "player"),
+                "confirm_fresh": body.get("confirm_fresh", False),
+            }
+        )
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _observe_ongoing_game(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        operation = GameObserveOperation.model_validate(
+            {
+                "action": ActionCode.GAME_OBSERVE,
+                "game_id": request.match_info["game_id"],
+                "confirm_fresh": body.get("confirm_fresh", False),
+            }
+        )
+        _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 
     async def _lobby_events(self, request: web.Request) -> web.Response:

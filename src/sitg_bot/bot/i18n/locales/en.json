@@ -247,6 +247,8 @@
   "miniapp.tournaments.open": "Open tournaments",
   "miniapp.library.open": "Open library",
   "miniapp.library.prompt": "Open your packet library to read or download packets.",
+  "miniapp.ongoing.open": "Open ongoing games",
+  "miniapp.ongoing.prompt": "Open the list of ongoing games to join a lobby or watch a game.",
   "miniapp.players.open": "Open profile",
   "miniapp.players.prompt": "Open your player profile to review ratings, statistics, and game results.",
   "profile.command.usage": "Usage: /profile player_id — or — /profile @username",

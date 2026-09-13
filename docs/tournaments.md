@@ -171,7 +171,9 @@ The runtime currently interprets policies for:
   contribution to ruleset-wide rating without changing tournament rating or confidence;
 - `observing`, defaulting to `forbidden`: `unlimited` permits observing fresh or burnt
   assigned content, `burnt-only` permits a player to observe only when every assigned claim
-  is already burnt for that player, and `forbidden` disables observing;
+  is already burnt for that player, and `forbidden` disables observing. Active tournament
+  managers bypass this policy (and the participant-membership requirement) for games in
+  tournaments they manage; fresh-content exposure claims still apply to them;
 - appeal voting rule, such as unanimity or majority;
 - whether appeal escalation is available and its deadlines.
 

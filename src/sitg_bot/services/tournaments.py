@@ -362,6 +362,48 @@ class TournamentService:
         self.rulesets = rulesets
         self.token_lifetime = token_lifetime
 
+    @staticmethod
+    async def player_tournament_map(
+        session: AsyncSession, player_id: UUID
+    ) -> tuple[dict[UUID, str], frozenset[UUID]]:
+        """Names of tournaments the player participates in or manages, plus managed IDs."""
+        names = {
+            tournament_id: name
+            for tournament_id, name in (
+                await session.execute(
+                    select(TournamentRecord.id, TournamentRecord.name)
+                    .join(
+                        TournamentMembershipRecord,
+                        TournamentMembershipRecord.tournament_id
+                        == TournamentRecord.id,
+                    )
+                    .where(
+                        TournamentMembershipRecord.player_id == player_id,
+                        TournamentMembershipRecord.status == "active",
+                    )
+                    .order_by(TournamentRecord.name)
+                )
+            ).all()
+        }
+        managed_rows = (
+            await session.execute(
+                select(TournamentRecord.id, TournamentRecord.name)
+                .join(
+                    TournamentManagerRecord,
+                    TournamentManagerRecord.tournament_id == TournamentRecord.id,
+                )
+                .where(
+                    TournamentManagerRecord.player_id == player_id,
+                    TournamentManagerRecord.revoked_at.is_(None),
+                )
+                .order_by(TournamentRecord.name)
+            )
+        ).all()
+        for tournament_id, name in managed_rows:
+            names.setdefault(tournament_id, name)
+        managed_ids = frozenset(row[0] for row in managed_rows)
+        return names, managed_ids
+
     async def grant_administrator(
         self, player_id: UUID, *, granted_by_id: UUID | None = None
     ) -> None:
