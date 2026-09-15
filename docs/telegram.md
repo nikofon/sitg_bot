@@ -28,6 +28,10 @@ the update's `from_user`; group-chat identities are not accepted as private sess
 Per-user event isolation prevents rapid input from bypassing an active conversation.
 
 `/start`, `/menu`, `/help`, `/cancel`, and `/language` support recovery and registration.
+Tournament menus expose **Registration link** to managers and active participants. Shared
+`/start reg_…` links ask for registration confirmation; private links include a sharing warning
+when requested. `/start join_…` offers registration to nonparticipants before lobby joining.
+Both flows recheck registration availability. The player menu omits rating/history placeholders.
 Real name, public nickname, locale, and Telegram visibility consent are separate choices.
 Navigation and registration are recovered from backend state. Short-lived callback references
 may expire; re-opening a destination must regenerate authorized controls.

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hmac
 import logging
 import re
+import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import UUID, uuid4
 
 from aiohttp import web
@@ -47,6 +50,7 @@ from sitg_bot.application.contracts import (
     PacketManagementUpdateOperation,
     PlayerBanOperation,
     PlayerGameResultsOperation,
+    PlayerListOperation,
     PlayerProfileOperation,
     PlayerUnbanOperation,
     TournamentAuthorCreateOperation,
@@ -72,6 +76,7 @@ from sitg_bot.services.miniapp_auth import (
     MiniAppCsrfError,
     MiniAppSessionContext,
     MiniAppSessionCredentials,
+    PublicBrowserContext,
 )
 
 SESSION_COOKIE = "__Host-sitg_session"
@@ -84,6 +89,8 @@ class TournamentSelectionNotifier(Protocol):
     ) -> None: ...
 
     async def lobby_invitation_url(self, invitation_code: str) -> str: ...
+
+    async def bot_username(self) -> str: ...
 
     async def close(self) -> None: ...
 
@@ -102,10 +109,16 @@ class MiniAppHttpServer:
         web_dist: Path | None = None,
         launch_references: LaunchReferenceService | None = None,
         selection_notifier: TournamentSelectionNotifier | None = None,
+        website_origins: set[str] | frozenset[str] = frozenset(),
     ) -> None:
         if not 0 <= port <= 65535:
             raise ValueError("Mini App HTTP port is invalid")
         self.auth = auth
+        self.website_origins = frozenset(
+            MiniAppAuthService.normalize_origin(origin) for origin in website_origins
+        )
+        if not self.website_origins <= auth.security_policy.allowed_origins:
+            raise ValueError("Website origins must be included in the HTTP auth policy")
         self.gateway = MiniAppGatewayAdapter(gateway, client_version=client_version)
         self.host = host
         self.port = port
@@ -121,6 +134,11 @@ class MiniAppHttpServer:
         app.router.add_route("OPTIONS", "/api/{path:.*}", self._options)
         app.router.add_post("/api/miniapp/session", self._create_session)
         app.router.add_post("/api/miniapp/session/refresh", self._refresh_session)
+        app.router.add_post("/api/website/session", self._resume_website_session)
+        app.router.add_post("/api/website/logout", self._website_logout)
+        app.router.add_get("/auth/telegram", self._website_login)
+        app.router.add_get("/auth/telegram/callback", self._website_login_callback)
+        app.router.add_get("/auth/bot", self._website_bot)
         app.router.add_get("/api/miniapp/routes/resolve", self._resolve_route)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/tournaments/{tournament_id}", self._tournament_info)
@@ -253,6 +271,12 @@ class MiniAppHttpServer:
         self, request: web.Request, handler: web.RequestHandler
     ) -> web.StreamResponse:
         try:
+            if request.path.startswith("/auth/"):
+                self._website_origin(request)
+            if request.path.startswith("/api/website/"):
+                origin = MiniAppAuthService.normalize_origin(self._origin(request))
+                if origin not in self.website_origins:
+                    raise MiniAppAuthenticationError("Website origin is not allowed")
             response = await handler(request)
         except (MiniAppAuthenticationError, MiniAppCsrfError) as error:
             response = self._error_response(
@@ -293,7 +317,101 @@ class MiniAppHttpServer:
         self.auth.security_policy.response_headers(self._origin(request))
         return web.Response(status=204)
 
+    async def _resume_website_session(self, request: web.Request) -> web.Response:
+        # This bootstrap returns a CSRF token, so require an explicit trusted Origin and JSON.
+        origin = request.headers.get("Origin", "")
+        self.auth.security_policy.response_headers(origin)
+        if request.content_type != "application/json":
+            raise MiniAppCsrfError("JSON is required")
+        await self._json_body(request)
+        token = self._session_token(request)
+        try:
+            credentials = await self.auth.resume_website_session(token, origin=origin)
+        except MiniAppAuthenticationError:
+            response = self._error_response("authentication_required", 401)
+            response.del_cookie(
+                SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="Strict"
+            )
+            return response
+        viewer = await self.auth.website_viewer(token, origin=origin)
+        return web.json_response({**self._session_payload(credentials), "viewer": viewer})
+
+    async def _website_logout(self, request: web.Request) -> web.Response:
+        await self.auth.logout_website_session(
+            self._session_token(request), origin=self._origin(request),
+            csrf_token=request.headers.get("X-CSRF-Token"),
+            idempotency_key=request.headers.get("X-Idempotency-Key"),
+            content_type=request.content_type,
+        )
+        response = web.json_response({"ok": True})
+        response.del_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="Strict")
+        return response
+
+    def _website_origin(self, request: web.Request) -> str:
+        for allowed in self.website_origins:
+            if urlsplit(allowed).netloc.casefold() == request.host.casefold():
+                return allowed
+        raise MiniAppAuthenticationError("Unknown website host")
+
+    async def _website_bot(self, request: web.Request) -> web.Response:
+        if self.selection_notifier is None:
+            raise LookupError("Telegram bot is unavailable")
+        username = await self.selection_notifier.bot_username()
+        return web.Response(status=302, headers={
+            "Location": f"https://t.me/{username}", "Cache-Control": "no-store"
+        })
+
+    async def _website_login(self, request: web.Request) -> web.Response:
+        origin = self._website_origin(request)
+        if self.selection_notifier is None:
+            raise LookupError("Telegram login is unavailable")
+        username = await self.selection_notifier.bot_username()
+        if not re.fullmatch(r"[A-Za-z0-9_]+", username):
+            raise ValueError("Invalid bot username")
+        state = secrets.token_urlsafe(32)
+        callback = f"{origin}/auth/telegram/callback?{urlencode({'state': state})}"
+        response = web.Response(
+            text=(
+                '<!doctype html><html lang="en"><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                '<title>Sign in · SITG</title><body><main><h1>SITG</h1>'
+                '<p>Sign in with Telegram / Войти через Telegram</p>'
+                '<script async src="https://telegram.org/js/telegram-widget.js?22" '
+                f'data-telegram-login="{escape(username)}" data-size="large" '
+                f'data-auth-url="{escape(callback, quote=True)}" data-request-access="write">'
+                '</script><p><a href="/tournaments">Back / Назад</a></p></main></body></html>'
+            ),
+            content_type="text/html", headers={"Cache-Control": "no-store"},
+        )
+        response.set_cookie(
+            "__Host-sitg_login", state, max_age=300, path="/", secure=True,
+            httponly=True, samesite="Lax",
+        )
+        return response
+
+    async def _website_login_callback(self, request: web.Request) -> web.Response:
+        origin = self._website_origin(request)
+        state = request.query.get("state", "")
+        cookie = request.cookies.get("__Host-sitg_login", "")
+        if not state or not cookie or not hmac.compare_digest(state, cookie):
+            raise MiniAppAuthenticationError("Login state does not match this browser")
+        if any(len(request.query.getall(key)) != 1 for key in request.query):
+            raise MiniAppAuthenticationError("Duplicate login fields")
+        credentials = await self.auth.create_website_session(
+            {key: value for key, value in request.query.items() if key != "state"}, origin=origin
+        )
+        response = web.Response(status=303, headers={
+            "Location": "/tournaments", "Cache-Control": "no-store"
+        })
+        self._set_session_cookie(response, credentials)
+        response.del_cookie(
+            "__Host-sitg_login", path="/", secure=True, httponly=True, samesite="Lax"
+        )
+        return response
+
     async def _create_session(self, request: web.Request) -> web.Response:
+        if MiniAppAuthService.normalize_origin(self._origin(request)) in self.website_origins:
+            raise MiniAppAuthenticationError("Mini App authentication requires a Mini App origin")
         body = await self._json_body(request)
         init_data = body.get("init_data")
         if not isinstance(init_data, str):
@@ -321,6 +439,22 @@ class MiniAppHttpServer:
         if parsed.scheme or parsed.netloc:
             return self._route_not_found()
         normalized_path = parsed.path.rstrip("/")
+        if normalized_path == "/players":
+            query = parse_qs(parsed.query)
+            operation = PlayerListOperation.model_validate({
+                "action": ActionCode.PLAYER_LIST,
+                "ruleset_key": query.get("ruleset", [None])[-1],
+                **{key: values[-1] for key, values in query.items()
+                   if key in {"search", "order", "offset", "limit"}},
+            })
+            session, result = await self._query(request, operation)
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale,
+                "authorization": {"allowed": True},
+                "resource": {"kind": "players", "state": "ready", **result.data},
+            })
         if normalized_path == "/library" or re.fullmatch(
             r"/library/[0-9a-fA-F-]{36}", normalized_path
         ):
@@ -567,6 +701,7 @@ class MiniAppHttpServer:
             {
                 "action": ActionCode.TOURNAMENT_LIST,
                 "role": query.get("role", "player"),
+                "include_managed_public": query.get("include_managed_public", "false"),
                 "phase": query.get("phase"),
                 "relationship": query.get("relationship"),
                 "registration": query.get("registration"),
@@ -1088,8 +1223,6 @@ class MiniAppHttpServer:
         mutation: bool = False,
         expected_routes: set[str] | None = None,
     ) -> tuple[MiniAppSessionContext, UUID]:
-        if self.launch_references is None:
-            raise LookupError("Launch-reference service is unavailable")
         authorization = {
             "origin": self._origin(request),
             "method": request.method,
@@ -1107,6 +1240,11 @@ class MiniAppHttpServer:
         player_id = session.principal.player_id
         if player_id is None:
             raise MiniAppAuthenticationError("Player identity is missing")
+        if re.fullmatch(r"[0-9a-fA-F-]{36}", raw_reference):
+            # Direct website URLs still pass through the gateway and current manager checks.
+            return session, UUID(raw_reference)
+        if self.launch_references is None:
+            raise LookupError("Launch-reference service is unavailable")
         resolved = await self.launch_references.resolve(raw_reference, player_id=player_id)
         routes = expected_routes or {"manager_settings"}
         # Both views manage the same tournament under the same current manager role.
@@ -1258,13 +1396,21 @@ class MiniAppHttpServer:
 
     async def _query(
         self, request: web.Request, operation: GatewayOperation
-    ) -> tuple[MiniAppSessionContext, GatewayResponse]:
-        session = await self.auth.authorize_request(
-            self._session_token(request),
-            origin=self._origin(request),
-            method=request.method,
-            action=ActionCode(operation.action),
-        )
+    ) -> tuple[MiniAppSessionContext | PublicBrowserContext, GatewayResponse]:
+        public_actions = {
+            ActionCode.PLAYER_LIST, ActionCode.PLAYER_PROFILE, ActionCode.PLAYER_GAME_RESULTS,
+            ActionCode.TOURNAMENT_LIST, ActionCode.TOURNAMENT_INFO,
+        }
+        if SESSION_COOKIE not in request.cookies and operation.action in public_actions:
+            self.auth.security_policy.response_headers(self._origin(request))
+            session = PublicBrowserContext(action=ActionCode(operation.action))
+        else:
+            session = await self.auth.authorize_request(
+                self._session_token(request),
+                origin=self._origin(request),
+                method=request.method,
+                action=ActionCode(operation.action),
+            )
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
@@ -1288,6 +1434,9 @@ class MiniAppHttpServer:
         return session, result
 
     async def _static(self, request: web.Request) -> web.StreamResponse:
+        if any(urlsplit(origin).netloc.casefold() == request.host.casefold()
+               for origin in self.website_origins):
+            raise web.HTTPNotFound()
         assert self.web_dist is not None
         relative = request.match_info.get("path", "")
         candidate = (self.web_dist / relative).resolve()

@@ -57,6 +57,9 @@ from sitg_bot.application.contracts import (
     TournamentInfoOperation,
     TournamentManagerManagementLinkOperation,
     TournamentManagerSettingsLinkOperation,
+    TournamentRegisterOperation,
+    TournamentRegistrationInvitationOperation,
+    TournamentRegistrationLinkOperation,
 )
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.state.models import (
@@ -523,6 +526,31 @@ class BotBackend:
                 role="player",
             ),
         )
+        return cast(dict[str, object], response.data)
+
+    async def registration_link(
+        self, claim: TelegramUpdateClaim, *, tournament_id: UUID,
+    ) -> dict[str, object]:
+        response = await self._execute(claim, TournamentRegistrationLinkOperation(
+            action=ActionCode.TOURNAMENT_REGISTRATION_LINK, tournament_id=tournament_id,
+        ))
+        return cast(dict[str, object], response.data)
+
+    async def registration_invitation(
+        self, claim: TelegramUpdateClaim, *, reference: str,
+    ) -> dict[str, object]:
+        response = await self._execute(claim, TournamentRegistrationInvitationOperation(
+            action=ActionCode.TOURNAMENT_REGISTRATION_INVITATION, reference=reference,
+        ))
+        return cast(dict[str, object], response.data)
+
+    async def register_tournament(
+        self, claim: TelegramUpdateClaim, *, tournament_id: UUID, invitation_reference: str,
+    ) -> dict[str, object]:
+        response = await self._execute(claim, TournamentRegisterOperation(
+            action=ActionCode.TOURNAMENT_REGISTER, tournament_id=tournament_id,
+            invitation_reference=invitation_reference,
+        ))
         return cast(dict[str, object], response.data)
 
     async def resolve_player(

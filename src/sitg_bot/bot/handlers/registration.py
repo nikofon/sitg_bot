@@ -2,6 +2,7 @@ from typing import Literal, cast
 
 from aiogram import F, Router
 from aiogram.filters import Filter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from sitg_bot.application.contracts import ErrorCode
@@ -38,6 +39,7 @@ async def handle_registration_input(
     telegram_update_claim: TelegramUpdateClaim,
     localization: LocalizationService,
     locale: str,
+    state: FSMContext,
 ) -> None:
     username = message.from_user.username if message.from_user is not None else None
     draft = await backend.start_registration(telegram_update_claim, telegram_username=username)
@@ -52,6 +54,7 @@ async def handle_registration_input(
             claim=telegram_update_claim,
             localization=localization,
             locale=locale,
+            state=state,
         )
         return
     if message.text.startswith("/"):
@@ -106,6 +109,7 @@ async def handle_registration_input(
         claim=telegram_update_claim,
         localization=localization,
         locale=locale,
+        state=state,
     )
 
 
@@ -116,6 +120,7 @@ async def _send_completed_menu(
     claim: TelegramUpdateClaim,
     localization: LocalizationService,
     locale: str,
+    state: FSMContext | None = None,
 ) -> None:
     navigation = await backend.navigation(claim)
     if navigation is None:
@@ -132,6 +137,10 @@ async def _send_completed_menu(
     menu = menu_message(navigation, localization, locale)
     text = f"{localization.text('registration.complete', locale)}\n\n{menu.text}"
     await send_message_model(message, MessageModel(text, menu.keyboard))
+    if state is not None:
+        from sitg_bot.bot.handlers.common import resume_invitation
+
+        await resume_invitation(message, backend, claim, localization, locale, state)
 
 
 @router.message(RegistrationRequired())

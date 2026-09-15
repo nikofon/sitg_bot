@@ -11,7 +11,8 @@ code map and shared development rules; each subsystem guide owns its implementat
 flowchart LR
     Telegram["Telegram bot process"] -->|Authenticated NDJSON| Server["sitg-server"]
     Console["Console clients"] -->|Local test protocol| Server
-    Browser["Telegram Mini App"] -->|Same-origin HTTP| HTTP["Mini App HTTP adapter"]
+    MiniApp["Telegram Mini App domain"] -->|Same-origin HTTP| HTTP["Browser HTTP adapter"]
+    Website["Independent website domain"] -->|Same-origin proxy| HTTP
     HTTP --> Gateway["Application gateway"]
     Server --> Gateway
     Server --> Services["Transactional services"]
@@ -22,7 +23,9 @@ flowchart LR
 
 The Python 3.12+ backend uses asyncio, SQLAlchemy/asyncpg, and PostgreSQL. The Telegram
 process uses aiogram; the optional HTTP adapter uses aiohttp and runs inside
-`sitg-server`. The Mini App is TypeScript with Vite and direct DOM rendering.
+`sitg-server`. The Mini App uses TypeScript with Vite and direct DOM rendering in `web/`.
+The website is an independent frontend project in the sibling `SITGBot-website` directory,
+with its own build and documentation. The frontends share backend services, not frontend code.
 
 PostgreSQL owns persistent state. The server runs game transitions, matchmaking, jobs,
 and delivery queues. Telegram is a presentation client and never constructs a database

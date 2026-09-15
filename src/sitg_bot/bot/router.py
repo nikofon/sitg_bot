@@ -11,6 +11,7 @@ from sitg_bot.bot.handlers import (
     navigation,
     player,
     registration,
+    tournament_registration,
 )
 
 root_router = Router(name="root")
@@ -20,6 +21,7 @@ root_router.include_router(registration.router)
 root_router.include_router(chat.commands)
 root_router.include_router(game.router)
 root_router.include_router(lobby.router)
+root_router.include_router(tournament_registration.router)
 root_router.include_router(player.router)
 root_router.include_router(manager.router)
 root_router.include_router(admin.router)

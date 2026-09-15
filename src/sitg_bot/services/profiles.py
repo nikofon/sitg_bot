@@ -92,9 +92,77 @@ class PlayerProfileService:
     def __init__(self, database: Database) -> None:
         self.database = database
 
+    async def list_players(
+        self, *, ruleset_key: str | None = None, search: str = "",
+        order: str = "name_asc", offset: int = 0, limit: int = 20
+    ) -> dict[str, object]:
+        if len(search) > 200 or order not in {"name_asc", "name_desc"}:
+            raise ValueError("Invalid player search")
+        if not 0 <= offset <= 1_000_000 or not 1 <= limit <= 100:
+            raise ValueError("Invalid player page")
+        async with self.database.sessions() as session:
+            versions = (await session.execute(select(GameRulesetVersionRecord).order_by(
+                GameRulesetVersionRecord.key, GameRulesetVersionRecord.version.desc()
+            ))).scalars()
+            names: dict[str, str] = {}
+            for version in versions:
+                names.setdefault(version.key, version.name)
+        rulesets = [{"key": key, "name": name} for key, name in names.items()]
+        selected = ruleset_key or (
+            SI_RULESET_KEY if SI_RULESET_KEY in names else next(iter(names), None)
+        )
+        if ruleset_key is not None and ruleset_key not in names:
+            raise ValueError("Unknown ruleset")
+        game_counts = (
+            select(GameResultRecord.player_id, func.count().label("games"))
+            .join(GameRecord, GameRecord.id == GameResultRecord.game_id)
+            .join(GameRulesetVersionRecord,
+                  GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id)
+            .where(GameRulesetVersionRecord.key == selected)
+            .group_by(GameResultRecord.player_id)
+            .having(func.count() > 1)
+            .subquery()
+        )
+        query = select(
+            PlayerRecord.id, PlayerRecord.public_nickname, game_counts.c.games,
+            func.coalesce(RulesetRatingRecord.rating, DEFAULT_RULESET_RATING).label("rating"),
+        ).join(game_counts, game_counts.c.player_id == PlayerRecord.id).outerjoin(
+            RulesetRatingRecord, and_(
+                RulesetRatingRecord.player_id == PlayerRecord.id,
+                RulesetRatingRecord.ruleset_key == selected,
+            ),
+        ).where(
+            PlayerRecord.status == "active", PlayerRecord.public_nickname.is_not(None)
+        )
+        if search.strip():
+            query = query.where(
+                func.lower(PlayerRecord.public_nickname).contains(
+                    search.strip().lower(), autoescape=True
+                )
+            )
+        name = func.lower(PlayerRecord.public_nickname)
+        ordering = (name, PlayerRecord.id) if order == "name_asc" else (
+            name.desc(), PlayerRecord.id.desc()
+        )
+        async with self.database.sessions() as session:
+            total = await session.scalar(select(func.count()).select_from(query.subquery()))
+            rows = (
+                await session.execute(query.order_by(*ordering).offset(offset).limit(limit))
+            ).all()
+        return {
+            "rulesets": rulesets,
+            "ruleset_key": selected,
+            "items": [{
+                "id": str(row.id), "label": row.public_nickname,
+                "rating": float(row.rating), "games": row.games,
+            } for row in rows],
+            "total": total,
+            "next_offset": offset + len(rows) if offset + len(rows) < (total or 0) else None,
+        }
+
     async def profile(
         self,
-        viewer_player_id: UUID,
+        viewer_player_id: UUID | None,
         player_id: UUID,
         *,
         ruleset_key: str | None = None,
@@ -102,7 +170,7 @@ class PlayerProfileService:
     ) -> dict[str, object]:
         async with self.database.sessions() as session:
             player = await session.get(PlayerRecord, player_id)
-            if player is None:
+            if player is None or (viewer_player_id is None and player.status != "active"):
                 raise LookupError("Player not found")
             privileged = viewer_player_id == player_id or await self._is_administrator(
                 session, viewer_player_id
@@ -148,7 +216,7 @@ class PlayerProfileService:
             return payload
 
     async def game_results(
-        self, viewer_player_id: UUID, player_id: UUID, game_id: UUID
+        self, viewer_player_id: UUID | None, player_id: UUID, game_id: UUID
     ) -> dict[str, object]:
         async with self.database.sessions() as session:
             game = await session.get(GameRecord, game_id)
@@ -395,7 +463,7 @@ class PlayerProfileService:
     async def _game_summaries(
         self,
         session: AsyncSession,
-        viewer_player_id: UUID,
+        viewer_player_id: UUID | None,
         results: list[tuple[GameResultRecord, GameRecord]],
     ) -> list[dict[str, object]]:
         games = [game for _, game in results]
@@ -545,7 +613,7 @@ class PlayerProfileService:
         return themes
 
     async def _tournament_visible(
-        self, session: AsyncSession, tournament: TournamentRecord, viewer_player_id: UUID
+        self, session: AsyncSession, tournament: TournamentRecord, viewer_player_id: UUID | None
     ) -> bool:
         if tournament.visibility == "public":
             return True
@@ -557,9 +625,9 @@ class PlayerProfileService:
 
     @staticmethod
     async def _accessible_tournaments(
-        session: AsyncSession, tournament_ids: set[UUID], viewer_player_id: UUID
+        session: AsyncSession, tournament_ids: set[UUID], viewer_player_id: UUID | None
     ) -> set[UUID]:
-        if not tournament_ids:
+        if not tournament_ids or viewer_player_id is None:
             return set()
         memberships = set(
             (
@@ -586,11 +654,8 @@ class PlayerProfileService:
         return memberships | managers
 
     @staticmethod
-    async def _is_administrator(session: AsyncSession, player_id: UUID) -> bool:
+    async def _is_administrator(session: AsyncSession, player_id: UUID | None) -> bool:
+        if player_id is None:
+            return False
         administrator = await session.get(PlatformAdministratorRecord, player_id)
         return administrator is not None and administrator.revoked_at is None
-
-
-
-
-

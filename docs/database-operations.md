@@ -25,6 +25,7 @@ The Telegram process loads `.env` through [Settings](../src/sitg_bot/config.py).
 | `APPLICATION_SECURITY_KEY` | 32+ character signing key for Mini App sessions and launch references |
 | `MINI_APP_BASE_URL` | Public HTTPS launch URL used by the bot |
 | `MINI_APP_ALLOWED_ORIGINS` | Exact origins accepted for Mini App authentication/API access |
+| `WEBSITE_ALLOWED_ORIGINS` | Exact independent website origins; hostname set must differ from Mini App origins |
 | `MINI_APP_HOST`, `MINI_APP_PORT` | Optional HTTP listener; setting the port enables it |
 | `MINI_APP_WEB_DIST` | Built browser assets; default `web/dist` |
 | `BOT_LOG_LEVEL`, `BOT_LOG_PATH` | Defaults: INFO and `logs/sitg-bot.log` |
@@ -35,6 +36,14 @@ The Mini App HTTP listener runs inside `sitg-server` and requires `BOT_TOKEN`,
 used by the launch URL. The TCP listener exposes trusted adapter access and numeric-ID console
 login; it is intended for a private boundary. See the [Mini App guide](mini-app.md) for its
 browser contract.
+
+The independent website serves its own build on a different domain and proxies `/api/`
+and `/auth/` to the HTTP listener, preserving public Host and browser Origin. Configure
+`WEBSITE_ALLOWED_ORIGINS` (or `--website-allowed-origins`) explicitly; website login is otherwise
+disabled. The server accepts business API calls from both configured origin sets, but keeps
+login flows separate and sessions bound to their original origin. Cookies are host-only.
+The website project contains its own deployment and API documentation; `MINI_APP_WEB_DIST`
+continues to point only at the Mini App build.
 
 ## Schema baseline
 

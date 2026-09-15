@@ -176,8 +176,9 @@ Ruleset-specific appeal effects, scoring, and tie-breaking are defined with that
   active membership, manager role, assignment-wide member rights, and explicit per-player
   entitlements.
 - Tournament discovery, registration approval, and active participation are separate. Only
-  active participants receive gameplay rights. Private registration requires a prior
-  invitation, and every registration requires manager approval.
+  active participants receive gameplay rights. Private registration requires a personal or
+  shared-link invitation. Approval is manual unless automatic registration approval is enabled;
+  finite tournaments still require participant-list finalization.
 - Active registration requirements compose by intersection. Prior-play checks use disclosed
   game participation, not membership. The unseen-packet check uses the packet-version
   provenance of burnt exposure claims; reservations do not count. Failed attempts persist

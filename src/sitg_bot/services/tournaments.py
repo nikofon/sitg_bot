@@ -67,6 +67,7 @@ PLAYABLE_ACCESS_LEVELS = PACKET_ACCESS_LEVELS - {"no-access"}
 PAYMENT_TYPES = frozenset({"free", "one-time", "per-stage"})
 _UNSET = object()
 HYBRID_MATCHMAKING_POLICY = "hybrid_matchmaking_enabled"
+AUTO_APPROVE_REGISTRATIONS_POLICY = "auto_approve_registrations"
 RULESET_RATING_WEIGHT_POLICY = "ruleset_rating_weight"
 MAXIMUM_PARTICIPANTS_POLICY = "maximum_participants"
 OBSERVING_POLICY = "observing"
@@ -93,6 +94,8 @@ def normalize_tournament_policies(
     for name, default in PACKET_ACCESS_DEFAULT_POLICIES.items():
         if not isinstance(normalized.setdefault(name, default), bool):
             raise ValueError(f"{name} must be a boolean")
+    if not isinstance(normalized.setdefault(AUTO_APPROVE_REGISTRATIONS_POLICY, False), bool):
+        raise ValueError(f"{AUTO_APPROVE_REGISTRATIONS_POLICY} must be a boolean")
     enabled = normalized.setdefault(HYBRID_MATCHMAKING_POLICY, False)
     if not isinstance(enabled, bool):
         raise ValueError(f"{HYBRID_MATCHMAKING_POLICY} must be a boolean")
@@ -686,9 +689,10 @@ class TournamentService:
 
     async def list_visible(
         self,
-        player_id: UUID,
+        player_id: UUID | None,
         *,
         role: str = "player",
+        include_managed_public: bool = False,
         phase: str | None = None,
         relationship: str | None = None,
         registration: str | None = None,
@@ -718,7 +722,8 @@ class TournamentService:
         reference_time = self._reference_time(now)
         async with self.database.sessions() as session:
             rows = await self._visible_listing_rows(
-                session, player_id=player_id, role=normalized["role"]
+                session, player_id=player_id, role=normalized["role"],
+                include_managed_public=include_managed_public,
             )
             rows = self._filter_visible_rows(rows, normalized, reference_time)
             self._sort_visible_rows(rows, normalized["order"])
@@ -726,7 +731,9 @@ class TournamentService:
             offset = self._decode_listing_cursor(cursor, signature)
             page_rows = rows[offset : offset + limit]
             items = [
-                await self._visible_list_item(session, row, reference_time, normalized["role"])
+                await self._visible_list_item(
+                    session, row, reference_time, normalized["role"] if player_id else "guest"
+                )
                 for row in page_rows
             ]
             visible = tuple(items)
@@ -741,7 +748,8 @@ class TournamentService:
                 total=len(rows),
                 navigation_version=(
                     navigation.version
-                    if (navigation := await session.get(PlayerTelegramNavigationRecord, player_id))
+                    if player_id is not None
+                    and (navigation := await session.get(PlayerTelegramNavigationRecord, player_id))
                     is not None
                     else 0
                 ),
@@ -750,7 +758,7 @@ class TournamentService:
     async def tournament_details(
         self,
         tournament_id: UUID,
-        player_id: UUID,
+        player_id: UUID | None,
         *,
         role: str = "player",
         now: datetime | None = None,
@@ -767,7 +775,9 @@ class TournamentService:
             if not rows:
                 raise LookupError("Tournament not found")
             row = rows[0]
-            item = await self._visible_list_item(session, row, reference_time, normalized_role)
+            item = await self._visible_list_item(
+                session, row, reference_time, normalized_role if player_id else "guest"
+            )
             requirements = tuple(
                 (
                     await session.execute(
@@ -1158,9 +1168,72 @@ class TournamentService:
                 membership.status = "invited"
                 membership.enrolled_by_id = invited_by_id
 
-    async def register(self, tournament_id: UUID, player_id: UUID) -> RegistrationDecision:
+    async def registration_link(self, tournament_id: UUID, player_id: UUID) -> dict[str, str]:
+        async with self.database.sessions() as session:
+            tournament = await session.get(TournamentRecord, tournament_id)
+            if tournament is None:
+                raise LookupError("Tournament not found")
+            membership = await session.get(
+                TournamentMembershipRecord, (tournament_id, player_id),
+            )
+            if not (
+                await self._is_manager(session, tournament_id, player_id)
+                or (membership is not None and membership.status == "active")
+            ):
+                raise PermissionError("Tournament manager or participant role is required")
+            return {
+                "name": tournament.name, "reference": f"reg_{tournament.registration_code}",
+                "visibility": tournament.visibility,
+            }
+
+    @staticmethod
+    async def _invitation_tournament(
+        session: AsyncSession, reference: str,
+    ) -> TournamentRecord:
+        match = re.fullmatch(r"(reg|join)_([A-Za-z0-9_-]{32})", reference)
+        if match is None:
+            raise LookupError("Invitation not found")
+        kind, code = match.groups()
+        if kind == "reg":
+            tournament = await session.scalar(select(TournamentRecord).where(
+                TournamentRecord.registration_code == code,
+            ))
+        else:
+            lobby = await session.scalar(select(PregameLobbyRecord).where(
+                PregameLobbyRecord.invitation_code == code,
+            ))
+            if (
+                lobby is None or lobby.status != "assembling"
+                or lobby.expires_at <= datetime.now(UTC)
+            ):
+                raise LookupError("Invitation not found")
+            tournament = await session.get(TournamentRecord, lobby.tournament_id)
+        if tournament is None or tournament.finalized_at is None:
+            raise LookupError("Finalized tournament not found")
+        return tournament
+
+    async def registration_invitation(
+        self, reference: str, player_id: UUID,
+    ) -> dict[str, object]:
+        async with self.database.sessions() as session:
+            tournament = await self._invitation_tournament(session, reference)
+            membership = await session.get(
+                TournamentMembershipRecord, (tournament.id, player_id),
+            )
+            manager = await self._is_manager(session, tournament.id, player_id)
+            return {
+                "tournament_id": str(tournament.id), "name": tournament.name,
+                "registration_open": self._registration_is_open(tournament, datetime.now(UTC)),
+                "membership_status": membership.status if membership else None,
+                "is_manager": manager,
+            }
+
+    async def register(
+        self, tournament_id: UUID, player_id: UUID, *, invitation_reference: str | None = None,
+    ) -> RegistrationDecision:
         async with self.database.transaction() as session:
             tournament = await self._active_tournament(session, tournament_id)
+            await session.refresh(tournament, with_for_update=True)
             if tournament.finalized_at is None:
                 raise LookupError("Finalized tournament not found")
             player = await session.get(PlayerRecord, player_id)
@@ -1172,6 +1245,11 @@ class TournamentService:
             invited = membership is not None and (
                 membership.status == "invited" or membership.enrolled_by_id is not None
             )
+            if invitation_reference is not None:
+                invitation = await self._invitation_tournament(session, invitation_reference)
+                if invitation.id != tournament_id:
+                    raise PermissionError("Invitation belongs to another tournament")
+                invited = True
             if tournament.visibility != "public" and not invited:
                 raise PermissionError("A private tournament requires an invitation")
             if not self._registration_is_open(tournament, datetime.now(UTC)):
@@ -1196,6 +1274,20 @@ class TournamentService:
                 membership.participation_confirmed_at = None
                 membership.participation_confirmed_by_id = None
             membership.status = "rejected" if failures else "registered"
+            if not failures:
+                context = await self.context(session, tournament_id)
+                if context.policies.get(AUTO_APPROVE_REGISTRATIONS_POLICY) is True:
+                    if context.type_key == "classic" and any(
+                        stage.started_at
+                        for stage in await ClassicService.stages(session, tournament_id)
+                    ):
+                        raise ValueError("Classic participants are locked after a stage starts")
+                    membership.approved_at = now
+                    if context.type_rules.get("open_ended") is True:
+                        membership.status = "active"
+                        membership.participation_confirmed_at = now
+                    else:
+                        membership.status = "approved"
             membership.registration_rejected_at = now if failures else None
             membership.registration_rejection_reasons = list(failures)
             session.add(
@@ -1327,6 +1419,18 @@ class TournamentService:
     async def approve_registration(
         self, tournament_id: UUID, player_id: UUID, *, manager_id: UUID
     ) -> str:
+        statuses = await self._approve_registrations(
+            tournament_id, manager_id=manager_id, player_id=player_id
+        )
+        return statuses[player_id]
+
+    async def approve_all_registrations(self, tournament_id: UUID, *, manager_id: UUID) -> int:
+        statuses = await self._approve_registrations(tournament_id, manager_id=manager_id)
+        return len(statuses)
+
+    async def _approve_registrations(
+        self, tournament_id: UUID, *, manager_id: UUID, player_id: UUID | None = None
+    ) -> dict[UUID, str]:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
             await self.require_modifiable(session, tournament_id)
@@ -1338,23 +1442,33 @@ class TournamentService:
                 await session.refresh(tournament, with_for_update=True)
                 if any(s.started_at for s in await ClassicService.stages(session, tournament_id)):
                     raise ValueError("Classic participants are locked after a stage starts")
-            membership = await session.get(TournamentMembershipRecord, (tournament_id, player_id))
-            if membership is None or membership.status != "registered":
+            query = select(TournamentMembershipRecord).where(
+                TournamentMembershipRecord.tournament_id == tournament_id,
+                TournamentMembershipRecord.status == "registered",
+            )
+            if player_id is not None:
+                query = query.where(TournamentMembershipRecord.player_id == player_id)
+            memberships = list(await session.scalars(query.with_for_update()))
+            if player_id is not None and not memberships:
                 raise ValueError("Only a pending registration can be approved")
-            if await self._is_manager(session, tournament_id, player_id):
-                raise PermissionError("Tournament managers cannot be approved as players")
             now = datetime.now(UTC)
-            membership.approved_at = now
-            membership.approved_by_id = manager_id
             assert type_version is not None
-            if type_version.rules.get("open_ended") is True:
-                membership.status = "active"
-                membership.participation_confirmed_at = now
-                membership.participation_confirmed_by_id = manager_id
-            else:
-                membership.status = "approved"
-            await self._invalidate_assembling_lobbies(session, tournament_id)
-            return membership.status
+            statuses: dict[UUID, str] = {}
+            for membership in memberships:
+                if await self._is_manager(session, tournament_id, membership.player_id):
+                    raise PermissionError("Tournament managers cannot be approved as players")
+                membership.approved_at = now
+                membership.approved_by_id = manager_id
+                if type_version.rules.get("open_ended") is True:
+                    membership.status = "active"
+                    membership.participation_confirmed_at = now
+                    membership.participation_confirmed_by_id = manager_id
+                else:
+                    membership.status = "approved"
+                statuses[membership.player_id] = membership.status
+            if memberships:
+                await self._invalidate_assembling_lobbies(session, tournament_id)
+            return statuses
 
     async def reject_registration(
         self, tournament_id: UUID, player_id: UUID, *, manager_id: UUID
@@ -3060,13 +3174,18 @@ class TournamentService:
         self,
         session: AsyncSession,
         *,
-        player_id: UUID,
+        player_id: UUID | None,
         role: str,
         tournament_id: UUID | None = None,
+        include_managed_public: bool = False,
     ) -> list[tuple[object, ...]]:
-        player = await session.get(PlayerRecord, player_id)
-        if player is None or player.status != "active":
-            raise LookupError("Active player not found")
+        if player_id is None:
+            if role != "player":
+                raise PermissionError("Authentication is required for this role")
+        else:
+            player = await session.get(PlayerRecord, player_id)
+            if player is None or player.status != "active":
+                raise LookupError("Active player not found")
         if role == "admin":
             await self._require_administrator(session, player_id)
         query = (
@@ -3094,12 +3213,13 @@ class TournamentService:
             query = query.where(
                 TournamentRecord.status != "draft",
                 TournamentRecord.finalized_at.is_not(None),
-                TournamentManagerRecord.player_id.is_(None),
                 or_(
                     TournamentRecord.visibility == "public",
                     TournamentMembershipRecord.player_id.is_not(None),
                 ),
             )
+            if not include_managed_public:
+                query = query.where(TournamentManagerRecord.player_id.is_(None))
         elif role == "manager":
             query = query.where(TournamentManagerRecord.player_id.is_not(None))
         return list((await session.execute(query)).all())
@@ -3117,7 +3237,7 @@ class TournamentService:
         membership_status = membership.status if membership is not None else None
         managed = manager is not None
         actions = ["info"]
-        if role == "manager" and managed:
+        if role in {"manager", "player"} and managed:
             actions.append("select_manager")
         elif role == "player":
             if membership_status == "active":
@@ -3820,6 +3940,9 @@ class TournamentService:
                 for name, default in PACKET_ACCESS_DEFAULT_POLICIES.items()
             },
             "hybrid_matchmaking_enabled": policies.get("hybrid_matchmaking_enabled", False),
+            AUTO_APPROVE_REGISTRATIONS_POLICY: policies.get(
+                AUTO_APPROVE_REGISTRATIONS_POLICY, False,
+            ),
             "observing": policies.get("observing", "forbidden"),
             "maximum_participants": policies.get("maximum_participants"),
             "appeal_voting_rule": policies.get("appeal_voting_rule", appeal.voting_rule),

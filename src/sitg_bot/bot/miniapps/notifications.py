@@ -37,5 +37,11 @@ class TelegramTournamentSelectionNotifier:
         identity = await self.bot.me()
         return f"https://t.me/{identity.username}?start=join_{invitation_code}"
 
+    async def bot_username(self) -> str:
+        identity = await self.bot.me()
+        if not identity.username:
+            raise LookupError("Bot username is unavailable")
+        return identity.username
+
     async def close(self) -> None:
         await self.bot.session.close()

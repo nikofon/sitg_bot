@@ -46,6 +46,7 @@ commands similarly use current context.
 | `tournament list mine` | List your memberships |
 | `tournament register [tournament-id]` | Apply to join; private tournaments require an invitation |
 | `tournament use <tournament-id>` | Select a tournament you belong to |
+| `tournament manage <tournament-id>` | Select a tournament you manage; no player membership required |
 | `tournament info` | Show selected tournament, rules, schedule, settings, and ratings |
 | `packets` | List discoverable packets, your access, and fresh content |
 
@@ -53,9 +54,9 @@ Discovery does not enroll you. Registration requires manager approval. Ladder ap
 activates participation; finite tournaments also require participant-list finalization.
 Managers cannot play in the tournament they manage.
 
-New tournaments require **setup finalization through the manager Mini App** before player
-access. The console's `tournament finalize` command finalizes a finite participant list;
-it does not finalize tournament setup. The console does not expose every manager workflow.
+New tournaments require **setup finalization** before player access. Run `tournament finalize`
+or use the manager Mini App. Participant-list finalization is a separate command:
+`tournament participants finalize [approved-player-uuid ...]`.
 
 ## Play a game
 
@@ -146,6 +147,8 @@ directed player pair. One report per reporter/target/game is accepted.
 ## Manage a tournament
 
 These commands require the applicable manager role. Keep at least one manager.
+Select your tournament with `tournament manage <tournament-id>`, then use commands such as
+`tournament info`, `tournament setting`, and `tournament finalize`.
 
 ### Creation
 
@@ -169,7 +172,8 @@ tournament create <token> <slug> "<name>" [options]
 
 Dates must be ISO-8601 with timezone, e.g. `2026-10-01T10:00:00+03:00`.
 Finite tournaments require registration end, start, and planned finish. Creation makes you
-a manager, not a player. Finish setup in the manager Mini App before inviting players to play.
+a manager, not a player. Run `tournament finalize` after configuring the tournament and before
+inviting players to play.
 
 ### Membership, metadata, and pricing
 
@@ -177,12 +181,22 @@ a manager, not a player. Finish setup in the manager Mini App before inviting pl
 | --- | --- |
 | `tournament invite <player-uuid>` | Invite a player |
 | `tournament approve <player-uuid>` | Approve their registration |
-| `tournament finalize [approved-player-uuid ...]` | Finalize a finite participant list; reject unselected applicants |
+| `tournament registrations` | List all registrations with player UUIDs, names, and current statuses |
+| `tournament approve all` | Approve all pending registrations atomically; report the approved count |
+| `tournament finalize` | Finish tournament setup and enable player access |
+| `tournament start` | Start a finalized non-Classic tournament now |
+| `tournament stage start <first|playoff>` | Start a configured Classic stage now |
+| `tournament participants finalize [approved-player-uuid ...]` | Finalize a finite participant list; reject unselected applicants |
 | `tournament member add <player-uuid>` | Directly activate membership |
 | `tournament manager add <player-uuid>` / `remove <player-uuid>` | Grant/revoke management |
 | `tournament metadata <field> <json-value>` | Update metadata, e.g. `registration-open true` |
 | `tournament pricing set <payment-type> <plans-json>` | Replace pricing |
 | `tournament complete [ISO-8601]` | Record completion; default now |
+
+For Classic, configure stages in the manager Mini App before starting them. Starting the
+first enabled stage also starts the tournament, confirms participants, and closes registration.
+If a first stage is enabled, it must finish before the play-off can start. Scheduled start
+dates send reminders; use these commands to actually start play.
 
 A pricing plan has a name and positive prices with distinct currencies:
 
@@ -266,9 +280,12 @@ there is no console library reader.
 | `packet reject <draft-id>` | Reject a draft |
 | `packet release <packet-id> <on-or-off> [packet-version-id]` | Owner/admin changes library release |
 
-Import, preview, publish, and reject require administrator access in the console.
-Manager upload/editing is available in Telegram and the Mini App. Inspect warnings before
-publication; a release alone does not grant reading rights.
+Import and draft review use the same tournament permissions as Telegram and the Mini App:
+managers and platform administrators can upload; active members can upload when the tournament
+enables member uploads. Publishing requires a tournament manager or platform administrator.
+Imports return a draft summary with validation errors and warnings, including for malformed
+files. Inspect the draft before publication; use the Mini App to edit it. A release alone
+does not grant reading rights.
 
 ### Manager appeal review
 

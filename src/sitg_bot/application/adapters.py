@@ -15,7 +15,7 @@ from sitg_bot.application.contracts import (
 from sitg_bot.application.telegram import TelegramUpdateClaim
 
 if TYPE_CHECKING:
-    from sitg_bot.services.miniapp_auth import MiniAppSessionContext
+    from sitg_bot.services.miniapp_auth import MiniAppSessionContext, PublicBrowserContext
 
 
 class GatewayExecutor(Protocol):
@@ -96,7 +96,7 @@ class MiniAppGatewayAdapter:
 
     async def execute(
         self,
-        session: MiniAppSessionContext,
+        session: MiniAppSessionContext | PublicBrowserContext,
         operation: GatewayOperation,
         *,
         correlation_id: UUID | None = None,

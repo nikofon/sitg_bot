@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -11,6 +12,7 @@ from sitg_bot.domain.game_deadlines import (
     REMAINING_PLAYERS_JOIN_TIMEOUT,
 )
 from sitg_bot.server import ConsoleApplicationServer, json_value
+from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.persistent_game import PersistentGameService
 
 
@@ -45,6 +47,38 @@ def test_game_event_payload_serializes_deadlines_for_jsonb() -> None:
 def test_server_rejects_invalid_poll_interval() -> None:
     with pytest.raises(ValueError):
         ConsoleApplicationServer(object(), poll_interval=0)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        PermissionError("Manager required"),
+        StaleWriteError("Tournament settings have changed"),
+    ],
+)
+async def test_console_setup_finalization_uses_manager_and_settings_version(
+    failure: Exception | None,
+) -> None:
+    server = ConsoleApplicationServer(object())  # type: ignore[arg-type]
+    manager_id = UUID(int=20)
+    tournament_id = UUID(int=30)
+    finalized_at = datetime(2026, 9, 15, tzinfo=UTC)
+    finalize = AsyncMock(
+        return_value=SimpleNamespace(finalized_at=finalized_at, settings_version=4),
+        side_effect=failure,
+    )
+    server.tournaments.finalize_tournament_setup = finalize
+    connection = SimpleNamespace(session=SimpleNamespace(player_id=manager_id))
+    params = {"tournament_id": str(tournament_id), "expected_version": 3}
+
+    if failure is None:
+        result = await server._dispatch_console(connection, "tournament_setup_finalize", params)
+        assert result == {"finalized_at": finalized_at, "settings_version": 4}
+    else:
+        with pytest.raises(type(failure), match=str(failure)):
+            await server._dispatch_console(connection, "tournament_setup_finalize", params)
+    finalize.assert_awaited_once_with(tournament_id, manager_id, expected_version=3)
 
 
 def test_bound_port_requires_a_started_server() -> None:

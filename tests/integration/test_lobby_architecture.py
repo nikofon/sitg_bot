@@ -3,6 +3,7 @@ import secrets
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy import func, select
 
 from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.domain.packet import Packet, Question, Theme
+from sitg_bot.server import ConsoleApplicationServer
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
@@ -640,6 +642,102 @@ async def test_manager_cannot_participate_even_with_legacy_active_membership(
                 tournament_id=fixture.tournament_id,
                 max_players=1,
             )
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("type_key", ["ladder", "classic"])
+async def test_console_lists_and_approves_pending_registrations(database_url: str, type_key: str):
+    database = Database(database_url)
+    fixture = await tournament_fixture(
+        database, player_count=4, type_key=type_key, started=False,
+        hybrid_matchmaking_enabled=type_key == "ladder",
+    )
+    server = ConsoleApplicationServer(database)
+    connection = SimpleNamespace(session=SimpleNamespace(player_id=fixture.manager.id))
+    params = {"tournament_id": str(fixture.tournament_id)}
+    try:
+        async with database.transaction() as session:
+            for player, status in zip(
+                fixture.players, ["registered", "registered", "active", "rejected"], strict=True
+            ):
+                membership = await session.get(
+                    TournamentMembershipRecord, (fixture.tournament_id, player.id)
+                )
+                membership.status = status
+                membership.registered_at = datetime.now(UTC)
+        connection.session.player_id = fixture.players[0].id
+        for action in ("tournament_registrations", "tournament_registrations_approve_all"):
+            with pytest.raises(PermissionError):
+                await server._dispatch(connection, action, params)
+        connection.session.player_id = fixture.manager.id
+        result = await server._dispatch(connection, "tournament_registrations", params)
+        assert {r.player_id for r in result["registrations"]} == {p.id for p in fixture.players}
+        assert all(r.display_name and r.registered_at for r in result["registrations"])
+        result = await server._dispatch(connection, "tournament_registrations_approve_all", params)
+        assert result == {"approved_count": 2}
+        result = await server._dispatch(connection, "tournament_registrations_approve_all", params)
+        assert result == {"approved_count": 0}
+        async with database.sessions() as session:
+            for index, player in enumerate(fixture.players):
+                membership = await session.get(
+                    TournamentMembershipRecord, (fixture.tournament_id, player.id)
+                )
+                if index < 2:
+                    assert membership.status == ("active" if type_key == "ladder" else "approved")
+                    assert membership.approved_by_id == fixture.manager.id
+                    assert membership.approved_at is not None
+                else:
+                    assert membership.status == ("active" if index == 2 else "rejected")
+    finally:
+        await database.close()
+
+
+async def test_console_manager_can_select_and_finalize_without_membership(
+    database_url: str,
+) -> None:
+    database = Database(database_url)
+    fixture = await tournament_fixture(database, player_count=1, finalized=False)
+    server = ConsoleApplicationServer(database)
+    connection = SimpleNamespace(session=SimpleNamespace(player_id=fixture.manager.id))
+    params = {"tournament_id": str(fixture.tournament_id)}
+    try:
+        async with database.sessions() as session:
+            assert await session.get(
+                TournamentMembershipRecord, (fixture.tournament_id, fixture.manager.id)
+            ) is None
+        for action in ("tournament_manage", "tournament_info"):
+            info = await server._dispatch_console(connection, action, params)
+            assert info["manager"] is True
+            assert info["membership_status"] is None
+            assert info["rating"] is None
+            assert info["finalized_at"] is None
+        finalized = await server._dispatch_console(
+            connection,
+            "tournament_setup_finalize",
+            {**params, "expected_version": info["settings_version"]},
+        )
+        assert finalized["finalized_at"] is not None
+        started = await server._dispatch(
+            connection,
+            "tournament_start",
+            {**params, "expected_version": finalized["settings_version"]},
+        )
+        assert started["actual_starts_at"] is not None
+        info = await server._dispatch(connection, "tournament_info", params)
+        assert info["actual_starts_at"] == started["actual_starts_at"]
+        with pytest.raises(ValueError, match="already started"):
+            await server._dispatch(
+                connection,
+                "tournament_start",
+                {**params, "expected_version": started["settings_version"]},
+            )
+        connection.session.player_id = fixture.players[0].id
+        with pytest.raises(PermissionError, match="manager role"):
+            await server._dispatch_console(connection, "tournament_manage", params)
+        connection.session.player_id = UUID(int=0)
+        with pytest.raises(PermissionError, match="manager role"):
+            await server._dispatch_console(connection, "tournament_info", params)
     finally:
         await database.close()
 

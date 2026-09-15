@@ -531,9 +531,7 @@ class TelegramNavigationService:
                         "player.settings",
                         "player.setting.set",
                         "player.other",
-                        "player.rating",
                         "player.profile",
-                        "player.history",
                         "player.library",
                         "player.author_link",
                         "player.ongoing",
@@ -545,6 +543,7 @@ class TelegramNavigationService:
                         "player.tournament",
                         "player.tournament.create_lobby",
                         "player.tournament.info",
+                        "tournament.registration_link",
                         "player.tournament.quit",
                     )
                 )
@@ -571,6 +570,7 @@ class TelegramNavigationService:
                         "manager.tournament.management",
                         "manager.tournament.packet_upload",
                         "manager.tournament.profile",
+                        "tournament.registration_link",
                         "manager.tournament.quit",
                     )
                 )

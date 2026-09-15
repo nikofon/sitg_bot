@@ -335,8 +335,6 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
 
     assert isinstance(model.keyboard, ReplyKeyboardModel)
     assert tuple(label for row in model.keyboard.rows for label in row) == (
-        "My rating",
-        "History",
         "Settings",
         "Set setting",
         "Link to author",

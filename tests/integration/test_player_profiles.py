@@ -381,6 +381,14 @@ async def test_profile_scopes_ruleset_privacy_and_game_cards(database_url: str) 
     assert outsider_view["games"][0]["tournament_name"] is None
     assert outsider_view["games"][0]["tournament_visible"] is False
 
+    anonymous = await service.profile(None, first.id, ruleset_key="si")
+    assert "real_name" not in anonymous["player"]
+    assert "telegram_username" not in anonymous["player"]
+    assert anonymous["games"][0]["tournament_name"] is None
+    game = await service.game_results(None, first.id, game_id)
+    assert game["tournament_name"] is None
+    assert "question_text" not in str(game)
+
     await database.close()
 
 
@@ -456,7 +464,6 @@ async def test_game_results_hide_private_content_and_tournament_name(database_ur
         )
 
     await database.close()
-
 
 
 

@@ -19,6 +19,7 @@ from sitg_bot.services.tournaments import (
         ("packets_playable_by_default", False),
         ("packets_readable_by_default", False),
         ("packets_released_by_default", False),
+        ("auto_approve_registrations", False),
     ),
 )
 def test_packet_access_policy_defaults_and_manager_editors(name: str, default: bool) -> None:

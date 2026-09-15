@@ -42,6 +42,8 @@ class ActionCode(StrEnum):
     TOURNAMENT_LIST = "tournaments.list.v1"
     TOURNAMENT_INFO = "tournaments.info.v1"
     TOURNAMENT_REGISTER = "tournaments.register.v1"
+    TOURNAMENT_REGISTRATION_LINK = "tournaments.registration.link.v1"
+    TOURNAMENT_REGISTRATION_INVITATION = "tournaments.registration.invitation.v1"
     TOURNAMENT_MANAGER_SETTINGS = "tournaments.manager.settings.v1"
     TOURNAMENT_MANAGER_SETTINGS_LINK = "tournaments.manager.settings.link.v1"
     TOURNAMENT_MANAGER_SETTINGS_UPDATE = "tournaments.manager.settings.update.v1"
@@ -55,6 +57,7 @@ class ActionCode(StrEnum):
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
+    PLAYER_LIST = "players.list.v1"
     PLAYER_PROFILE = "players.profile.get.v1"
     PLAYER_GAME_RESULTS = "players.game_results.get.v1"
     PLAYER_RESOLVE = "players.resolve.v1"
@@ -297,6 +300,7 @@ class TournamentCreateOperation(ContractModel):
 class TournamentListOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_LIST]
     role: Literal["player", "manager", "admin"] = "player"
+    include_managed_public: bool = False
     phase: Literal["upcoming", "future", "ongoing", "past"] | None = None
     relationship: (
         Literal["discoverable", "registered", "approved", "participating", "managed"] | None
@@ -320,6 +324,19 @@ class TournamentInfoOperation(ContractModel):
 class TournamentRegisterOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_REGISTER]
     tournament_id: UUID
+    invitation_reference: str | None = Field(
+        default=None, pattern=r"^(reg|join)_[A-Za-z0-9_-]{32}$",
+    )
+
+
+class TournamentRegistrationLinkOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_REGISTRATION_LINK]
+    tournament_id: UUID
+
+
+class TournamentRegistrationInvitationOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_REGISTRATION_INVITATION]
+    reference: str = Field(pattern=r"^(reg|join)_[A-Za-z0-9_-]{32}$")
 
 
 class TournamentManagerSettingsOperation(ContractModel):
@@ -470,6 +487,15 @@ class LibraryAccessOperation(ContractModel):
     action: Literal[ActionCode.LIBRARY_VIEW, ActionCode.LIBRARY_DOWNLOAD]
     version_id: UUID
     confirm: bool = Field(default=False, strict=True)
+
+
+class PlayerListOperation(ContractModel):
+    action: Literal[ActionCode.PLAYER_LIST]
+    ruleset_key: str | None = Field(default=None, min_length=1, max_length=64)
+    search: str = Field(default="", max_length=200)
+    order: Literal["name_asc", "name_desc"] = "name_asc"
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class PlayerProfileOperation(ContractModel):
@@ -836,6 +862,8 @@ GatewayOperation = Annotated[
     | TournamentListOperation
     | TournamentInfoOperation
     | TournamentRegisterOperation
+    | TournamentRegistrationLinkOperation
+    | TournamentRegistrationInvitationOperation
     | TournamentManagerSettingsOperation
     | TournamentManagerSettingsLinkOperation
     | TournamentManagerSettingsUpdateOperation
@@ -850,6 +878,7 @@ GatewayOperation = Annotated[
     | PacketManagementGetOperation
     | LibraryListOperation
     | LibraryAccessOperation
+    | PlayerListOperation
     | PlayerProfileOperation
     | PlayerGameResultsOperation
     | PlayerResolveOperation

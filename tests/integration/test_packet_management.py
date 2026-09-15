@@ -1,3 +1,7 @@
+import base64
+import json
+from dataclasses import asdict
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -5,6 +9,7 @@ from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import packet, tournament_fixture
 
+from sitg_bot.server import ConsoleApplicationServer
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
@@ -32,6 +37,51 @@ from sitg_bot.storage.packets import PostgresPacketRepository
 
 pytestmark = pytest.mark.integration
 database_url = _database_url
+
+
+async def test_console_manager_packet_workflow_uses_tournament_permissions(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        server = ConsoleApplicationServer(database)
+        connection = SimpleNamespace(
+            session=SimpleNamespace(player_id=fixture.manager.id, admin=False)
+        )
+        params = {
+            "tournament_id": str(fixture.tournament_id),
+            "source_filename": "console.json",
+            "source_base64": base64.b64encode(json.dumps(asdict(packet())).encode()).decode(),
+        }
+        draft = await server._dispatch(connection, "packet_import", params)
+        assert draft["status"] == "awaiting_confirmation"
+        assert draft["can_publish"] is True
+        target = {"draft_id": draft["draft_id"]}
+        preview = await server._dispatch(connection, "packet_preview", target)
+        assert preview["packet"]["themes"]
+        connection.session.player_id = fixture.players[0].id
+        with pytest.raises(PermissionError):
+            await server._dispatch(connection, "packet_import", params)
+        for action in ("packet_preview", "packet_publish", "packet_reject"):
+            with pytest.raises(PermissionError):
+                await server._dispatch(connection, action, target)
+        connection.session.player_id = fixture.manager.id
+        published = await server._dispatch(connection, "packet_publish", target)
+        assert published["status"] == "published"
+        repeated = await server._dispatch(connection, "packet_publish", target)
+        assert repeated["status"] == "published"
+        invalid = await server._dispatch(
+            connection, "packet_import",
+            {**params, "source_base64": base64.b64encode(b"invalid JSON").decode()},
+        )
+        assert invalid["status"] == "validation_failed" and invalid["errors"]
+        rejected = await server._dispatch(
+            connection, "packet_reject", {"draft_id": invalid["draft_id"]}
+        )
+        assert rejected["status"] == "rejected"
+        with pytest.raises(ValueError, match="valid base64"):
+            await server._dispatch(connection, "packet_import", {**params, "source_base64": "!"})
+    finally:
+        await database.close()
 
 
 async def assigned(database, fixture):

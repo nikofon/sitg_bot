@@ -42,8 +42,6 @@ PLAYER_ACTIONS = tuple(
     for action in row
 )
 PLACEHOLDER_ACTIONS = {
-    "player.rating",
-    "player.history",
     "player.author_link",
 }
 

@@ -1,5 +1,7 @@
 import argparse
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -10,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import select
@@ -578,15 +581,17 @@ class ConsoleApplicationServer:
                 planned_ends_at=self._optional_datetime(params, "planned_ends_at"),
                 author_names=tuple(authors),
             )
-        if action == "tournament_info":
+        if action in {"tournament_info", "tournament_manage"}:
             tournament_id = self._uuid(params, "tournament_id")
             async with self.database.sessions() as db_session:
                 membership = await db_session.get(
                     TournamentMembershipRecord,
                     (tournament_id, session.player_id),
                 )
-                if membership is None:
-                    raise LookupError("Tournament membership not found")
+                if action == "tournament_manage" or membership is None:
+                    await self.tournaments._require_manager(
+                        db_session, tournament_id, session.player_id
+                    )
                 tournament = await db_session.get(TournamentRecord, tournament_id)
                 if tournament is None:
                     raise LookupError("Tournament not found")
@@ -643,6 +648,16 @@ class ConsoleApplicationServer:
             return await self.tournaments.registration_requirements(
                 self._uuid(params, "tournament_id"), viewer_id=session.player_id
             )
+        if action == "tournament_registrations":
+            management = await self.tournaments.manager_management(
+                self._uuid(params, "tournament_id"), session.player_id
+            )
+            return {"registrations": management.registrations}
+        if action == "tournament_registrations_approve_all":
+            count = await self.tournaments.approve_all_registrations(
+                self._uuid(params, "tournament_id"), manager_id=session.player_id
+            )
+            return {"approved_count": count}
         if action == "tournament_registration_approve":
             status = await self.tournaments.approve_registration(
                 self._uuid(params, "tournament_id"),
@@ -650,6 +665,39 @@ class ConsoleApplicationServer:
                 manager_id=session.player_id,
             )
             return {"approved": True, "membership_status": status}
+        if action == "tournament_setup_finalize":
+            settings = await self.tournaments.finalize_tournament_setup(
+                self._uuid(params, "tournament_id"),
+                session.player_id,
+                expected_version=self._integer(params, "expected_version", minimum=1),
+            )
+            return {
+                "finalized_at": settings.finalized_at,
+                "settings_version": settings.settings_version,
+            }
+        if action == "tournament_start":
+            management = await self.tournaments.start_tournament(
+                self._uuid(params, "tournament_id"),
+                session.player_id,
+                expected_version=self._integer(params, "expected_version", minimum=1),
+            )
+            return {
+                "actual_starts_at": management.tournament.actual_starts_at,
+                "settings_version": management.settings_version,
+            }
+        if action == "tournament_stage_start":
+            from sitg_bot.services.classic import ClassicService
+
+            kind = self._string(params, "kind")
+            await ClassicService(self.database).mutate(
+                self._uuid(params, "tournament_id"),
+                session.player_id,
+                expected_version=self._integer(params, "expected_version", minimum=1),
+                command="start",
+                kind=kind,
+                values={},
+            )
+            return {"stage_started": True, "kind": kind}
         if action == "tournament_participants_finalize":
             player_ids = params.get("player_ids")
             if not isinstance(player_ids, list):
@@ -1084,6 +1132,41 @@ class ConsoleApplicationServer:
                 connection.game_ids.discard(game_id)
             return transition
 
+        if action == "packet_import":
+            try:
+                source = base64.b64decode(self._string(params, "source_base64"), validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise ValueError("Packet upload is not valid base64") from error
+            return await self.packet_admin.import_upload(
+                source,
+                source_filename=self._string(params, "source_filename"),
+                uploader_id=session.player_id,
+                tournament_id=self._uuid(params, "tournament_id"),
+            )
+        if action == "packet_preview":
+            return await self.packet_admin.editable_draft(
+                self._uuid(params, "draft_id"), session.player_id
+            )
+        if action in {"packet_publish", "packet_reject"}:
+            draft_id = self._uuid(params, "draft_id")
+            summary = await self.packet_admin.draft_summary(draft_id, session.player_id)
+            if summary["status"] in {"published", "rejected"}:
+                return summary
+            if action == "packet_reject":
+                await self.packet_admin.reject(
+                    draft_id, actor_id=session.player_id, notify_bound_telegram=True
+                )
+                return await self.packet_admin.draft_summary(draft_id, session.player_id)
+            packet = await self.packet_admin.publish(
+                draft_id, administrator_id=session.player_id, notify_bound_telegram=True
+            )
+            return {
+                "draft_id": draft_id,
+                "status": "published",
+                "packet_id": packet.logical_id,
+                "packet_version_id": packet.version_id,
+                "name": packet.packet.name,
+            }
         if action == "admin_packet_import":
             self._require_admin(session)
             content = params.get("content")
@@ -1363,7 +1446,7 @@ class ConsoleApplicationServer:
         self,
         db_session: Any,
         tournament: TournamentRecord,
-        membership: TournamentMembershipRecord,
+        membership: TournamentMembershipRecord | None,
         *,
         player_id: UUID,
     ) -> dict[str, Any]:
@@ -1373,7 +1456,7 @@ class ConsoleApplicationServer:
         ruleset_rating = await db_session.get(RulesetRatingRecord, (context.ruleset_key, player_id))
         now = datetime.now(UTC)
         tournament_confidence = self.games.rating_confidence.calculate(
-            current_rating=Decimal(membership.rating),
+            current_rating=Decimal(membership.rating) if membership is not None else Decimal(1000),
             history=await self.games._tournament_rating_history(
                 db_session, tournament.id, player_id
             ),
@@ -1404,9 +1487,12 @@ class ConsoleApplicationServer:
             "registration_starts_at": tournament.registration_starts_at,
             "registration_ends_at": tournament.registration_ends_at,
             "starts_at": tournament.starts_at,
+            "actual_starts_at": tournament.actual_starts_at,
             "planned_ends_at": tournament.planned_ends_at,
             "actual_ends_at": tournament.actual_ends_at,
             "participants_finalized_at": tournament.participants_finalized_at,
+            "finalized_at": tournament.finalized_at,
+            "settings_version": tournament.settings_version,
             "type": context.type_key,
             "type_version": type_version.version,
             "game_ruleset": context.ruleset_key,
@@ -1417,15 +1503,21 @@ class ConsoleApplicationServer:
             "policies": context.policies,
             "type_supports_hybrid_matchmaking": context.type_supports_hybrid_matchmaking,
             "hybrid_matchmaking_enabled": context.hybrid_matchmaking_enabled,
-            "membership_status": membership.status,
-            "registration_rejected_at": membership.registration_rejected_at,
-            "registration_rejection_reasons": membership.registration_rejection_reasons,
+            "membership_status": membership.status if membership is not None else None,
+            "registration_rejected_at": (
+                membership.registration_rejected_at if membership is not None else None
+            ),
+            "registration_rejection_reasons": (
+                membership.registration_rejection_reasons if membership is not None else []
+            ),
             "registration_requirements": await self.tournaments.registration_requirements(
                 tournament.id
             ),
-            "rating": membership.rating,
-            "rating_confidence": tournament_confidence.confidence,
-            "rating_sequence": membership.rating_sequence,
+            "rating": membership.rating if membership is not None else None,
+            "rating_confidence": (
+                tournament_confidence.confidence if membership is not None else None
+            ),
+            "rating_sequence": membership.rating_sequence if membership is not None else None,
             "ruleset_rating": ruleset_rating_value,
             "ruleset_rating_confidence": ruleset_confidence.confidence,
             "rating_confidence_model": self.games.rating_confidence.key,
@@ -1844,12 +1936,24 @@ class ConsoleApplicationServer:
 
 async def main(args: argparse.Namespace) -> None:
     mini_app_origins: set[str] | None = None
+    website_origins: set[str] = set()
     if args.mini_app_port is not None:
         if not args.bot_token or not args.application_security_key:
             raise RuntimeError(
                 "BOT_TOKEN and APPLICATION_SECURITY_KEY are required for the Mini App server"
             )
-        mini_app_origins = _mini_app_origins(args.mini_app_allowed_origins)
+        mini_app_origins = {
+            MiniAppAuthService.normalize_origin(origin)
+            for origin in _mini_app_origins(args.mini_app_allowed_origins)
+        }
+        website_origins = {
+            MiniAppAuthService.normalize_origin(origin)
+            for origin in _mini_app_origins(getattr(args, "website_allowed_origins", "[]"))
+        }
+        if {urlsplit(origin).hostname for origin in mini_app_origins} & {
+            urlsplit(origin).hostname for origin in website_origins
+        }:
+            raise ValueError("Website and Mini App domains must be different")
     database = Database(args.database_url)
     launch_references = (
         LaunchReferenceService(
@@ -1879,7 +1983,7 @@ async def main(args: argparse.Namespace) -> None:
                 database,
                 bot_token=args.bot_token,
                 session_signing_key=args.application_security_key,
-                allowed_origins=mini_app_origins,
+                allowed_origins=mini_app_origins | website_origins,
                 environment=args.telegram_environment,
             ),
             server.application_gateway,
@@ -1888,6 +1992,7 @@ async def main(args: argparse.Namespace) -> None:
             host=args.mini_app_host,
             port=args.mini_app_port,
             web_dist=Path(args.mini_app_web_dist),
+            website_origins=website_origins,
         )
     try:
         if mini_app is not None:
@@ -1950,6 +2055,10 @@ def run() -> None:
     parser.add_argument(
         "--mini-app-web-dist",
         default=os.environ.get("MINI_APP_WEB_DIST", "web/dist"),
+    )
+    parser.add_argument(
+        "--website-allowed-origins",
+        default=os.environ.get("WEBSITE_ALLOWED_ORIGINS", "[]"),
     )
     parser.add_argument(
         "--telegram-environment",

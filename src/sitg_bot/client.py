@@ -1,13 +1,11 @@
 import argparse
 import asyncio
+import base64
 import json
 import shlex
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
-
-from sitg_bot.packet_import import packet_from_docx, packet_from_json
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 MAX_RESPONSE_BYTES = 1_048_576
@@ -299,10 +297,13 @@ class InteractiveConsole:
             self.current_tournament_id = result["id"]
             self._show_json(result)
             return
-        if operation == "use":
+        if operation in {"use", "manage"}:
             if len(arguments) != 1:
-                raise ValueError("Usage: tournament use <tournament-id>")
-            result = await self.client.request("tournament_info", tournament_id=arguments[0])
+                raise ValueError(f"Usage: tournament {operation} <tournament-id>")
+            result = await self.client.request(
+                "tournament_manage" if operation == "manage" else "tournament_info",
+                tournament_id=arguments[0],
+            )
             self.current_tournament_id = result["id"]
             self._show_tournament(result)
             return
@@ -336,19 +337,66 @@ class InteractiveConsole:
             result = await self.client.request(
                 "tournament_invite", tournament_id=tournament_id, player_id=arguments[0]
             )
+        elif operation == "registrations":
+            if arguments:
+                raise ValueError("Usage: tournament registrations")
+            result = await self.client.request(
+                "tournament_registrations", tournament_id=tournament_id
+            )
         elif operation == "approve":
             if len(arguments) != 1:
-                raise ValueError("Usage: tournament approve <player-uuid>")
-            result = await self.client.request(
-                "tournament_registration_approve",
-                tournament_id=tournament_id,
-                player_id=arguments[0],
-            )
+                raise ValueError("Usage: tournament approve <player-uuid|all>")
+            if arguments[0].casefold() == "all":
+                result = await self.client.request(
+                    "tournament_registrations_approve_all", tournament_id=tournament_id
+                )
+            else:
+                result = await self.client.request(
+                    "tournament_registration_approve",
+                    tournament_id=tournament_id,
+                    player_id=arguments[0],
+                )
         elif operation == "finalize":
+            if arguments:
+                raise ValueError("Usage: tournament finalize")
+            info = await self._tournament_info()
+            result = await self.client.request(
+                "tournament_setup_finalize",
+                tournament_id=tournament_id,
+                expected_version=info["settings_version"],
+            )
+        elif operation == "start":
+            if arguments:
+                raise ValueError("Usage: tournament start")
+            info = await self._tournament_info()
+            result = await self.client.request(
+                "tournament_start",
+                tournament_id=tournament_id,
+                expected_version=info["settings_version"],
+            )
+        elif operation == "stage":
+            if (
+                len(arguments) != 2
+                or arguments[0].casefold() != "start"
+                or arguments[1].casefold() not in {"first", "playoff"}
+            ):
+                raise ValueError("Usage: tournament stage start <first|playoff>")
+            info = await self._tournament_info()
+            result = await self.client.request(
+                "tournament_stage_start",
+                tournament_id=tournament_id,
+                expected_version=info["settings_version"],
+                kind=arguments[1].casefold(),
+            )
+        elif operation == "participants":
+            if not arguments or arguments[0].casefold() != "finalize":
+                raise ValueError(
+                    "Usage: tournament participants finalize [approved-player-uuid ...]"
+                )
             result = await self.client.request(
                 "tournament_participants_finalize",
                 tournament_id=tournament_id,
-                player_ids=arguments,
+                player_ids=arguments[1:],
             )
         elif operation == "complete":
             if len(arguments) > 1:
@@ -861,23 +909,18 @@ class InteractiveConsole:
         operation, target = arguments[0].casefold(), arguments[1]
         if operation == "import":
             path = Path(target)
-            packet = (
-                packet_from_docx(path)
-                if path.suffix.casefold() == ".docx"
-                else packet_from_json(path)
-            )
             result = await self.client.request(
-                "admin_packet_import",
+                "packet_import",
                 source_filename=path.name,
-                content=asdict(packet),
+                source_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
                 tournament_id=self._tournament_id(),
             )
         elif operation == "preview":
-            result = await self.client.request("admin_packet_preview", draft_id=target)
+            result = await self.client.request("packet_preview", draft_id=target)
         elif operation == "publish":
-            result = await self.client.request("admin_packet_publish", draft_id=target)
+            result = await self.client.request("packet_publish", draft_id=target)
         elif operation == "reject":
-            result = await self.client.request("admin_packet_reject", draft_id=target)
+            result = await self.client.request("packet_reject", draft_id=target)
         elif operation == "release":
             if len(arguments) not in {3, 4}:
                 raise ValueError("Usage: packet release <packet-id> <on|off> [packet-version-id]")
@@ -1408,10 +1451,15 @@ class InteractiveConsole:
             '  login <player-id> "<display-name>" [--admin [token]]\n'
             "  me | tournament list <mine|public>\n"
             "  tournament use <tournament-id> | tournament info\n"
+            "  tournament manage <tournament-id>\n"
             '  tournament create <token> <slug> "<name>" [creation options]\n'
             "    --type <type> --ruleset <ruleset> --visibility <public|private>\n"
             "    --starts-at <ISO-8601> --planned-ends-at <ISO-8601>\n"
             "  tournament member add <player-uuid>\n"
+            "  tournament registrations | tournament approve <player-uuid|all>\n"
+            "  tournament finalize (finish setup)\n"
+            "  tournament start | tournament stage start <first|playoff>\n"
+            "  tournament participants finalize [approved-player-uuid ...]\n"
             "  tournament manager <add|remove> <player-uuid>\n"
             "  tournament setting <name> <value> | tournament mutable <name> <on|off>\n"
             "  tournament policy <name> <json-value>\n"

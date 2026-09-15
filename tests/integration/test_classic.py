@@ -2,12 +2,14 @@ import asyncio
 import secrets
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture
 
+from sitg_bot.server import ConsoleApplicationServer
 from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
@@ -59,6 +61,55 @@ async def first_round(database, fixture, kind="first"):
     )
     stage = next(s for s in view.classic["stages"] if s["kind"] == kind)
     return stage["rounds"][0], view.packets[0].assignment_id
+
+
+@pytest.mark.parametrize("kind", ["first", "playoff"])
+async def test_console_starts_classic_stages(database_url, kind):
+    database = Database(database_url)
+    try:
+        fixture = await setup(
+            database, 1, stage_type="quiz" if kind == "first" else "playoff",
+            scheme=None if kind == "first" else "playoff-8", kind=kind,
+        )
+        server = ConsoleApplicationServer(database)
+        connection = SimpleNamespace(session=SimpleNamespace(player_id=fixture.manager.id))
+        info = await server._dispatch(
+            connection, "tournament_manage", {"tournament_id": str(fixture.tournament_id)}
+        )
+        params = {
+            "tournament_id": str(fixture.tournament_id),
+            "expected_version": info["settings_version"],
+            "kind": kind,
+        }
+        with pytest.raises(ValueError, match="Start a Classic stage"):
+            await server._dispatch(connection, "tournament_start", params)
+        connection.session.player_id = fixture.players[0].id
+        with pytest.raises(PermissionError, match="manager role"):
+            await server._dispatch(connection, "tournament_stage_start", params)
+        connection.session.player_id = fixture.manager.id
+        with pytest.raises(StaleWriteError):
+            await server._dispatch(
+                connection, "tournament_stage_start",
+                {**params, "expected_version": params["expected_version"] + 1},
+            )
+        result = await server._dispatch(connection, "tournament_stage_start", params)
+        assert result == {"stage_started": True, "kind": kind}
+        with pytest.raises(ValueError, match="participants are locked"):
+            await server._dispatch(connection, "tournament_registrations_approve_all", params)
+        async with database.sessions() as session:
+            stage = (await ClassicService.stages(session, fixture.tournament_id))[0]
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            assert stage.started_at is not None
+            assert tournament.actual_starts_at == stage.started_at
+            assert tournament.registration_open_override is False
+            assert tournament.settings_version == params["expected_version"] + 1
+        with pytest.raises(ValueError, match="already started"):
+            await server._dispatch(
+                connection, "tournament_stage_start",
+                {**params, "expected_version": params["expected_version"] + 1},
+            )
+    finally:
+        await database.close()
 
 
 async def test_classic_creation_defers_dates_and_settings_enable_registration(database_url):

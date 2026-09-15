@@ -58,6 +58,7 @@ async def resume_registration(
     claim: TelegramUpdateClaim,
     localization: LocalizationService,
     locale: str,
+    state: FSMContext | None = None,
 ) -> None:
     username = message.from_user.username if message.from_user is not None else None
     draft = await backend.start_registration(claim, telegram_username=username)
@@ -78,6 +79,8 @@ async def resume_registration(
             localization=localization,
             locale=locale,
         )
+        if state is not None:
+            await resume_invitation(message, backend, claim, localization, locale, state)
         return
     await send_message_model(message, registration_prompt(draft, localization, locale))
 
@@ -93,13 +96,24 @@ async def handle_start(
     state: FSMContext,
 ) -> None:
     await state.clear()
-    invite = re.fullmatch(r"/start(?:@[A-Za-z0-9_]+)? join_([A-Za-z0-9_-]{32})", message.text or "")
+    invite = re.fullmatch(
+        r"/start(?:@[A-Za-z0-9_]+)? ((?:reg|join)_[A-Za-z0-9_-]{32})", message.text or "",
+    )
     if invite and navigation is not None and navigation.context != "registration":
-        await backend.join_lobby(telegram_update_claim, invitation_code=invite.group(1))
+        from sitg_bot.bot.handlers.tournament_registration import show_invitation
+
+        if await show_invitation(
+            message, backend, telegram_update_claim, invite.group(1), localization, locale,
+        ):
+            return
+        await backend.join_lobby(
+            telegram_update_claim, invitation_code=invite.group(1).removeprefix("join_"),
+        )
         updated = await backend.navigation(telegram_update_claim)
         await send_message_model(message, menu_message(updated, localization, locale))
         return
     if invite:
+        await state.update_data(registration_invitation=invite.group(1))
         await send_message_model(
             message, MessageModel(localization.text("lobby.register_first", locale))
         )
@@ -110,6 +124,7 @@ async def handle_start(
             claim=telegram_update_claim,
             localization=localization,
             locale=locale,
+            state=state,
         )
         return
     await send_menu_with_notification_alert(
@@ -120,6 +135,23 @@ async def handle_start(
         localization=localization,
         locale=locale,
     )
+
+
+async def resume_invitation(
+    message: Message, backend: BotBackend, claim: TelegramUpdateClaim,
+    localization: LocalizationService, locale: str, state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    reference = data.get("registration_invitation")
+    if not isinstance(reference, str):
+        return
+    await state.update_data(registration_invitation=None)
+    from sitg_bot.bot.handlers.tournament_registration import show_invitation
+
+    if not await show_invitation(message, backend, claim, reference, localization, locale):
+        await backend.join_lobby(claim, invitation_code=reference.removeprefix("join_"))
+        updated = await backend.navigation(claim)
+        await send_message_model(message, menu_message(updated, localization, locale))
 
 
 @router.message(Command("help"))

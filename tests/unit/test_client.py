@@ -1,3 +1,5 @@
+import base64
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,6 +24,7 @@ class RecordingClient:
             "game_ruleset": "si",
             "game_ruleset_version": 1,
             "policy_version": 1,
+            "settings_version": 3,
             "default_parameters": GameSettings().to_dict(),
             "player_mutable_parameters": [],
             "policies": {
@@ -60,7 +63,7 @@ class RecordingClient:
                 "future": [],
                 "past": [],
             }
-        if action == "tournament_info":
+        if action in {"tournament_info", "tournament_manage"}:
             return self.info
         if action == "tournament_create":
             return {"id": "created-tournament"}
@@ -190,6 +193,105 @@ def console() -> tuple[InteractiveConsole, RecordingClient]:
     interactive = InteractiveConsole(client)  # type: ignore[arg-type]
     interactive.logged_in = True
     return interactive, client
+
+
+async def test_manager_selection_scopes_info_settings_and_finalization(
+    console: tuple[InteractiveConsole, RecordingClient],
+) -> None:
+    interactive, client = console
+    client.info["membership_status"] = None
+    client.info["rating"] = None
+    await interactive.execute("tournament manage tournament-1")
+    assert client.requests[0] == ("tournament_manage", {"tournament_id": "tournament-1"})
+    assert interactive.current_tournament_id == "tournament-1"
+    await interactive.execute("tournament info")
+    await interactive.execute("tournament setting theme_count 8")
+    await interactive.execute("tournament finalize")
+    assert all(params["tournament_id"] == "tournament-1" for _, params in client.requests)
+    assert client.requests[-1][0] == "tournament_setup_finalize"
+
+
+@pytest.mark.parametrize(
+    ("command", "action", "extra"),
+    [
+        ("tournament start", "tournament_start", {}),
+        ("tournament stage start first", "tournament_stage_start", {"kind": "first"}),
+        ("tournament stage start playoff", "tournament_stage_start", {"kind": "playoff"}),
+    ],
+)
+async def test_tournament_start_commands_use_current_settings_version(
+    console: tuple[InteractiveConsole, RecordingClient],
+    command: str,
+    action: str,
+    extra: dict[str, str],
+) -> None:
+    interactive, client = console
+    interactive.current_tournament_id = "tournament-1"
+    await interactive.execute(command)
+    assert client.requests == [
+        ("tournament_info", {"tournament_id": "tournament-1"}),
+        (action, {"tournament_id": "tournament-1", "expected_version": 3, **extra}),
+    ]
+
+
+async def test_packet_import_sends_original_file_for_server_validation(
+    console: tuple[InteractiveConsole, RecordingClient], tmp_path: Path,
+) -> None:
+    interactive, client = console
+    interactive.current_tournament_id = "tournament-1"
+    source = b"malformed JSON to review in a draft"
+    path = tmp_path / "packet.json"
+    path.write_bytes(source)
+    await interactive.execute(f'packet import "{path}"')
+    assert client.requests == [("packet_import", {
+        "source_filename": "packet.json",
+        "source_base64": base64.b64encode(source).decode("ascii"),
+        "tournament_id": "tournament-1",
+    })]
+    for operation in ("preview", "publish", "reject"):
+        await interactive.execute(f"packet {operation} draft-1")
+        assert client.requests[-1] == (f"packet_{operation}", {"draft_id": "draft-1"})
+
+
+async def test_registration_list_and_bulk_approval_commands(
+    console: tuple[InteractiveConsole, RecordingClient],
+) -> None:
+    interactive, client = console
+    interactive.current_tournament_id = "tournament-1"
+    await interactive.execute("tournament registrations")
+    await interactive.execute("tournament approve all")
+    await interactive.execute("tournament approve player-1")
+    assert client.requests == [
+        ("tournament_registrations", {"tournament_id": "tournament-1"}),
+        ("tournament_registrations_approve_all", {"tournament_id": "tournament-1"}),
+        ("tournament_registration_approve", {
+            "tournament_id": "tournament-1", "player_id": "player-1",
+        }),
+    ]
+
+
+async def test_tournament_finalization_commands_are_distinct(
+    console: tuple[InteractiveConsole, RecordingClient],
+) -> None:
+    interactive, client = console
+    interactive.current_tournament_id = "tournament-1"
+
+    await interactive.execute("tournament finalize")
+    assert client.requests == [
+        ("tournament_info", {"tournament_id": "tournament-1"}),
+        ("tournament_setup_finalize", {"tournament_id": "tournament-1", "expected_version": 3}),
+    ]
+
+    await interactive.execute("tournament participants finalize player-1 player-2")
+    assert client.requests[-1] == (
+        "tournament_participants_finalize",
+        {"tournament_id": "tournament-1", "player_ids": ["player-1", "player-2"]},
+    )
+    await interactive.execute("tournament participants finalize")
+    assert client.requests[-1] == (
+        "tournament_participants_finalize",
+        {"tournament_id": "tournament-1", "player_ids": []},
+    )
 
 
 async def test_tournament_selection_scopes_packet_and_lobby_commands(
@@ -333,6 +435,20 @@ async def test_tournament_discovery_and_membership_listing_use_separate_actions(
         "tournament discover",
         "tournament list",
         "tournament info tournament-1",
+        "tournament manage",
+        "tournament registrations extra",
+        "tournament approve",
+        "tournament approve all extra",
+        "tournament start first",
+        "tournament stage",
+        "tournament stage start",
+        "tournament stage start second",
+        "tournament stage stop first",
+        "tournament stage start first extra",
+        "tournament manage tournament-1 tournament-2",
+        "tournament finalize player-1",
+        "tournament participants",
+        "tournament participants approve player-1",
         "packets tournament-1",
         "lobby packet packet-1",
         "lobby themes 8",

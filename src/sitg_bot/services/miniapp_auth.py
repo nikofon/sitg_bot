@@ -13,7 +13,12 @@ from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal
 from sitg_bot.application.gateway import ACTION_POLICIES
 from sitg_bot.services.players import PlayerAccountService
 from sitg_bot.storage.database import Database
-from sitg_bot.storage.models import MiniAppSessionRecord, PlayerRecord
+from sitg_bot.storage.models import (
+    MiniAppSessionRecord,
+    PlatformAdministratorRecord,
+    PlayerRecord,
+    TournamentManagerRecord,
+)
 
 
 class MiniAppAuthenticationError(PermissionError):
@@ -22,6 +27,14 @@ class MiniAppAuthenticationError(PermissionError):
 
 class MiniAppCsrfError(PermissionError):
     """Raised when a browser mutation does not satisfy CSRF protections."""
+
+
+@dataclass(frozen=True, slots=True)
+class PublicBrowserContext:
+    action: ActionCode
+    principal: ApplicationPrincipal = ApplicationPrincipal()
+    idempotency_key: None = None
+    preferred_locale: str = "ru"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +77,7 @@ class MiniAppSecurityPolicy:
                 "base-uri 'none'",
                 "object-src 'none'",
                 "form-action 'self'",
-                "frame-src 'none'",
+                "frame-src https://oauth.telegram.org",
                 "script-src 'self' https://telegram.org",
                 "style-src 'self' 'unsafe-inline'",
                 "img-src 'self' data: https:",
@@ -158,29 +171,120 @@ class MiniAppAuthService:
         draft = await self.player_accounts.create_or_resume_registration(
             telegram_user_id, telegram_username=username
         )
+        return await self._issue_session(
+            draft.account.player_id, draft.account.preferred_locale,
+            origin=normalized_origin,
+            auth_date=datetime.fromtimestamp(int(values["auth_date"]), tz=UTC),
+            now=current_time,
+        )
+
+    async def create_website_session(
+        self, values: dict[str, str], *, origin: str, now: datetime | None = None
+    ) -> MiniAppSessionCredentials:
+        current_time = now or datetime.now(UTC)
+        normalized_origin = self.normalize_origin(origin)
+        if normalized_origin not in self.security_policy.allowed_origins:
+            raise MiniAppAuthenticationError("Origin is not allowed")
+        self.verify_website_login(values, now=current_time)
+        draft = await self.player_accounts.create_or_resume_registration(
+            int(values["id"]), telegram_username=values.get("username")
+        )
+        return await self._issue_session(
+            draft.account.player_id, draft.account.preferred_locale,
+            origin=normalized_origin,
+            auth_date=datetime.fromtimestamp(int(values["auth_date"]), tz=UTC),
+            now=current_time,
+        )
+
+    def verify_website_login(
+        self, values: dict[str, str], *, now: datetime | None = None
+    ) -> None:
+        allowed = {"id", "first_name", "last_name", "username", "photo_url", "auth_date", "hash"}
+        if not values.keys() <= allowed or any(
+            not isinstance(value, str) or len(value) > 4096 for value in values.values()
+        ):
+            raise MiniAppAuthenticationError("Invalid Telegram login fields")
+        check = "\n".join(
+            f"{key}={value}" for key, value in sorted(values.items()) if key != "hash"
+        )
+        expected = hmac.new(
+            hashlib.sha256(self.bot_token.encode()).digest(), check.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, values.get("hash", "")):
+            raise MiniAppAuthenticationError("Invalid Telegram login signature")
+        self._positive_int(values.get("id"), label="Telegram user ID")
+        timestamp = self._positive_int(values.get("auth_date"), label="auth_date")
+        current = (now or datetime.now(UTC)).timestamp()
+        if not current - self.authorization_max_age.total_seconds() <= timestamp <= (
+            current + self.future_clock_skew.total_seconds()
+        ):
+            raise MiniAppAuthenticationError("Telegram login has expired")
+
+    async def resume_website_session(
+        self, session_token: str, *, origin: str
+    ) -> MiniAppSessionCredentials:
+        context = await self.authorize_request(
+            session_token, origin=origin, method="GET", action=ActionCode.PLAYER_PROFILE
+        )
+        # Derive a stable CSRF token so opening a second browser tab does not invalidate the first.
+        csrf = self._secret_digest("website-csrf", session_token)
+        async with self.database.transaction() as session:
+            record = await session.get(
+                MiniAppSessionRecord, context.session_id, with_for_update=True
+            )
+            if (
+                record is None or record.revoked_at is not None
+                or record.expires_at <= datetime.now(UTC)
+            ):
+                raise MiniAppAuthenticationError("Session is unavailable")
+            record.csrf_digest = self._secret_digest("csrf", csrf)
+        return MiniAppSessionCredentials(
+            session_token, csrf, context.expires_at, context.preferred_locale
+        )
+
+    async def website_viewer(self, session_token: str, *, origin: str) -> dict[str, object]:
+        context = await self.authorize_request(
+            session_token, origin=origin, method="GET", action=ActionCode.PLAYER_PROFILE
+        )
+        player_id = context.principal.player_id
+        async with self.database.sessions() as session:
+            administrator = await session.get(PlatformAdministratorRecord, player_id)
+            manager = await session.scalar(select(TournamentManagerRecord.tournament_id).where(
+                TournamentManagerRecord.player_id == player_id,
+                TournamentManagerRecord.revoked_at.is_(None),
+            ).limit(1))
+        return {
+            "player_id": str(player_id),
+            "registration_status": context.registration_status,
+            "is_admin": administrator is not None and administrator.revoked_at is None,
+            "is_manager": manager is not None,
+        }
+
+    async def _issue_session(
+        self, player_id: UUID, locale: str, *, origin: str, auth_date: datetime, now: datetime
+    ) -> MiniAppSessionCredentials:
         raw_session_token = secrets.token_urlsafe(32)
         raw_csrf_token = secrets.token_urlsafe(32)
-        expires_at = current_time + self.session_lifetime
-        auth_date = datetime.fromtimestamp(int(values["auth_date"]), tz=UTC)
+        expires_at = now + self.session_lifetime
         async with self.database.transaction() as session:
             session.add(
                 MiniAppSessionRecord(
                     token_digest=self._secret_digest("session", raw_session_token),
                     csrf_digest=self._secret_digest("csrf", raw_csrf_token),
-                    player_id=draft.account.player_id,
+                    player_id=player_id,
                     bot_id=self.bot_id,
                     environment=self.environment,
-                    origin=normalized_origin,
+                    origin=origin,
                     telegram_auth_date=auth_date,
                     expires_at=expires_at,
-                    last_seen_at=current_time,
+                    last_seen_at=now,
                 )
             )
         return MiniAppSessionCredentials(
             raw_session_token,
             raw_csrf_token,
             expires_at,
-            draft.account.preferred_locale,
+            locale,
         )
 
     async def refresh_session(
@@ -224,7 +328,14 @@ class MiniAppAuthService:
             player = await session.get(PlayerRecord, record.player_id)
             if player is None or player.status == "anonymized":
                 raise MiniAppAuthenticationError("Mini App player account is unavailable")
-            raw_csrf_token = secrets.token_urlsafe(32)
+            website_csrf = self._secret_digest("website-csrf", session_token)
+            raw_csrf_token = (
+                website_csrf
+                if hmac.compare_digest(
+                    record.csrf_digest, self._secret_digest("csrf", website_csrf)
+                )
+                else secrets.token_urlsafe(32)
+            )
             record.csrf_digest = self._secret_digest("csrf", raw_csrf_token)
             record.expires_at = current_time + self.session_lifetime
             record.last_seen_at = current_time
@@ -342,6 +453,25 @@ class MiniAppAuthService:
                 player.telegram_public,
                 player.preferred_locale,
             )
+
+    async def logout_website_session(
+        self, session_token: str, *, origin: str, csrf_token: str | None,
+        idempotency_key: str | None, content_type: str | None,
+    ) -> None:
+        context = await self.authorize_request(
+            session_token, origin=origin, method="GET", action=ActionCode.PLAYER_PROFILE
+        )
+        async with self.database.transaction() as session:
+            record = await session.get(
+                MiniAppSessionRecord, context.session_id, with_for_update=True
+            )
+            if record is None or record.revoked_at is not None:
+                raise MiniAppAuthenticationError("Session is unavailable")
+            self._validate_mutation(
+                record, method="POST", csrf_token=csrf_token,
+                idempotency_key=idempotency_key, content_type=content_type,
+            )
+            record.revoked_at = datetime.now(UTC)
 
     async def revoke_session(self, session_token: str) -> None:
         token_digest = self._secret_digest("session", session_token)

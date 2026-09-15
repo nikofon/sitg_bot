@@ -468,6 +468,8 @@ export const ru: Record<MessageKey, string> = {
   "setting.theme_count.label": "Количество тем",
   "ruleset.si.theme_count.description": "Количество тем в одной игре.",
   "policy.hybrid_matchmaking_enabled.label": "Гибридный поиск игроков",
+  "policy.auto_approve_registrations.label": "Автоматически одобрять регистрации",
+  "policy.auto_approve_registrations.description": "Одобрять новые заявки, прошедшие все требования. В Ладдере игроки сразу становятся активными; в конечных турнирах нужно утвердить список участников.",
   "policy.hybrid_matchmaking_enabled.description": "Разрешает совместимым лобби искать игроков и объединяться.",
   "policy.observing.label": "Наблюдение",
   "policy.packets_discoverable_by_default.label": "Пакеты обнаруживаемы по умолчанию",

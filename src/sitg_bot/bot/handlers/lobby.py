@@ -287,6 +287,12 @@ async def handle_join_callback(
             ),
         )
         return
+    from sitg_bot.bot.handlers.tournament_registration import show_invitation
+
+    if role == "p" and await show_invitation(
+        callback.message, backend, telegram_update_claim, f"join_{code}", localization, locale,
+    ):
+        return
     await backend.join_lobby(
         telegram_update_claim,
         invitation_code=code,

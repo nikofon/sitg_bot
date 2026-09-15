@@ -466,6 +466,8 @@ export const en = {
   "setting.theme_count.label": "Theme count",
   "ruleset.si.theme_count.description": "Number of themes played in a game.",
   "policy.hybrid_matchmaking_enabled.label": "Hybrid matchmaking",
+  "policy.auto_approve_registrations.label": "Automatically approve registrations",
+  "policy.auto_approve_registrations.description": "Approve new registrations that pass all requirements. Ladder players become active immediately; finite tournaments still require participant-list finalization.",
   "policy.hybrid_matchmaking_enabled.description": "Allow compatible invitation lobbies to search for and merge with other players.",
   "policy.observing.label": "Observing",
   "policy.packets_discoverable_by_default.label": "Packets discoverable by default",

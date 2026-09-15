@@ -17,9 +17,6 @@
   [test_lobby_architecture.py](../tests/integration/test_lobby_architecture.py): behavior and
   transactional integration coverage.
 
-The following describes implemented behavior. Remaining competition algorithms and product
-decisions are tracked in [planned features](future-work.md).
-
 ## Ownership and roles
 
 A packet must be assigned to at least one tournament and may be assigned to several.
@@ -27,8 +24,6 @@ The logical packet and its immutable versions are shared content; an explicit
 tournament-packet assignment controls how each tournament may use and expose them.
 Drafts record the tournament context in which they are created and any intended packet
 assignments. Lobbies, games, results, and rating events each belong to one tournament.
-
-Roles are scoped as follows:
 
 - **Administrators** direct the bot as a whole. They authorize tournament creation and
   perform platform-wide moderation and operations.
@@ -65,13 +60,19 @@ enrollment is governed independently by tournament policy and manager actions.
 Registration and participation are separate membership states. A player may be invited,
 registered, approved, active, rejected, suspended, or left. Public tournaments accept
 self-registration while the effective registration window is open. A private tournament
-requires a direct invitation before registration. Managers approve registrations. Approval
+requires an invitation. Managers approve registrations unless `auto_approve_registrations`
+is enabled (default `false`); requirements still apply. Approval
 immediately activates a player in an open-ended Ladder; in a finite tournament it moves the
 player to `approved` until managers close registration and finalize an explicit participant
 list. Finalization activates selected approved players and rejects the remaining applicants.
 Only active participants can enter lobbies or use tournament packet play rights.
 An optional positive `maximum_participants` policy narrows any limit supplied by the
 tournament type and is enforced when the finite participant list is finalized.
+
+Managers and participants can share **Registration links**, granting private-tournament
+invitations with a sharing warning. Yes/No confirmation rechecks registration availability.
+Lobby links offer registration to nonparticipants; automatically activated players then join.
+See [Telegram](telegram.md) for bot flows.
 
 ### Registration requirements
 
@@ -222,9 +223,6 @@ are final, including appeals. Restarting or retrying a job does not reroll resul
 
 ## Tournament settings
 
-Managers configure their tournament within its type's rules and platform technical
-limits. A tournament may be very restrictive or permissive.
-
 Each configurable gameplay setting has both:
 
 1. a tournament default chosen by managers; and
@@ -242,6 +240,7 @@ The runtime currently interprets policies for:
 - hybrid matchmaking enablement, only when the tournament type supports it;
 - rating enablement when the tournament type is rated;
 - an optional positive `maximum_participants` limit;
+- `auto_approve_registrations` (default `false`), which approves new qualifying registrations;
 - `packets_discoverable_by_default` (default `true`), `packets_playable_by_default`
   (default `false`), and `packets_readable_by_default` (default `false`): independent boolean
   access defaults for newly uploaded packets. Publication copies each destination tournament's

@@ -1,4 +1,4 @@
-# Mini App and HTTP Adapter
+# Mini App and Browser HTTP Adapter
 
 [Technical index](architecture.md) · [Setup](database-operations.md) · [Telegram](telegram.md)
 
@@ -18,6 +18,23 @@
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`.
+
+## Independent website
+
+The website is a separate project in `SITGBot-website`, with its own frontend source,
+build, assets, and self-contained API/deployment documentation. `web/` contains only
+the Telegram Mini App. The website uses the same backend application services over HTTP;
+there are no shared frontend imports or build-time copies.
+
+Configure its exact origins with `WEBSITE_ALLOWED_ORIGINS`. Website and Mini App hostnames
+must differ; each session is bound to its origin and each cookie to its hostname.
+The website domain serves its own assets and proxies `/api/` and `/auth/` to this listener.
+Website login endpoints are disabled unless website origins are explicitly configured.
+The Mini App session endpoint rejects website origins, and the listener will not serve
+Mini App assets for a website Host. See [deployment configuration](database-operations.md).
+
+## Asset delivery
+
 HTML and unversioned static files use `Cache-Control: no-cache`: browsers may store them
 but must revalidate before reuse; unchanged files return 304. Content-hashed files under
 `/assets/` use `public, max-age=31536000, immutable`. Missing assets return 404 instead of
@@ -42,7 +59,7 @@ rebuilding directly into the live directory: Vite cleans the output directory by
 4. Mutations use POST JSON with `X-CSRF-Token`, `X-Idempotency-Key`, and
    `X-Correlation-ID`. Queries include correlation metadata. Session refresh rotates CSRF.
 
-The adapter resolves the principal from server-side session state on every request and calls
+For authenticated requests, the adapter resolves the principal from server-side session state and calls
 the typed gateway. Requested `role` is a view selector, never a grant of manager/admin rights.
 Exact-origin CORS, CSP/security headers, and per-action authorization remain enforced.
 Stable error codes are localized; server exception text is neither rendered nor logged.
@@ -151,6 +168,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | Routes | Purpose |
 | --- | --- |
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
+| GET `/routes/resolve?path=/players` | Public player directory; `search`, `order`, `offset`, `limit` |
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
@@ -191,8 +209,8 @@ development build and displays a warning. It still requires valid backend authen
 there is no production fallback identity and no browser bot token.
 
 Use text insertion for user/server content, preserve the security policy and lockfile, and keep
-production source maps disabled. Add routes through the shared shell and permission-aware
-backend projections rather than separate apps.
+production source maps disabled. Add Mini App routes through its shell and permission-aware backend projections.
+Keep website navigation and assets in the independent website project.
 
 Browser tests are colocated `*.test.ts`; HTTP and auth tests are
 [test_miniapp_http.py](../tests/unit/test_miniapp_http.py) and

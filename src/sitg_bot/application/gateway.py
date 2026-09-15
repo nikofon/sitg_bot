@@ -77,6 +77,7 @@ from sitg_bot.application.contracts import (
     PacketUploadOperation,
     PlayerBanOperation,
     PlayerGameResultsOperation,
+    PlayerListOperation,
     PlayerProfileOperation,
     PlayerReportOperation,
     PlayerResolveOperation,
@@ -106,6 +107,8 @@ from sitg_bot.application.contracts import (
     TournamentPacketAccessUpdateOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
+    TournamentRegistrationInvitationOperation,
+    TournamentRegistrationLinkOperation,
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
 )
@@ -221,7 +224,13 @@ ACTION_POLICIES.update(
         ActionCode.TOKEN_REQUEST_ADMIN_RESOLVED: ActionPolicy(cursor_paginated=True),
         ActionCode.TOKEN_INVENTORY: ActionPolicy(cursor_paginated=True),
         ActionCode.NOTIFICATIONS_LIST: ActionPolicy(cursor_paginated=True),
-        ActionCode.TOURNAMENT_LIST: ActionPolicy(cursor_paginated=True),
+        ActionCode.TOURNAMENT_LIST: ActionPolicy(
+            authentication_required=False, cursor_paginated=True
+        ),
+        ActionCode.TOURNAMENT_INFO: ActionPolicy(authentication_required=False),
+        ActionCode.PLAYER_LIST: ActionPolicy(authentication_required=False),
+        ActionCode.PLAYER_PROFILE: ActionPolicy(authentication_required=False),
+        ActionCode.PLAYER_GAME_RESULTS: ActionPolicy(authentication_required=False),
         ActionCode.SETTINGS_UPDATE: ActionPolicy(
             mutation=True,
             idempotency_required=True,
@@ -510,6 +519,26 @@ class ApplicationGateway:
         if action == ActionCode.CAPABILITIES:
             return self.capabilities()
 
+        if principal.telegram_user_id is None and principal.player_id is None:
+            if isinstance(operation, PlayerListOperation):
+                return await self.profiles.list_players(**operation.model_dump(exclude={"action"}))
+            if isinstance(operation, PlayerProfileOperation):
+                return await self.profiles.profile(
+                    None, operation.player_id, ruleset_key=operation.ruleset_key
+                )
+            if isinstance(operation, PlayerGameResultsOperation):
+                return await self.profiles.game_results(
+                    None, operation.player_id, operation.game_id
+                )
+            if isinstance(operation, TournamentListOperation):
+                return await self.tournaments.list_visible(
+                    None, **operation.model_dump(exclude={"action"})
+                )
+            if isinstance(operation, TournamentInfoOperation):
+                return await self.tournaments.tournament_details(
+                    operation.tournament_id, None, role=operation.role
+                )
+
         telegram_user_id = self._require_telegram_principal(principal)
         if principal.player_id is not None:
             claimed_account = await self.player_accounts.lookup_by_telegram_user_id(
@@ -565,6 +594,8 @@ class ApplicationGateway:
 
         player_id = await self._require_active_principal(principal)
         await self._reject_banned_player(player_id, action)
+        if isinstance(operation, PlayerListOperation):
+            return await self.profiles.list_players(**operation.model_dump(exclude={"action"}))
         if isinstance(operation, PlayerProfileOperation):
             return await self.profiles.profile(
                 player_id,
@@ -681,6 +712,7 @@ class ApplicationGateway:
             return await self.tournaments.list_visible(
                 player_id,
                 role=operation.role,
+                include_managed_public=operation.include_managed_public,
                 phase=operation.phase,
                 relationship=operation.relationship,
                 registration=operation.registration,
@@ -697,7 +729,14 @@ class ApplicationGateway:
                 operation.tournament_id, player_id, role=operation.role
             )
         if isinstance(operation, TournamentRegisterOperation):
-            return await self.tournaments.register(operation.tournament_id, player_id)
+            return await self.tournaments.register(
+                operation.tournament_id, player_id,
+                invitation_reference=operation.invitation_reference,
+            )
+        if isinstance(operation, TournamentRegistrationLinkOperation):
+            return await self.tournaments.registration_link(operation.tournament_id, player_id)
+        if isinstance(operation, TournamentRegistrationInvitationOperation):
+            return await self.tournaments.registration_invitation(operation.reference, player_id)
         if isinstance(operation, TournamentManagerSettingsLinkOperation):
             if self.launch_references is None:
                 raise _CapabilityUnavailable
