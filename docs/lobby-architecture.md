@@ -87,6 +87,11 @@ the fields lobby creators may override. Any effective parameter, packet, members
 entitlement, or policy change clears readiness. Assigned games retain their captured policy,
 parameters, and plan.
 
+Manual readiness changes notify the other active participants with the player's name
+and ready/total player count (observers are excluded from the count). Bulk resets keep
+the existing overall notice. Console clients follow persisted lobby/game versions, so
+starts and readiness changes made through Telegram or HTTP also reach their sessions.
+
 Rating is derived only from the snapshotted tournament-type rules, tournament policy, and
 tournament ordering.
 Appeal escalation is derived only from the snapshotted appeal policy.
@@ -99,6 +104,10 @@ asks the game host to materialize ruleset execution state, closes lobby membersh
 marks the lobby started in one transaction. The stored plan and seed make selection
 auditable. Recovery executes the stored plan through the game host; it does not reconstruct
 selection from mutable packet state.
+
+Assigned players explicitly join the created game before its countdown begins. Console
+clients receive its ID and join prompt; Telegram replaces the Join button with a
+confirmation and joined/total count while waiting for the remaining players.
 
 ## Current SI adapter
 

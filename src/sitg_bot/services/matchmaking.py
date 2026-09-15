@@ -652,12 +652,22 @@ class InvitationMatchmakingService:
                 if violations:
                     violation = violations[0]
                     raise LobbyReadinessError(str(violation["code"]), violation.get("details", {}))
+            if member.ready == ready:
+                return await self._snapshot(session, lobby)
             member.ready = ready
+            members = await self._active_members(session, lobby.id)
+            player = await session.get(PlayerRecord, member.player_id)
             await self._event(
                 session,
                 lobby.id,
                 "readiness_changed",
-                {"player_id": str(member.player_id), "ready": ready},
+                {
+                    "player_id": str(member.player_id),
+                    "player_name": player.public_nickname,
+                    "ready": ready,
+                    "ready_count": sum(item.ready for item in members),
+                    "player_count": len(members),
+                },
             )
             self._bump(lobby)
             await session.flush()
@@ -2212,6 +2222,7 @@ class InvitationMatchmakingService:
             "player_joined",
             "player_left",
             "lobby_cancelled",
+            "readiness_changed",
         }:
             notice = {"changes": payload} if kind == "settings_changed" else dict(payload)
             if kind in {"player_joined", "player_left"}:
@@ -2232,6 +2243,8 @@ class InvitationMatchmakingService:
                 )
             ).scalars()
             for recipient in recipients:
+                if kind == "readiness_changed" and str(recipient.id) == payload["player_id"]:
+                    continue
                 await TransactionalOutbox.enqueue(
                     session,
                     topic="telegram.lobby.notice",

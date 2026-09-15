@@ -65,6 +65,15 @@ def appeal_ballot(ballot, localization, locale):
 
 
 def join_message(view, localization, locale):
+    if any(p["self"] and p.get("joined") for p in view["participants"]):
+        return MessageModel(
+            localization.text(
+                "flow.joined_waiting",
+                locale,
+                joined=sum(bool(p.get("joined")) for p in view["participants"]),
+                total=len(view["participants"]),
+            )
+        )
     return MessageModel(
         localization.text("flow.created", locale),
         InlineKeyboardModel(

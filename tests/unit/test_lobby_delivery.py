@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.lobby_delivery import (
     lobby_notice_delivery_handler,
@@ -8,6 +10,29 @@ from sitg_bot.bot.lobby_delivery import (
     notification_alert_delivery_handler,
     packet_draft_status_delivery_handler,
 )
+
+
+@pytest.mark.parametrize("ready,count", [(True, 1), (False, 0)])
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_readiness_notice_includes_escaped_name_and_counts(ready, count, locale):
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, LocalizationService())
+    await deliver({
+        "recipient_telegram_user_id": 42,
+        "locale": locale,
+        "kind": "readiness_changed",
+        "player_name": "<Player>",
+        "ready": ready,
+        "ready_count": count,
+        "player_count": 4,
+    })
+    text = bot.send_message.await_args.args[1]
+    assert "&lt;Player&gt;" in text
+    assert f"{count}/4" in text
+    if locale == "en":
+        assert ("is ready." if ready else "is not ready.") in text
+    else:
+        assert ("готов." if ready else "не готов.") in text
 
 
 async def test_durable_lobby_delivery_builds_localized_reopenable_button() -> None:

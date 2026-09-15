@@ -49,7 +49,9 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlatformAdministratorRecord,
     PlayerRecord,
+    PregameLobbyEventRecord,
     PregameLobbyMemberRecord,
+    PregameLobbyRecord,
     RulesetRatingRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
@@ -180,6 +182,10 @@ class ConsoleApplicationServer:
         self._background_tasks: list[asyncio.Task[None]] = []
         self._closing = False
         self._game_event_sequences: dict[UUID, int] = {}
+        self._lobby_event_sequences: dict[UUID, int] = {}
+        self._lobby_versions: dict[UUID, int] = {}
+        self._game_versions: dict[UUID, int] = {}
+        self._lobby_delivery_lock = asyncio.Lock()
 
     @property
     def bound_port(self) -> int:
@@ -199,6 +205,7 @@ class ConsoleApplicationServer:
         self._background_tasks = [
             asyncio.create_task(self._job_scheduler_loop(), name="durable-job-scheduler"),
             asyncio.create_task(self._job_worker_loop(), name="durable-job-worker"),
+            asyncio.create_task(self._console_updates_loop(), name="console-updates"),
         ]
         LOGGER.info("Application server listening on %s:%s", self.host, self.bound_port)
 
@@ -823,6 +830,7 @@ class ConsoleApplicationServer:
                 tournament_id=self._uuid(params, "tournament_id"),
             )
             connection.lobby_ids.add(lobby.id)
+            await self._broadcast_lobby(lobby.id, exclude=connection)
             return lobby
         if action == "lobby_join":
             target = self._string(params, "target")
@@ -923,9 +931,6 @@ class ConsoleApplicationServer:
             lobby_id = self._uuid(params, "lobby_id")
             result = await self.matchmaking.start(lobby_id, session.telegram_user_id)
             await self._broadcast_lobby(lobby_id, exclude=connection)
-            if result.game is not None:
-                await self._subscribe_game_members(result.game.id)
-                await self._broadcast_game(result.game.id, snapshot=result.game)
             return result
         if action == "lobby_suggestions":
             lobby_id = self._uuid(params, "lobby_id")
@@ -1721,6 +1726,34 @@ class ConsoleApplicationServer:
         if merges:
             await self._broadcast_search_pool()
 
+    async def _console_updates_loop(self) -> None:
+        while not self._closing:
+            try:
+                await self._sync_console_updates()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Console update delivery failed; polling will continue")
+            await asyncio.sleep(self.poll_interval)
+
+    async def _sync_console_updates(self) -> None:
+        # HTTP and Telegram mutations commit through the shared services without
+        # passing through console dispatch. Follow their persisted versions too.
+        for model, attribute, versions, broadcast in (
+            (PregameLobbyRecord, "lobby_ids", self._lobby_versions, self._broadcast_lobby),
+            (GameRecord, "game_ids", self._game_versions, self._broadcast_game),
+        ):
+            ids = {item for c in self._connections for item in getattr(c, attribute)}
+            if not ids:
+                continue
+            async with self.database.sessions() as session:
+                rows = (
+                    await session.execute(select(model.id, model.version).where(model.id.in_(ids)))
+                ).all()
+            for resource_id, version in rows:
+                if versions.get(resource_id) != version:
+                    await broadcast(resource_id)
+
     async def _broadcast_search_pool(self) -> None:
         for lobby_id in await self.matchmaking.searching_lobby_ids():
             await self._broadcast_lobby(lobby_id)
@@ -1769,11 +1802,47 @@ class ConsoleApplicationServer:
                 "events": events,
             },
         )
+        self._game_versions[game_id] = snapshot.version
 
     async def _broadcast_lobby(
         self, lobby_id: UUID, *, exclude: ClientConnection | None = None
     ) -> None:
+        async with self._lobby_delivery_lock:
+            await self._deliver_lobby_update(lobby_id, exclude=exclude)
+
+    async def _deliver_lobby_update(
+        self, lobby_id: UUID, *, exclude: ClientConnection | None = None
+    ) -> None:
         snapshot = await self.matchmaking.get(lobby_id)
+        following_events = lobby_id in self._lobby_event_sequences
+        async with self.database.sessions() as session:
+            events = tuple(
+                (
+                    await session.execute(
+                        select(PregameLobbyEventRecord)
+                        .where(
+                            PregameLobbyEventRecord.lobby_id == lobby_id,
+                            PregameLobbyEventRecord.sequence
+                            > self._lobby_event_sequences.get(lobby_id, 0),
+                        )
+                        .order_by(PregameLobbyEventRecord.sequence)
+                    )
+                ).scalars()
+            )
+        active_telegram_ids = {member.telegram_user_id for member in snapshot.members}
+        for event in events if following_events else ():
+            if event.kind == "readiness_changed":
+                await self._broadcast(
+                    (
+                        c for c in self._connections
+                        if lobby_id in c.lobby_ids and c.session is not None
+                        and c.session.telegram_user_id in active_telegram_ids
+                        and str(c.session.player_id) != event.payload["player_id"]
+                    ),
+                    {"event": "lobby_readiness_changed", "lobby_id": lobby_id, **event.payload},
+                )
+        if events:
+            self._lobby_event_sequences[lobby_id] = events[-1].sequence
         await self._broadcast(
             (
                 connection
@@ -1782,6 +1851,10 @@ class ConsoleApplicationServer:
             ),
             {"event": "lobby_changed", "lobby_id": lobby_id, "snapshot": snapshot},
         )
+        self._lobby_versions[lobby_id] = snapshot.version
+        if snapshot.game_id is not None:
+            await self._subscribe_game_members(snapshot.game_id)
+            await self._broadcast_game(snapshot.game_id)
 
     async def _subscribe_game_members(self, game_id: UUID) -> None:
         snapshot = await self.games.recover(game_id)
