@@ -742,6 +742,11 @@ class ConsoleApplicationServer:
             for name in ("language", "payment_type", "registration_open"):
                 if name in params:
                     metadata[name] = params[name]
+            if "description" in params:
+                description = params["description"]
+                if not isinstance(description, str):
+                    raise ValueError("description must be a string")
+                metadata["description"] = description
             if "pricing_plans" in params:
                 pricing_plans = params["pricing_plans"]
                 if not isinstance(pricing_plans, list):
@@ -1477,6 +1482,7 @@ class ConsoleApplicationServer:
             "id": tournament.id,
             "name": tournament.name,
             "slug": tournament.slug,
+            "description": tournament.description,
             "status": tournament.status,
             "visibility": tournament.visibility,
             "language": tournament.language,

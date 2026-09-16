@@ -16,6 +16,7 @@ from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthenticateOperation,
     AdminAuthorLinkOperation,
+    AdminAuthorMergeOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
@@ -334,6 +335,7 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_AUTHOR_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -776,6 +778,7 @@ class ApplicationGateway:
                 registration_ends_at=operation.registration_ends_at,
                 starts_at=operation.starts_at,
                 planned_ends_at=operation.planned_ends_at,
+                description=operation.description,
                 author_names=operation.author_names,
                 author_ids=operation.author_ids,
                 default_parameters=dict(operation.default_parameters),
@@ -1234,6 +1237,13 @@ class ApplicationGateway:
         if isinstance(operation, AdminAuthorLinkOperation):
             return await AdminManagementService(self.database).link_author(
                 player_id, operation.author_id, operation.target
+            )
+        if isinstance(operation, AdminAuthorMergeOperation):
+            return await AdminManagementService(self.database).merge_authors(
+                player_id,
+                operation.author_id,
+                operation.merge_author_id,
+                confirm=operation.confirm,
             )
         if isinstance(operation, AdminPacketAccessOperation):
             return await self.library.access(

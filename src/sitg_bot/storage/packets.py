@@ -84,6 +84,7 @@ class PostgresPacketRepository:
                     name=theme_record.name,
                     questions=questions,
                     author=theme_author or "",
+                    commentary=theme_record.commentary,
                 )
             )
         return StoredPacket(

@@ -210,6 +210,7 @@ class TournamentListItem:
     finalized_at: datetime | None = None
     settings_version: int = 1
     actual_starts_at: datetime | None = None
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +491,15 @@ class TournamentService:
                 delivery.failure_reason = "revoked"
                 delivery.encrypted_token = None
 
+    @staticmethod
+    def _normalize_description(description: object) -> str:
+        if not isinstance(description, str):
+            raise ValueError("Tournament description must be a string")
+        normalized = description.strip()
+        if len(normalized) > 2000:
+            raise ValueError("Tournament description must be at most 2000 characters")
+        return normalized
+
     async def create_tournament(
         self,
         *,
@@ -513,8 +523,10 @@ class TournamentService:
         registration_ends_at: datetime | None = None,
         starts_at: datetime | None = None,
         planned_ends_at: datetime | None = None,
+        description: str = "",
         author_names: tuple[str, ...] = (),
     ) -> TournamentSnapshot:
+        normalized_description = self._normalize_description(description)
         if (raw_token is None) == (token_id is None):
             raise ValueError("Exactly one tournament creation token reference is required")
         normalized_name = name.strip()
@@ -597,6 +609,7 @@ class TournamentService:
                 registration_ends_at=registration_ends_at,
                 starts_at=starts_at,
                 planned_ends_at=planned_ends_at,
+                description=normalized_description,
                 finalized_at=None,
             )
             session.add(tournament)
@@ -950,6 +963,7 @@ class TournamentService:
         default_parameters: dict[str, object],
         player_mutable_parameters: set[str] | frozenset[str],
         policies: dict[str, object],
+        description: str = "",
         ignore_late_registrations: bool = True,
         author_ids: tuple[UUID, ...] = (),
         registration_open_override: bool | None = None,
@@ -1036,6 +1050,7 @@ class TournamentService:
 
             tournament.name = normalized_name
             tournament.slug = normalized_slug
+            tournament.description = self._normalize_description(description)
             tournament.type_version_id = type_version.id
             tournament.game_ruleset_version_id = ruleset_version.id
             tournament.visibility = normalized_visibility
@@ -1702,6 +1717,7 @@ class TournamentService:
         registration_ends_at: datetime | None | object = _UNSET,
         starts_at: datetime | None | object = _UNSET,
         planned_ends_at: datetime | None | object = _UNSET,
+        description: str | object = _UNSET,
         author_names: tuple[str, ...] | object = _UNSET,
     ) -> None:
         async with self.database.transaction() as session:
@@ -1783,6 +1799,8 @@ class TournamentService:
                     )
             if language is not _UNSET:
                 tournament.language = normalize_language_tag(str(language))
+            if description is not _UNSET:
+                tournament.description = self._normalize_description(description)
             if registration_open is not _UNSET:
                 if not isinstance(registration_open, bool):
                     raise ValueError("registration_open must be a boolean")
@@ -3287,6 +3305,7 @@ class TournamentService:
             available_actions=tuple(actions),
             finalized_at=tournament.finalized_at,
             settings_version=tournament.settings_version,
+            description=tournament.description,
         )
 
     @staticmethod
@@ -3615,6 +3634,7 @@ class TournamentService:
                     policy_version=policy.version,
                     finalized_at=tournament.finalized_at,
                     settings_version=tournament.settings_version,
+                    description=tournament.description,
                 )
             )
         groups["ongoing"].sort(

@@ -272,6 +272,8 @@ class FakeGateway:
                 },
                 "events": [],
             }
+        elif operation.action == ActionCode.AUTHOR_LINK_MINE:
+            data = {"items": [], "next_cursor": None}
         else:
             data = {"selected": True}
         return GatewayResponse(
@@ -864,3 +866,155 @@ async def test_admin_suspicion_ledger_route_resolves_and_supports_events_and_cle
     assert operation.action == ActionCode.ADMIN_SUSPICION_CLEAR
     assert operation.player_id == UUID(int=40)
     assert operation.note == "reviewed"
+
+
+async def test_author_link_window_resolves_own_requests_and_searches_authors() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    request = make_mocked_request(
+        "GET",
+        "/api/miniapp/routes/resolve?path=/authors/link",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "author_links"
+    assert payload["resource"]["state"] == "empty"
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.AUTHOR_LINK_MINE
+
+    search_request = make_mocked_request(
+        "GET",
+        "/api/miniapp/authors?query=Ada&limit=5",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+
+    response = await http._search_authors(search_request)
+
+    assert response.status == 200
+    assert json.loads(response.text)["items"][0]["display_name"] == "Ada Lovelace"
+    operation = gateway.requests[-1].operation
+    assert operation.action == ActionCode.AUTHORS_SEARCH
+    assert operation.query == "Ada"
+    assert operation.limit == 5
+
+
+async def test_author_link_request_submission_maps_write_operation() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    author_id = UUID(int=30)
+    request = make_mocked_request(
+        "POST",
+        "/api/miniapp/authors/link",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "author-link-test",
+        },
+    )
+    request._read_bytes = json.dumps(
+        {"author_id": str(author_id), "note": "I am this author"}
+    ).encode()
+
+    response = await http._create_author_link(request)
+
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.AUTHOR_LINK_CREATE
+    assert operation.author_id == author_id
+    assert operation.note == "I am this author"
+    assert gateway.requests[0].metadata.idempotency_key == "author-link-test"
+
+
+@pytest.mark.parametrize(("command", "approve"), [("approve", True), ("reject", False)])
+async def test_admin_link_request_decisions_map_write_operation(
+    command: str, approve: bool
+) -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    request_id = UUID(int=50)
+    request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/admin/management/link_requests/{request_id}/{command}",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": f"link-request-{command}",
+        },
+        match_info={
+            "section": "link_requests",
+            "resource_id": str(request_id),
+            "command": command,
+        },
+    )
+    request._read_bytes = b"{}"
+
+    response = await http._admin_management_action(request)
+
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.AUTHOR_LINK_ADMIN_DECIDE
+    assert operation.request_id == request_id
+    assert operation.approve is approve
+    assert operation.expected_status == "pending"
+    assert gateway.requests[0].metadata.idempotency_key == f"link-request-{command}"
+
+
+async def test_admin_author_merge_maps_confirmed_write_operation() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    author_id, merge_author_id = UUID(int=30), UUID(int=31)
+    request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/admin/management/authors/{author_id}/merge",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "author-merge-test",
+        },
+        match_info={
+            "section": "authors",
+            "resource_id": str(author_id),
+            "command": "merge",
+        },
+    )
+    request._read_bytes = json.dumps(
+        {"merge_author_id": str(merge_author_id), "confirm": True}
+    ).encode()
+
+    response = await http._admin_management_action(request)
+
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.ADMIN_AUTHOR_MERGE
+    assert operation.author_id == author_id
+    assert operation.merge_author_id == merge_author_id
+    assert operation.confirm is True
+    assert gateway.requests[0].metadata.idempotency_key == "author-merge-test"

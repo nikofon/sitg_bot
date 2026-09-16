@@ -34,14 +34,16 @@ Member upload and original-file retention remain [planned work](future-work.md).
 ## Input formats
 
 JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, and `language`
-(default `und`). Each theme has `name`, optional `author`, and `questions`. Each question
-requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
+(default `und`). Each theme has `name`, optional `author` and `commentary`, and `questions`.
+Each question requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
 (string list), `form`, `commentary`, `source`, and `author`. Use
 `packet_to_json`/`packet_from_data` in the importer as the serialization contract.
 
 The DOCX converter uses Heading 1 for the packet name and Heading 2 for theme names
 (including Russian style names), question lines such as `10. [answer form] Question text`,
 and fields labeled `Ответ:`, `Зачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.
+A theme-level commentary line starts with `Комментарий к теме:` (or `Theme commentary:`)
+after the theme heading or author line; following plain lines continue it.
 Accepted alternatives in `Зачёт:` are comma-separated. It is not a general Word-layout parser. Convert with
 `sitg-import-packet packet.docx packet.json`, inspect the result, and use JSON for custom
 question values. Parser limits are separate from per-game SI limits.
@@ -188,7 +190,8 @@ followed the latest version are pinned before branching so substitutions cannot 
 1. A tournament manager selects Modify on a packet card in Tournament management.
 2. The upload-style editor displays the assignment's adopted version with every field locked.
 3. A green pencil enables a field as a correction. Theme names and question text/answer fields
-   also offer a red substitution arrow. Author fields resolve registered identities independently.
+   also offer a red substitution arrow; theme commentary is correction-only. Author fields
+   resolve registered identities independently.
 4. Save changes verifies that every enabled field changed and every change was classified,
    validates the result in each affected tournament, and publishes in one transaction.
 5. A concurrent edit or deleted assignment rejects the stale save. Managers reload and review

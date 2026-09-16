@@ -234,6 +234,7 @@ class TournamentRecord(Base, TimestampMixin):
         server_default=text("replace(gen_random_uuid()::text, '-', '')"),
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     moderation_status: Mapped[str] = mapped_column(
         String(24), nullable=False, default="normal", server_default=text("'normal'")
     )
@@ -1012,6 +1013,7 @@ class ThemeRevisionRecord(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+    commentary: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     __table_args__ = (
         UniqueConstraint("theme_id", "revision_number"),
@@ -1125,8 +1127,8 @@ class GameRecord(Base, TimestampMixin):
         CheckConstraint("phase IN ('lobby', 'countdown', 'intermission', 'question', 'finished')"),
         CheckConstraint(
             "progression_stage IS NULL OR progression_stage IN "
-            "('ready_countdown', 'theme_start', 'question_start', 'next_question', "
-            "'theme_complete', 'theme_scoreboard', 'question_reveal_start', "
+            "('ready_countdown', 'theme_start', 'theme_commentary', 'question_start', "
+            "'next_question', 'theme_complete', 'theme_scoreboard', 'question_reveal_start', "
             "'question_reveal', 'buzz_timer_start', 'finish')"
         ),
         CheckConstraint("question_token_index >= 0"),

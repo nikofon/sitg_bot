@@ -29,7 +29,8 @@ export function renderAdminManagement(
         ...entries.map((entry) => {
           if (entry === null || typeof entry !== "object") return element("p", {}, String(entry ?? "—"));
           if (Array.isArray(entry)) return element("p", {}, entry.join(", "));
-          const profile = (key === "players" || key === "managers") && typeof entry.id === "string"
+          const profile = (key === "players" || key === "managers" || key === "player")
+            && typeof entry.id === "string"
             ? link(`/players/${entry.id}`, name(entry))
             : key === "tournaments" && typeof entry.id === "string"
               ? link(`/tournaments?role=admin&info=${entry.id}`, name(entry)) : null;
@@ -40,7 +41,7 @@ export function renderAdminManagement(
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
   const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets"] as const).map((section) => element("button", {
+    ...(["tournaments", "authors", "players", "packets", "link_requests"] as const).map((section) => element("button", {
       type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
       "aria-current": resource.section === section ? "page" : undefined,
       onclick: (() => navigate(`/admin/management?section=${section}`)) as EventListener,
@@ -49,7 +50,9 @@ export function renderAdminManagement(
   const card = (item: AdminCard): HTMLElement => {
     const buttons = element("div", { className: "settings-actions" });
     const add = (command: string): void => {
-      const className = command === "abolish" || command === "ban" ? "danger-button"
+      const className = command === "abolish" || command === "ban" || command === "reject"
+        || command === "merge" ? "danger-button"
+        : command === "approve" ? "primary-button"
         : command === "halt" ? "secondary-button warning-button" : "secondary-button";
       const button = element("button", { type: "button", className }, label(command));
       button.addEventListener("click", () => action(item, command, button));
@@ -62,7 +65,12 @@ export function renderAdminManagement(
       else if (item.moderation_status === "normal" && item.status === "active"
         && item.actual_starts_at && !item.actual_ends_at) add("halt");
       if (item.moderation_status !== "abolished") add("abolish");
-    } else if (resource.section === "authors") add("link");
+    } else if (resource.section === "link_requests") {
+      profile = typeof item.player === "object" && item.player !== null
+        && typeof (item.player as { id?: unknown }).id === "string"
+        ? link(`/players/${(item.player as { id: string }).id}`, label("profile")) : null;
+      if (item.status === "pending") { add("approve"); add("reject"); }
+    } else if (resource.section === "authors") { add("link"); add("merge"); }
     else if (resource.section === "players") {
       profile = link(`/players/${item.id}`, label("profile"));
       if (!item.administrator) add(item.ban ? "unban" : "ban");
@@ -73,6 +81,7 @@ export function renderAdminManagement(
       authors: ["id", "questions", "themes", "packet_count", "players", "tournaments", "packets"],
       players: ["id", "real_name", "telegram_username", "suspicion", "reputation", "ban", "games_played", "rulesets", "reports"],
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
+      link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
     }[resource.section];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)));
@@ -82,7 +91,8 @@ export function renderAdminManagement(
   };
   const render = (): void => {
     const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
-    const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc" : "name:asc");
+    const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
+      : resource.section === "link_requests" ? "created_at:desc" : "name:asc");
     const [key, direction] = order.split(":");
     const items = resource.items.filter((item) => JSON.stringify(item).toLocaleLowerCase(i18n.locale).includes(search));
     const value = (item: AdminCard): string | number => key === "name" ? name(item) :
@@ -101,11 +111,13 @@ export function renderAdminManagement(
   const sortKeys = ["name", "created_at", ...{
     tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
+    link_requests: ["status", "decided_at"],
   }[resource.section]];
   const sort = element("select", { "aria-label": label("sort") }, ...sortKeys.flatMap((key) =>
     ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
       `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
-  sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc" : "name:asc");
+  sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
+    : resource.section === "link_requests" ? "created_at:desc" : "name:asc");
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
   render();
   return element("section", { className: "route-content" }, tabs,

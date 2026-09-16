@@ -57,6 +57,7 @@ export interface TournamentListItem {
   id: string;
   name: string;
   slug: string;
+  description?: string;
   status: string;
   phase: "future" | "ongoing" | "past";
   visibility: "public" | "private";
@@ -368,6 +369,7 @@ export interface PacketQuestion {
 export interface PacketTheme {
   name: string;
   author: string;
+  commentary?: string;
   questions: PacketQuestion[];
 }
 
@@ -413,6 +415,48 @@ export interface PacketDraftResource {
 export interface RegisteredAuthor {
   author_id: string;
   display_name: string;
+}
+
+export interface AuthorshipMetadata {
+  packet_count: number;
+  theme_count: number;
+  question_count: number;
+  packet_names: string[];
+  theme_names: string[];
+  tournament_names: string[];
+  years: number[];
+}
+
+export interface AuthorSummary {
+  author_id: string;
+  display_name: string;
+  authorship: AuthorshipMetadata;
+}
+
+export interface AuthorSearchPage {
+  items: AuthorSummary[];
+  next_cursor: string | null;
+}
+
+export interface AuthorLinkRequest {
+  request_id: string;
+  player_id: string;
+  player_nickname: string;
+  author: AuthorSummary;
+  status: string;
+  request_note: string | null;
+  decision_note: string | null;
+  decided_by_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+  cancelled_at: string | null;
+}
+
+export interface AuthorLinksResource {
+  kind: "author_links";
+  state: "ready" | "empty";
+  items: AuthorLinkRequest[];
+  next_cursor?: string | null;
 }
 
 export interface PageCursor {
@@ -582,7 +626,7 @@ export interface AdminSuspicionLedgerResource {
   items: SuspicionLedgerCard[];
 }
 
-export type AdminSection = "tournaments" | "authors" | "players" | "packets";
+export type AdminSection = "tournaments" | "authors" | "players" | "packets" | "link_requests";
 export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
 export interface AdminCard {
   id: string;
@@ -620,7 +664,8 @@ export interface RoutePayload {
     | PlayerProfileResource
     | PlayerGameResource
     | AdminSuspicionLedgerResource
-    | AdminManagementResource;
+    | AdminManagementResource
+    | AuthorLinksResource;
   pagination?: PageCursor;
 }
 

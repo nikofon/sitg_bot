@@ -175,6 +175,12 @@ timeouts, pause permission, inter-message delays, and other presentation timings
 Defaults are defined by `GameSettings`; each tournament policy snapshots effective values
 and player-mutability grants.
 
+A theme may carry optional commentary. When a started theme has commentary, the game
+announces the theme name and author, waits `theme_author_to_commentary_delay`, announces
+the commentary, then waits `theme_commentary_to_question_delay` before the first question.
+A theme without commentary sends no commentary message and uses
+`theme_to_first_question_delay` between the theme announcement and its first question.
+
 The SI technical limits currently include at most 12 players and at most 128 themes in
 one game. A tournament type may impose narrower limits.
 

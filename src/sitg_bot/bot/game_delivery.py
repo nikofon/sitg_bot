@@ -224,6 +224,10 @@ class GameDelivery:
                     )
                 ),
             )
+        elif kind == "theme_commentary_announced":
+            text = t("flow.theme_commentary", commentary=params["commentary"])
+            for i, chunk in enumerate(plain_chunks(html.unescape(text))):
+                await self._send(chat, game, messages, key + f":{i}", MessageModel(chunk))
         elif kind == "question_cost_announced":
             await self._send(
                 chat,

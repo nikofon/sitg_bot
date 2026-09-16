@@ -116,6 +116,7 @@ class ActionCode(StrEnum):
     ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
     ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
     ADMIN_AUTHOR_LINK = "platform.admin.authors.link.v1"
+    ADMIN_AUTHOR_MERGE = "platform.admin.authors.merge.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
 
 
@@ -367,6 +368,7 @@ class TournamentManagerSettingsUpdateOperation(ContractModel):
     registration_ends_at: datetime | None = None
     starts_at: datetime | None = None
     planned_ends_at: datetime | None = None
+    description: str = Field(default="", max_length=2000)
     author_names: tuple[str, ...] = ()
     author_ids: tuple[UUID, ...] = ()
     default_parameters: dict[str, JsonValue]
@@ -793,7 +795,9 @@ class BugReportCreateOperation(ContractModel):
 
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
-    section: Literal["tournaments", "authors", "players", "packets"] = "tournaments"
+    section: Literal["tournaments", "authors", "players", "packets", "link_requests"] = (
+        "tournaments"
+    )
 
 
 class AdminTournamentModerateOperation(ContractModel):
@@ -808,6 +812,13 @@ class AdminAuthorLinkOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_AUTHOR_LINK]
     author_id: UUID
     target: str = Field(min_length=1, max_length=200)
+
+
+class AdminAuthorMergeOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AUTHOR_MERGE]
+    author_id: UUID
+    merge_author_id: UUID
+    confirm: bool = Field(default=False, strict=True)
 
 
 class AdminPacketAccessOperation(ContractModel):
@@ -928,6 +939,7 @@ GatewayOperation = Annotated[
     | AdminManagementListOperation
     | AdminTournamentModerateOperation
     | AdminAuthorLinkOperation
+    | AdminAuthorMergeOperation
     | AdminPacketAccessOperation,
     Field(discriminator="action"),
 ]

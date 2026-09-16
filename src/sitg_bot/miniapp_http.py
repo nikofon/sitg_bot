@@ -19,12 +19,16 @@ from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthorLinkOperation,
+    AdminAuthorMergeOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
+    AuthorLinkAdminDecideOperation,
+    AuthorLinkCreateOperation,
+    AuthorLinkMineOperation,
     AuthorsSearchOperation,
     GameObserveOperation,
     GatewayOperation,
@@ -140,6 +144,8 @@ class MiniAppHttpServer:
         app.router.add_get("/auth/telegram/callback", self._website_login_callback)
         app.router.add_get("/auth/bot", self._website_bot)
         app.router.add_get("/api/miniapp/routes/resolve", self._resolve_route)
+        app.router.add_get("/api/miniapp/authors", self._search_authors)
+        app.router.add_post("/api/miniapp/authors/link", self._create_author_link)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/tournaments/{tournament_id}", self._tournament_info)
         app.router.add_get("/api/miniapp/players/{player_id}", self._player_profile)
@@ -498,6 +504,25 @@ class MiniAppHttpServer:
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
+        if normalized_path == "/authors/link":
+            session, result = await self._query(
+                request,
+                AuthorLinkMineOperation(action=ActionCode.AUTHOR_LINK_MINE, limit=50),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "author_links",
+                        "state": "ready" if result.data.get("items") else "empty",
+                        **result.data,
+                    },
+                }
+            )
         if normalized_path == "/admin/management":
             operation = AdminManagementListOperation.model_validate({
                 "action": ActionCode.ADMIN_MANAGEMENT_LIST,
@@ -912,6 +937,27 @@ class MiniAppHttpServer:
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
+        return self._gateway_response(result)
+
+    async def _search_authors(self, request: web.Request) -> web.Response:
+        raw_limit = request.query.get("limit", "20")
+        operation = AuthorsSearchOperation.model_validate(
+            {
+                "action": ActionCode.AUTHORS_SEARCH,
+                "query": request.query.get("query", ""),
+                "cursor": request.query.get("cursor"),
+                "limit": int(raw_limit),
+            }
+        )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _create_author_link(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        operation = AuthorLinkCreateOperation.model_validate(
+            {**body, "action": ActionCode.AUTHOR_LINK_CREATE}
+        )
+        _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 
     async def _search_manager_authors(self, request: web.Request) -> web.Response:
@@ -1346,6 +1392,17 @@ class MiniAppHttpServer:
         elif section == "authors" and command == "link":
             operation = AdminAuthorLinkOperation.model_validate({
                 **body, "action": ActionCode.ADMIN_AUTHOR_LINK, "author_id": resource_id,
+            })
+        elif section == "authors" and command == "merge":
+            operation = AdminAuthorMergeOperation.model_validate({
+                **body, "action": ActionCode.ADMIN_AUTHOR_MERGE, "author_id": resource_id,
+            })
+        elif section == "link_requests" and command in {"approve", "reject"}:
+            operation = AuthorLinkAdminDecideOperation.model_validate({
+                **body,
+                "action": ActionCode.AUTHOR_LINK_ADMIN_DECIDE,
+                "request_id": resource_id,
+                "approve": command == "approve",
             })
         elif section == "packets":
             operation = AdminPacketAccessOperation.model_validate({

@@ -294,20 +294,22 @@ async def test_join_is_sent_once_across_direct_sync_and_outbox_then_start_preced
         event(4, "game_started"),
         event(5, "themes_announced", themes=[{"name": "Theme"}]),
         event(6, "theme_started", name="Theme", author="Author"),
-        event(7, "question_cost_announced", round_id=ROUND, theme="Theme", value=10),
-        event(8, "question_token_revealed", round_id=ROUND, text="First token"),
+        event(7, "theme_commentary_announced", name="Theme", commentary="About the theme"),
+        event(8, "question_cost_announced", round_id=ROUND, theme="Theme", value=10),
+        event(9, "question_token_revealed", round_id=ROUND, text="First token"),
     ]
     await delivery.sync(42, GAME)
     texts = [c.args[1] for c in bot.send_message.await_args_list]
-    assert len(texts) == 6
+    assert len(texts) == 7
     assert texts[1].startswith("Все игроки присоединились.")
     assert isinstance(
         bot.send_message.await_args_list[1].kwargs["reply_markup"], ReplyKeyboardMarkup
     )
     assert texts[2] == "Темы игры:\n1) Theme"
     assert "<b>Theme</b>" in texts[3]
-    assert texts[4] == "Тема: Theme\nВопрос за 10"
-    assert texts[5] == "First token"
+    assert texts[4] == "Комментарий к теме: About the theme"
+    assert texts[5] == "Тема: Theme\nВопрос за 10"
+    assert texts[6] == "First token"
     assert all("Между вопросами" not in text for text in texts)
 
 

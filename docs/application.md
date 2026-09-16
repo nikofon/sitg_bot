@@ -65,7 +65,11 @@ activates the platform role and administrator navigation mode. Telegram deletes 
 credential message after processing.
 
 Player-to-author linking retains pending, approved, rejected, and cancelled requests.
-Administrator decisions do not merge authors by display name. Approved links feed permanent
+Administrator decisions do not merge authors by display name. An explicit confirmed
+administrator join deletes the second author and transfers their statistics,
+attributions, links, requests, and tournament authorships to the first; rows that would
+collide with the surviving identity are dropped, and inherited linked players burn the
+surviving author's content. Approved links feed permanent
 authorship exposure burns; see [packet administration](packet-administration.md).
 
 Tournament-token requests retain requester, proposed name, commentary, decision, and audit

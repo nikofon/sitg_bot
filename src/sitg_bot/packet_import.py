@@ -18,6 +18,10 @@ FIELD_RE = re.compile(
     r"^(Ответ|Зач[её]т|Комментарий|Источник|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
     re.I,
 )
+THEME_COMMENTARY_RE = re.compile(
+    r"^(?:Комментарий к теме|Theme commentary)\s*:\s*(.*)$",
+    re.I,
+)
 INLINE_FIELD_RE = re.compile(
     r"(?=\s+(?:Ответ|Зач[её]т|Комментарий|Источник|Автор(?: вопроса)?|Author)\s*:)",
     re.I,
@@ -86,6 +90,7 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
     themes: list[Theme] = []
     theme_name = ""
     theme_author = ""
+    theme_commentary = ""
     questions: list[Question] = []
     question: dict[str, object] | None = None
     active_field = "text"
@@ -125,11 +130,14 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
         question = None
 
     def finish_theme() -> None:
-        nonlocal questions
+        nonlocal questions, theme_commentary
         finish_question()
         if theme_name:
-            themes.append(Theme(theme_name, tuple(questions), theme_author))
+            themes.append(
+                Theme(theme_name, tuple(questions), theme_author, theme_commentary.strip())
+            )
         questions = []
+        theme_commentary = ""
 
     for line in _document_lines(source):
         heading = _heading_level(line.style)
@@ -144,6 +152,12 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
             finish_theme()
             theme_name = line.text
             theme_author = ""
+            continue
+        theme_commentary_match = THEME_COMMENTARY_RE.match(line.text)
+        if theme_commentary_match:
+            finish_question()
+            value = theme_commentary_match.group(1).strip()
+            theme_commentary = f"{theme_commentary}\n{value}" if theme_commentary else value
             continue
         marker = QUESTION_RE.match(line.text)
         if marker:
@@ -176,6 +190,8 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
             continue
         if line.text and question is not None:
             append(active_field, line.text)
+        elif line.text and question is None and theme_commentary:
+            theme_commentary = f"{theme_commentary}\n{line.text}"
     finish_theme()
     if not packet_name:
         raise ValueError("A DOCX packet must have a non-empty level-1 heading")
@@ -254,6 +270,7 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
                 Theme(
                     name=string(raw_theme["name"], "theme name"),
                     author=string(raw_theme.get("author", ""), "theme author"),
+                    commentary=string(raw_theme.get("commentary", ""), "theme commentary"),
                     questions=tuple(questions),
                 )
             )

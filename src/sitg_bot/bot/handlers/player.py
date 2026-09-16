@@ -41,9 +41,7 @@ PLAYER_ACTIONS = tuple(
     for row in (*PLAYER_MENU_ACTIONS, *OTHER_MENU_ACTIONS, *PLAYER_TOURNAMENT_ACTIONS)
     for action in row
 )
-PLACEHOLDER_ACTIONS = {
-    "player.author_link",
-}
+PLACEHOLDER_ACTIONS: frozenset[str] = frozenset()
 
 
 class PlayerMenuAction(Filter):
@@ -640,6 +638,37 @@ async def handle_player_menu_action(
                         (
                             InlineButtonModel(
                                 localization.text(f"miniapp.{route}.open", locale),
+                                web_app_url=url,
+                            ),
+                        ),
+                    )
+                ),
+            ),
+        )
+        return
+    if player_action == "player.author_link":
+        if launch_links is None:
+            await send_message_model(
+                message,
+                MessageModel(
+                    localization.text(
+                        "feature.placeholder",
+                        locale,
+                        feature=localization.text("button.player.author_link", locale),
+                    )
+                ),
+            )
+            return
+        url = mini_app_route_url(launch_links, "authors/link")
+        await send_message_model(
+            message,
+            MessageModel(
+                localization.text("miniapp.authors_link.prompt", locale),
+                InlineKeyboardModel(
+                    rows=(
+                        (
+                            InlineButtonModel(
+                                localization.text("miniapp.authors_link.open", locale),
                                 web_app_url=url,
                             ),
                         ),

@@ -245,6 +245,7 @@ Classic does not support hybrid matchmaking.
 | `question_token_delay` | Seconds between reveal steps; `instantaneous` also accepted |
 | `ready_delay`, `message_delay` | Pre-start and message delays, seconds |
 | `game_start_to_first_theme_delay`, `theme_to_first_question_delay` | Introductory delays, seconds |
+| `theme_author_to_commentary_delay`, `theme_commentary_to_question_delay` | Theme-commentary delays, seconds (used only when a theme has commentary) |
 | `question_cost_announcement_delay`, `buzz_timer_countdown_delay` | Question/countdown delays, seconds |
 | `buzz_timeout`, `answer_timeout` | Buzz/answer windows, seconds |
 | `between_questions_delay`, `last_question_to_theme_complete_delay` | Question/theme transition delays, seconds |

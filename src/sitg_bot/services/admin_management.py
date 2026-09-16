@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from sitg_bot.services.author_exposure import burn_author_content
 from sitg_bot.services.author_links import AuthorLinkService
@@ -17,6 +17,8 @@ from sitg_bot.storage.models import (
     GameRecord,
     GameRulesetVersionRecord,
     LogicalPacketRecord,
+    LogicalQuestionRecord,
+    PacketDraftRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
     PlatformAdministratorRecord,
@@ -28,6 +30,7 @@ from sitg_bot.storage.models import (
     QuestionRevisionRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
+    ThemeRecord,
     ThemeRevisionRecord,
     TournamentAuthorRecord,
     TournamentManagerRecord,
@@ -52,11 +55,53 @@ class AdminManagementService:
         self.database = database
 
     async def catalogue(self, administrator_id: UUID, section: str) -> dict:
-        if section not in {"tournaments", "authors", "players", "packets"}:
+        if section not in {"tournaments", "authors", "players", "packets", "link_requests"}:
             raise ValueError("Unknown management section")
         async with self.database.sessions() as session:
             await _require_administrator(session, administrator_id)
             items = []
+            if section == "link_requests":
+                requests = await session.scalars(
+                    select(PlayerAuthorLinkRequestRecord).order_by(
+                        PlayerAuthorLinkRequestRecord.created_at.desc(),
+                        PlayerAuthorLinkRequestRecord.id.desc(),
+                    )
+                )
+                for record in requests:
+                    player = await session.get(PlayerRecord, record.player_id)
+                    author = await session.get(AuthorRecord, record.author_id)
+                    if player is None or author is None:
+                        continue
+                    items.append({
+                        "id": record.id,
+                        "name": author.display_name,
+                        "status": record.status,
+                        "request_note": record.request_note,
+                        "decision_note": record.decision_note,
+                        "created_at": record.created_at,
+                        "decided_at": record.decided_at,
+                        "cancelled_at": record.cancelled_at,
+                        "player": await self._player(session, player),
+                        "author": {
+                            **fields(author),
+                            "questions": await session.scalar(
+                                select(func.count(func.distinct(QuestionRevisionRecord.question_id))).where(
+                                    QuestionRevisionRecord.author_id == author.id
+                                )
+                            ),
+                            "themes": await session.scalar(
+                                select(func.count(func.distinct(ThemeRevisionRecord.theme_id))).where(
+                                    ThemeRevisionRecord.author_id == author.id
+                                )
+                            ),
+                        },
+                    })
+                return {
+                    "kind": "admin_management",
+                    "state": "ready",
+                    "section": section,
+                    "items": items,
+                }
             model = {
                 "tournaments": TournamentRecord,
                 "authors": AuthorRecord,
@@ -455,3 +500,169 @@ class AdminManagementService:
             )
             await burn_author_content(session, author_id=author_id)
             return {"linked": True}
+
+    async def merge_authors(
+        self,
+        administrator_id: UUID,
+        author_id: UUID,
+        merge_author_id: UUID,
+        *,
+        confirm: bool,
+    ) -> dict:
+        """Join two author identities into one.
+
+        The second author is deleted; their statistics, attributions, links, and
+        requests transfer to the first author. Rows that would collide with the
+        surviving identity (duplicate links, tournament authorships, and pending
+        requests that can no longer be approved) are dropped in favour of the
+        surviving author's row.
+        """
+        if author_id == merge_author_id:
+            raise ValueError("An author cannot be joined with itself")
+        if not confirm:
+            raise ValueError("Author merge requires confirmation")
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            primary = await session.get(AuthorRecord, author_id, with_for_update=True)
+            secondary = await session.get(AuthorRecord, merge_author_id, with_for_update=True)
+            if primary is None or secondary is None:
+                raise LookupError("Author not found")
+            summary = {
+                "questions": await session.scalar(
+                    select(func.count()).select_from(QuestionRevisionRecord).where(
+                        QuestionRevisionRecord.author_id == merge_author_id
+                    )
+                ),
+                "themes": await session.scalar(
+                    select(func.count()).select_from(ThemeRevisionRecord).where(
+                        ThemeRevisionRecord.author_id == merge_author_id
+                    )
+                ),
+                "packets": await session.scalar(
+                    select(func.count()).select_from(LogicalPacketRecord).where(
+                        LogicalPacketRecord.statistical_author_id == merge_author_id
+                    )
+                ),
+                "linked_players": await session.scalar(
+                    select(func.count()).select_from(PlayerAuthorLinkRecord).where(
+                        PlayerAuthorLinkRecord.author_id == merge_author_id
+                    )
+                ),
+                "tournaments": await session.scalar(
+                    select(func.count()).select_from(TournamentAuthorRecord).where(
+                        TournamentAuthorRecord.author_id == merge_author_id
+                    )
+                ),
+            }
+            await session.execute(
+                update(PacketDraftRecord)
+                .where(PacketDraftRecord.lead_author_id == merge_author_id)
+                .values(lead_author_id=author_id)
+            )
+            await session.execute(
+                update(PacketVersionRecord)
+                .where(PacketVersionRecord.lead_author_id == merge_author_id)
+                .values(lead_author_id=author_id)
+            )
+            await session.execute(
+                update(LogicalPacketRecord)
+                .where(LogicalPacketRecord.statistical_author_id == merge_author_id)
+                .values(statistical_author_id=author_id)
+            )
+            await session.execute(
+                update(ThemeRecord)
+                .where(ThemeRecord.statistical_author_id == merge_author_id)
+                .values(statistical_author_id=author_id)
+            )
+            await session.execute(
+                update(ThemeRevisionRecord)
+                .where(ThemeRevisionRecord.author_id == merge_author_id)
+                .values(author_id=author_id)
+            )
+            await session.execute(
+                update(LogicalQuestionRecord)
+                .where(LogicalQuestionRecord.statistical_author_id == merge_author_id)
+                .values(statistical_author_id=author_id)
+            )
+            await session.execute(
+                update(QuestionRevisionRecord)
+                .where(QuestionRevisionRecord.author_id == merge_author_id)
+                .values(author_id=author_id)
+            )
+            # Draft Telegram author bindings map display names to author IDs.
+            secondary_text = str(merge_author_id)
+            for draft in await session.scalars(
+                select(PacketDraftRecord).where(
+                    PacketDraftRecord.author_bindings != {}  # type: ignore[comparison-overlap]
+                )
+            ):
+                if secondary_text not in set(draft.author_bindings.values()):
+                    continue
+                draft.author_bindings = {
+                    name: str(author_id) if value == secondary_text else value
+                    for name, value in draft.author_bindings.items()
+                }
+            # Pending requests that could never be approved after the merge are
+            # dropped; every other request is re-pointed at the surviving author.
+            blocked_players = select(PlayerAuthorLinkRequestRecord.player_id).where(
+                PlayerAuthorLinkRequestRecord.status == "pending",
+                PlayerAuthorLinkRequestRecord.author_id == author_id,
+            ).union(
+                select(PlayerAuthorLinkRecord.player_id).where(
+                    PlayerAuthorLinkRecord.author_id == author_id
+                )
+            )
+            await session.execute(
+                delete(PlayerAuthorLinkRequestRecord).where(
+                    PlayerAuthorLinkRequestRecord.author_id == merge_author_id,
+                    PlayerAuthorLinkRequestRecord.status == "pending",
+                    PlayerAuthorLinkRequestRecord.player_id.in_(blocked_players),
+                )
+            )
+            await session.execute(
+                update(PlayerAuthorLinkRequestRecord)
+                .where(PlayerAuthorLinkRequestRecord.author_id == merge_author_id)
+                .values(author_id=author_id)
+            )
+            await session.execute(
+                delete(PlayerAuthorLinkRecord).where(
+                    PlayerAuthorLinkRecord.author_id == merge_author_id,
+                    PlayerAuthorLinkRecord.player_id.in_(
+                        select(PlayerAuthorLinkRecord.player_id).where(
+                            PlayerAuthorLinkRecord.author_id == author_id
+                        )
+                    ),
+                )
+            )
+            await session.execute(
+                update(PlayerAuthorLinkRecord)
+                .where(PlayerAuthorLinkRecord.author_id == merge_author_id)
+                .values(author_id=author_id)
+            )
+            await session.execute(
+                delete(TournamentAuthorRecord).where(
+                    TournamentAuthorRecord.author_id == merge_author_id,
+                    TournamentAuthorRecord.tournament_id.in_(
+                        select(TournamentAuthorRecord.tournament_id).where(
+                            TournamentAuthorRecord.author_id == author_id
+                        )
+                    ),
+                )
+            )
+            await session.execute(
+                update(TournamentAuthorRecord)
+                .where(TournamentAuthorRecord.author_id == merge_author_id)
+                .values(author_id=author_id)
+            )
+            # Players inherited from the joined author must be burned on the
+            # surviving author's content, including the transferred attribution.
+            await burn_author_content(session, author_id=author_id)
+            await session.delete(secondary)
+            await session.flush()
+            return {
+                "merged": True,
+                "author_id": str(author_id),
+                "merged_author_id": str(merge_author_id),
+                "display_name": primary.display_name,
+                **summary,
+            }

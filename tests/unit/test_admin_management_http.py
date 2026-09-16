@@ -16,7 +16,9 @@ from sitg_bot.application.gateway import ACTION_POLICIES
 from sitg_bot.miniapp_http import MiniAppHttpServer
 
 
-@pytest.mark.parametrize("section", ["tournaments", "authors", "players", "packets"])
+@pytest.mark.parametrize(
+    "section", ["tournaments", "authors", "players", "packets", "link_requests"]
+)
 async def test_management_route_resolves_requested_section(section):
     class CatalogueGateway(FakeGateway):
         async def execute(self, principal, request):
@@ -61,6 +63,14 @@ async def test_management_route_resolves_requested_section(section):
             ActionCode.ADMIN_TOURNAMENT_MODERATE,
         ),
         ("authors", "link", {"target": "@nickname"}, ActionCode.ADMIN_AUTHOR_LINK),
+        (
+            "authors",
+            "merge",
+            {"merge_author_id": str(UUID(int=31)), "confirm": True},
+            ActionCode.ADMIN_AUTHOR_MERGE,
+        ),
+        ("link_requests", "approve", {}, ActionCode.AUTHOR_LINK_ADMIN_DECIDE),
+        ("link_requests", "reject", {}, ActionCode.AUTHOR_LINK_ADMIN_DECIDE),
         ("packets", "view", {"confirm": True}, ActionCode.ADMIN_PACKET_ACCESS),
         ("packets", "download", {"confirm": True}, ActionCode.ADMIN_PACKET_ACCESS),
         ("players", "ban", {"reason": "Review"}, ActionCode.PLAYER_BAN),

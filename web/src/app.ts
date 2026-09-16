@@ -29,6 +29,8 @@ import type {
   SuspicionLedgerCard,
   AdminManagementResource,
   AdminCard,
+  AuthorLinksResource,
+  AuthorSearchPage,
 } from "./api/types";
 import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
@@ -39,6 +41,7 @@ import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
+import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderAdminManagement } from "./ui/admin-management";
@@ -218,6 +221,10 @@ export class MiniAppShell {
     }
     if (route.id === "admin_suspicion" && isSuspicionLedgerResource(payload.resource)) {
       this.renderSuspicionLedger(route, payload.resource);
+      return;
+    }
+    if (route.id === "authors_link" && isAuthorLinksResource(payload.resource)) {
+      this.renderAuthorsLinkRoute(route, payload.resource);
       return;
     }
     if (route.id === "lobby" && isLobbyResource(payload.resource)) {
@@ -509,7 +516,7 @@ export class MiniAppShell {
       if (!theme) return;
       for (const input of page.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("[data-theme-field]")) {
         if (modifying && input.disabled) continue;
-        theme[input.dataset.themeField as "name" | "author"] = input.value;
+        theme[input.dataset.themeField as "name" | "author" | "commentary"] = input.value;
       }
       for (const input of page.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("[data-question-field]")) {
         if (modifying && input.disabled) continue;
@@ -539,7 +546,7 @@ export class MiniAppShell {
       next.addEventListener("click", () => { capturePage(); themeIndex += 1; renderPage(); });
       const themeFields = element("fieldset", {}, element("legend", {}, `${this.i18n.t("packet_editor.theme")} ${themeIndex + 1} / ${packet.themes.length}`));
       for (const field of resource.editor.theme_fields) {
-        const item = control(field, theme[field as "name" | "author"], false, `themes.${themeIndex}.${field}`);
+        const item = control(field, theme[field as "name" | "author" | "commentary"] ?? "", field === "commentary", `themes.${themeIndex}.${field}`);
         const input = item.querySelector<HTMLInputElement>("[data-field]");
         if (input) { input.dataset.themeField = field; delete input.dataset.field; }
         themeFields.append(item);
@@ -873,9 +880,12 @@ export class MiniAppShell {
       description_key: name, options: [],
     }));
     const editable = descriptors.filter((item) => can("settings_update") && lobby.mutable_parameters.includes(item.name));
+    const editableNames = new Set(editable.map((item) => item.name));
+    const fixed = descriptors.filter((item) => !editableNames.has(item.name));
     const settings = element("form", { className: "settings-form" });
     settings.addEventListener("input", () => { dirty = true; });
     if (editable.length) {
+      settings.append(element("h3", {}, this.i18n.t("lobby.settings_editable")));
       settings.append(this.renderDescriptorGroup(editable, "setting"));
       settings.append(element("button", { type: "submit", className: "primary-button" }, this.i18n.t("lobby.settings_save")));
       settings.addEventListener("submit", (event) => {
@@ -889,9 +899,13 @@ export class MiniAppShell {
         }
       });
     }
+    const settingValue = (item: { name: string; value: unknown }): string =>
+      typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value);
+    const fixedSettings = fixed.length ? element("div", { className: "resource-card" },
+      element("h3", {}, this.i18n.t("lobby.settings_fixed")),
+      ...fixed.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item)))) : null;
     const currentSettings = element("div", { className: "resource-card" },
-      ...descriptors.map((item) => this.detail(this.descriptorLabel(item.name, "setting"),
-        typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value))));
+      ...descriptors.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item))));
     const tabs = element("nav", { className: "settings-actions", "aria-label": this.i18n.t("lobby.sections") });
     for (const [value, key] of [["overview", "lobby.overview"], ["packets", "lobby.packets"], ["settings", "lobby.options"]] as const) {
       const query = new URLSearchParams(route.query);
@@ -945,7 +959,7 @@ export class MiniAppShell {
       "section", { className: "route-content lobby-content" }, tabs,
       element("h2", { className: "lobby-tournament-title" }, lobby.tournament_name ?? ""),
       section === "packets" ? element("section", {}, element("h2", {}, this.i18n.t("lobby.packets")), packetList) :
-      section === "settings" ? element("section", {}, element("h2", {}, this.i18n.t("lobby.options")), currentSettings, settings) :
+      section === "settings" ? element("section", {}, element("h2", {}, this.i18n.t("lobby.options")), settings, fixedSettings) :
       element("section", { className: "route-content lobby-overview" },
         lobby.invitation_url ? element("a", { href: lobby.invitation_url, className: "resource-card lobby-invitation-link" },
           this.i18n.t("lobby.invitation"), ": ", lobby.invitation_url) : this.detail(this.i18n.t("lobby.invitation"), lobby.invitation_code),
@@ -1042,6 +1056,9 @@ export class MiniAppShell {
             "article",
             { className: "resource-card tournament-card" },
             element("div", { className: "tournament-heading" }, element("h2", {}, item.name), element("code", {}, item.slug)),
+            item.description
+              ? element("p", { className: "tournament-description" }, item.description)
+              : null,
             badges,
             element(
               "p",
@@ -1671,6 +1688,7 @@ export class MiniAppShell {
         input("tournament.slug", "slug", item.slug),
         select("tournament.visibility", "visibility", ["private", "public"], item.visibility),
         input("tournament.language", "language", item.language),
+        element("label", {}, this.i18n.t("manager_settings.description"), element("textarea", { name: "description", rows: "3" }, item.description ?? "")),
         element("h3", {}, this.i18n.t("tournament.authors")),
         authors,
         authorSearch,
@@ -1895,9 +1913,19 @@ export class MiniAppShell {
     const wrapper = element("div", { className: "descriptor-editor" });
     const picker = element("select", { "aria-label": this.i18n.t(prefix === "setting" ? "manager_settings.setting_select" : "manager_settings.policy_select") });
     const panels = element("div", { className: "descriptor-panels" });
+    const demos = new Map<string, SettingDemo>();
+    const readSettings = (): Record<string, unknown> => {
+      const seeded = Object.fromEntries(descriptors.map((descriptor) => [descriptor.name, descriptor.value]));
+      const form = wrapper.closest("form");
+      return form ? { ...seeded, ...this.descriptorValues(form, descriptors, "setting") } : seeded;
+    };
     const show = (name: string): void => {
       for (const panel of panels.querySelectorAll<HTMLElement>("[data-descriptor]")) {
         panel.hidden = panel.dataset.descriptor !== name;
+      }
+      for (const [demoName, demo] of demos) {
+        if (demoName === name) demo.restart();
+        else demo.stop();
       }
     };
     for (const descriptor of descriptors) {
@@ -1923,12 +1951,22 @@ export class MiniAppShell {
           step: descriptor.value_type === "integer" ? "1" : "any",
         });
       }
-      panels.append(element(
-        "section",
-        { className: "descriptor-panel", "data-descriptor": descriptor.name },
+      const panelChildren: Node[] = [
         element("h3", {}, this.descriptorLabel(descriptor.name, prefix)),
         element("p", { className: "field-help" }, this.descriptorDescription(descriptor.description_key)),
         control,
+      ];
+      if (prefix === "setting" && MESSAGE_FLOW_SETTINGS.has(descriptor.name)) {
+        const demo = createSettingDemo(descriptor.name, readSettings, this.i18n);
+        demos.set(descriptor.name, demo);
+        control.addEventListener("input", () => demo.restart());
+        control.addEventListener("change", () => demo.restart());
+        panelChildren.push(demo.root);
+      }
+      panels.append(element(
+        "section",
+        { className: "descriptor-panel", "data-descriptor": descriptor.name },
+        ...panelChildren,
       ));
     }
     picker.addEventListener("change", () => show(picker.value));
@@ -2132,6 +2170,7 @@ export class MiniAppShell {
             expected_version: resource.settings_version,
             name: value("name"),
             slug: value("slug"),
+            description: value("description"),
             type_key: value("type_key") || resource.tournament.type_key,
             game_ruleset_key: value("game_ruleset_key") || resource.tournament.ruleset_key,
             visibility: value("visibility"),
@@ -2513,6 +2552,12 @@ export class MiniAppShell {
       const target = window.prompt(this.i18n.t("admin_management.link_prompt"));
       if (!target?.trim()) return;
       body.target = target.trim();
+    } else if (command === "merge") {
+      this.promptAuthorMerge(route, card);
+      return;
+    } else if (command === "approve" || command === "reject") {
+      if (!window.confirm(this.i18n.t(`admin_management.${command}_confirm` as MessageKey))) return;
+      body.approve = command === "approve";
     } else if (command === "ban") {
       const reason = window.prompt(this.i18n.t("admin_management.ban_prompt"));
       if (reason === null) return;
@@ -2528,6 +2573,187 @@ export class MiniAppShell {
       this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
       if (code === "stale_write") await this.load(route);
     } finally { button.disabled = false; }
+  }
+
+  private renderAuthorsLinkRoute(route: RouteMatch, resource: AuthorLinksResource): void {
+    const status = element("p", { className: "field-help", role: "status" });
+    const picker = element("select", { "aria-label": this.i18n.t("authors_link.select") });
+    const search = element("input", {
+      type: "search", maxlength: "300",
+      placeholder: this.i18n.t("authors_link.search_placeholder"),
+      "aria-label": this.i18n.t("authors_link.search"),
+    });
+    let requestSequence = 0;
+    let timer: number | undefined;
+    let loaded = false;
+    const loadAuthors = async (): Promise<void> => {
+      const sequence = ++requestSequence;
+      try {
+        const result = await this.api.request<AuthorSearchPage>(
+          `/api/miniapp/authors?query=${encodeURIComponent(search.value)}`,
+          { signal: this.request?.signal },
+        );
+        if (sequence !== requestSequence || !picker.isConnected) return;
+        replaceChildren(picker,
+          element("option", { value: "" }, this.i18n.t("authors_link.select")),
+          ...result.items.map((author) => element("option", {
+            value: author.author_id,
+          }, author.display_name)));
+        status.textContent = result.items.length ? "" : this.i18n.t("authors_link.no_matches");
+        loaded = true;
+      } catch (error) {
+        if (sequence === requestSequence) {
+          const code = error instanceof ApiError ? error.code : "internal_error";
+          status.textContent = this.i18n.t(`error.${code}` as MessageKey);
+        }
+      }
+    };
+    picker.addEventListener("focus", () => { if (!loaded) void loadAuthors(); });
+    search.addEventListener("input", () => {
+      requestSequence += 1;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void loadAuthors(), 200);
+    });
+    const note = element("input", {
+      name: "note", maxlength: "1000",
+      placeholder: this.i18n.t("authors_link.note_placeholder"),
+      "aria-label": this.i18n.t("authors_link.note"),
+    });
+    const submit = element("button", { type: "submit", className: "primary-button" },
+      this.i18n.t("authors_link.submit"));
+    const form = element("form", { className: "settings-form" }, status,
+      element("label", {}, this.i18n.t("authors_link.select"), search, picker),
+      element("label", {}, this.i18n.t("authors_link.note"), note),
+      submit);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!picker.value) {
+        status.textContent = this.i18n.t("authors_link.select_required");
+        return;
+      }
+      submit.disabled = true;
+      try {
+        await this.api.request("/api/miniapp/authors/link", {
+          method: "POST",
+          body: { author_id: picker.value, note: note.value.trim() || null },
+          signal: this.request?.signal,
+        });
+        this.platform.notifySuccess();
+        status.textContent = this.i18n.t("authors_link.submitted");
+        await this.load(route);
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        status.textContent = this.i18n.t(`error.${code}` as MessageKey);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    const requests = element("ul", { className: "resource-list" });
+    if (resource.items.length) {
+      for (const item of resource.items) {
+        requests.append(element("li", {}, element("article", {
+          className: "resource-card", "data-request-id": item.request_id,
+        },
+          element("h2", {}, item.author.display_name),
+          element("p", {}, `${this.i18n.t("authors_link.status")}: ${
+            this.i18n.t(`authors_link.status_${item.status}` as MessageKey)}`),
+          element("p", {}, `${this.i18n.t("admin_management.created_at")}: ${this.formatDate(item.created_at)}`),
+          item.request_note
+            ? element("p", {}, `${this.i18n.t("authors_link.note")}: ${item.request_note}`)
+            : null,
+        )));
+      }
+    } else {
+      requests.append(element("li", {}, element("p", {}, this.i18n.t("authors_link.no_requests"))));
+    }
+    this.renderFrame(route, element("section", { className: "route-content" },
+      form,
+      element("h2", {}, this.i18n.t("authors_link.my_requests")),
+      requests));
+  }
+
+  private promptAuthorMerge(route: RouteMatch, card: AdminCard): void {
+    const search = element("input", {
+      type: "search", maxlength: "300",
+      placeholder: this.i18n.t("authors_link.search_placeholder"),
+      "aria-label": this.i18n.t("admin_management.merge_search"),
+    });
+    const picker = element("select", { "aria-label": this.i18n.t("admin_management.merge_select") });
+    const errorText = element("p", { className: "field-help", role: "status" });
+    let requestSequence = 0;
+    let timer: number | undefined;
+    const loadAuthors = async (): Promise<void> => {
+      const sequence = ++requestSequence;
+      try {
+        const result = await this.api.request<AuthorSearchPage>(
+          `/api/miniapp/authors?query=${encodeURIComponent(search.value)}`,
+          { signal: this.request?.signal },
+        );
+        if (sequence !== requestSequence || !picker.isConnected) return;
+        replaceChildren(picker,
+          element("option", { value: "" }, this.i18n.t("admin_management.merge_select")),
+          ...result.items
+            .filter((author) => author.author_id !== card.id)
+            .map((author) => element("option", { value: author.author_id }, author.display_name)));
+        errorText.textContent = "";
+      } catch (error) {
+        if (sequence === requestSequence) {
+          const code = error instanceof ApiError ? error.code : "internal_error";
+          errorText.textContent = this.i18n.t(`error.${code}` as MessageKey);
+        }
+      }
+    };
+    picker.addEventListener("focus", () => { if (!picker.options.length) void loadAuthors(); });
+    search.addEventListener("input", () => {
+      requestSequence += 1;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void loadAuthors(), 200);
+    });
+    void loadAuthors();
+    const confirmButton = element("button", { type: "submit", className: "danger-button" },
+      this.i18n.t("admin_management.merge_action"));
+    const form = element("form", { className: "settings-form" },
+      element("p", { className: "field-help" }, this.i18n.t("admin_management.merge_help")),
+      element("label", {}, this.i18n.t("admin_management.merge_search"), search),
+      element("label", {}, this.i18n.t("admin_management.merge_select"), picker),
+      errorText, confirmButton);
+    const dialog = element(
+      "dialog",
+      { className: "tournament-dialog", "aria-labelledby": "merge-author-title" },
+      element("div", { className: "dialog-heading" },
+        element("h2", { id: "merge-author-title" }, this.i18n.t("admin_management.merge_title")),
+        element("button", {
+          type: "button", className: "icon-button", "aria-label": this.i18n.t("common.close"),
+        }, "×")),
+      form,
+    );
+    dialog.querySelector<HTMLButtonElement>(".icon-button")?.addEventListener("click", () => dialog.close());
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!picker.value) {
+        errorText.textContent = this.i18n.t("admin_management.merge_select_required");
+        return;
+      }
+      if (!window.confirm(this.i18n.t("admin_management.merge_confirm"))) return;
+      confirmButton.disabled = true;
+      try {
+        await this.api.request(
+          `/api/miniapp/admin/management/authors/${encodeURIComponent(card.id)}/merge`,
+          { method: "POST", body: { merge_author_id: picker.value, confirm: true }, signal: this.request?.signal },
+        );
+        dialog.close();
+        this.platform.notifySuccess();
+        await this.load(route);
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        errorText.textContent = this.i18n.t(`error.${code}` as MessageKey);
+      } finally {
+        confirmButton.disabled = false;
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
   }
 
   private async inspectSuspicion(route: RouteMatch, card: SuspicionLedgerCard): Promise<void> {
@@ -2727,6 +2953,10 @@ function isSuspicionLedgerResource(
   value: RoutePayload["resource"],
 ): value is AdminSuspicionLedgerResource {
   return "kind" in value && value.kind === "admin_suspicion_ledger";
+}
+
+function isAuthorLinksResource(value: RoutePayload["resource"]): value is AuthorLinksResource {
+  return "kind" in value && value.kind === "author_links";
 }
 
 function isTournamentAction(value: string): value is TournamentAction {

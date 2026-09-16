@@ -51,4 +51,31 @@ describe("admin management", () => {
     expect([...view.querySelectorAll("button")].filter(b => b.textContent === "Review suspicion")).toHaveLength(2);
     expect([...view.querySelectorAll("button")].filter(b => b.textContent === "Clear suspicion")).toHaveLength(2);
   });
+
+  it("lists link requests with decisions only while pending and links to the player", () => {
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "link_requests", items: [
+      { id: "r1", name: "Ada Lovelace", status: "pending", request_note: "I am this author",
+        created_at: "2026-09-01", decided_at: null,
+        player: { id: "p1", public_nickname: "Alice" },
+        author: { id: "a1", display_name: "Ada Lovelace", questions: 5, themes: 1 } },
+      { id: "r2", name: "Grace Hopper", status: "approved", request_note: null,
+        created_at: "2026-09-02", decided_at: "2026-09-03",
+        player: { id: "p2", public_nickname: "Bob" },
+        author: { id: "a2", display_name: "Grace Hopper", questions: 0, themes: 0 } },
+    ] }, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    const buttons = (id: string) => [...view.querySelectorAll(`[data-resource-id="${id}"] button`)].map(b => b.textContent);
+    expect(buttons("r1")).toEqual(["Approve", "Reject"]);
+    expect(buttons("r2")).toEqual([]);
+    expect(view.querySelector('[data-resource-id="r1"] a')?.getAttribute("href")).toBe("/players/p1");
+    expect(view.textContent).toContain("I am this author");
+    expect(view.textContent).toContain("Link requests");
+  });
+
+  it("offers linking and joining for every author", () => {
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "authors", items: [
+      { id: "a1", display_name: "Ada Lovelace", questions: 5, themes: 1, packet_count: 1 },
+    ] }, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    expect([...view.querySelectorAll("article button")].map(b => b.textContent)).toEqual(["Link", "Join"]);
+    expect(view.querySelector("article button.danger-button")?.textContent).toBe("Join");
+  });
 });

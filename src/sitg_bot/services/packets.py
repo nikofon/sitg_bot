@@ -352,6 +352,7 @@ class PacketAdminService:
                     position=i + 1,
                     name=theme.name,
                     author_id=theme_author_id,
+                    commentary=theme.commentary,
                 )
                 session.add(theme_revision)
                 await session.flush()
@@ -901,6 +902,7 @@ class PacketAdminService:
                     position=theme_position,
                     name=theme.name,
                     author_id=theme_author.id if theme_author else None,
+                    commentary=theme.commentary,
                 )
                 session.add(theme_revision)
                 await session.flush()

@@ -16,6 +16,8 @@ class GameSettings:
     message_delay: float = 3.0
     game_start_to_first_theme_delay: float = 3.0
     theme_to_first_question_delay: float = 3.0
+    theme_author_to_commentary_delay: float = 3.0
+    theme_commentary_to_question_delay: float = 3.0
     question_cost_announcement_delay: float = 1.0
     question_token_delay: float = 0.6
     question_token_target_chars: int = 18
@@ -37,6 +39,8 @@ class GameSettings:
             "message_delay",
             "game_start_to_first_theme_delay",
             "theme_to_first_question_delay",
+            "theme_author_to_commentary_delay",
+            "theme_commentary_to_question_delay",
             "question_cost_announcement_delay",
             "question_token_delay",
             "buzz_timer_countdown_delay",
@@ -130,6 +134,14 @@ class GameSettings:
     @property
     def theme_to_first_question_delta(self) -> timedelta:
         return timedelta(seconds=self.theme_to_first_question_delay)
+
+    @property
+    def theme_author_to_commentary_delta(self) -> timedelta:
+        return timedelta(seconds=self.theme_author_to_commentary_delay)
+
+    @property
+    def theme_commentary_to_question_delta(self) -> timedelta:
+        return timedelta(seconds=self.theme_commentary_to_question_delay)
 
     @property
     def question_cost_announcement_delta(self) -> timedelta:

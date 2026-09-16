@@ -10,6 +10,7 @@ from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import packet, tournament_fixture
 
 from sitg_bot.services.admin_management import AdminManagementService
+from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
@@ -26,9 +27,11 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlatformAdministratorRecord,
     PlayerAuthorLinkRecord,
+    PlayerAuthorLinkRequestRecord,
     PlayerRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
+    TournamentAuthorRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentPolicyVersionRecord,
@@ -355,6 +358,88 @@ async def test_catalogues_include_banned_players_and_author_link_burns_content(d
         await service.link_author(fixture.manager.id, author_id, str(fixture.players[0].id))
         async with database.sessions() as session:
             assert await session.get(PlayerAuthorLinkRecord, (fixture.players[0].id, author_id))
+        assert all(c.state == "burnt" for c in await claims_for(database, fixture.players[0].id))
+    finally:
+        await database.close()
+
+
+async def test_author_merge_transfers_identity_and_drops_conflicts(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        await administrator(database, fixture.manager.id)
+        async with database.transaction() as session:
+            primary = AuthorRecord(display_name=f"Primary {uuid4()}")
+            secondary = AuthorRecord(display_name=f"Secondary {uuid4()}")
+            session.add_all((primary, secondary))
+            await session.flush()
+            session.add_all((
+                TournamentAuthorRecord(
+                    tournament_id=fixture.tournament_id, author_id=primary.id
+                ),
+                TournamentAuthorRecord(
+                    tournament_id=fixture.tournament_id, author_id=secondary.id
+                ),
+            ))
+            version = await session.scalar(
+                select(PacketVersionRecord).where(
+                    PacketVersionRecord.packet_id == fixture.packet_id
+                )
+            )
+            version.lead_author_id = secondary.id
+            primary_id, secondary_id = primary.id, secondary.id
+        service = AdminManagementService(database)
+        await service.link_author(fixture.manager.id, secondary_id, str(fixture.players[0].id))
+        await AuthorLinkService(database).create_request(
+            fixture.players[1].id, secondary_id, note="Join me"
+        )
+        with pytest.raises(PermissionError):
+            await service.merge_authors(
+                fixture.players[0].id, primary_id, secondary_id, confirm=True
+            )
+        with pytest.raises(ValueError):
+            await service.merge_authors(
+                fixture.manager.id, primary_id, secondary_id, confirm=False
+            )
+        with pytest.raises(ValueError):
+            await service.merge_authors(
+                fixture.manager.id, primary_id, primary_id, confirm=True
+            )
+        result = await service.merge_authors(
+            fixture.manager.id, primary_id, secondary_id, confirm=True
+        )
+        assert result["merged"] is True
+        assert result["author_id"] == str(primary_id)
+        async with database.sessions() as session:
+            assert await session.get(AuthorRecord, secondary_id) is None
+            assert await session.get(
+                PlayerAuthorLinkRecord, (fixture.players[0].id, primary_id)
+            )
+            version = await session.scalar(
+                select(PacketVersionRecord).where(
+                    PacketVersionRecord.packet_id == fixture.packet_id
+                )
+            )
+            assert version.lead_author_id == primary_id
+            tournament_authors = tuple(
+                await session.scalars(
+                    select(TournamentAuthorRecord).where(
+                        TournamentAuthorRecord.tournament_id == fixture.tournament_id
+                    )
+                )
+            )
+            assert {row.author_id for row in tournament_authors} == {primary_id}
+            request = await session.scalar(
+                select(PlayerAuthorLinkRequestRecord).where(
+                    PlayerAuthorLinkRequestRecord.player_id == fixture.players[1].id
+                )
+            )
+            assert request.status == "pending"
+            assert request.author_id == primary_id
+        catalogue = await service.catalogue(fixture.manager.id, "link_requests")
+        assert next(
+            item for item in catalogue["items"] if item["player"]["id"] == fixture.players[1].id
+        )["author"]["id"] == primary_id
         assert all(c.state == "burnt" for c in await claims_for(database, fixture.players[0].id))
     finally:
         await database.close()

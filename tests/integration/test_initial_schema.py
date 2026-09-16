@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0007_registration_links"
+                "0008_theme_commentary"
             )
             types = (
                 await connection.execute(

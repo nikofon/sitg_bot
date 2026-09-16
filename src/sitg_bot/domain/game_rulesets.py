@@ -157,6 +157,8 @@ class SIGameRuleset:
             "message_delay",
             "game_start_to_first_theme_delay",
             "theme_to_first_question_delay",
+            "theme_author_to_commentary_delay",
+            "theme_commentary_to_question_delay",
             "question_cost_announcement_delay",
             "question_token_delay",
             "buzz_timer_countdown_delay",
@@ -195,7 +197,7 @@ class SIGameRuleset:
             "schema": "si.packet.v1",
             "page_collection": "themes",
             "packet_fields": ("name", "language", "lead_author", "year"),
-            "theme_fields": ("name", "author"),
+            "theme_fields": ("name", "author", "commentary"),
             "question_fields": (
                 "value",
                 "form",

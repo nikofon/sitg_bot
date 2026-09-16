@@ -49,9 +49,10 @@ describe("MiniAppShell", () => {
     ],
   };
 
-  function lobbyShell(section: string) {
+  function lobbyShell(section: string, overrides: Record<string, unknown> = {}) {
     window.history.replaceState({}, "", `/lobbies/ref?section=${section}`);
     const resource = structuredClone(lobby);
+    Object.assign(resource, structuredClone(overrides));
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
       if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
       if (String(url).endsWith("/packet-select")) {
@@ -99,6 +100,60 @@ describe("MiniAppShell", () => {
     shell.start();
     return { root, fetcher };
   }
+
+  it("submits an author link request from the searchable window", async () => {
+    window.history.replaceState({}, "", "/authors/link");
+    const authorship = { packet_count: 1, theme_count: 2, question_count: 10,
+      packet_names: ["Packet"], theme_names: ["Theme"], tournament_names: [], years: [2026] };
+    let requests = [{
+      request_id: "existing", player_id: "player-1", player_nickname: "Alice", status: "pending",
+      author: { author_id: "a9", display_name: "Grace Hopper", authorship },
+      request_note: "Old request", decision_note: null, decided_by_id: null,
+      created_at: "2026-09-01T00:00:00Z", decided_at: null, cancelled_at: null,
+    }];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).includes("/routes/resolve")) {
+        return response({ locale: "en", authorization: { allowed: true },
+          resource: { kind: "author_links", state: "ready", items: requests } });
+      }
+      if (String(url).includes("/api/miniapp/authors?query=")) {
+        return response({ items: [
+          { author_id: "a1", display_name: "Ada Lovelace", authorship },
+        ], next_cursor: null });
+      }
+      if (String(url).endsWith("/api/miniapp/authors/link")) {
+        const body = JSON.parse(String(options?.body));
+        requests = [{
+          request_id: "new", player_id: "player-1", player_nickname: "Alice", status: "pending",
+          author: { author_id: body.author_id, display_name: "Ada Lovelace", authorship },
+          request_note: body.note, decision_note: null, decided_by_id: null,
+          created_at: "2026-09-02T00:00:00Z", decided_at: null, cancelled_at: null,
+        }, ...requests];
+        return response({ request_id: "new" });
+      }
+      return response({});
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    await vi.waitFor(() => expect(root.textContent).toContain("Grace Hopper"));
+    const select = root.querySelector<HTMLSelectElement>("select")!;
+    select.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(select.textContent).toContain("Ada Lovelace"));
+    select.value = "a1";
+    root.querySelector<HTMLInputElement>('[name="note"]')!.value = "I am this author";
+    root.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    const submitted = await vi.waitFor(() => {
+      const call = fetcher.mock.calls.find(([url]) => String(url) === "/api/miniapp/authors/link");
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(JSON.parse(String(submitted[1]?.body))).toEqual({ author_id: "a1", note: "I am this author" });
+    await vi.waitFor(() => expect(root.querySelectorAll("[data-request-id]")).toHaveLength(2));
+    expect(root.querySelector('[data-request-id="new"] h2')?.textContent).toBe("Ada Lovelace");
+  });
 
   it("requires confirmation before exposing a fresh packet", async () => {
     const { root, fetcher } = libraryShell("view", true);
@@ -155,6 +210,26 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/settings"))).toBe(true));
     const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/settings"));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { theme_count: 4 } });
+  });
+
+  it("lists editable settings before fixed ones and previews message pacing options", async () => {
+    const { root } = lobbyShell("settings", { mutable_parameters: ["ready_delay"] });
+    await vi.waitFor(() => expect(root.querySelector('input[name="setting:ready_delay"]')).not.toBeNull());
+    const form = root.querySelector("form.settings-form")!;
+    expect(form.textContent).toContain("Settings you can change");
+    expect(root.querySelector('input[name="setting:theme_count"]')).toBeNull();
+    const fixed = root.querySelector(".resource-card")!;
+    expect(fixed.textContent).toContain("Fixed settings");
+    expect(fixed.textContent).toContain("Theme count");
+    expect(fixed.querySelector("input, select, button")).toBeNull();
+    expect(form.compareDocumentPosition(fixed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const demos = root.querySelectorAll(".setting-demo");
+    expect(demos).toHaveLength(1);
+    expect(demos[0]!.textContent).toContain("Message flow preview");
+    const input = root.querySelector<HTMLInputElement>('input[name="setting:ready_delay"]')!;
+    input.value = "25";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(root.querySelector(".setting-demo-status")?.textContent).toContain("shortened for the preview"));
   });
 
   it("shows lobby membership without an invite-player form", async () => {
@@ -505,7 +580,8 @@ describe("MiniAppShell", () => {
     expect(playoffSettings.querySelectorAll("input")).toHaveLength(0);
     expect(playoffSettings.querySelector("button")!.classList.contains("primary-button")).toBe(true);
     expect(root.querySelector<HTMLInputElement>("[name=ignore_late_registrations]")?.checked).toBe(true);
-    expect(root.querySelector("textarea")).toBeNull();
+    expect(root.querySelectorAll("textarea")).toHaveLength(1);
+    expect(root.querySelector<HTMLTextAreaElement>("[name=description]")?.value).toBe("");
     expect(root.querySelector("[name='setting:theme_count']")).not.toBeNull();
     expect(root.querySelector("[name='setting:question_values']")?.getAttribute("type")).toBe("text");
     expect(root.querySelector("[name=author_ids]")?.getAttribute("value")).toBe("00000000-0000-0000-0000-000000000004");
@@ -518,6 +594,7 @@ describe("MiniAppShell", () => {
     expect(root.querySelectorAll(".pricing-price-row")).toHaveLength(3);
     const settingPanels = root.querySelectorAll<HTMLElement>(".descriptor-editor:first-of-type .descriptor-panel");
     expect(Array.from(settingPanels).filter((panel) => !panel.hidden)).toHaveLength(1);
+    expect(root.querySelector(".setting-demo")).toBeNull();
     expect(root.textContent).not.toContain("Management overview");
     expect(root.querySelector(".danger-button")).toBeNull();
     expect(fetcher.mock.calls[1]?.[0]).toContain("opaque-reference");

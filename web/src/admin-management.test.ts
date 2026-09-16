@@ -63,4 +63,56 @@ describe("management shell", () => {
       { confirm: false }, { confirm: true },
     ]);
   });
+
+  it("approves a pending author link request after confirmation", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({}));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const root = start("link_requests", [{ id: "r1", name: "Ada Lovelace", status: "pending",
+      player: { id: "p1", public_nickname: "Alice" }, author: { id: "a1", display_name: "Ada Lovelace" } }], fetcher);
+    await vi.waitFor(() => expect(root.textContent).toContain("Approve"));
+    [...root.querySelectorAll("button")].find(b => b.textContent === "Approve")!.click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(String(fetcher.mock.calls[0]![0])).toContain("/admin/management/link_requests/r1/approve");
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({ approve: true });
+  });
+
+  it("rejects a pending author link request after confirmation", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({}));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const root = start("link_requests", [{ id: "r1", name: "Ada Lovelace", status: "pending",
+      player: { id: "p1", public_nickname: "Alice" }, author: { id: "a1", display_name: "Ada Lovelace" } }], fetcher);
+    await vi.waitFor(() => expect(root.textContent).toContain("Reject"));
+    [...root.querySelectorAll("button")].find(b => b.textContent === "Reject")!.click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(String(fetcher.mock.calls[0]![0])).toContain("/admin/management/link_requests/r1/reject");
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({ approve: false });
+  });
+
+  it("joins authors through a searchable dialog with explicit confirmation", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).includes("/api/miniapp/authors?query=")) {
+        return response({ items: [
+          { author_id: "a1", display_name: "Ada Lovelace", authorship: null },
+          { author_id: "a2", display_name: "Grace Hopper", authorship: null },
+        ], next_cursor: null });
+      }
+      return response({ merged: true });
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const root = start("authors", [{ id: "a1", display_name: "Ada Lovelace" }], fetcher);
+    await vi.waitFor(() => expect(root.textContent).toContain("Join"));
+    [...root.querySelectorAll<HTMLButtonElement>("article button")].find(b => b.textContent === "Join")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    const select = dialog.querySelector<HTMLSelectElement>("select")!;
+    await vi.waitFor(() => expect(select.textContent).toContain("Grace Hopper"));
+    expect(select.textContent).not.toContain("Ada Lovelace");
+    select.value = "a2";
+    dialog.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    const mergeCall = await vi.waitFor(() => {
+      const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/admin/management/authors/a1/merge"));
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(JSON.parse(String(mergeCall[1]?.body))).toEqual({ merge_author_id: "a2", confirm: true });
+  });
 });

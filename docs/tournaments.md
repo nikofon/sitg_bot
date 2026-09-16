@@ -274,6 +274,10 @@ assigned, and results record the policy relevant to their interpretation.
 `supports_hybrid_matchmaking` capability is rejected. Disabling it also stops searches in
 assembling lobbies; direct invitation remains available.
 
+Tournaments also carry an optional plain-text description (at most 2000 characters),
+maintained with the other manager-editable metadata. Listing projections include it, and
+the Mini App shows it on tournament cards.
+
 ## Universal and technical constraints
 
 The universal gameplay content rule is: **a player's reserved or burnt canonical claim

@@ -10,14 +10,18 @@
 | [web/src/routing](../web/src/routing) | Route parsing and navigation |
 | [web/src/api](../web/src/api) | Typed payloads, credentialed requests, stable errors |
 | [web/src/platform](../web/src/platform) | Telegram chrome and local development harness |
-| [web/src/ui](../web/src/ui), [state](../web/src/state) | DOM helpers, packet cards, filters and filter persistence |
+| [web/src/ui](../web/src/ui), [state](../web/src/state) | DOM helpers, packet cards, filters, filter persistence, and message-flow setting previews |
 | [web/src/i18n](../web/src/i18n), [styles.css](../web/src/styles.css) | Russian/English catalogs and responsive layout |
 | [miniapp_http.py](../src/sitg_bot/miniapp_http.py) | aiohttp routes, session resolution, gateway translation, static files |
 | [services/miniapp_auth.py](../src/sitg_bot/services/miniapp_auth.py), [launch_references.py](../src/sitg_bot/services/launch_references.py) | Telegram signature validation, sessions, CSRF, actor-bound launch targets |
 
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
-are served by the application server from `web/dist`.
+are served by the application server from `web/dist`. Descriptor editors for ruleset settings
+that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`);
+the lobby settings section lists changeable options before fixed ones. The author-link
+window (`/authors/link`) lets a registered player search authors, submit a link request
+with an optional note, and follow their own request statuses; the bot's player menu opens it.
 
 ## Independent website
 
@@ -168,12 +172,13 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | Routes | Purpose |
 | --- | --- |
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
+| GET `/authors`; POST `/authors/link` | Player author search and author-link request submission |
 | GET `/routes/resolve?path=/players` | Public player directory; `search`, `order`, `offset`, `limit` |
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
-| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, author links, player bans, unrestricted packet reads/downloads |
+| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |

@@ -19,9 +19,11 @@ from sitg_bot.services.telegram_game import TelegramGameService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     GameRecord,
+    GameThemeRecord,
     OutboxEventRecord,
     PlayerRecord,
     TelegramGameViewRecord,
+    ThemeRevisionRecord,
     TournamentPolicyVersionRecord,
 )
 
@@ -342,5 +344,35 @@ async def test_simultaneous_buzzes_privacy_reputation_and_duplicate_reports(data
             )
         async with database.sessions() as session:
             assert await session.get(TelegramGameViewRecord, (game_id, fixture.players[0].id))
+    finally:
+        await database.close()
+
+
+async def test_theme_commentary_is_announced_between_theme_and_first_question(database_url):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 2)
+        async with database.transaction() as session:
+            theme = await session.scalar(
+                select(ThemeRevisionRecord)
+                .join(GameThemeRecord, GameThemeRecord.theme_revision_id == ThemeRevisionRecord.id)
+                .where(GameThemeRecord.game_id == game_id)
+            )
+            assert theme is not None
+            theme.commentary = "Integration theme commentary"
+        service = TelegramGameService(database)
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        await progress_until(database, game_id, fixture.inputs[0], lambda v: "buzz" in v["actions"])
+        events = await PersistentGameService(database).events(game_id)
+        kinds = [event["kind"] for event in events]
+        assert "theme_commentary_announced" in kinds
+        started = kinds.index("theme_started")
+        commentary = kinds.index("theme_commentary_announced")
+        cost = kinds.index("question_cost_announced")
+        assert started < commentary < cost
+        payload = events[commentary]["payload"]
+        assert payload["commentary"] == "Integration theme commentary"
+        assert payload["name"] == "Theme"
     finally:
         await database.close()

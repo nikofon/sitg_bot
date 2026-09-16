@@ -1217,6 +1217,8 @@ class InteractiveConsole:
             print(f"\n{payload['name']}")
             if payload.get("author"):
                 print(f"Author: {payload['author']}")
+        elif kind == "theme_commentary_announced":
+            print(f"\nTheme commentary: {payload['commentary']}")
         elif kind == "theme_completed":
             print(f"\nTheme completed: {payload['name']}")
         elif kind == "player_abandoned":
@@ -1337,6 +1339,9 @@ class InteractiveConsole:
                     f"v{tournament['ruleset_version']} | {tournament['visibility']} | {access}"
                 )
                 print(f"    schedule: {starts_at} → {ends_at}; status={tournament['status']}")
+                description = tournament.get("description")
+                if description:
+                    print(f"    {description}")
                 authors = tournament.get("authors", [])
                 if authors:
                     print(f"    authors: {', '.join(authors)}")

@@ -2195,8 +2195,13 @@ class PersistentGameService:
                 author = await session.scalar(
                     select(AuthorRecord.display_name).where(AuthorRecord.id == theme.author_id)
                 )
-            game.progression_stage = "question_start"
-            game.progression_deadline = now + self._settings(game).theme_to_first_question_delta
+            settings = self._settings(game)
+            if theme.commentary.strip():
+                game.progression_stage = "theme_commentary"
+                game.progression_deadline = now + settings.theme_author_to_commentary_delta
+            else:
+                game.progression_stage = "question_start"
+                game.progression_deadline = now + settings.theme_to_first_question_delta
             return [
                 await self._event(
                     session,
@@ -2210,6 +2215,33 @@ class PersistentGameService:
                         "packet_name": packet_version.name,
                         "packet_version_id": str(packet_version.id),
                         "packet_changed": packet_changed,
+                    },
+                )
+            ]
+        if game.progression_stage == "theme_commentary":
+            next_round = await self._next_pending_round(session, game.id)
+            if next_round is None:
+                game.progression_stage = "finish"
+                game.progression_deadline = now
+                return []
+            placement = await self._placement(session, game, next_round)
+            theme = await session.get(ThemeRevisionRecord, placement.theme_revision_id)
+            assert theme is not None
+            game_theme, _, _ = await self._game_theme_context(session, game.id, theme.id)
+            game.progression_stage = "question_start"
+            game.progression_deadline = (
+                now + self._settings(game).theme_commentary_to_question_delta
+            )
+            return [
+                await self._event(
+                    session,
+                    game.id,
+                    "theme_commentary_announced",
+                    {
+                        "theme_revision_id": str(theme.id),
+                        "position": game_theme.position,
+                        "name": theme.name,
+                        "commentary": theme.commentary,
                     },
                 )
             ]

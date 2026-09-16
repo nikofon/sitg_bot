@@ -72,6 +72,7 @@ def test_optional_packet_metadata_round_trips() -> None:
                 {
                     "name": "Theme",
                     "author": "Alice",
+                    "commentary": "Theme commentary",
                     "questions": [
                         {
                             "text": str(value),
@@ -90,6 +91,8 @@ def test_optional_packet_metadata_round_trips() -> None:
     assert encoded["year"] == 2025
     assert encoded["lead_author"] == "Alice"
     assert encoded["language"] == "pt-BR"
+    assert encoded["themes"][0]["commentary"] == "Theme commentary"
+    assert packet.themes[0].commentary == "Theme commentary"
 
 
 def test_packet_rejects_invalid_language_tag() -> None:
@@ -104,6 +107,8 @@ def test_docx_packet_import(tmp_path) -> None:
         ("Heading1", "Test packet"),
         ("Heading2", "Test theme"),
         ("Normal", "Автор: Alice, Bob"),
+        ("Normal", "Комментарий к теме: Theme commentary first"),
+        ("Normal", "Theme commentary continuation"),
     ]
     for value in (10, 20, 30, 40, 50):
         paragraphs.extend(
@@ -139,6 +144,7 @@ def test_docx_packet_import(tmp_path) -> None:
 
     assert packet.name == "Test packet"
     assert packet.themes[0].author == "Alice, Bob"
+    assert packet.themes[0].commentary == "Theme commentary first\nTheme commentary continuation"
     assert question.author == "Carol"
     assert question.form == "SUBJECT"
     assert question.source == "https://example.com/10"

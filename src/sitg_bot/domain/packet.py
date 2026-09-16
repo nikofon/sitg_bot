@@ -51,6 +51,7 @@ class Theme:
     name: str
     questions: tuple[Question, ...]
     author: str = ""
+    commentary: str = ""
 
     def __post_init__(self) -> None:
         values = tuple(question.value for question in self.questions)
