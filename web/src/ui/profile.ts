@@ -26,7 +26,9 @@ const PLACEMENT_LABELS: Record<PlayerPlacementKind, MessageKey> = {
   place_2: "profile.place_2",
   place_3: "profile.place_3",
   place_4: "profile.place_4",
-  draw: "profile.draw",
+  place_1_5: "profile.place_1_5",
+  place_2_5: "profile.place_2_5",
+  place_3_5: "profile.place_3_5",
   below_4: "profile.below_4",
 };
 

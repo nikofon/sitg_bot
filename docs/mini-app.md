@@ -103,7 +103,7 @@ assignment defaults even when there are no participants yet.
 bot's player-mode "My profile" reply-keyboard button (own profile) or participant links on
 game cards. A ruleset dropdown
 lists only rulesets with at least one settled result. Each view shows the global ruleset rating
-with a recent-history graph, win rate with place distribution (places 1–4, shared places,
+with a recent-history graph, win rate with place distribution (1, 1.5, 2, 2.5, 3, 3.5, 4,
 worse), SI per-question-value correct/incorrect counts (custom tournament scales are mapped
 onto canonical 10–50 values), and recent game cards with tournament name, stage placeholder,
 participants, scores, and places. Private tournament names are replaced with a neutral label

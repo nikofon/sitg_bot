@@ -394,6 +394,7 @@ async def handle_game_keyboard(
         "join",
         "reconnect",
         "score",
+        "themes",
         "players",
         "appeal",
         "pause",
@@ -450,6 +451,19 @@ async def handle_game_command(
             view,
             score_text(view, localization, locale, final=view["status"] not in {"lobby", "active"}),
         )
+        return
+    if command == "themes":
+        text = localization.text("game.unavailable", locale)
+        if "themes" in view["actions"]:
+            text = localization.text(
+                "game.themes", locale,
+                themes="\n".join(
+                    f"{index}) {theme['name']}"
+                    for index, theme in enumerate(view["themes"], 1)
+                ),
+            )
+        for index, chunk in enumerate(plain_chunks(html.unescape(text))):
+            await game_reply(message, backend, view, chunk, suffix=f"themes:{index}")
         return
     if command == "players":
         for index, player in enumerate(view["participants"], 1):

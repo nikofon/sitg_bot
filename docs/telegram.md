@@ -75,15 +75,20 @@ Gameplay uses Telegram messages and controls; there is no game Mini App.
 
 1. Assignment sends a Join button. Once players join, the bot announces participants and
    installs a persistent keyboard: `+` for buzzing, `||` for pause/resume, `!` for appeal.
-2. Ordered events announce themes and question value, then reveal text by editing a separate
+2. Ordered events announce numbered themes and question value, then reveal text by editing a separate
    question message. Long questions use stable adjacent chunks.
 3. Buzz hides all question chunks and prompts the answering player with the answer form.
-   Other players see the submitted answer; everyone sees the verdict or timeout.
+   Other players receive a named buzz notice and see the submitted answer; everyone sees the verdict or timeout.
 4. A wrong answer restores the previous reveal position. Question completion fully reveals
    the text and sends answer, commentary, and author separately.
 5. Results show shared places, score, and points before penalties. Opponent reputation votes
    have independent controls; reports use explicit confirmation and receipts.
+   Each player's settled global and, when applicable, tournament rating appears with
+   before/after values and a signed change. Pending settlement is indicated; finalization
+   updates the same results message with the recorded ratings.
 
+Scores are displayed from highest to lowest. `/themes` lists the game's themes during active
+play, only after the initial theme reveal and only for rulesets that announce themes.
 `/score`, `/players`, and `/results` provide private projections. `/answer` reopens an answer
 prompt. `/pause`, `/resume`, `/appeal`, `/escalate yes|no`, and `/commentary` supplement
 buttons. Appeal target selection uses a numbered prompt when necessary. Inline vote messages

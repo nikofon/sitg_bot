@@ -1,6 +1,7 @@
 """Small event presenters for Telegram gameplay."""
 
 import html
+from decimal import Decimal
 from uuid import UUID
 
 from sitg_bot.bot.presenters.models import (
@@ -99,7 +100,7 @@ def start_message(view, localization, locale):
 
 def score_text(view, localization, locale, *, final=False):
     lines = [localization.text("flow.final_score" if final else "game.scores", locale)]
-    players = sorted(view["participants"], key=lambda p: p.get("place") or 999)
+    players = sorted(view["participants"], key=lambda p: -p["score"])
     for i, player in enumerate(players, 1):
         # Preserve shared official places (including fractional places).
         rank = player.get("place") if final and player.get("place") is not None else i
@@ -113,7 +114,23 @@ def score_text(view, localization, locale, *, final=False):
                 correct=player.get("correct_points", 0),
             )
         )
+        if final:
+            for scope in ("ruleset", "tournament"):
+                for change in view.get("rating_changes", []):
+                    if change["player_id"] != player["id"] or change["scope"] != scope:
+                        continue
+                    lines.append(
+                        localization.text(
+                            "flow.rating_" + scope,
+                            locale,
+                            before=f"{Decimal(str(change['before'])):.2f}",
+                            after=f"{Decimal(str(change['after'])):.2f}",
+                            delta=f"{Decimal(str(change['delta'])):+.2f}",
+                        )
+                    )
     if final:
+        if view.get("rating_pending"):
+            lines.append(localization.text("game.rating_pending", locale))
         lines.append("\n" + localization.text("flow.quit_hint", locale))
     return "\n".join(lines)
 

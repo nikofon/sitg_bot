@@ -36,17 +36,19 @@ PRIVATE_PLACES = 4
 MEMBERSHIP_VISIBLE_STATUSES = frozenset({"invited", "registered", "approved", "active"})
 TELEGRAM_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,64}")
 
-PLACEMENT_KINDS = ("place_1", "place_2", "place_3", "place_4", "draw", "below_4")
+PLACEMENT_KINDS = (
+    "place_1", "place_1_5", "place_2", "place_2_5",
+    "place_3", "place_3_5", "place_4", "below_4",
+)
 
 
 def placement_summary(places: Iterable[Decimal]) -> list[dict[str, object]]:
-    """Bucket final places into integer places 1-4, shared (draw) places, and worse."""
+    """Bucket final places from 1 to 4 in half-place steps, and worse."""
     counts: dict[str, int] = dict.fromkeys(PLACEMENT_KINDS, 0)
     for place in places:
-        if place != place.to_integral_value():
-            counts["draw"] += 1
-        elif place <= PRIVATE_PLACES:
-            counts[f"place_{int(place)}"] += 1
+        if place <= PRIVATE_PLACES:
+            suffix = "_5" if place != place.to_integral_value() else ""
+            counts[f"place_{int(place)}{suffix}"] += 1
         else:
             counts["below_4"] += 1
     total = sum(counts.values())

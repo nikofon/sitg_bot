@@ -359,7 +359,9 @@ async def test_profile_scopes_ruleset_privacy_and_game_cards(database_url: str) 
     assert own["stats"]["win_rate"] == 100.0
     placements = {item["kind"]: item["count"] for item in own["stats"]["placements"]}
     assert placements["place_1"] == 1
-    assert placements["draw"] == 0
+    assert placements["place_1_5"] == 0
+    assert placements["place_2_5"] == 0
+    assert placements["place_3_5"] == 0
     assert own["si_question_stats"] == [
         {"value": 10, "correct": 1, "incorrect": 0},
         {"value": 20, "correct": 1, "incorrect": 0},
@@ -464,6 +466,5 @@ async def test_game_results_hide_private_content_and_tournament_name(database_ur
         )
 
     await database.close()
-
 
 
