@@ -110,7 +110,13 @@ class InteractiveConsole:
 
     async def event(self, message: dict[str, Any]) -> None:
         event = message["event"]
-        if event == "lobby_changed":
+        if event == "lobby_readiness_changed":
+            state = "ready" if message["ready"] else "not ready"
+            print(
+                f"\n{message['player_name']} is {state}. "
+                f"{message['ready_count']}/{message['player_count']} players are ready."
+            )
+        elif event == "lobby_changed":
             self.current_lobby_id = message["lobby_id"]
             self.current_tournament_id = message["snapshot"]["tournament_id"]
             print("\n[Lobby changed]")

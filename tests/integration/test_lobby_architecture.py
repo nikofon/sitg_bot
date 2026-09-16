@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -1939,6 +1940,151 @@ async def test_readiness_reports_specific_conditions_and_allows_unready(database
             lobby.id, owner, ready=False, expected_version=lobby.version
         )
         assert not lobby.members[0].ready
+    finally:
+        await database.close()
+
+
+async def test_gateway_start_reaches_console_players_and_all_can_join(database_url: str) -> None:
+    from sitg_bot.application.contracts import ApplicationPrincipal, GatewayRequest
+    from sitg_bot.server import PlayerSession
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=4)
+        server = ConsoleApplicationServer(database)
+        lobby = await server.matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id
+        )
+        connections = [
+            SimpleNamespace(
+                session=PlayerSession(
+                    player.id, player.telegram_user_id, player.public_nickname, False
+                ),
+                lobby_ids=set(), game_ids=set(), send=AsyncMock(), adapter_session=None,
+            )
+            for player in fixture.players[1:]
+        ]
+        server._connections = connections
+        for connection in connections:
+            await server._dispatch_console(
+                connection, "lobby_join", {"target": lobby.invitation_code}
+            )
+        await server.matchmaking.select_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        for player in fixture.inputs:
+            lobby = await server.matchmaking.set_ready(lobby.id, player.telegram_user_id)
+        await server._sync_console_updates()
+        for connection in connections:
+            connection.send.reset_mock()
+
+        principal = ApplicationPrincipal(fixture.players[0].id, fixture.inputs[0].telegram_user_id)
+
+        async def request(action, **fields):
+            result = await server.application_gateway.execute(
+                principal,
+                GatewayRequest.model_validate({
+                    "metadata": {
+                        "channel": "telegram_bot", "client_name": "mixed-lobby-test",
+                        "client_version": "1", "idempotency_key": secrets.token_hex(16),
+                    },
+                    "operation": {"action": action, **fields},
+                }),
+            )
+            assert result.ok, result.error
+            return result.data
+
+        started = await request(
+            "lobbies.start.v1", lobby_id=str(lobby.id), expected_version=lobby.version
+        )
+        game_id = UUID(started["game"]["id"])
+        await server._sync_console_updates()
+        for connection in connections:
+            assert game_id in connection.game_ids
+            messages = [call.args[0] for call in connection.send.await_args_list]
+            game_message = next(m for m in messages if m["event"] == "game_changed")
+            assert game_message["game_id"] == game_id
+            assert game_message["snapshot"].status == "lobby"
+            assert any(
+                m["event"] == "lobby_changed" and m["snapshot"].status == "started"
+                for m in messages
+            )
+
+        nav = await server.application_gateway.navigation.snapshot(principal.telegram_user_id)
+        assert nav.context == "game" and nav.active_game.id == game_id
+        await request("games.act.v1", game_id=str(game_id), command="join")
+        await server._sync_console_updates()
+        assert connections[0].send.await_args.args[0]["snapshot"].participants[0].joined
+        for connection in connections:
+            transition = await server._dispatch_console(
+                connection, "game_join", {"game_id": str(game_id)}
+            )
+            assert transition.accepted
+        assert transition.snapshot.status == "active"
+        assert all(p.joined for p in transition.snapshot.participants)
+        transition = await server.games.progress_due(game_id)
+        assert any(event["kind"] == "themes_announced" for event in transition.events)
+    finally:
+        await database.close()
+
+
+async def test_manual_readiness_notifies_others_but_bulk_reset_does_not(database_url: str) -> None:
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=5)
+        server = ConsoleApplicationServer(database)
+        service = server.matchmaking
+        owner = fixture.inputs[0].telegram_user_id
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        for player in fixture.inputs[1:4]:
+            await service.join(lobby.invitation_code, player)
+        async with database.sessions() as session:
+            context = await service.tournaments.context(session, fixture.tournament_id)
+        await service.tournaments.update_policy(
+            fixture.tournament_id, fixture.manager.id,
+            default_parameters=context.settings.to_dict(),
+            player_mutable_parameters=context.mutable_parameters,
+            policies={**context.policies, "observing": "unlimited"},
+        )
+        await service.join(
+            lobby.invitation_code, fixture.inputs[4], role="observer", confirm_fresh=True
+        )
+        await service.select_packet(lobby.id, owner, fixture.packet_id)
+        connections = [
+            SimpleNamespace(
+                session=SimpleNamespace(player_id=p.id, telegram_user_id=p.telegram_user_id),
+                lobby_ids={lobby.id}, game_ids=set(), send=AsyncMock(),
+            )
+            for p in fixture.players
+        ]
+        server._connections = connections
+        await server._sync_console_updates()
+        for connection in connections:
+            connection.send.reset_mock()
+        for ready in (True, True, False):
+            await service.set_ready(lobby.id, owner, ready=ready)
+            await server._sync_console_updates()
+        await service.set_settings(lobby.id, owner, {"theme_count": 2})
+        await server._sync_console_updates()
+        for index, connection in enumerate(connections):
+            notices = [call.args[0] for call in connection.send.await_args_list
+                       if call.args[0]["event"] == "lobby_readiness_changed"]
+            assert len(notices) == (0 if index == 0 else 2)
+            if notices:
+                assert [n["ready_count"] for n in notices] == [1, 0]
+                assert all(n["player_count"] == 4 for n in notices)
+        async with database.sessions() as session:
+            notices = list(await session.scalars(select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == lobby.id,
+                OutboxEventRecord.topic == "telegram.lobby.notice",
+            )))
+        readiness = [n.payload for n in notices if n.payload["kind"] == "readiness_changed"]
+        assert len(readiness) == 8
+        assert all(n["recipient_telegram_user_id"] != owner for n in readiness)
+        assert all(n["player_name"] == fixture.players[0].public_nickname for n in readiness)
+        assert {n["ready_count"] for n in readiness} == {0, 1}
+        assert all(n["player_count"] == 4 for n in readiness)
+        assert any(n.payload["kind"] == "settings_changed" for n in notices)
     finally:
         await database.close()
 

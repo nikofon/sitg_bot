@@ -8,6 +8,17 @@ from sitg_bot.client import InteractiveConsole
 from sitg_bot.domain.game_settings import GameSettings
 
 
+@pytest.mark.parametrize("ready,count", [(True, 1), (False, 0)])
+async def test_console_displays_readiness_notice(ready, count, capsys):
+    interactive = InteractiveConsole(RecordingClient())
+    await interactive.event({
+        "event": "lobby_readiness_changed", "lobby_id": "lobby-1",
+        "player_name": "Player", "ready": ready, "ready_count": count, "player_count": 4,
+    })
+    state = "ready" if ready else "not ready"
+    assert f"Player is {state}. {count}/4 players are ready." in capsys.readouterr().out
+
+
 class RecordingClient:
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, Any]]] = []

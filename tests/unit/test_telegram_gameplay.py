@@ -313,6 +313,22 @@ async def test_join_is_sent_once_across_direct_sync_and_outbox_then_start_preced
     assert all("Между вопросами" not in text for text in texts)
 
 
+async def test_join_updates_existing_prompt_with_waiting_confirmation():
+    snapshot = view(status="lobby")
+    bot, protocol, delivery = fixture(snapshot)
+    protocol.events = [event(1, "game_created"), event(2, "players_assigned")]
+    await delivery.sync(42, GAME)
+    message_id = protocol.messages["join"]["ids"][0]
+    protocol.view["participants"][0]["joined"] = True
+    protocol.events.append(event(3, "player_joined"))
+    await delivery.sync(42, GAME)
+    assert bot.send_message.await_count == 1
+    assert "Вы присоединились" in bot.edit_message_text.await_args.args[0]
+    assert "1/3" in bot.edit_message_text.await_args.args[0]
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == message_id
+    assert bot.edit_message_text.await_args.kwargs["reply_markup"] is None
+
+
 async def test_buzz_hides_question_wrong_answer_resumes_same_message_and_completion_reveals_it():
     bot, protocol, delivery = fixture()
     protocol.events = [event(1, "question_token_revealed", round_id=ROUND, text="First")]

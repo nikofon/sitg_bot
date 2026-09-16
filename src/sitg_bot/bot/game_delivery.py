@@ -192,10 +192,11 @@ class GameDelivery:
                 kind="ballot",
                 appeal_id=params["appeal_id"],
             )
-        if kind in {"game_created", "players_assigned"}:
+        if kind in {"game_created", "players_assigned", "player_joined"}:
             if view["status"] == "lobby" and any(p["self"] for p in view["participants"]):
                 await self._send(
-                    chat, game, messages, "join", join_message(view, self.localization, locale)
+                    chat, game, messages, "join", join_message(view, self.localization, locale),
+                    edit=True,
                 )
         elif kind in {"ready_countdown", "game_started"}:
             await self._send(
