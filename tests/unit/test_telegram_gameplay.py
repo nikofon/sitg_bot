@@ -293,7 +293,7 @@ async def test_join_is_sent_once_across_direct_sync_and_outbox_then_start_preced
         event(3, "ready_countdown"),
         event(4, "game_started"),
         event(5, "themes_announced", themes=[{"name": "Theme"}]),
-        event(6, "theme_started", name="Theme", author="Author"),
+        event(6, "theme_started", position=1, name="Theme", author="Author"),
         event(7, "theme_commentary_announced", name="Theme", commentary="About the theme"),
         event(8, "question_cost_announced", round_id=ROUND, theme="Theme", value=10),
         event(9, "question_token_revealed", round_id=ROUND, text="First token"),
@@ -306,7 +306,7 @@ async def test_join_is_sent_once_across_direct_sync_and_outbox_then_start_preced
         bot.send_message.await_args_list[1].kwargs["reply_markup"], ReplyKeyboardMarkup
     )
     assert texts[2] == "Темы игры:\n1) Theme"
-    assert "<b>Theme</b>" in texts[3]
+    assert texts[3].startswith("Тема 1: <b>Theme</b>\nАвтор: Author")
     assert texts[4] == "Комментарий к теме: About the theme"
     assert texts[5] == "Тема: Theme\nВопрос за 10"
     assert texts[6] == "First token"
@@ -411,13 +411,15 @@ async def test_reveal_coalesces_only_before_boundaries_and_restart_reuses_questi
     await delivery.sync(42, GAME)
     assert bot.send_message.await_count == 1
     assert bot.send_message.await_args.args[1] == "One two"
-    protocol.events += [event(3, "player_buzzed", round_id=ROUND, mine=False)]
+    protocol.events += [event(3, "player_buzzed", round_id=ROUND, mine=False, name="Other <b>")]
     restarted = GameDelivery(bot, LocalizationService(), protocol, None)
     await restarted.sync(42, GAME)
-    assert bot.send_message.await_count == 1
+    assert bot.send_message.await_count == 2
+    assert bot.send_message.await_args.args[1] == "Other &lt;b&gt; отбился!"
     assert bot.edit_message_text.await_args.args[0] == "Вопрос скрыт"
     await restarted.sync(42, GAME)
     assert bot.edit_message_text.await_count == 1
+    assert bot.send_message.await_count == 2
 
 
 async def test_final_results_have_no_inline_controls_and_each_opponent_gets_a_rating_message():
@@ -539,3 +541,41 @@ async def test_commands_after_exit_do_not_resolve_a_historical_game():
     )
     backend.game_view.assert_not_awaited()
     backend.game_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize("available", [False, True])
+async def test_themes_command_requires_revealed_themes(available):
+    snapshot = view(actions=["themes"] if available else [])
+    snapshot["themes"] = [{"name": "First <theme>"}, {"name": "Second"}]
+    backend, message, navigation = handler_fixture(snapshot)
+    message.text = "/themes"
+    await handle_game_command(
+        message, backend, object(), LocalizationService(), "en", navigation, SimpleNamespace(), None
+    )
+    text = backend.game_delivery.send.await_args.args[3].text
+    if available:
+        assert "1) First &lt;theme&gt;\n2) Second" in text
+    else:
+        assert "First" not in text
+    backend.game_action.assert_not_awaited()
+
+
+async def test_score_command_and_scoreboard_sort_descending():
+    snapshot = view()
+    for player, score in zip(snapshot["participants"], [-20, 50, 10], strict=True):
+        player["score"] = score
+    backend, message, navigation = handler_fixture(snapshot)
+    message.text = "/score"
+    await handle_game_command(
+        message, backend, object(), LocalizationService(), "en", navigation, SimpleNamespace(), None
+    )
+    text = backend.game_delivery.send.await_args.args[3].text
+    names = [html.escape(p["name"]) for p in snapshot["participants"]]
+    assert text.index(names[1]) < text.index(names[2]) < text.index(names[0])
+    bot, protocol, delivery = fixture(snapshot)
+    protocol.events = [event(1, "scoreboard", players=[
+        {"name": p["name"], "score": p["score"]} for p in snapshot["participants"]
+    ])]
+    await delivery.sync(42, GAME)
+    text = bot.send_message.await_args.args[1]
+    assert text.index(names[1]) < text.index(names[2]) < text.index(names[0])

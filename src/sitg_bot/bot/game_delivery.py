@@ -219,6 +219,7 @@ class GameDelivery:
                 MessageModel(
                     t(
                         "flow.theme",
+                        number=params["position"],
                         name=params["name"],
                         author=params.get("author") or "—",
                         packet=params.get("packet_name") or "—",
@@ -255,6 +256,11 @@ class GameDelivery:
                     markup=ForceReply(selective=True),
                     kind="answer",
                     round_id=round_id,
+                )
+            else:
+                await self._send(
+                    chat, game, messages, key,
+                    MessageModel(t("game.buzzed", name=params["name"])),
                 )
         elif kind == "answer_judged":
             if params.get("answer") is not None and not params.get("mine"):
@@ -293,7 +299,10 @@ class GameDelivery:
             text = (
                 t("game.scores")
                 + "\n"
-                + "\n".join(f"{html.escape(p['name'])}: {p['score']}" for p in params["players"])
+                + "\n".join(
+                    f"{html.escape(p['name'])}: {p['score']}"
+                    for p in sorted(params["players"], key=lambda p: -p["score"])
+                )
             )
             await self._send(chat, game, messages, key, MessageModel(text))
         elif kind in {"game_completed", "game_finalized"}:

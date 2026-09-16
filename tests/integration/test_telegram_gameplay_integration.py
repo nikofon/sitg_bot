@@ -172,9 +172,15 @@ async def test_native_si_join_answer_appeal_pause_finish_and_recovery(database_u
         fixture, game_id = await assigned_game(database, 1)
         player = fixture.inputs[0]
         service = TelegramGameService(database)
-        assert "join" in (await service.view(player.telegram_user_id, game_id))["actions"]
+        initial = await service.view(player.telegram_user_id, game_id)
+        assert "join" in initial["actions"]
+        assert "themes" not in initial["actions"]
+        assert initial["themes"] == []
         await act(service, player, game_id, "join")
         question = await progress_until(database, game_id, player, lambda v: "buzz" in v["actions"])
+        assert "themes" in question["actions"]
+        assert question["themes"][0]["position"] == 1
+        assert question["themes"][0]["name"]
         round_id = question["question"]["round_id"]
         assert question["question"]["revealed_answer"] is None
         assert question["question"]["form"] is None
@@ -219,6 +225,7 @@ async def test_native_si_join_answer_appeal_pause_finish_and_recovery(database_u
         buzz = next(e for e in delivery["events"] if e["kind"] == "player_buzzed")
         assert buzz["parameters"]["round_id"] == str(round_id)
         assert buzz["parameters"]["mine"]
+        assert buzz["parameters"]["name"] == question["participants"][0]["name"]
         assert buzz["parameters"]["form"] == "ANSWER"
         await service.record_delivery(
             player.telegram_user_id,

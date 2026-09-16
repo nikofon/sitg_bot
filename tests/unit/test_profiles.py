@@ -31,21 +31,23 @@ def player_record() -> PlayerRecord:
 
 def test_placement_summary_buckets_ties_and_low_places() -> None:
     summary = placement_summary(
-        [Decimal(value) for value in ("1", "2", "2.5", "2.5", "4", "5")]
+        [Decimal(value) for value in ("1", "1.5", "2", "2.5", "2.5", "3.5", "4", "4.5", "5")]
     )
 
     assert [item["kind"] for item in summary] == list(PLACEMENT_KINDS)
     counts = {item["kind"]: item["count"] for item in summary}
     assert counts == {
         "place_1": 1,
+        "place_1_5": 1,
         "place_2": 1,
         "place_3": 0,
         "place_4": 1,
-        "draw": 2,
-        "below_4": 1,
+        "place_2_5": 2,
+        "place_3_5": 1,
+        "below_4": 2,
     }
     percents = {item["kind"]: item["percent"] for item in summary}
-    assert percents["draw"] == 33.3
+    assert percents["place_2_5"] == 22.2
     assert sum(item["percent"] for item in summary) >= 99.5
 
 

@@ -372,6 +372,8 @@ class TelegramGameService:
                             GameParticipantRecord, UUID(params["participant_id"])
                         )
                         params["mine"] = participant.player_id == player.id
+                        public = await session.get(PlayerRecord, participant.player_id)
+                        params["name"] = public.public_nickname
                         params["form"] = revision.form if params["mine"] else None
                 if event.kind == "answer_judged":
                     attempt = await session.get(AnswerAttemptRecord, UUID(params["attempt_id"]))
@@ -793,6 +795,26 @@ class TelegramGameService:
             .order_by(GameEventRecord.sequence.desc())
             .limit(1)
         )
+        announcement = await session.scalar(
+            select(GameEventRecord.payload)
+            .where(GameEventRecord.game_id == game.id, GameEventRecord.kind == "themes_announced")
+            .order_by(GameEventRecord.sequence)
+            .limit(1)
+        )
+        themes = announcement.get("themes", []) if announcement else []
+        if themes and game.status == "active":
+            actions.append("themes")
+        settlement = None
+        if game.status == "finalized":
+            settlement = await session.scalar(
+                select(GameEventRecord.payload)
+                .where(
+                    GameEventRecord.game_id == game.id,
+                    GameEventRecord.kind == "game_finalized",
+                )
+                .order_by(GameEventRecord.sequence.desc())
+                .limit(1)
+            )
         cursor = await session.get(TelegramGameViewRecord, (game.id, player.id))
         messages = cursor.messages if cursor else {}
         return {
@@ -814,10 +836,15 @@ class TelegramGameService:
             "appeal_targets": appeal_targets,
             "actions": actions,
             "theme": theme,
+            "themes": themes,
             "join_deadline": snapshot.join_deadline,
             "answer_deadline": snapshot.answer_deadline,
             "buzz_deadline": snapshot.buzz_deadline,
             "progression_deadline": snapshot.progression_deadline,
             "rating_pending": snapshot.rating_pending,
+            "rating_changes": [
+                {key: change[key] for key in ("player_id", "scope", "before", "after", "delta")}
+                for change in (settlement or {}).get("rating_changes", [])
+            ],
             "last_sequence": last_sequence or 0,
         }

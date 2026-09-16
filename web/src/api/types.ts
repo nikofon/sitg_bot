@@ -516,7 +516,9 @@ export type PlayerPlacementKind =
   | "place_2"
   | "place_3"
   | "place_4"
-  | "draw"
+  | "place_1_5"
+  | "place_2_5"
+  | "place_3_5"
   | "below_4";
 
 export interface PlayerPlacement {

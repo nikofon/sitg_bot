@@ -38,10 +38,12 @@ const profile: PlayerProfileResource = {
     win_rate: 50,
     placements: [
       { kind: "place_1", count: 1, percent: 50 },
+      { kind: "place_1_5", count: 0, percent: 0 },
       { kind: "place_2", count: 0, percent: 0 },
+      { kind: "place_2_5", count: 1, percent: 50 },
       { kind: "place_3", count: 0, percent: 0 },
+      { kind: "place_3_5", count: 0, percent: 0 },
       { kind: "place_4", count: 0, percent: 0 },
-      { kind: "draw", count: 1, percent: 50 },
       { kind: "below_4", count: 0, percent: 0 },
     ],
   },
@@ -121,7 +123,9 @@ describe("player profile", () => {
       (row) => row.textContent,
     );
     expect(rows[0]).toContain("1st place");
-    expect(rows[4]).toContain("Shared place (draw)");
+    expect(rows[1]).toContain("1.5 place");
+    expect(rows[3]).toContain("2.5 place");
+    expect(rows[5]).toContain("3.5 place");
     expect(root.querySelector(".profile-question-stats")!.textContent).toContain("3");
   });
 
@@ -184,4 +188,3 @@ describe("player game results", () => {
     expect(openPlayer).toHaveBeenCalledWith(playerOneId);
   });
 });
-
