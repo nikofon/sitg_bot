@@ -1295,3 +1295,148 @@ p {
 .admin-card .danger-button {
   background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 12%, var(--tg-theme-section-bg-color));
 }
+
+.tournament-profile {
+  display: grid;
+  gap: 1rem;
+}
+
+.tournament-profile-sections {
+  display: grid;
+  gap: 1rem;
+}
+
+.tournament-profile-section {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.tournament-profile-section h3 {
+  margin: 0;
+}
+
+.tournament-section-nav {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.4rem;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 20%, transparent);
+  border-radius: 0.9rem;
+  background: var(--tg-theme-section-bg-color);
+  scrollbar-width: none;
+}
+
+.tournament-section-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.tournament-section-nav button {
+  flex: 1 0 auto;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.8rem;
+  border: 0;
+  border-radius: 0.65rem;
+  background: transparent;
+  color: var(--tg-theme-hint-color);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.tournament-section-nav button.active {
+  background: color-mix(in srgb, var(--tg-theme-button-color) 12%, transparent);
+  color: var(--tg-theme-button-text-color);
+}
+
+.tournament-registration {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.tournament-registration-date {
+  color: var(--tg-theme-hint-color);
+  font-size: 0.78rem;
+}
+
+.badge-approved {
+  background: color-mix(in srgb, #2e7d32 16%, transparent);
+  color: color-mix(in srgb, #2e7d32 85%, var(--tg-theme-text-color));
+}
+
+.badge-rejected {
+  background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 14%, transparent);
+  color: var(--tg-theme-destructive-text-color);
+}
+
+.tournament-games-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.tournament-games-controls label,
+.tournament-profile-section > label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-weight: 600;
+}
+
+.tournament-games-controls .pagination {
+  margin-top: 0;
+  gap: 0.5rem;
+}
+
+.pagination-status {
+  color: var(--tg-theme-hint-color);
+  font-variant-numeric: tabular-nums;
+}
+
+.tournament-game-card {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.tournament-game-card h4 {
+  margin: 0;
+}
+
+.tournament-leaders {
+  gap: 0.5rem;
+}
+
+.tournament-leader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tournament-leader-rating {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.leader-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leader-table th,
+.leader-table td {
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 16%, transparent);
+  text-align: left;
+}
+
+.leader-table th[scope="col"] {
+  color: var(--tg-theme-hint-color);
+  font-size: 0.78rem;
+}
+
+.leader-table th[scope="row"] {
+  font-variant-numeric: tabular-nums;
+}

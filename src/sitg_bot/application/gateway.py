@@ -100,6 +100,7 @@ from sitg_bot.application.contracts import (
     TournamentFinalizeOperation,
     TournamentInfoOperation,
     TournamentListOperation,
+    TournamentProfileOperation,
     TournamentManagerManagementLinkOperation,
     TournamentManagerManagementOperation,
     TournamentManagerSettingsLinkOperation,
@@ -131,6 +132,7 @@ from sitg_bot.services.token_requests import (
     TokenPlaintextUnavailable,
     TournamentTokenRequestService,
 )
+from sitg_bot.services.tournament_profiles import TournamentProfileService
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
@@ -229,6 +231,7 @@ ACTION_POLICIES.update(
             authentication_required=False, cursor_paginated=True
         ),
         ActionCode.TOURNAMENT_INFO: ActionPolicy(authentication_required=False),
+        ActionCode.TOURNAMENT_PROFILE: ActionPolicy(authentication_required=False),
         ActionCode.PLAYER_LIST: ActionPolicy(authentication_required=False),
         ActionCode.PLAYER_PROFILE: ActionPolicy(authentication_required=False),
         ActionCode.PLAYER_GAME_RESULTS: ActionPolicy(authentication_required=False),
@@ -438,6 +441,7 @@ class ApplicationGateway:
         self.packets = packets or PacketAdminService(database)
         self.library = PacketLibraryService(database)
         self.profiles = PlayerProfileService(database)
+        self.tournament_profiles = TournamentProfileService(database)
         self.minimum_client_version = minimum_client_version
         self.idempotency_lease = idempotency_lease
 
@@ -539,6 +543,10 @@ class ApplicationGateway:
             if isinstance(operation, TournamentInfoOperation):
                 return await self.tournaments.tournament_details(
                     operation.tournament_id, None, role=operation.role
+                )
+            if isinstance(operation, TournamentProfileOperation):
+                return await self.tournament_profiles.profile(
+                    None, operation.tournament_id
                 )
 
         telegram_user_id = self._require_telegram_principal(principal)
@@ -730,6 +738,8 @@ class ApplicationGateway:
             return await self.tournaments.tournament_details(
                 operation.tournament_id, player_id, role=operation.role
             )
+        if isinstance(operation, TournamentProfileOperation):
+            return await self.tournament_profiles.profile(player_id, operation.tournament_id)
         if isinstance(operation, TournamentRegisterOperation):
             return await self.tournaments.register(
                 operation.tournament_id, player_id,

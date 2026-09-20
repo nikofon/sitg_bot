@@ -63,6 +63,7 @@ from sitg_bot.application.contracts import (
     TournamentFinalizeOperation,
     TournamentInfoOperation,
     TournamentListOperation,
+    TournamentProfileOperation,
     TournamentManagerManagementOperation,
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
@@ -501,6 +502,9 @@ class MiniAppHttpServer:
             r"/players/([0-9a-fA-F-]{36})/games/([0-9a-fA-F-]{36})", normalized_path
         )
         player_match = re.fullmatch(r"/players/([0-9a-fA-F-]{36})", normalized_path)
+        tournament_profile_match = re.fullmatch(
+            r"/tournaments/([0-9a-fA-F-]{36})", normalized_path
+        )
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
@@ -577,6 +581,28 @@ class MiniAppHttpServer:
                     "authorization": {"allowed": True},
                     "resource": {
                         "kind": "player_game",
+                        "state": "ready",
+                        **result.data,
+                    },
+                }
+            )
+        if tournament_profile_match is not None:
+            session, result = await self._query(
+                request,
+                TournamentProfileOperation(
+                    action=ActionCode.TOURNAMENT_PROFILE,
+                    tournament_id=UUID(tournament_profile_match.group(1)),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "tournament_profile",
                         "state": "ready",
                         **result.data,
                     },
@@ -1457,6 +1483,7 @@ class MiniAppHttpServer:
         public_actions = {
             ActionCode.PLAYER_LIST, ActionCode.PLAYER_PROFILE, ActionCode.PLAYER_GAME_RESULTS,
             ActionCode.TOURNAMENT_LIST, ActionCode.TOURNAMENT_INFO,
+            ActionCode.TOURNAMENT_PROFILE,
         }
         if SESSION_COOKIE not in request.cookies and operation.action in public_actions:
             self.auth.security_policy.response_headers(self._origin(request))

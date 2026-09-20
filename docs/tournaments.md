@@ -8,7 +8,10 @@
   creation, settings, registration, roles, policy, assignments, and entitlements.
 - [services/classic.py](../src/sitg_bot/services/classic.py): Classic stages, prescribed games,
   standings, deadlines, and round entitlements. [domain/classic.py](../src/sitg_bot/domain/classic.py)
-  owns scheme validation, balanced seeding, and point aggregation.
+  owns scheme validation, balanced seeding, point aggregation, and play-off final places.
+- [services/tournament_profiles.py](../src/sitg_bot/services/tournament_profiles.py): read-only
+  tournament profile projections (general details, registrations, participants, games, and
+  leaders) served to the Mini App through `tournaments.profile.get.v1`.
 - [services/token_requests.py](../src/sitg_bot/services/token_requests.py): creation-token
   requests, rulings, and inventory; shared identity contracts are in [application.md](application.md).
 - [storage/models.py](../src/sitg_bot/storage/models.py): tournament, version, membership,

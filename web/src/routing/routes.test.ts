@@ -23,6 +23,15 @@ describe("route matching", () => {
     expect(route.query.get("view")).toBe("players");
   });
 
+  it("matches the tournament profile route by tournament id", () => {
+    const route = matchRoute({
+      pathname: "/tournaments/00000000-0000-0000-0000-000000000001",
+      search: "",
+    });
+    expect(route.id).toBe("tournament_profile");
+    expect(route.params.tournament_id).toBe("00000000-0000-0000-0000-000000000001");
+  });
+
   it("matches player profile and per-game result routes", () => {
     const profile = matchRoute({
       pathname: "/players/00000000-0000-0000-0000-000000000001",

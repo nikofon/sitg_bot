@@ -12,6 +12,7 @@ import type {
   TournamentAction,
   TournamentDetailsPayload,
   TournamentListItem,
+  TournamentProfileResource,
   TournamentManagerSettingsResource,
   TournamentManagerManagementResource,
   ManagementPacket,
@@ -44,6 +45,7 @@ import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets"
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
+import { renderTournamentProfile } from "./ui/tournament";
 import { renderAdminManagement } from "./ui/admin-management";
 
 export class MiniAppShell {
@@ -209,6 +211,12 @@ export class MiniAppShell {
       this.renderTournamentRoute(route, payload.resource, payload.pagination);
       const info = route.query.get("info");
       if (info) void this.openLibraryTournament({ id: info, role: payload.resource.role });
+      return;
+    }
+    if (
+      route.id === "tournament_profile" && isTournamentProfileResource(payload.resource)
+    ) {
+      this.renderTournamentProfileRoute(route, payload.resource);
       return;
     }
     if (route.id === "manager_settings" && isManagerSettingsResource(payload.resource)) {
@@ -1077,6 +1085,27 @@ export class MiniAppShell {
       list,
     );
     if (page?.previous || page?.next) content.append(this.pagination(route, page));
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderTournamentProfileRoute(
+    route: RouteMatch,
+    resource: TournamentProfileResource,
+  ): void {
+    const content = renderTournamentProfile(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        openPlayer: (playerId) =>
+          this.router.navigate(`/players/${encodeURIComponent(playerId)}`),
+        openGame: (playerId, gameId) =>
+          this.router.navigate(
+            `/players/${encodeURIComponent(playerId)}/games/${encodeURIComponent(gameId)}`,
+          ),
+      },
+    );
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
@@ -2244,10 +2273,7 @@ export class MiniAppShell {
     button.disabled = true;
     try {
       if (action === "info") {
-        const details = await this.api.request<TournamentDetailsPayload>(
-          `/api/miniapp/tournaments/${encodeURIComponent(item.id)}?role=${resource.role}`,
-        );
-        this.showTournamentDetails(details);
+        this.router.navigate(`/tournaments/${encodeURIComponent(item.id)}`);
         return;
       }
       if (action === "register") {
@@ -2915,6 +2941,12 @@ export class MiniAppShell {
 
 function isTournamentResource(value: RoutePayload["resource"]): value is TournamentRouteResource {
   return "kind" in value && value.kind === "tournaments";
+}
+
+function isTournamentProfileResource(
+  value: RoutePayload["resource"],
+): value is TournamentProfileResource {
+  return "kind" in value && value.kind === "tournament_profile";
 }
 
 function isManagerSettingsResource(

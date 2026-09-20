@@ -4,6 +4,7 @@ import json
 import math
 import random
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from importlib.resources import files
 from statistics import median
@@ -106,6 +107,62 @@ def order_results(results: list[dict], *, seed: str) -> list[dict]:
     ordered = list(results)
     random.Random(seed).shuffle(ordered)
     return sorted(ordered, key=lambda r: tuple(Decimal(str(v)) for v in r["key"]), reverse=True)
+
+
+def playoff_places(
+    scheme: dict,
+    seats: Mapping[tuple[int, int], Sequence[str | None]],
+    results: Mapping[tuple[int, int], Sequence[Mapping[str, object]]],
+) -> list[dict]:
+    """Final places for a play-off scheme from ordered per-game result lists.
+
+    ``seats`` maps every scheme game ``(round, game)`` to its resolved
+    participants and ``results`` maps played games to their ordered finishers
+    (each entry carries ``seat``). The last round keeps its in-game order: the
+    winner takes 1st place and the other finalists keep their finishing
+    positions. A player eliminated in an earlier round with several parallel
+    games shares one place: ``survivors + position - 1.5``, where ``survivors``
+    counts the distinct players that continue after that round.
+    """
+    games = {(game["round"], game["game"]): game for game in scheme["games"]}
+    last_round = max(round_number for round_number, _ in games)
+    advancing: set[tuple[int, int, int]] = set()
+    for game in games.values():
+        for source in game["sources"]:
+            if isinstance(source, list):
+                advancing.add((int(source[0]), int(source[1]), int(source[2])))
+    survivors: dict[int, int] = {}
+    for round_number in {round_number for round_number, _ in games}:
+        distinct = {
+            seat
+            for (game_round, _), game_seats in seats.items()
+            if game_round > round_number
+            for seat in game_seats or ()
+            if seat and not seat.startswith("chair:")
+        }
+        survivors[round_number] = len(distinct)
+    ranking: dict[str, Decimal] = {}
+    for (round_number, game_number), ordered in results.items():
+        if (round_number, game_number) not in games:
+            continue
+        for position, entry in enumerate(ordered, start=1):
+            seat = str(entry["seat"])
+            if seat.startswith("chair:"):
+                continue
+            if round_number == last_round:
+                ranking[seat] = Decimal(position)
+            elif (round_number, game_number, position) in advancing:
+                continue
+            else:
+                ranking[seat] = (
+                    Decimal(survivors.get(round_number, 0))
+                    + Decimal(position)
+                    - Decimal("1.5")
+                )
+    return [
+        {"seat": seat, "place": str(place)}
+        for seat, place in sorted(ranking.items(), key=lambda item: (item[1], item[0]))
+    ]
 
 
 def standings(matches: list, *, quiz: bool, seed: str) -> list[dict]:

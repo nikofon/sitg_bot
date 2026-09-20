@@ -401,11 +401,45 @@ describe("MiniAppShell", () => {
       )
       .mockResolvedValueOnce(
         response({
-          tournament,
-          registration_requirements: [],
-          policies: { observing: "forbidden" },
-          default_parameters: { players: 3 },
-          player_mutable_parameters: [],
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            kind: "tournament_profile",
+            state: "ready",
+            type_key: "ladder",
+            tournament: {
+              id: "00000000-0000-0000-0000-000000000001",
+              name: "Autumn Open",
+              slug: "autumn-open",
+            },
+            general: {
+              name: "Autumn Open",
+              slug: "autumn-open",
+              description: "",
+              status: "active",
+              moderation_status: "normal",
+              visibility: "public",
+              language: "en",
+              payment_type: "free",
+              type: { key: "ladder", name: "Ladder", version: 1 },
+              ruleset: { key: "si", name: "Своя игра", version: 1 },
+              starts_at: null,
+              planned_ends_at: null,
+              actual_starts_at: null,
+              actual_ends_at: null,
+              finalized_at: null,
+              settings_version: 1,
+              registration: { open: true, starts_at: null, ends_at: null },
+              managers: [],
+              authors: ["Author One"],
+              registration_count: 0,
+              participant_count: 0,
+            },
+            registrations: [],
+            participants: null,
+            games: { kind: "ladder", items: [] },
+            leaders: { kind: "ladder", items: [] },
+          },
         }),
       );
     const root = document.createElement("div");
@@ -420,9 +454,9 @@ describe("MiniAppShell", () => {
       "Register",
     ]);
     (root.querySelector(".tournament-actions button") as HTMLButtonElement).click();
-    await vi.waitFor(() => expect(document.querySelector("dialog h2")?.textContent).toBe("Autumn Open"));
-    expect(document.querySelector("dialog")?.textContent).toContain("Registration requirements");
-    expect(fetcher.mock.calls[2]?.[0]).toContain("/api/miniapp/tournaments/00000000-0000-0000-0000-000000000001?role=player");
+    await vi.waitFor(() => expect(root.querySelector(".tournament-profile .tournament-name")?.textContent).toBe("Autumn Open"));
+    expect(window.location.pathname).toBe("/tournaments/00000000-0000-0000-0000-000000000001");
+    expect(fetcher.mock.calls[2]?.[0]).toContain("/api/miniapp/routes/resolve");
   });
 
   it("selects a managed tournament with the authoritative navigation version", async () => {

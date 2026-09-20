@@ -41,6 +41,7 @@ class ActionCode(StrEnum):
     TOURNAMENT_CREATE = "tournaments.create.v1"
     TOURNAMENT_LIST = "tournaments.list.v1"
     TOURNAMENT_INFO = "tournaments.info.v1"
+    TOURNAMENT_PROFILE = "tournaments.profile.get.v1"
     TOURNAMENT_REGISTER = "tournaments.register.v1"
     TOURNAMENT_REGISTRATION_LINK = "tournaments.registration.link.v1"
     TOURNAMENT_REGISTRATION_INVITATION = "tournaments.registration.invitation.v1"
@@ -320,6 +321,11 @@ class TournamentInfoOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_INFO]
     tournament_id: UUID
     role: Literal["player", "manager", "admin"] = "player"
+
+
+class TournamentProfileOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_PROFILE]
+    tournament_id: UUID
 
 
 class TournamentRegisterOperation(ContractModel):
@@ -872,6 +878,7 @@ GatewayOperation = Annotated[
     | TournamentCreateOperation
     | TournamentListOperation
     | TournamentInfoOperation
+    | TournamentProfileOperation
     | TournamentRegisterOperation
     | TournamentRegistrationLinkOperation
     | TournamentRegistrationInvitationOperation
