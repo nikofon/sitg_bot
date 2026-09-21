@@ -52,7 +52,7 @@ Unknown tournament action descriptors are ignored and logged.
   and notify every active administrator through the admin notification audience and the
   throttled Telegram alert.
 - Manager token requests, inventory, token-backed tournament creation, anonymous appeal
-  review, selected tournament management/settings, and JSON/DOCX packet upload.
+  review, selected tournament management and profiles, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
 - Administrator moderation is opened through the **Management** keyboard button. Player
@@ -60,8 +60,17 @@ Unknown tournament action descriptors are ignored and logged.
   "You have been banned! Reason: … You can still use your library" on every interaction
   except opening their packet library, which stays available in both the bot and the Mini App.
 - Mini App buttons for tournament lists, ongoing games/lobbies ("Ongoing games"), the player profile ("My profile"), lobby
-  packet/settings views, manager settings, management, packet draft/editing flows,
+  packet/settings views, management, packet draft/editing flows,
   and administrator management (Tournaments, Authors, Players, Packets).
+
+The player tournament context opens the tournament profile Mini App window through the
+**Info** button (**Leaders** deep-links the same window on its leaders section), and the
+manager tournament context opens it through the **Tournament profile** button. Starting a
+lobby without selected packets proposes an
+automatic assignment instead of refusing: packets playable for every member are picked,
+preferring the least (but non-zero) fresh themes and adding packets until the theme count
+is satisfied, then a Yes/No inline confirmation applies the selection and starts the game.
+Without a valid packet the bot reports that the tournament does not contain one.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,

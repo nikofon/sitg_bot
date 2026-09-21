@@ -24,6 +24,37 @@ class LobbyInviteState(StatesGroup):
     username = State()
 
 
+def automatic_packet_selection(lobby: dict) -> list[dict]:
+    """Choose the smallest valid packet set for a lobby without selected packets.
+
+    Candidates must be playable for every member and have fresh content; packets
+    with the least (but non-zero) fresh themes are preferred, and more packets are
+    added until the lobby theme count requirement is satisfied.
+    """
+
+    theme_count = (lobby.get("settings") or {}).get("theme_count")
+    try:
+        required = int(theme_count) if theme_count is not None else 8
+    except (TypeError, ValueError):
+        required = 8
+    candidates = [
+        packet
+        for packet in lobby.get("packet_suggestions") or ()
+        if packet.get("playable_for_all") and int(packet.get("fresh_play_unit_count") or 0) > 0
+    ]
+    candidates.sort(key=lambda packet: int(packet["fresh_play_unit_count"]))
+    chosen: list[dict] = []
+    available = 0
+    for packet in candidates:
+        if chosen and available >= required:
+            break
+        chosen.append(packet)
+        available += int(packet["fresh_play_unit_count"])
+    if not chosen or available < required:
+        return []
+    return chosen
+
+
 async def show_lobby(
     message: Message,
     backend: BotBackend,
@@ -162,6 +193,36 @@ async def handle_lobby_action(
                         (
                             InlineButtonModel(
                                 localization.text(f"button.{lobby_action}", locale), web_app_url=url
+                            ),
+                        ),
+                    )
+                ),
+            ),
+        )
+    elif lobby_action == "lobby.start" and not lobby["selected_packets"]:
+        packets = automatic_packet_selection(lobby)
+        if not packets:
+            await send_message_model(
+                message, MessageModel(localization.text("lobby.start.no_valid_packet", locale))
+            )
+            return
+        names = ", ".join(str(packet["name"]) for packet in packets)
+        await send_message_model(
+            message,
+            MessageModel(
+                localization.text("lobby.start.auto_packet_confirm", locale, packets=names),
+                InlineKeyboardModel(
+                    rows=(
+                        (
+                            InlineButtonModel(
+                                localization.text("button.yes", locale),
+                                callback_data=(
+                                    f"lobbystart:yes:{navigation.active_lobby.id.hex}"
+                                ),
+                            ),
+                            InlineButtonModel(
+                                localization.text("button.no", locale),
+                                callback_data=f"lobbystart:no:{navigation.active_lobby.id.hex}",
                             ),
                         ),
                     )
@@ -328,4 +389,66 @@ async def handle_cancel_callback(
         )
     await callback.message.edit_reply_markup(reply_markup=None)
     updated = await backend.navigation(telegram_update_claim)
+    await send_message_model(callback.message, menu_message(updated, localization, locale))
+
+
+@router.callback_query(F.data.regexp(r"^lobbystart:(yes|no):[a-f0-9]{32}$"))
+async def handle_start_confirmation_callback(
+    callback: CallbackQuery,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState | None,
+) -> None:
+    from uuid import UUID
+
+    await callback.answer()
+    if not isinstance(callback.message, Message):
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    decision, raw_lobby_id = (callback.data or "").split(":")[1:]
+    if decision != "yes":
+        return
+    if navigation is None or navigation.active_lobby is None:
+        return
+    try:
+        lobby_id = UUID(hex=raw_lobby_id)
+    except ValueError:
+        return
+    if navigation.active_lobby.id != lobby_id:
+        return
+    lobby = await backend.lobby_info(telegram_update_claim, lobby_id=lobby_id)
+    packets = automatic_packet_selection(lobby)
+    if not packets:
+        await send_message_model(
+            callback.message,
+            MessageModel(localization.text("lobby.start.no_valid_packet", locale)),
+        )
+        return
+    version = int(lobby["version"])
+    if not lobby.get("selected_packets"):
+        selection = await backend.select_lobby_packets(
+            telegram_update_claim,
+            lobby_id=lobby_id,
+            packet_ids=tuple(packet["packet_id"] for packet in packets),
+            expected_version=version,
+        )
+        version = int(selection["version"])
+    await backend.lobby_action(
+        telegram_update_claim, lobby_id=lobby_id, action="start", expected_version=version
+    )
+    updated = await backend.navigation(telegram_update_claim)
+    if updated.context == "game":
+        from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
+
+        await send_menu_with_notification_alert(
+            callback.message,
+            backend=backend,
+            claim=telegram_update_claim,
+            navigation=updated,
+            localization=localization,
+            locale=locale,
+        )
+        return
     await send_message_model(callback.message, menu_message(updated, localization, locale))

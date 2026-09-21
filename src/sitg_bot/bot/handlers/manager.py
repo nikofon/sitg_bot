@@ -970,22 +970,23 @@ async def handle_manager_tournament_action(
             MessageModel(localization.text("packet_upload.document_prompt", locale)),
         )
         return
-    if manager_tournament_action == "manager.tournament.settings" and launch_links is not None:
-        reference = await backend.tournament_settings_link(telegram_update_claim)
-        url = mini_app_launch_url(
-            launch_links,
-            "manager/tournaments",
-            reference,  # type: ignore[arg-type]
-        )
+    if manager_tournament_action == "manager.tournament.profile" and launch_links is not None:
+        selected = navigation.selected_manager_tournament
+        if selected is None:
+            await send_message_model(message, menu_message(navigation, localization, locale))
+            return
+        url = mini_app_route_url(launch_links, f"tournaments/{selected.id}")
         await send_message_model(
             message,
             MessageModel(
-                localization.text("miniapp.manager_settings.prompt", locale),
+                localization.text("miniapp.tournament_profile.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
-                                localization.text("miniapp.manager_settings.open", locale),
+                                localization.text(
+                                    "button.manager.tournament.profile", locale
+                                ),
                                 web_app_url=url,
                             ),
                         ),

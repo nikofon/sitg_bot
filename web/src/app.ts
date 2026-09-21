@@ -1105,6 +1105,7 @@ export class MiniAppShell {
             `/players/${encodeURIComponent(playerId)}/games/${encodeURIComponent(gameId)}`,
           ),
       },
+      route.query.get("section") ?? undefined,
     );
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());

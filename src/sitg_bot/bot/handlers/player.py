@@ -17,7 +17,7 @@ from sitg_bot.bot.keyboards.common import (
     setting_choices_keyboard,
     setting_names_keyboard,
 )
-from sitg_bot.bot.miniapps import mini_app_route_url, website_url
+from sitg_bot.bot.miniapps import mini_app_route_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
@@ -506,7 +506,9 @@ async def handle_player_menu_action(
                             (
                                 InlineButtonModel(
                                     localization.text("button.player.tournament.profile", locale),
-                                    url=website_url(launch_links, "tournaments", selected.slug),
+                                    web_app_url=mini_app_route_url(
+                                        launch_links, f"tournaments/{selected.id}"
+                                    ),
                                 ),
                             ),
                         )
@@ -540,16 +542,19 @@ async def handle_player_menu_action(
             return
         if player_action != "player.tournament.leaders":
             return
-        url = website_url(launch_links, "tournaments", selected.slug, "leaders")
+        url = mini_app_route_url(
+            launch_links, f"tournaments/{selected.id}", query={"section": "leaders"}
+        )
         await send_message_model(
             message,
             MessageModel(
-                localization.text("link.open_prompt", locale),
+                localization.text("miniapp.tournament_profile.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
-                                localization.text(f"button.{player_action}", locale), url=url
+                                localization.text(f"button.{player_action}", locale),
+                                web_app_url=url,
                             ),
                         ),
                     )

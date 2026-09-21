@@ -566,7 +566,6 @@ class TelegramNavigationService:
                 actions.extend(
                     (
                         "manager.tournament",
-                        "manager.tournament.settings",
                         "manager.tournament.management",
                         "manager.tournament.packet_upload",
                         "manager.tournament.profile",

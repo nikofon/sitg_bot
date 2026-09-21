@@ -205,7 +205,7 @@ def test_tournament_launch_url_preserves_display_filters() -> None:
 
 @pytest.mark.parametrize("route", [
     "tournaments", "players/00000000-0000-0000-0000-000000000001", "library",
-    "admin/management",
+    "admin/management", "tournaments/00000000-0000-0000-0000-000000000002",
 ])
 def test_menu_launches_use_stable_transition_urls(route: str) -> None:
     first = urlsplit(mini_app_route_url("https://mini.example.test", route))
@@ -214,6 +214,25 @@ def test_menu_launches_use_stable_transition_urls(route: str) -> None:
     assert first.path == second.path == f"/{route}"
     assert first == second
     assert parse_qs(first.query) == {"_launch": ["1"]}
+
+
+def test_tournament_profile_launch_url_preserves_the_section_query() -> None:
+    url = mini_app_route_url(
+        "https://mini.example.test/app",
+        "tournaments/00000000-0000-0000-0000-000000000002",
+        query={"section": "leaders"},
+    )
+
+    parsed = urlsplit(url)
+    assert parsed.path == "/app/tournaments/00000000-0000-0000-0000-000000000002"
+    query = parse_qs(parsed.query)
+    assert query.pop("_launch") == ["1"]
+    assert query == {"section": ["leaders"]}
+
+
+def test_tournament_profile_launch_url_rejects_non_identifier_routes() -> None:
+    with pytest.raises(ValueError, match="Unsupported Mini App route"):
+        mini_app_route_url("https://mini.example.test", "tournaments/managed-cup")
 
 
 def test_manager_settings_launch_url_uses_only_an_opaque_reference() -> None:

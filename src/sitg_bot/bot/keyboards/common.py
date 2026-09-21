@@ -58,7 +58,6 @@ LOBBY_OTHER_ACTIONS = (
 MANAGER_TOURNAMENT_ACTIONS = (
     ("manager.tournament.management",),
     ("manager.tournament.packet_upload",),
-    ("manager.tournament.settings",),
     ("manager.tournament.profile",),
     ("tournament.registration_link",),
     ("manager.tournament.quit",),

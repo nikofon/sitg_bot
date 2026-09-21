@@ -52,6 +52,7 @@ from sitg_bot.application.contracts import (
     LobbyInviteOperation,
     LobbyJoinOperation,
     LobbyLinkOperation,
+    LobbyPacketBulkSelectOperation,
     LobbyPacketOperation,
     LobbyReadyUpdateOperation,
     LobbyRoleUpdateOperation,
@@ -100,13 +101,13 @@ from sitg_bot.application.contracts import (
     TournamentFinalizeOperation,
     TournamentInfoOperation,
     TournamentListOperation,
-    TournamentProfileOperation,
     TournamentManagerManagementLinkOperation,
     TournamentManagerManagementOperation,
     TournamentManagerSettingsLinkOperation,
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
+    TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationInvitationOperation,
@@ -366,6 +367,9 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.LOBBY_PACKET_SELECT: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.LOBBY_PACKET_SELECT_MANY: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.LOBBY_PACKET_REMOVE: ActionPolicy(
@@ -1143,6 +1147,13 @@ class ApplicationGateway:
                 telegram_user_id,
                 operation.role,
                 confirm_fresh=operation.confirm_fresh,
+                expected_version=operation.expected_version,
+            )
+        if isinstance(operation, LobbyPacketBulkSelectOperation):
+            return await self.matchmaking.select_packets(
+                operation.lobby_id,
+                telegram_user_id,
+                operation.packet_ids,
                 expected_version=operation.expected_version,
             )
         if isinstance(operation, LobbyPacketOperation):

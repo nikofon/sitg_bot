@@ -26,6 +26,7 @@ from sitg_bot.application.contracts import (
     LobbyInviteOperation,
     LobbyJoinOperation,
     LobbyLinkOperation,
+    LobbyPacketBulkSelectOperation,
     LobbyReadyUpdateOperation,
     LobbySimpleMutationOperation,
     NavigationContextSetOperation,
@@ -56,7 +57,6 @@ from sitg_bot.application.contracts import (
     TournamentCreateOperation,
     TournamentInfoOperation,
     TournamentManagerManagementLinkOperation,
-    TournamentManagerSettingsLinkOperation,
     TournamentRegisterOperation,
     TournamentRegistrationInvitationOperation,
     TournamentRegistrationLinkOperation,
@@ -424,17 +424,6 @@ class BotBackend:
             {"id": data["id"], "name": data["name"], "slug": data["slug"]}
         )
 
-    async def tournament_settings_link(
-        self, claim: TelegramUpdateClaim
-    ) -> TournamentSettingsLinkState:
-        response = await self._execute(
-            claim,
-            TournamentManagerSettingsLinkOperation(
-                action=ActionCode.TOURNAMENT_MANAGER_SETTINGS_LINK
-            ),
-        )
-        return TournamentSettingsLinkState.model_validate(response.data)
-
     async def tournament_management_link(
         self, claim: TelegramUpdateClaim
     ) -> TournamentSettingsLinkState:
@@ -648,6 +637,27 @@ class BotBackend:
                     "lobby_id": lobby_id,
                     "expected_version": expected_version,
                     **values,
+                }
+            ),
+        )
+        return cast(dict, response.data)
+
+    async def select_lobby_packets(
+        self,
+        claim: TelegramUpdateClaim,
+        *,
+        lobby_id: UUID,
+        packet_ids: tuple[UUID, ...] | list[UUID],
+        expected_version: int,
+    ) -> dict:
+        response = await self._execute(
+            claim,
+            LobbyPacketBulkSelectOperation.model_validate(
+                {
+                    "action": ActionCode.LOBBY_PACKET_SELECT_MANY,
+                    "lobby_id": lobby_id,
+                    "expected_version": expected_version,
+                    "packet_ids": [str(packet_id) for packet_id in packet_ids],
                 }
             ),
         )

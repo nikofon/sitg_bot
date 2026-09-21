@@ -557,12 +557,14 @@ export function renderTournamentProfile(
   i18n: I18n,
   formatDate: (value?: string | null) => string,
   handlers: TournamentProfileHandlers,
+  initialSection?: string,
 ): HTMLElement {
   const sections: SectionId[] =
     resource.type_key === "classic"
       ? ["general", "registrations", "participants", "games", "leaders"]
       : ["general", "registrations", "games", "leaders"];
-  const state = { active: "general" as SectionId };
+  const initial = sections.find((section) => section === initialSection);
+  const state = { active: initial ?? ("general" as SectionId) };
   const gamesState = { stageIndex: 0, groupIndex: 0, roundIndex: 0 };
   const leaderState = { stageIndex: 0 };
   const navigation = element(

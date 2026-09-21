@@ -19,13 +19,16 @@
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`. Descriptor editors for ruleset settings
-that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`);
+that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`),
+replayed through a `⏵` (U+23F5) button;
 the lobby settings section lists changeable options before fixed ones. The author-link
 window (`/authors/link`) lets a registered player search authors, submit a link request
 with an optional note, and follow their own request statuses; the bot's player menu opens it.
 
 The tournament profile window (`/tournaments/{tournament_id}`, opened by the catalogue's
-info action) shows five permission-aware sections: general details and managers, registered
+info action, the bot's player **Info** and manager **Tournament profile** buttons, and the
+**Leaders** button that adds `?section=leaders`) shows five permission-aware sections:
+general details and managers, registered
 players with approval badges, the finalized participant list (classic only), games, and
 leaders. Ladder games list the latest finalized games with per-player scores and links to
 the same game examination as player profiles; classic games browse first-stage and play-off
@@ -89,7 +92,8 @@ alternatives are `starts_desc`, `name_asc`, and `name_desc`.
 **Lobbies:** overview, packet selection, and settings. The overview shows current selections
 and validation warnings. Packet cards show author/year metadata, shared fresh-theme counts,
 and playability for all players; observers do not affect freshness/playability. Selected cards
-come first. Text and inclusive packet/publication year filters survive refresh. Mutations
+come first. Text and inclusive packet/publication year filters survive refresh, and a sort
+control reorders cards by fresh-theme count. Mutations
 use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -456,89 +457,116 @@ class InvitationMatchmakingService:
             self._require_version(lobby, expected_version)
             await self._require_open(session, lobby)
             await self._require_creator(session, lobby, telegram_user_id)
-            packet = await session.get(LogicalPacketRecord, packet_id)
-            if packet is None or packet.retired_at is not None:
-                raise LookupError("Packet not found")
-            assignment = await session.scalar(
-                select(TournamentPacketAssignmentRecord).where(
-                    TournamentPacketAssignmentRecord.tournament_id == lobby.tournament_id,
-                    TournamentPacketAssignmentRecord.packet_id == packet.id,
-                    TournamentPacketAssignmentRecord.status == "active",
-                )
-            )
-            if assignment is None or not await self.tournaments.has_assignment_access(
-                session, assignment, lobby.creator_player_id, "playable"
-            ):
-                raise PermissionError("Packet is not game-eligible in this tournament")
-            version = (
-                await session.get(PacketVersionRecord, assignment.adopted_version_id)
-                if assignment.adopted_version_id is not None
-                else await session.scalar(
-                    select(PacketVersionRecord)
-                    .where(
-                        PacketVersionRecord.packet_id == packet.id,
-                        PacketVersionRecord.state == "published",
-                    )
-                    .order_by(PacketVersionRecord.version_number.desc())
-                    .limit(1)
-                )
-            )
-            if version is None:
-                raise LookupError("Packet has no published version")
-            selected = await self._selected_packets(session, lobby.id)
-            context = await self.tournaments.context(session, lobby.tournament_id)
-            classic_notice = {}
-            if context.type_key == "classic":
-                if any(item.packet_id != packet.id for item in selected):
-                    raise ValueError("Classic games use exactly one round packet")
-                prescribed = await ClassicService.prescribed_match(
-                    session,
-                    lobby.tournament_id,
-                    assignment.id,
-                    [lobby.creator_player_id],
-                    exact=False,
-                )
-                names = []
-                for seat in prescribed.seats:
-                    player = None if is_chair(seat) else await session.get(PlayerRecord, UUID(seat))
-                    names.append("Chair" if player is None else player.public_nickname)
-                classic_notice = {
-                    "classic_players": names,
-                    "classic_solo": len(prescribed.seats) == 1,
-                }
-            if not any(item.packet_id == packet.id for item in selected):
-                session.add(
-                    PregameLobbyPacketRecord(
-                        lobby_id=lobby.id,
-                        packet_id=packet.id,
-                        packet_version_id=version.id,
-                        assignment_id=assignment.id,
-                        selection_order=(
-                            max((item.selection_order for item in selected), default=0) + 1
-                        ),
-                    )
-                )
-            members = await self._all_active_members(session, lobby.id)
-            for member in members:
-                member.ready = False
-                if member.role == "observer":
-                    member.fresh_content_confirmed = False
-            await session.flush()
-            await self._refresh_validation(session, lobby)
-            await self._event(
-                session,
-                lobby.id,
-                "packet_selected",
-                {
-                    "packet_id": str(packet.id),
-                    "packet_version_id": str(version.id),
-                    "packet_name": version.name,
-                    **classic_notice,
-                },
-            )
-            self._bump(lobby)
-            await session.flush()
+            await self._apply_packet_selection(session, lobby, packet_id)
             return await self._snapshot(session, lobby)
+
+    async def select_packets(
+        self,
+        lobby_id: UUID,
+        telegram_user_id: int,
+        packet_ids: Sequence[UUID],
+        *,
+        expected_version: int | None = None,
+    ) -> LobbySnapshot:
+        """Select several packets atomically so one update can assign them together."""
+
+        async with self.database.transaction() as session:
+            lobby = await self._locked_lobby(session, lobby_id)
+            self._require_version(lobby, expected_version)
+            await self._require_open(session, lobby)
+            await self._require_creator(session, lobby, telegram_user_id)
+            for packet_id in packet_ids:
+                await self._apply_packet_selection(session, lobby, packet_id)
+            return await self._snapshot(session, lobby)
+
+    async def _apply_packet_selection(
+        self,
+        session: AsyncSession,
+        lobby: PregameLobbyRecord,
+        packet_id: UUID,
+    ) -> None:
+        packet = await session.get(LogicalPacketRecord, packet_id)
+        if packet is None or packet.retired_at is not None:
+            raise LookupError("Packet not found")
+        assignment = await session.scalar(
+            select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.tournament_id == lobby.tournament_id,
+                TournamentPacketAssignmentRecord.packet_id == packet.id,
+                TournamentPacketAssignmentRecord.status == "active",
+            )
+        )
+        if assignment is None or not await self.tournaments.has_assignment_access(
+            session, assignment, lobby.creator_player_id, "playable"
+        ):
+            raise PermissionError("Packet is not game-eligible in this tournament")
+        version = (
+            await session.get(PacketVersionRecord, assignment.adopted_version_id)
+            if assignment.adopted_version_id is not None
+            else await session.scalar(
+                select(PacketVersionRecord)
+                .where(
+                    PacketVersionRecord.packet_id == packet.id,
+                    PacketVersionRecord.state == "published",
+                )
+                .order_by(PacketVersionRecord.version_number.desc())
+                .limit(1)
+            )
+        )
+        if version is None:
+            raise LookupError("Packet has no published version")
+        selected = await self._selected_packets(session, lobby.id)
+        context = await self.tournaments.context(session, lobby.tournament_id)
+        classic_notice = {}
+        if context.type_key == "classic":
+            if any(item.packet_id != packet.id for item in selected):
+                raise ValueError("Classic games use exactly one round packet")
+            prescribed = await ClassicService.prescribed_match(
+                session,
+                lobby.tournament_id,
+                assignment.id,
+                [lobby.creator_player_id],
+                exact=False,
+            )
+            names = []
+            for seat in prescribed.seats:
+                player = None if is_chair(seat) else await session.get(PlayerRecord, UUID(seat))
+                names.append("Chair" if player is None else player.public_nickname)
+            classic_notice = {
+                "classic_players": names,
+                "classic_solo": len(prescribed.seats) == 1,
+            }
+        if not any(item.packet_id == packet.id for item in selected):
+            session.add(
+                PregameLobbyPacketRecord(
+                    lobby_id=lobby.id,
+                    packet_id=packet.id,
+                    packet_version_id=version.id,
+                    assignment_id=assignment.id,
+                    selection_order=(
+                        max((item.selection_order for item in selected), default=0) + 1
+                    ),
+                )
+            )
+        members = await self._all_active_members(session, lobby.id)
+        for member in members:
+            member.ready = False
+            if member.role == "observer":
+                member.fresh_content_confirmed = False
+        await session.flush()
+        await self._refresh_validation(session, lobby)
+        await self._event(
+            session,
+            lobby.id,
+            "packet_selected",
+            {
+                "packet_id": str(packet.id),
+                "packet_version_id": str(version.id),
+                "packet_name": version.name,
+                **classic_notice,
+            },
+        )
+        self._bump(lobby)
+        await session.flush()
 
     async def remove_packet(
         self,

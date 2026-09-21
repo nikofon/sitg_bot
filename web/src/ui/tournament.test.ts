@@ -283,6 +283,30 @@ describe("tournament profile", () => {
     expect(root.querySelector(".pagination-status")!.textContent).toContain("Round 2 / 2");
   });
 
+  it("opens on the requested section for deep links", () => {
+    const root = renderTournamentProfile(ladder, new I18n("en"), () => "—", {
+      openPlayer: vi.fn(),
+      openGame: vi.fn(),
+    }, "leaders");
+
+    expect(
+      Array.from(root.querySelectorAll<HTMLButtonElement>(".tournament-section-nav button"))
+        .find((item) => item.classList.contains("active"))!
+        .textContent,
+    ).toBe("Leaders");
+    expect(root.querySelector(".tournament-leaders")).not.toBeNull();
+
+    const fallback = renderTournamentProfile(ladder, new I18n("en"), () => "—", {
+      openPlayer: vi.fn(),
+      openGame: vi.fn(),
+    }, "participants");
+    expect(
+      Array.from(fallback.querySelectorAll<HTMLButtonElement>(".tournament-section-nav button"))
+        .find((item) => item.classList.contains("active"))!
+        .textContent,
+    ).toBe("General");
+  });
+
   it("switches classic leader stages and shows shared play-off places", () => {
     const root = renderTournamentProfile(classicProfile(), new I18n("en"), () => "—", {
       openPlayer: vi.fn(),
