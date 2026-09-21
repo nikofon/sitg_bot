@@ -1,8 +1,10 @@
+import asyncio
 import re
 from datetime import datetime
 from uuid import UUID
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Filter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -343,7 +345,7 @@ async def handle_packet_document(
     data = await state.get_data()
     maximum_bytes = int(data.get("maximum_bytes", 4 * 1024 * 1024))
     filename = (document.file_name or "").strip()
-    if not filename.casefold().endswith((".docx", ".json")):
+    if not filename.casefold().endswith((".docx", ".pdf", ".json")):
         await send_message_model(
             message, MessageModel(localization.text("packet_upload.file_invalid", locale))
         )
@@ -377,24 +379,28 @@ async def handle_packet_document(
             ),
         )
         return
-    draft = await backend.upload_packet(
+    drafts = await backend.upload_packet(
         telegram_update_claim,
         tournament_id=UUID(str(data["tournament_id"])),
         source_filename=filename,
         source=source,
     )
     await state.clear()
-    sent_message = await send_message_model(
-        message,
-        packet_draft_message(draft, localization, locale, launch_links=launch_links),
-    )
-    await backend.bind_packet_draft_message(
-        telegram_update_claim,
-        draft_id=draft.draft_id,
-        chat_id=sent_message.chat.id,
-        message_id=sent_message.message_id,
-        locale=locale,
-    )
+    for draft in drafts:
+        model = packet_draft_message(draft, localization, locale, launch_links=launch_links)
+        while True:
+            try:
+                sent_message = await send_message_model(message, model)
+                break
+            except TelegramRetryAfter as error:
+                await asyncio.sleep(error.retry_after)
+        await backend.bind_packet_draft_message(
+            telegram_update_claim,
+            draft_id=draft.draft_id,
+            chat_id=sent_message.chat.id,
+            message_id=sent_message.message_id,
+            locale=locale,
+        )
 
 
 @router.message(StateFilter(PacketUploadState.waiting_document))

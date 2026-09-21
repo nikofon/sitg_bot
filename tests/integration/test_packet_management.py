@@ -22,6 +22,7 @@ from sitg_bot.storage.models import (
     GamePacketVersionRecord,
     GameResultRecord,
     LogicalQuestionRecord,
+    PacketDraftRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
     PlatformAdministratorRecord,
@@ -80,6 +81,36 @@ async def test_console_manager_packet_workflow_uses_tournament_permissions(datab
         assert rejected["status"] == "rejected"
         with pytest.raises(ValueError, match="valid base64"):
             await server._dispatch(connection, "packet_import", {**params, "source_base64": "!"})
+    finally:
+        await database.close()
+
+
+async def test_upload_creates_independent_drafts_with_shared_provenance(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        first = asdict(packet())
+        second = {**first, "name": "Second packet"}
+        result = await service.import_upload(
+            json.dumps([first, second]).encode(), source_filename="batch.json",
+            uploader_id=fixture.manager.id, tournament_id=fixture.tournament_id,
+        )
+        summaries = result["drafts"]
+        assert [item["packet_name"] for item in summaries] == [first["name"], "Second packet"]
+        ids = [UUID(item["draft_id"]) for item in summaries]
+        assert ids[0] != ids[1]
+        async with database.sessions() as session:
+            drafts = [await session.get(PacketDraftRecord, draft_id) for draft_id in ids]
+            assert drafts[0].source_checksum == drafts[1].source_checksum
+            assert all(draft.source_filename == "batch.json" for draft in drafts)
+            assert all(draft.uploader_id == fixture.manager.id for draft in drafts)
+        await service.reject(ids[0], actor_id=fixture.manager.id)
+        assert (await service.draft_summary(ids[0], fixture.manager.id))["status"] == "rejected"
+        assert (await service.draft_summary(ids[1], fixture.manager.id))["can_publish"]
+        assert ".pdf" in (await service.upload_eligibility(
+            fixture.tournament_id, fixture.manager.id
+        ))["accepted_extensions"]
     finally:
         await database.close()
 

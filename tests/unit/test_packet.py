@@ -1,7 +1,12 @@
+import io
 import json
+from types import SimpleNamespace
+from unittest.mock import Mock
+from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+from pypdf import PdfWriter
 
 from sitg_bot.domain.packet import Packet, Question, Theme
 from sitg_bot.packet_import import (
@@ -10,6 +15,7 @@ from sitg_bot.packet_import import (
     packet_from_docx_bytes,
     packet_from_json,
     packet_to_json,
+    packets_from_document_bytes,
 )
 
 
@@ -178,3 +184,110 @@ def test_unreadable_docx_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="not a readable DOCX"):
         packet_from_docx(path)
+
+
+def docx_bytes(paragraphs: list[tuple[str, str]]) -> bytes:
+    body = "".join(
+        f'<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr>'
+        f'<w:r><w:t>{escape(text)}</w:t></w:r></w:p>'
+        for style, text in paragraphs
+    )
+    source = io.BytesIO()
+    with ZipFile(source, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+            f'wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>',
+        )
+    return source.getvalue()
+
+
+def test_docx_multiple_packet_headings() -> None:
+    source = docx_bytes([
+        (style, text)
+        for name in ("First", "Second")
+        for style, text in [
+            ("Heading1", name), ("Heading2", f"{name} theme"),
+            ("Normal", "10. Question Ответ: Answer"),
+        ]
+    ])
+    packets = packets_from_document_bytes(source, "test.docx")
+    assert [p.name for p in packets] == ["First", "Second"]
+    assert [p.themes[0].name for p in packets] == ["First theme", "Second theme"]
+    with pytest.raises(ValueError, match="several packets"):
+        packet_from_docx_bytes(source)
+    single = docx_bytes([
+        ("Heading1", "Named packet"), ("Heading2", "Финал"),
+        ("Normal", "10. Question Ответ: Answer"),
+    ])
+    assert packet_from_docx_bytes(single).name == "Named packet"
+
+
+@pytest.mark.parametrize("extension", [".pdf", ".docx"])
+def test_document_sections_and_wrapped_fields(monkeypatch, extension) -> None:
+    sections = ["БОЙ I", "Бой 2", "ПЕРВЫЙ ЭТАП", "2-й ЭТАП", "ГРАНД-ФИНАЛ", "ЗАПАС"]
+    lines = ["Preamble", "10. This is not a question", "Ответ: Ignore"]
+    for section in sections:
+        lines.extend([
+            section, "Темы:", "10. A table of contents entry",
+            "1. ТЕМА: First", "Автор: Alice", "Комментарий: Theme note",
+            "continued", "10. First line", "second line", "Ответ: A",
+            "Источники:", "https://example.org", "50. A question about prices",
+            "30. This continues the question", "Ответ: B",
+            "Тема 2. SecondАвтор: Bob", "10. Other question Ответ: C",
+            "Зачёт: D, E", "Тема 3.", "Автор:",
+        ])
+    if extension == ".pdf":
+        page = SimpleNamespace(get_contents=lambda: SimpleNamespace(get_data=lambda: b"text"),
+                               extract_text=Mock(
+            return_value="\n".join(lines)
+        ))
+        monkeypatch.setattr("sitg_bot.packet_import.PdfReader", lambda _: SimpleNamespace(
+            pages=[page], is_encrypted=False
+        ))
+        source = b"pdf"
+    else:
+        source = docx_bytes([("Normal", line) for line in lines])
+    packets = packets_from_document_bytes(source, f"Tournament{extension}")
+    assert [p.name for p in packets] == [
+        f"Tournament. {name}" for name in ["Бой 1", "Бой 2", *sections[2:]]
+    ]
+    for packet in packets:
+        assert len(packet.themes) == 2
+        first, second = packet.themes
+        assert first.commentary == "Theme note\ncontinued"
+        assert first.questions[0].text == "First line\nsecond line"
+        assert first.questions[0].source == "https://example.org"
+        assert first.questions[1].text.endswith("30. This continues the question")
+        assert second.name == "Second"
+        assert second.questions[0].author == "Bob"
+        assert second.questions[0].accepted_answers == ("D", "E")
+    if extension == ".pdf":
+        page.extract_text.assert_called_once_with(
+            extraction_mode="layout", layout_mode_space_vertically=False
+        )
+
+
+def test_pdf_empty_encrypted_and_unreadable_inputs() -> None:
+    with pytest.raises(ValueError, match="not a readable PDF"):
+        packets_from_document_bytes(b"invalid", "test.pdf")
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    source = io.BytesIO()
+    writer.write(source)
+    with pytest.raises(ValueError, match="no extractable text"):
+        packets_from_document_bytes(source.getvalue(), "empty.pdf")
+    writer.encrypt("secret")
+    encrypted = io.BytesIO()
+    writer.write(encrypted)
+    with pytest.raises(ValueError, match="Password-protected"):
+        packets_from_document_bytes(encrypted.getvalue(), "encrypted.pdf")
+
+
+def test_multi_packet_json_round_trip() -> None:
+    packet = Packet("Example", (Theme("Theme", (Question("Q", "A", "", 10),)),))
+    single = packet_to_json(packet)
+    assert packets_from_document_bytes(single.encode(), "test.json") == (packet,)
+    assert packets_from_document_bytes(f"[{single},{single}]".encode(), "test.json") == (
+        packet, packet,
+    )

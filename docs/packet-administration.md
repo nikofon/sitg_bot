@@ -6,7 +6,7 @@
 
 | Module | Responsibility |
 | --- | --- |
-| [packet_import.py](../src/sitg_bot/packet_import.py) | Bounded DOCX parsing, JSON serialization/parsing |
+| [packet_import.py](../src/sitg_bot/packet_import.py) | Bounded DOCX/PDF parsing, multi-packet splitting, JSON serialization/parsing |
 | [domain/packet.py](../src/sitg_bot/domain/packet.py) | Packet/theme/question values and validation |
 | [services/packets.py](../src/sitg_bot/services/packets.py) | Drafts, preview/edit, publication, management and authorization |
 | [storage/packets.py](../src/sitg_bot/storage/packets.py) | Logical content, immutable revisions and publication persistence |
@@ -38,24 +38,46 @@ JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, and `la
 Each question requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
 (string list), `form`, `commentary`, `source`, and `author`. Use
 `packet_to_json`/`packet_from_data` in the importer as the serialization contract.
+Uploads also accept an array of packet objects. JSON remains supported internally but is
+not advertised in Telegram's upload prompt.
 
-The DOCX converter uses Heading 1 for the packet name and Heading 2 for theme names
+The DOCX converter uses Heading 1 for each packet name and Heading 2 for theme names
 (including Russian style names), question lines such as `10. [answer form] Question text`,
 and fields labeled `Ответ:`, `Зачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.
 A theme-level commentary line starts with `Комментарий к теме:` (or `Theme commentary:`)
 after the theme heading or author line; following plain lines continue it.
-Accepted alternatives in `Зачёт:` are comma-separated. It is not a general Word-layout parser. Convert with
-`sitg-import-packet packet.docx packet.json`, inspect the result, and use JSON for custom
-question values. Parser limits are separate from per-game SI limits.
+Accepted alternatives in `Зачёт:` are comma-separated; `Источники:` is also supported.
+
+PDF uploads use `pypdf` layout extraction and require selectable text; scanned images need
+OCR before upload. Both PDF and DOCX recognize standalone `Бой I`/`Бой 1`, numbered or
+spelled-out stage headings (`ПЕРВЫЙ ЭТАП`, `2-й ЭТАП`, `Этап 2`), `ГРАНД-ФИНАЛ`, `ФИНАЛ`,
+and `ЗАПАС`. Section names are appended to the source filename without its extension;
+Roman fight numbers become decimal, e.g. `Чемпионат Воронежа по СИ 2017. Бой 1`.
+Text before the first section and theme indexes before the first theme are ignored.
+Plain theme headings include `1. ТЕМА: Название`, `Тема 1. Название`, and `Тема: Название`.
+Before a theme's first question, `Комментарий:` also denotes theme commentary.
+Wrapped question fields continue across lines and pages. These are structural heuristics;
+review the extracted text and correct interpretation errors in the editor.
+
+Convert with `sitg-import-packet packet.pdf packet.json` (DOCX also works). Output is one
+JSON object for a single packet or an array for several. The shared byte API is
+`packets_from_document_bytes(source, source_filename)`; existing singular DOCX helpers
+reject multi-packet input instead of silently discarding packets. Limits include 128 packets
+per document, 512 PDF pages, and 8 MiB of extracted text. Uploads retain the existing 4 MiB
+file and combined interpreted-content limits. These are separate from per-game SI limits.
 
 ## Initial import and verification
 
-1. An authorized administrator or tournament manager imports a JSON or supported DOCX
-   packet in a specific tournament context. Publishing creates tournament assignments using
+1. An authorized administrator or tournament manager imports a supported DOCX, PDF, or JSON
+   file in a specific tournament context. Publishing creates tournament assignments using
    each destination's configured access defaults. Automatic library release is disabled by
    default and can be enabled with `packets_released_by_default`.
-2. The application parses it into a draft packet structure without making it
-   available for games.
+2. The application parses all packets and saves their drafts in one transaction without
+   making them available for games. Each draft has the source filename and checksum.
+   Telegram sends a separate preview/edit link and publish/reject controls for each packet.
+   A parse failure creates a validation-failed draft; it does not import a partial batch.
+   The upload response retains the existing summary for one draft; multiple drafts return
+   an ordered `drafts` array of those summaries.
 3. The application validates the draft and presents its complete interpreted content
    back to the uploader and authorized reviewers. The preview includes packet
    metadata, ruleset-specific content structure and ordering, resolved authors, and
@@ -77,7 +99,7 @@ confirmation identifies a specific draft, preventing an older command from publi
 a later import.
 
 JSON imports accept optional top-level `year` and `lead_author` fields. The current
-DOCX converter does not infer either field, so converted DOCX drafts leave them empty.
+DOCX/PDF converter does not infer either field, so converted drafts leave them empty.
 
 The Mini App's packet details list distinct author names found in packet, theme, and question
 author fields. Each name can be associated with a registered author or a newly registered author

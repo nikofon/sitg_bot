@@ -930,27 +930,28 @@ class ApplicationGateway:
                 source = base64.b64decode(operation.source_base64, validate=True)
             except (binascii.Error, ValueError) as error:
                 raise ValueError("Packet upload is not valid base64") from error
-            summary = await self.packets.import_upload(
+            result = await self.packets.import_upload(
                 source,
                 source_filename=operation.source_filename,
                 uploader_id=player_id,
                 tournament_id=tournament_id,
             )
-            if self.launch_references is not None:
-                reference = await self.launch_references.create(
-                    route="packet_draft",
-                    target_id=UUID(str(summary["draft_id"])),
-                    created_by_player_id=player_id,
-                    intended_player_id=player_id,
-                    lifetime=timedelta(hours=2),
-                    one_time=False,
-                )
-                summary = {
-                    **summary,
-                    "launch_reference": reference.value,
-                    "launch_expires_at": reference.expires_at,
-                }
-            return summary
+            summaries = result.get("drafts", [result])
+            for summary in summaries:
+                if self.launch_references is not None:
+                    reference = await self.launch_references.create(
+                        route="packet_draft",
+                        target_id=UUID(str(summary["draft_id"])),
+                        created_by_player_id=player_id,
+                        intended_player_id=player_id,
+                        lifetime=timedelta(hours=2),
+                        one_time=False,
+                    )
+                    summary.update(
+                        launch_reference=reference.value,
+                        launch_expires_at=reference.expires_at,
+                    )
+            return result
         if isinstance(operation, PacketDraftGetOperation):
             return await self.packets.editable_draft(operation.draft_id, player_id)
         if isinstance(operation, PacketDraftUpdateOperation):

@@ -1,3 +1,4 @@
+import io
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -7,6 +8,8 @@ from uuid import UUID
 import pytest
 from aiogram import Bot
 from aiogram.dispatcher.event.bases import CancelHandler
+from aiogram.exceptions import TelegramRetryAfter
+from aiogram.methods import SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from sitg_bot.application.contracts import ActionCode, GatewayRequest, GatewayResponse
@@ -27,6 +30,7 @@ from sitg_bot.bot.handlers.manager import (
     _creation_prompt,
     delivered_token_message,
     handle_manager_tournament_action,
+    handle_packet_document,
     handle_token_request_commentary,
     handle_tournament_ruleset,
     handle_tournament_type,
@@ -54,6 +58,7 @@ from sitg_bot.bot.presenters.models import (
     ReplyKeyboardModel,
 )
 from sitg_bot.bot.state import GatewayCallError
+from sitg_bot.bot.state.backend import BotBackend
 from sitg_bot.bot.state.models import (
     DeliveredCreationTokenState,
     NavigationState,
@@ -67,6 +72,56 @@ from sitg_bot.bot.state.settings import TournamentCreationState
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.telegram_auth import DuplicateTelegramUpdate
 from sitg_bot.storage.models import PlayerTelegramNavigationRecord
+
+
+@pytest.mark.parametrize("filename", ["packets.pdf", "packets.docx", "packets.json"])
+async def test_packet_upload_sends_controls_for_every_draft(filename) -> None:
+    summaries = [
+        {
+            "draft_id": str(UUID(int=index)), "version": 1,
+            "status": "awaiting_confirmation", "source_filename": filename,
+            "ruleset_key": "si", "ruleset_version": 1, "packet_name": f"Packet {index}",
+            "theme_count": 6, "question_count": 30, "detected_authors": [],
+            "errors": [], "warnings": [], "can_publish": True, "can_reject": True,
+            "launch_reference": f"preview{index}",
+        }
+        for index in (1, 2)
+    ]
+    gateway = SimpleNamespace(execute_update=AsyncMock(side_effect=[
+        SimpleNamespace(ok=True, data={"drafts": summaries}),
+        SimpleNamespace(ok=True), SimpleNamespace(ok=True),
+    ]))
+    flood_wait = [TelegramRetryAfter(
+        method=SendMessage(chat_id=42, text="preview"), message="retry", retry_after=0,
+    )] if filename.endswith(".pdf") else []
+    message = SimpleNamespace(
+        document=SimpleNamespace(file_name=filename, file_size=5),
+        bot=SimpleNamespace(download=AsyncMock(return_value=io.BytesIO(b"input"))),
+        answer=AsyncMock(side_effect=[
+            *flood_wait,
+            *(SimpleNamespace(chat=SimpleNamespace(id=42), message_id=index)
+              for index in (10, 11)),
+        ]),
+    )
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"tournament_id": str(UUID(int=3))}), clear=AsyncMock()
+    )
+    await handle_packet_document(
+        message, BotBackend(gateway), object(), LocalizationService(), "en", state,
+        "https://example.org/app",
+    )
+    assert message.answer.await_count == 2 + len(flood_wait)
+    for index, call in enumerate(message.answer.await_args_list[len(flood_wait):], 1):
+        assert f"Packet {index}" in call.args[0]
+        buttons = [button for row in call.kwargs["reply_markup"].inline_keyboard for button in row]
+        assert any(button.web_app and f"preview{index}" in button.web_app.url for button in buttons)
+        assert any(button.callback_data == f"packet:draft:publish:{UUID(int=index)}"
+                   for button in buttons)
+    bindings = [call.args[1] for call in gateway.execute_update.await_args_list[1:]]
+    assert [(binding.draft_id, binding.message_id) for binding in bindings] == [
+        (UUID(int=1), 10), (UUID(int=2), 11),
+    ]
+    state.clear.assert_awaited_once()
 
 
 def registration(*, step: str, locale: str = "ru", version: int = 2) -> RegistrationState:

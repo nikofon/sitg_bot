@@ -12,6 +12,7 @@ from sitg_bot.application.contracts import (
     ErrorCode,
     GatewayRequest,
     GatewayResponse,
+    PacketDraftTelegramBindOperation,
 )
 from sitg_bot.application.gateway import ACTION_POLICIES, ApplicationGateway
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
@@ -271,3 +272,13 @@ async def test_telegram_adapter_derives_update_idempotency_without_storage_acces
     assert gateway.request.metadata.channel == "telegram_bot"
     assert gateway.request.metadata.idempotency_key == "telegram-update:99:test:456"
     assert gateway.request.metadata.correlation_id == claim.correlation_id
+
+    keys = []
+    for draft_id in (UUID(int=1), UUID(int=2), UUID(int=1)):
+        await adapter.execute_update(claim, PacketDraftTelegramBindOperation(
+            action=ActionCode.PACKET_DRAFT_TELEGRAM_BIND,
+            draft_id=draft_id, chat_id=123, message_id=456, locale="ru",
+        ))
+        keys.append(gateway.request.metadata.idempotency_key)
+    assert keys[0] != keys[1]
+    assert keys[0] == keys[2]

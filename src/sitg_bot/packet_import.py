@@ -9,13 +9,16 @@ from typing import Any, NamedTuple
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+from pypdf import PdfReader
+from pypdf.errors import PyPdfError
+
 from sitg_bot.domain.packet import Packet, Question, Theme
 
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": WORD_NAMESPACE}
 QUESTION_RE = re.compile(r"^(10|20|30|40|50)\s*[.)]\s*(?:\[([^]]*)])?\s*(.*)$")
 FIELD_RE = re.compile(
-    r"^(Ответ|Зач[её]т|Комментарий|Источник|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
+    r"^(Ответ|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
     re.I,
 )
 THEME_COMMENTARY_RE = re.compile(
@@ -23,12 +26,25 @@ THEME_COMMENTARY_RE = re.compile(
     re.I,
 )
 INLINE_FIELD_RE = re.compile(
-    r"(?=\s+(?:Ответ|Зач[её]т|Комментарий|Источник|Автор(?: вопроса)?|Author)\s*:)",
+    r"(?=\s+(?:Ответ|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:)",
     re.I,
 )
 MAX_DOCUMENT_XML_BYTES = 8 * 1024 * 1024
 MAX_PACKET_THEMES = 256
 MAX_PACKET_QUESTIONS = 4096
+MAX_DOCUMENT_PACKETS = 128
+MAX_PDF_PAGES = 512
+SECTION_RE = re.compile(
+    r"^(?:Бой\s+(?:\d+|[IVXLCDM]+)|"
+    r"(?:\d+(?:[-‐‑–]?[йя])?|[IVXLCDM]+|Первый|Второй|Третий|Четв[её]ртый|"
+    r"Пятый|Шестой|Седьмой|Восьмой|Девятый|Десятый)\s+этап|"
+    r"Этап\s+(?:\d+|[IVXLCDM]+)|Гранд[\s\-‐‑–—]*финал|Финал|Запас)\s*[.:]?$",
+    re.I,
+)
+THEME_RE = re.compile(
+    r"^(?:\d+\s*[.)]\s*Тема\s*:|Тема\s+(?:№\s*)?\d+\s*[.):]|Тема\s*:)\s*(.*)$",
+    re.I,
+)
 
 
 class Line(NamedTuple):
@@ -76,17 +92,114 @@ def _heading_level(style: str) -> int | None:
 
 def packet_from_docx(path: str | Path) -> Packet:
     """Parse a marked-up DOCX question packet into the domain model."""
-    return _packet_from_docx_source(Path(path))
+    return _single_packet(packets_from_document_bytes(Path(path).read_bytes(), Path(path).name))
 
 
 def packet_from_docx_bytes(source: bytes) -> Packet:
     """Parse DOCX bytes without retaining an original source file on the server."""
-    return _packet_from_docx_source(io.BytesIO(source))
+    return _single_packet(packets_from_document_bytes(source, "packet.docx"))
 
 
-def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
-    """Internal DOCX parser shared by filesystem and transport inputs."""
-    packet_name = ""
+def _single_packet(packets: tuple[Packet, ...]) -> Packet:
+    if len(packets) != 1:
+        raise ValueError("The document contains several packets; use packets_from_document_bytes")
+    return packets[0]
+
+
+def _pdf_lines(source: bytes) -> list[Line]:
+    try:
+        reader = PdfReader(io.BytesIO(source))
+        if reader.is_encrypted:
+            raise ValueError("Password-protected PDF files are not supported")
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ValueError("The PDF has too many pages")
+        lines: list[Line] = []
+        size = 0
+        for page in reader.pages:
+            content = page.get_contents()
+            if content is None:
+                continue
+            if len(content.get_data()) > MAX_DOCUMENT_XML_BYTES:
+                raise ValueError("The PDF page content is too large")
+            text = page.extract_text(extraction_mode="layout", layout_mode_space_vertically=False)
+            size += len(text.encode("utf-8"))
+            if size > MAX_DOCUMENT_XML_BYTES:
+                raise ValueError("The PDF text content is too large")
+            # Page numbers are not question content. Keep line breaks across pages.
+            page_lines = text.strip().splitlines()
+            lines.extend(Line(line.strip(), "") for index, line in enumerate(page_lines)
+                         if not (index in {0, len(page_lines) - 1}
+                                 and line.strip().isdecimal()))
+    except (PyPdfError, OSError, RecursionError) as error:
+        raise ValueError("The uploaded document is not a readable PDF file") from error
+    if not any(line.text for line in lines):
+        raise ValueError("The PDF has no extractable text; scanned files require OCR")
+    return lines
+
+
+def _section_name(text: str) -> str:
+    text = text.rstrip(".:").strip()
+    if text.casefold().startswith("бой"):
+        number = text.split()[1].upper()
+        if not number.isdecimal():
+            values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+            number = str(sum(-values[c] if i + 1 < len(number)
+                             and values[c] < values[number[i + 1]] else values[c]
+                             for i, c in enumerate(number)))
+        return f"Бой {number}"
+    return text
+
+
+def packets_from_document_bytes(source: bytes, source_filename: str) -> tuple[Packet, ...]:
+    """Parse one upload into packets, preserving document order."""
+    path = Path(source_filename)
+    extension = path.suffix.casefold()
+    if extension == ".json":
+        data = json.loads(source.decode("utf-8-sig"))
+        entries = data if isinstance(data, list) else [data]
+        if not entries or len(entries) > MAX_DOCUMENT_PACKETS:
+            raise ValueError(f"A document must contain 1–{MAX_DOCUMENT_PACKETS} packets")
+        if not all(isinstance(entry, dict) for entry in entries):
+            raise ValueError("Packet JSON must be an object or an array of packet objects")
+        return tuple(packet_from_data(entry) for entry in entries)
+    if extension == ".docx":
+        lines = _document_lines(io.BytesIO(source))
+    elif extension == ".pdf":
+        lines = _pdf_lines(source)
+    else:
+        raise ValueError("Only DOCX, PDF and JSON packet files are supported")
+
+    sections = any(_heading_level(line.style) != 2 and SECTION_RE.fullmatch(line.text)
+                   for line in lines)
+    packets: list[Packet] = []
+    name = path.stem
+    body: list[Line] = []
+    started = not sections
+
+    def finish() -> None:
+        if not any(_heading_level(line.style) == 2 or THEME_RE.match(line.text)
+                   for line in body):
+            return  # Document title, preamble or table of contents.
+        if len(packets) >= MAX_DOCUMENT_PACKETS:
+            raise ValueError(f"A document may contain at most {MAX_DOCUMENT_PACKETS} packets")
+        packets.append(_packet_from_lines(body, name))
+
+    for line in lines:
+        section = SECTION_RE.fullmatch(line.text) if _heading_level(line.style) != 2 else None
+        if section or (not sections and _heading_level(line.style) == 1 and line.text):
+            finish()
+            body = []
+            name = f"{path.stem}. {_section_name(line.text)}" if section else line.text
+            started = True
+        elif started:
+            body.append(line)
+    finish()
+    if not packets:
+        raise ValueError("The document contains no packets with recognizable theme headings")
+    return tuple(packets)
+
+
+def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
     themes: list[Theme] = []
     theme_name = ""
     theme_author = ""
@@ -132,37 +245,47 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
     def finish_theme() -> None:
         nonlocal questions, theme_commentary
         finish_question()
-        if theme_name:
+        if theme_name and questions:
             themes.append(
                 Theme(theme_name, tuple(questions), theme_author, theme_commentary.strip())
             )
         questions = []
         theme_commentary = ""
 
-    for line in _document_lines(source):
+    normalized: list[Line] = []
+    for line in lines:
+        text = line.text
+        if THEME_RE.match(text):
+            text = re.sub(r"(?<!\s)(?=Автор\s*:)", "\n", text, flags=re.I)
+        for part in text.splitlines():
+            normalized.extend(Line(chunk.strip(), line.style)
+                              for chunk in INLINE_FIELD_RE.split(part))
+
+    for line in normalized:
         heading = _heading_level(line.style)
-        if heading == 1 and line.text:
-            if packet_name:
-                raise ValueError("A DOCX packet must contain exactly one level-1 heading")
-            packet_name = line.text
-            continue
-        if heading == 2:
+        theme_marker = THEME_RE.match(line.text)
+        if heading == 2 or theme_marker:
             if not line.text:
                 continue
             finish_theme()
-            theme_name = line.text
+            theme_name = theme_marker.group(1).strip() if theme_marker else line.text
             theme_author = ""
             continue
+        if not theme_name:
+            continue  # Ignore preambles and numbered theme indexes before the first theme.
         theme_commentary_match = THEME_COMMENTARY_RE.match(line.text)
-        if theme_commentary_match:
+        if theme_commentary_match or (
+            question is None and theme_name and re.match(r"^Комментарий\s*:", line.text, re.I)
+        ):
             finish_question()
-            value = theme_commentary_match.group(1).strip()
+            value = line.text.split(":", 1)[1].strip()
             theme_commentary = f"{theme_commentary}\n{value}" if theme_commentary else value
             continue
         marker = QUESTION_RE.match(line.text)
+        if (marker and question is not None and not question["answer"]
+                and int(marker.group(1)) <= int(question["value"])):
+            marker = None  # A wrapped question can mention a lower price followed by a period.
         if marker:
-            if not theme_name:
-                raise ValueError(f"Question {marker.group(1)} appears before a theme heading")
             finish_question()
             value, form, inline_text = marker.groups()
             question = {
@@ -183,7 +306,7 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
                 continue
             active_field = {
                 "ответ": "answer", "зачет": "accepted_answers",
-                "комментарий": "commentary", "источник": "source",
+                "комментарий": "commentary", "источник": "source", "источники": "source",
                 "автор": "author", "автор вопроса": "author", "author": "author",
             }[label]
             append(active_field, value.strip())
@@ -193,11 +316,9 @@ def _packet_from_docx_source(source: str | Path | io.BytesIO) -> Packet:
         elif line.text and question is None and theme_commentary:
             theme_commentary = f"{theme_commentary}\n{line.text}"
     finish_theme()
-    if not packet_name:
-        raise ValueError("A DOCX packet must have a non-empty level-1 heading")
     if not themes:
-        raise ValueError("A DOCX packet must contain at least one level-2 theme heading")
-    return Packet(packet_name, tuple(themes))
+        raise ValueError(f"Packet {packet_name!r} contains no themes with questions")
+    return packet_from_data(asdict(Packet(packet_name, tuple(themes))))
 
 
 def packet_to_json(packet: Packet, *, indent: int | None = 2) -> str:
@@ -298,11 +419,13 @@ def packet_from_json(path: str | Path) -> Packet:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert a marked-up DOCX packet to JSON")
-    parser.add_argument("input", type=Path, help="path to the source .docx file")
+    parser = argparse.ArgumentParser(description="Convert DOCX/PDF packets to JSON")
+    parser.add_argument("input", type=Path, help="path to the source .docx, .pdf or .json file")
     parser.add_argument("output", type=Path, nargs="?", help="output path (stdout by default)")
     args = parser.parse_args()
-    rendered = packet_to_json(packet_from_docx(args.input)) + "\n"
+    packets = packets_from_document_bytes(args.input.read_bytes(), args.input.name)
+    data = asdict(packets[0]) if len(packets) == 1 else [asdict(packet) for packet in packets]
+    rendered = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
     else:

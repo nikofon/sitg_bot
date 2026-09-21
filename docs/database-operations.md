@@ -84,7 +84,7 @@ Entry points are declared in [pyproject.toml](../pyproject.toml).
 | `sitg-server` | Application services, TCP listener, background workers, optional Mini App HTTP listener |
 | `sitg-bot` / `python -m sitg_bot` | Telegram presentation process |
 | `sitg-console` | Local interactive client; [command guide](console-commands.md) |
-| `sitg-import-packet` | Marked-up DOCX-to-JSON conversion |
+| `sitg-import-packet` | DOCX/PDF-to-JSON conversion, including multiple packets |
 | `sitg-admin-packet` | Trusted direct-database draft import, preview, publication, and rejection |
 | `sitg-rating-simulation` | Comparison of `time_weighted` and `log_recent`; produces `report.html` and CSV files |
 

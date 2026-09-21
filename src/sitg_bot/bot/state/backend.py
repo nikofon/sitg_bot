@@ -465,7 +465,7 @@ class BotBackend:
         tournament_id: UUID,
         source_filename: str,
         source: bytes,
-    ) -> PacketDraftState:
+    ) -> tuple[PacketDraftState, ...]:
         response = await self._execute(
             claim,
             PacketUploadOperation(
@@ -475,7 +475,9 @@ class BotBackend:
                 source_base64=base64.b64encode(source).decode("ascii"),
             ),
         )
-        return PacketDraftState.model_validate(response.data)
+        data = cast(dict[str, object], response.data)
+        return tuple(PacketDraftState.model_validate(draft)
+                     for draft in data.get("drafts", [data]))
 
     async def decide_packet_draft(
         self,

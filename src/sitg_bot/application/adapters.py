@@ -10,6 +10,7 @@ from sitg_bot.application.contracts import (
     GatewayOperation,
     GatewayRequest,
     GatewayResponse,
+    PacketDraftTelegramBindOperation,
     RequestMetadata,
 )
 from sitg_bot.application.telegram import TelegramUpdateClaim
@@ -71,15 +72,17 @@ class TelegramGatewayAdapter:
     ) -> GatewayResponse:
         if claim.bot_id != self.bot_id or claim.environment != self.environment:
             raise PermissionError("Telegram update claim belongs to another bot environment")
+        idempotency_key = f"telegram-update:{claim.bot_id}:{claim.environment}:{claim.update_id}"
+        if isinstance(operation, PacketDraftTelegramBindOperation):
+            # One document update can produce several independently bound draft messages.
+            idempotency_key += f":draft:{operation.draft_id}"
         request = GatewayRequest(
             metadata=RequestMetadata(
                 correlation_id=claim.correlation_id,
                 channel="telegram_bot",
                 client_name="sitg-telegram-bot",
                 client_version=self.client_version,
-                idempotency_key=(
-                    f"telegram-update:{claim.bot_id}:{claim.environment}:{claim.update_id}"
-                ),
+                idempotency_key=idempotency_key,
             ),
             operation=operation,
         )

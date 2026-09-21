@@ -14,6 +14,7 @@ dependencies = [
     "alembic>=1.14,<2",
     "asyncpg>=0.30,<1",
     "pydantic-settings>=2.6,<3",
+    "pypdf>=6.18.1,<7",
     "sqlalchemy>=2.0.45,<2.1",
 ]
 

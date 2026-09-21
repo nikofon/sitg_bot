@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from collections.abc import Iterable
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.packet import Packet
-from sitg_bot.packet_import import packet_from_data, packet_from_docx_bytes
+from sitg_bot.packet_import import packet_from_data, packets_from_document_bytes
 from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
@@ -513,7 +514,7 @@ class PacketAdminService:
                 "tournament_id": str(context.tournament_id),
                 "ruleset_key": context.ruleset_key,
                 "ruleset_version": context.ruleset_version,
-                "accepted_extensions": [".docx", ".json"],
+                "accepted_extensions": [".docx", ".pdf", ".json"],
                 "maximum_bytes": self.MAX_UPLOAD_BYTES,
             }
 
@@ -525,27 +526,23 @@ class PacketAdminService:
         uploader_id: UUID,
         tournament_id: UUID,
     ) -> dict[str, object]:
-        """Parse an authenticated transport upload and persist its interpreted draft."""
+        """Persist all interpreted drafts; single uploads retain their v1 response shape."""
         filename = Path(source_filename).name
         extension = Path(filename).suffix.casefold()
-        if extension not in {".docx", ".json"}:
-            raise ValueError("Only DOCX and JSON packet files are supported")
+        if extension not in {".docx", ".pdf", ".json"}:
+            raise ValueError("Only DOCX, PDF and JSON packet files are supported")
         if not source or len(source) > self.MAX_UPLOAD_BYTES:
             raise ValueError(f"Packet file must be between 1 and {self.MAX_UPLOAD_BYTES} bytes")
+        await self.upload_eligibility(tournament_id, uploader_id)
         checksum = hashlib.sha256(source).hexdigest()
         parsed_content: dict[str, object] = {}
         try:
             if extension == ".json":
                 decoded = json.loads(source.decode("utf-8-sig"))
-                if not isinstance(decoded, dict):
-                    raise TypeError("the document root must be an object")
-                parsed_content = decoded
-                packet = packet_from_data(decoded)
-            else:
-                packet = packet_from_docx_bytes(source)
-                parsed_content = asdict(packet)
-                packet = packet_from_data(parsed_content)
-            self._require_reasonable_content_size(parsed_content)
+                if isinstance(decoded, dict):
+                    parsed_content = decoded
+            packets = await asyncio.to_thread(packets_from_document_bytes, source, filename)
+            self._require_reasonable_content_size({"packets": [asdict(p) for p in packets]})
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             stored_content = parsed_content
             if (
@@ -579,14 +576,15 @@ class PacketAdminService:
                 )
                 draft_id = draft.id
             return await self.draft_summary(draft_id, uploader_id)
-        draft_id = await self.create_draft(
-            packet,
+        draft_ids = await self._create_drafts(
+            packets,
             source_filename=filename,
             source_checksum=checksum,
             uploader_id=uploader_id,
             tournament_id=tournament_id,
         )
-        return await self.draft_summary(draft_id, uploader_id)
+        summaries = [await self.draft_summary(draft_id, uploader_id) for draft_id in draft_ids]
+        return summaries[0] if len(summaries) == 1 else {"drafts": summaries}
 
     async def create_draft(
         self,
@@ -598,33 +596,52 @@ class PacketAdminService:
         tournament_id: UUID,
         intended_tournament_ids: tuple[UUID, ...] = (),
     ) -> UUID:
-        content = asdict(packet)
-        encoded = json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
+        return (await self._create_drafts(
+            (packet,), source_filename=source_filename, source_checksum=source_checksum,
+            uploader_id=uploader_id, tournament_id=tournament_id,
+            intended_tournament_ids=intended_tournament_ids,
+        ))[0]
+
+    async def _create_drafts(
+        self,
+        packets: tuple[Packet, ...],
+        *,
+        source_filename: str,
+        source_checksum: str | None = None,
+        uploader_id: UUID | None = None,
+        tournament_id: UUID,
+        intended_tournament_ids: tuple[UUID, ...] = (),
+    ) -> tuple[UUID, ...]:
+        draft_ids: list[UUID] = []
         async with self.database.transaction() as session:
             await self.tournaments.require_modifiable(session, tournament_id)
             context = await self.tournaments.context(session, tournament_id)
             if uploader_id is not None:
                 await self._require_upload_access(session, context, uploader_id)
-            errors, warnings = self.validate(packet)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
-            errors.extend(ruleset.validate_content(packet, context.settings))
-            draft = PacketDraftRecord(
-                status="validation_failed" if errors else "awaiting_confirmation",
-                source_filename=source_filename,
-                source_checksum=source_checksum or hashlib.sha256(encoded).hexdigest(),
-                content=content,
-                validation_errors=errors,
-                validation_warnings=warnings,
-                uploader_id=uploader_id,
-                creation_tournament_id=context.tournament_id,
-            )
-            session.add(draft)
-            await session.flush()
-            for intended_id in intended_tournament_ids or (context.tournament_id,):
-                session.add(
-                    PacketDraftTournamentRecord(draft_id=draft.id, tournament_id=intended_id)
+            for packet in packets:
+                content = asdict(packet)
+                encoded = json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
+                errors, warnings = self.validate(packet)
+                errors.extend(ruleset.validate_content(packet, context.settings))
+                draft = PacketDraftRecord(
+                    status="validation_failed" if errors else "awaiting_confirmation",
+                    source_filename=source_filename,
+                    source_checksum=source_checksum or hashlib.sha256(encoded).hexdigest(),
+                    content=content,
+                    validation_errors=errors,
+                    validation_warnings=warnings,
+                    uploader_id=uploader_id,
+                    creation_tournament_id=context.tournament_id,
                 )
-        return draft.id
+                session.add(draft)
+                await session.flush()
+                draft_ids.append(draft.id)
+                for intended_id in intended_tournament_ids or (context.tournament_id,):
+                    session.add(
+                        PacketDraftTournamentRecord(draft_id=draft.id, tournament_id=intended_id)
+                    )
+        return tuple(draft_ids)
 
     async def preview(self, draft_id: UUID) -> dict[str, object]:
         async with self.database.sessions() as session:
