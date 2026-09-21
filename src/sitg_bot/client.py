@@ -516,13 +516,13 @@ class InteractiveConsole:
             if not arguments:
                 raise ValueError(
                     "Usage: tournament packet assign <packet-id> "
-                    "[--version <version-id>] [--access-level <level>] "
+                    "[--version <version-id>] [--library-viewing-rule <rule>] "
                     "[--discoverable] [--playable] "
                     "[--content-visible] [--editable]"
                 )
             packet_id = arguments.pop(0)
             version_id = None
-            access_level = None
+            library_viewing_rule = None
             rights = {
                 "discoverable": False,
                 "playable": False,
@@ -536,10 +536,10 @@ class InteractiveConsole:
                         raise ValueError("--version requires a packet version ID")
                     version_id = arguments.pop(0)
                     continue
-                if flag == "--access-level":
+                if flag == "--library-viewing-rule":
                     if not arguments:
-                        raise ValueError("--access-level requires a value")
-                    access_level = arguments.pop(0)
+                        raise ValueError("--library-viewing-rule requires a value")
+                    library_viewing_rule = arguments.pop(0)
                     continue
                 right = flag.removeprefix("--").replace("-", "_")
                 if not flag.startswith("--") or right not in rights:
@@ -550,19 +550,10 @@ class InteractiveConsole:
                 tournament_id=tournament_id,
                 packet_id=packet_id,
                 packet_version_id=version_id,
-                access_level=access_level,
+                library_viewing_rule=library_viewing_rule,
                 **rights,
             )
         if operation == "entitlement":
-            if len(arguments) == 4 and arguments[2].replace("_", "-") == "access-level":
-                assignment_id, player_id, _, access_level = arguments
-                return await self.client.request(
-                    "tournament_packet_entitlement_set",
-                    assignment_id=assignment_id,
-                    player_id=player_id,
-                    rights={},
-                    access_level=access_level,
-                )
             if len(arguments) != 4:
                 raise ValueError(
                     "Usage: tournament packet entitlement <assignment-id> <player-uuid> "

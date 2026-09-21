@@ -151,13 +151,15 @@ async def test_correction_and_deletion_preserve_game_history_and_entitlements(da
         tournaments = TournamentService(database)
         assignment = await assigned(database, fixture)
         async with database.transaction() as session:
+            current = await session.get(TournamentPacketAssignmentRecord, assignment.id)
+            current.library_viewing_rule = "anytime"
             session.add(
                 TournamentPacketEntitlementRecord(
                     assignment_id=assignment.id,
                     player_id=fixture.players[0].id,
                     content_visible=True,
                     discoverable=True,
-                    access_level="read-or-play",
+                    playable=True,
                 )
             )
         matchmaking = InvitationMatchmakingService(database)
@@ -183,6 +185,7 @@ async def test_correction_and_deletion_preserve_game_history_and_entitlements(da
                 service, fixture, assignment, editor, {"themes.0.questions.0.text": "correction"}
             )
         updated = await assigned(database, fixture)
+        assert updated.library_viewing_rule == "anytime"
         async with database.sessions() as session:
             old = await session.get(PacketVersionRecord, assignment.adopted_version_id)
             assert old.state == "archived" and old.deleted_at is not None

@@ -1331,6 +1331,17 @@ export class MiniAppShell {
         ),
       );
       const actions = element("div", { className: "inline-actions" });
+      const viewingRule = element("select", { disabled: !can("packet_access") },
+        ...["never", "after-play", "anytime"].map((rule) => element(
+          "option", { value: rule, selected: rule === packet.library_viewing_rule },
+          this.i18n.t(`packet_management.library_viewing_rule.${rule}` as MessageKey),
+        )));
+      viewingRule.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
+        assignment_id: packet.assignment_id, right: "library_viewing_rule", library_viewing_rule: viewingRule.value,
+        expected_version: resource.settings_version,
+      }));
+      card.append(element("label", {}, this.i18n.t("packet_management.library_viewing_rule"), viewingRule));
+      card.append(element("p", { className: "field-help" }, this.i18n.t("packet_management.library_viewing_help")));
       if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
         const button = element("button", {
           type: "button", className: command === "delete" ? "danger-button" : "secondary-button",
@@ -1422,7 +1433,7 @@ export class MiniAppShell {
     classic = false,
   ): HTMLElement {
     const rights: Array<"playable" | "discoverable" | "readable"> = classic ? ["readable"] : ["playable", "discoverable", "readable"];
-    const table = element("table", { className: "packet-access-table" });
+    const table = element("table", { className: `packet-access-table${classic ? " packet-access-table-classic" : ""}` });
     const head = element("thead", {}, element(
       "tr",
       {},
@@ -1712,11 +1723,6 @@ export class MiniAppShell {
       group(
         "manager_settings.registration",
         element("label", { className: "checkbox-label" }, element("input", {
-          name: "registration_available", type: "checkbox", checked: item.registration_open,
-          disabled: resource.finalized_at == null,
-        }), this.i18n.t("manager_management.registration_available")),
-        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_override_help")),
-        element("label", { className: "checkbox-label" }, element("input", {
           name: "registration_open", type: "checkbox", checked: resource.registration_enabled,
         }), this.i18n.t("manager_settings.registration_enabled")),
         element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_help")),
@@ -1844,22 +1850,17 @@ export class MiniAppShell {
         element("label", { className: "switch-label" }, playable, this.i18n.t("manager_management.playable")),
         element("label", {}, this.i18n.t("classic.deadline"), deadline),
         element("p", { className: "field-help" }, this.i18n.t("classic.deadline_help")),
-        element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
+        element("div", { className: "settings-actions" }, element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
           onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
             round_id: round.id, assignment_id: packet.value || null,
             ...(stageStarted ? accessChanges : {}),
             start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
           })) as EventListener }, this.i18n.t("classic.save_round")),
-        element("button", { type: "button", className: "secondary-button", disabled: resource.tournament.status !== "active",
-          onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
-            round_id: round.id, assignment_id: packet.value || null, discoverable: null, playable: null,
-            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
-          })) as EventListener }, this.i18n.t("classic.use_packet_defaults")),
-        ...round.matches.map((m) => {
+        element("button", { type: "button", className: "secondary-button",
+          onclick: (() => this.showTextDialog(this.i18n.t("classic.game_statuses"), round.matches.map((m) => {
           const results = m.results?.map((r) => `${r.place}. ${r.seat.startsWith("chair:") ? this.i18n.t("classic.chair") : names.get(r.seat) ?? r.seat} (${r.score})`).join("; ");
-          return element("p", {},
-            `${this.i18n.t("classic.group")} ${m.group} · ${this.i18n.t("classic.game")} ${m.number}: ${results || m.players.join(", ") || this.i18n.t("classic.awaiting_results")} · ${this.i18n.t(m.randomized ? "classic.randomized" : m.results ? "classic.completed" : m.game_id ? "classic.running" : "classic.pending")}`);
-        }),
+          return `${this.i18n.t("classic.group")} ${m.group} · ${this.i18n.t("classic.game")} ${m.number}: ${results || m.players.join(", ") || this.i18n.t("classic.awaiting_results")} · ${this.i18n.t(m.randomized ? "classic.randomized" : m.results ? "classic.completed" : m.game_id ? "classic.running" : "classic.pending")}`;
+        }))) as EventListener }, this.i18n.t("classic.game_statuses"))),
       ));
     }
     if (stage.standings.length) container.append(element("table", {},
@@ -1939,7 +1940,8 @@ export class MiniAppShell {
       } else if (descriptor.value_type === "enum") {
         control = element("select", { name: fieldName }, ...descriptor.options.map((option) => element("option", {
           value: option, selected: option === descriptor.value,
-        }, option)));
+        }, descriptor.name === "library_viewing_rule_default"
+          ? this.i18n.t(`packet_management.library_viewing_rule.${option}` as MessageKey) : option)));
       } else {
         const serialized = descriptor.value_type === "array"
           ? JSON.stringify(descriptor.value)
@@ -1949,6 +1951,8 @@ export class MiniAppShell {
           value: serialized,
           type: descriptor.value_type === "array" || descriptor.value_type === "string" ? "text" : "number",
           step: descriptor.value_type === "integer" ? "1" : "any",
+          ...(["minimum_players", "maximum_players"].includes(descriptor.name)
+            ? { min: "1", max: "12", required: true } : {}),
         });
       }
       const panelChildren: Node[] = [
@@ -2178,8 +2182,6 @@ export class MiniAppShell {
             payment_type: value("payment_type"),
             pricing_plans: value("payment_type") === "free" ? [] : this.pricingPlans(form),
             registration_open: value("registration_open") === "on",
-            ...(resource.finalized_at != null && data.has("registration_available") !== resource.tournament.registration_open
-              ? { registration_open_override: data.has("registration_available") } : {}),
             ignore_late_registrations: data.has("ignore_late_registrations"),
             registration_starts_at: timestamp("registration_starts_at"),
             registration_ends_at: timestamp("registration_ends_at"),

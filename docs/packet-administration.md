@@ -274,7 +274,7 @@ The implemented initial-publication model stores:
 - the source file name, checksum, uploader, and confirmation timestamps;
 - the packet version pinned to each game and question revision pinned to each round;
 - assignment-wide member rights and per-player packet entitlement grants/revocations;
-- assignment-wide and per-player gameplay/library access levels.
+- assignment-wide library viewing rules, independent of playability.
 
 Correction and substitution saves also store field classifications, publishing actor, previous
 version, and logical statistical attribution. They enforce assignment-version concurrency checks.

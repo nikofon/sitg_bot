@@ -870,6 +870,8 @@ class ApplicationGateway:
                 right=operation.right,
                 enabled=operation.enabled,
                 player_id=operation.player_id,
+                library_viewing_rule=operation.library_viewing_rule,
+                expected_version=operation.expected_version,
             )
         if isinstance(operation, TournamentCompleteOperation):
             tournament_id = await self._manager_tournament_id(

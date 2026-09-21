@@ -31,14 +31,14 @@ pytestmark = pytest.mark.integration
 database_url = _database_url
 
 
-async def configure(database, fixture, *, level="read-or-play", readable=True, released=True):
+async def configure(database, fixture, *, level="anytime", readable=True, released=True):
     async with database.transaction() as session:
         assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
             TournamentPacketAssignmentRecord.packet_id == fixture.packet_id,
             TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
         ))
         assignment.content_visible_by_members = readable
-        assignment.access_level_by_members = level
+        assignment.library_viewing_rule = level
         version = await session.get(PacketVersionRecord, assignment.adopted_version_id)
         version.library_released_at = datetime.now(UTC) if released else None
         return assignment.id, version.id
@@ -57,8 +57,8 @@ async def claims_for(database, player_id, version_id=None):
 
 @pytest.mark.parametrize("download", [False, True])
 @pytest.mark.parametrize("level,released", [
-    ("no-access", True), ("play-only", True), ("read-after-play", True),
-    ("read-or-play", False),
+    ("never", True), ("after-play", True),
+    ("anytime", False),
 ])
 async def test_cards_are_listed_but_actions_check_release_and_view_rules(
     database_url, level, released, download,
@@ -80,7 +80,7 @@ async def test_cards_are_listed_but_actions_check_release_and_view_rules(
         await database.close()
 
 
-@pytest.mark.parametrize("level", ["no-access", "play-only", "read-after-play", "read-or-play"])
+@pytest.mark.parametrize("level", ["never", "after-play", "anytime"])
 async def test_manager_ignores_release_readability_and_view_rules(database_url, level):
     database = Database(database_url)
     try:
@@ -205,7 +205,7 @@ async def test_confirmation_rechecks_authorization(database_url, revocation):
         await database.close()
 
 
-@pytest.mark.parametrize("level", ["read-after-play", "read-or-play"])
+@pytest.mark.parametrize("level", ["after-play", "anytime"])
 async def test_reading_requires_disclosure_and_preserves_game_provenance(database_url, level):
     database = Database(database_url)
     try:
@@ -272,10 +272,11 @@ async def test_shared_version_is_grouped_without_leaking_private_tournaments(dat
         tournaments = TournamentService(database)
         await tournaments.set_packet_entitlement(
             assignment_id, first.players[0].id, first.manager.id,
-            content_visible=True, access_level="read-or-play",
+            content_visible=True,
         )
         await tournaments.assign_packet(other.tournament_id, first.packet_id, other.manager.id,
-                                        adopted_version_id=version_id, access_level="read-or-play")
+                                        adopted_version_id=version_id, content_visible=True,
+                                        library_viewing_rule="anytime")
         library = PacketLibraryService(database)
         card = (await library.list_packets(first.players[0].id))["items"][0]
         assert [t["id"] for t in card["tournaments"]] == [str(first.tournament_id)]

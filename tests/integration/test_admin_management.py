@@ -151,7 +151,7 @@ async def test_abolition_revokes_only_its_assignment_and_is_permanent(database_u
             other.manager.id,
             adopted_version_id=version_id,
             content_visible=True,
-            access_level="read-or-play",
+            library_viewing_rule="anytime",
         )
         await moderate(database, fixture, "abolish")
         library = PacketLibraryService(database)

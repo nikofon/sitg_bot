@@ -991,9 +991,8 @@ class PacketAdminService:
                         discoverable_by_members=access_defaults["packets_discoverable_by_default"],
                         playable_by_members=access_defaults["packets_playable_by_default"],
                         content_visible_by_members=access_defaults["packets_readable_by_default"],
-                        access_level_by_members=(
-                            "play-only" if access_defaults["packets_playable_by_default"]
-                            else "no-access"
+                        library_viewing_rule=(
+                            context.policies.get("library_viewing_rule_default", "after-play")
                         ),
                     )
                 )

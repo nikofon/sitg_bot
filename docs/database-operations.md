@@ -58,6 +58,14 @@ Subsequent schema changes require new ordered migrations.
 Run `alembic upgrade head` against the server database before restarting after an update.
 Revision `0005_manual_tournament_start` adds manual starts and scheduled reminders, preserving
 existing tournaments with games or started Classic stages. Others require a manual start.
+Revision `0009_tournament_player_limits` initializes minimum/maximum players to four and
+clears assembling-lobby readiness. Classic retains prescribed rosters. Existing manual
+registration overrides disable scheduling. Packet assignments whose former `no-access` value
+represented disabled playability receive `read-after-play`; their access switches remain unchanged.
+Revision `0010_library_viewing_rules` separates viewing from playing, renaming the assignment
+rule and policy default. The choices become `never`, `after-play`, and `anytime`; former
+`no-access` and `play-only` values both become `never` for library viewing only. Explicit
+per-player play permissions are preserved independently. Update the server and Mini App together.
 Revision `0002_token_delivery_pgcrypto` enables PostgreSQL `pgcrypto`, required for encrypted
 one-time token delivery when `SITG_TOKEN_DELIVERY_KEY` is configured. The migration role needs
 permission to create this extension. Downgrading preserves it because it may be shared.

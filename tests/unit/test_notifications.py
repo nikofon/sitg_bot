@@ -4,6 +4,8 @@ from uuid import UUID
 
 import pytest
 
+from sitg_bot.bot.handlers.player import notification_text
+from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -12,6 +14,18 @@ from sitg_bot.storage.models import (
     PlayerRecord,
     PlayerTelegramNavigationRecord,
 )
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_packet_available_notification_renders_roster_deadline_and_escapes_names(locale):
+    text = notification_text("packet.available", {
+        "packet_name": "<Packet>", "tournament_name": "Cup",
+        "opponents": [{"name": "<Ada>", "chair": False}, {"name": "", "chair": True}],
+        "start_deadline": "2026-10-01T12:00:00+00:00",
+    }, LocalizationService(), locale)
+    assert "&lt;Packet&gt;" in text and "&lt;Ada&gt;" in text
+    assert "2026-10-01T12:00:00+00:00" in text
+    assert ("Chair" if locale == "en" else "Стул") in text
 
 
 class AlertSession:

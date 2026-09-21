@@ -156,6 +156,7 @@ class ConsoleApplicationServer:
                 "matchmaking.scan": self._job_matchmaking,
                 "classic.reconcile": self._job_classic,
                 "tournament.start_reminder": self._job_tournament_start_reminder,
+                "packet.availability": self._job_packet_availability,
                 "suspicion.tick": self._job_suspicion,
             },
             poll_interval=poll_interval,
@@ -799,7 +800,10 @@ class ConsoleApplicationServer:
                 playable=bool(params.get("playable", False)),
                 content_visible=bool(params.get("content_visible", False)),
                 editable=bool(params.get("editable", False)),
-                access_level=(str(params["access_level"]) if params.get("access_level") else None),
+                library_viewing_rule=(
+                    str(params["library_viewing_rule"])
+                    if params.get("library_viewing_rule") else None
+                ),
             )
             return {"assignment_id": assignment_id}
         if action == "tournament_packet_entitlement_set":
@@ -812,7 +816,6 @@ class ConsoleApplicationServer:
                 self._uuid(params, "assignment_id"),
                 self._uuid(params, "player_id"),
                 session.player_id,
-                access_level=(str(params["access_level"]) if params.get("access_level") else None),
                 **rights,
             )
             return {"entitlements_updated": True}
@@ -831,7 +834,9 @@ class ConsoleApplicationServer:
         if action == "lobby_create":
             lobby = await self.matchmaking.create_lobby(
                 self._participant(session),
-                max_players=int(params.get("max_players", 4)),
+                max_players=(
+                    int(params["max_players"]) if params.get("max_players") is not None else None
+                ),
                 tournament_id=self._uuid(params, "tournament_id"),
             )
             connection.lobby_ids.add(lobby.id)
@@ -1435,7 +1440,7 @@ class ConsoleApplicationServer:
                             "violations": violations,
                         },
                         "access": {
-                            "level": await self.tournaments.packet_access_level(
+                            "library_viewing_rule": await self.tournaments.library_viewing_rule(
                                 session, assignment, player_id
                             ),
                             "playable": has_playable_access,
@@ -1616,6 +1621,11 @@ class ConsoleApplicationServer:
 
     async def _job_tournament_start_reminder(self, payload: dict[str, Any]) -> None:
         await self.tournaments.remind_scheduled_starts()
+
+    async def _job_packet_availability(self, payload: dict[str, Any]) -> None:
+        from sitg_bot.services.packet_notifications import PacketAvailabilityService
+
+        await PacketAvailabilityService(self.database).reconcile()
 
     async def _job_classic(self, payload: dict[str, Any]) -> None:
         from sitg_bot.services.classic import ClassicService

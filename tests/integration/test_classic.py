@@ -175,9 +175,15 @@ async def test_classic_creation_defers_dates_and_settings_enable_registration(da
             registration_open_override=False, **values,
         )
         management = await tournaments.manager_management(created.id, fixture.manager.id)
-        assert management.registration_scheduled_open and not management.registration_open
+        assert not management.registration_scheduled_open and not management.registration_open
+        await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=management.settings_version, **values,
+        )
+        management = await tournaments.manager_management(created.id, fixture.manager.id)
+        assert management.registration_scheduled_open and management.registration_open
+        assert management.registration_open_override is None
         settings = await tournaments.manager_settings(created.id, fixture.manager.id)
-        assert not settings.tournament.registration_open
+        assert settings.tournament.registration_open
     finally:
         await database.close()
 

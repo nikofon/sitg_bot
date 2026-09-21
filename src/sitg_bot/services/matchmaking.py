@@ -172,10 +172,13 @@ class InvitationMatchmakingService:
         self,
         creator: ParticipantInput,
         *,
-        max_players: int = 4,
+        max_players: int | None = None,
         tournament_id: UUID,
     ) -> LobbySnapshot:
-        if not 1 <= max_players <= 12:
+        if max_players is not None and (
+            isinstance(max_players, bool) or not isinstance(max_players, int)
+            or not 1 <= max_players <= 12
+        ):
             raise ValueError("A lobby supports between one and twelve players")
         async with self.database.transaction() as session:
             context = await self.tournaments.context(session, tournament_id)
@@ -183,6 +186,16 @@ class InvitationMatchmakingService:
                 raise ValueError("tournament_stage_closed")
             type_maximum = int(context.type_rules.get("maximum_players", 12))
             type_minimum = int(context.type_rules.get("minimum_players", 1))
+            settings = context.settings
+            if context.type_key == "classic":
+                max_players = max_players or min(12, type_maximum)
+            else:
+                default_maximum = int(settings.to_dict()["maximum_players"])
+                if max_players is not None and max_players != default_maximum:
+                    if "maximum_players" not in context.mutable_parameters:
+                        raise PermissionError("Tournament locks parameter: maximum_players")
+                    settings = settings.updated({"maximum_players": max_players})
+                max_players = int(settings.to_dict()["maximum_players"])
             if not type_minimum <= max_players <= min(12, type_maximum):
                 raise ValueError(
                     f"Lobby capacity must be between {type_minimum} and {min(12, type_maximum)}"
@@ -204,7 +217,7 @@ class InvitationMatchmakingService:
                 invitation_code=secrets.token_urlsafe(24),
                 max_players=max_players,
                 expires_at=datetime.now(UTC) + self.lobby_lifetime,
-                settings=context.settings.to_dict(),
+                settings=settings.to_dict(),
             )
             session.add(lobby)
             await session.flush()
@@ -615,6 +628,14 @@ class InvitationMatchmakingService:
                 if lobby.settings.get(key) != value
             }
             lobby.settings = settings.to_dict()
+            if context.type_key != "classic":
+                maximum = int(lobby.settings["maximum_players"])
+                if await self._active_member_count(session, lobby.id) > maximum:
+                    raise ValueError("Maximum players cannot be below the current lobby size")
+                lobby.max_players = maximum
+                if await self._active_member_count(session, lobby.id) >= maximum:
+                    lobby.searching = False
+                    lobby.search_started_at = None
             members = await self._all_active_members(session, lobby.id)
             for member in members:
                 member.ready = False
@@ -1697,6 +1718,18 @@ class InvitationMatchmakingService:
         )
         if not context.assembly_open:
             violations.append(ValidationViolation("tournament_stage_closed", {}))
+        if context.type_key != "classic":
+            settings = ruleset.parameters(lobby.settings).to_dict()
+            minimum = max(
+                int(settings["minimum_players"]), int(context.type_rules.get("minimum_players", 1))
+            )
+            maximum = min(
+                int(settings["maximum_players"]), int(context.type_rules.get("maximum_players", 12))
+            )
+            if not minimum <= len(members) <= maximum:
+                violations.append(ValidationViolation("ruleset_player_limit_exceeded", {
+                    "minimum": minimum, "maximum": maximum, "actual": len(members),
+                }))
         if context.type_key == "classic" and selected:
             try:
                 if len(selected) != 1:

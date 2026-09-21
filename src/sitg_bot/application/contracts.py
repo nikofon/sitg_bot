@@ -465,8 +465,24 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
     tournament_id: UUID | None = None
     assignment_id: UUID
     player_id: UUID | None = None
-    right: Literal["playable", "discoverable", "readable"]
-    enabled: bool
+    right: Literal["playable", "discoverable", "readable", "library_viewing_rule"]
+    enabled: bool | None = None
+    library_viewing_rule: Literal["never", "after-play", "anytime"] | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_access_update(self) -> "TournamentPacketAccessUpdateOperation":
+        if self.right == "library_viewing_rule":
+            if (
+                self.library_viewing_rule is None or self.expected_version is None
+                or self.player_id is not None
+            ):
+                raise ValueError(
+                    "Library viewing rules require a rule, settings version, and no player"
+                )
+        elif self.enabled is None or self.library_viewing_rule is not None:
+            raise ValueError("Packet rights require an enabled flag")
+        return self
 
 
 class TournamentCompleteOperation(ContractModel):
@@ -634,7 +650,7 @@ class LobbyInviteOperation(ContractModel):
 class LobbyCreateOperation(ContractModel):
     action: Literal[ActionCode.LOBBY_CREATE]
     tournament_id: UUID | None = None
-    max_players: int = Field(default=4, ge=1, le=12)
+    max_players: int | None = Field(default=None, ge=1, le=12)
 
 
 class LobbyLinkOperation(ContractModel):

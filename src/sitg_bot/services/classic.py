@@ -368,6 +368,7 @@ class ClassicService:
         if tournament.actual_starts_at is None:
             tournament.actual_starts_at = now
         tournament.registration_open_override = False
+        tournament.registration_open = False
         tournament.participants_finalized_at = now
         rounds = {r.number: r for r in await self.rounds(session, stage.id)}
         for group_number, group in enumerate(stage.seeds, 1):

@@ -3,6 +3,19 @@ import pytest
 from sitg_bot.domain.game_settings import GameSettings, announcement_tokens
 
 
+@pytest.mark.parametrize("minimum,maximum", [(0, 4), (5, 4), (1, 13), (True, 4), (1, 2.5)])
+def test_player_limits_reject_invalid_ranges(minimum, maximum):
+    with pytest.raises(ValueError):
+        GameSettings(minimum_players=minimum, maximum_players=maximum)
+
+
+def test_player_limits_default_to_four_and_support_mutable_ranges():
+    settings = GameSettings()
+    assert (settings.minimum_players, settings.maximum_players) == (4, 4)
+    changed = settings.updated({"minimum_players": 1, "maximum_players": 6})
+    assert (changed.minimum_players, changed.maximum_players) == (1, 6)
+
+
 def test_announcement_tokens_group_short_words_and_isolate_long_words() -> None:
     assert announcement_tokens("a few extraordinarilylong words fit", 10) == (
         "a few",

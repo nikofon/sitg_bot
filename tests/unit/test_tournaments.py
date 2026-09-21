@@ -12,6 +12,17 @@ from sitg_bot.services.tournaments import (
 )
 
 
+def test_library_viewing_rule_default_is_validated_and_exposed_as_enum():
+    descriptors = {item.name: item for item in TournamentService._manager_policy_descriptors({})}
+    descriptor = descriptors["library_viewing_rule_default"]
+    assert descriptor.value == "after-play"
+    assert descriptor.value_type == "enum"
+    assert set(descriptor.options) == {"never", "after-play", "anytime"}
+    for value in (None, "invalid", "no-access", "play-only", [], True):
+        with pytest.raises(ValueError, match="library viewing rule"):
+            normalize_tournament_policies({}, {"library_viewing_rule_default": value})
+
+
 @pytest.mark.parametrize(
     ("name", "default"),
     (

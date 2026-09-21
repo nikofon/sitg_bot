@@ -382,6 +382,17 @@ async def test_tournament_creation_and_packet_entitlements_are_exposed(
 
     interactive.current_tournament_id = "tournament-1"
     await interactive.execute(
+        "tournament packet assign packet-1 --library-viewing-rule never --playable"
+    )
+    assert client.requests[-1] == (
+        "tournament_packet_assign",
+        {
+            "tournament_id": "tournament-1", "packet_id": "packet-1",
+            "packet_version_id": None, "library_viewing_rule": "never",
+            "playable": True, "discoverable": False, "content_visible": False, "editable": False,
+        },
+    )
+    await interactive.execute(
         "tournament packet entitlement assignment-1 player-1 content-visible on"
     )
     assert client.requests[-1] == (

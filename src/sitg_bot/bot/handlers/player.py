@@ -104,6 +104,22 @@ def other_menu_message(
 def notification_text(
     kind: str, payload: dict[str, object], localization: LocalizationService, locale: str
 ) -> str:
+    if kind == "packet.available":
+        text = localization.text("notification.packet.available", locale,
+            packet_name=payload.get("packet_name", ""),
+            tournament_name=payload.get("tournament_name", ""))
+        if "opponents" in payload:
+            opponents = ", ".join(
+                localization.text("notification.packet.chair", locale)
+                if item["chair"] else item["name"]
+                for item in payload["opponents"]
+            )
+            text += "\n" + localization.text("notification.packet.opponents", locale,
+                opponents=opponents or localization.text("notification.packet.solo", locale))
+        if payload.get("start_deadline"):
+            text += "\n" + localization.text("notification.packet.deadline", locale,
+                deadline=payload["start_deadline"])
+        return text
     if kind == "tournament.start_due":
         return localization.text(
             "notification.tournament.start_due", locale, name=payload.get("name", ""),

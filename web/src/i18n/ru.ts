@@ -1,6 +1,17 @@
 import type { MessageKey } from "./en";
 
 export const ru: Record<MessageKey, string> = {
+  "setting.minimum_players.label": "Минимум игроков в игре",
+  "setting.maximum_players.label": "Максимум игроков в игре",
+  "policy.library_viewing_rule_default.label": "Правило просмотра в библиотеке для новых пакетов",
+  "packet_management.library_viewing_rule": "Правило просмотра в библиотеке",
+  "packet_management.library_viewing_help": "Определяет только условия просмотра пакетов, доступных для чтения и выпущенных в библиотеку. Не влияет на доступность игры.",
+  "packet_management.library_viewing_rule.never": "Без просмотра в библиотеке",
+  "packet_management.library_viewing_rule.after-play": "После игры",
+  "packet_management.library_viewing_rule.anytime": "До или после игры",
+  "policy.library_viewing_rule_default.description": "Условие просмотра новых пакетов в библиотеке. Разрешение на чтение и выпуск в библиотеку по-прежнему обязательны. Правило не влияет на доступность игры; у существующих пакетов сохраняются свои правила.",
+  "ruleset.si.minimum_players.description": "Минимум игроков в игре (1–12, не больше максимума). В классическом турнире используется заданный состав игры.",
+  "ruleset.si.maximum_players.description": "Максимум игроков в игре (1–12). В классическом турнире используется заданный состав игры.",
   "admin_management.title": "Управление",
   "admin_management.empty": "Записи не найдены.",
   "admin_management.tournaments": "Турниры",
@@ -423,7 +434,7 @@ export const ru: Record<MessageKey, string> = {
   "classic.deadline": "Срок начала игр",
   "classic.deadline_help": "Неначатые игры получают случайные места и нулевой счёт. Начатые игры завершаются в обычном порядке.",
   "classic.packet_access_requires_start": "Начните этап, прежде чем открывать его пакеты для поиска или игры.",
-  "classic.use_packet_defaults": "Использовать настройки пакета",
+  "classic.game_statuses": "Статусы игр",
   "classic.save_round": "Сохранить раунд",
   "classic.group": "Группа",
   "classic.game": "Игра",

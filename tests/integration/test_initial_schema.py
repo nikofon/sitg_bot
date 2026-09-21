@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0008_theme_commentary"
+                "0010_library_viewing_rules"
             )
             types = (
                 await connection.execute(
@@ -144,6 +144,182 @@ def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):
     asyncio.run(assert_schema(url, empty=True))
     command.upgrade(config, "head")
     asyncio.run(assert_schema(url))
+
+
+def test_player_limits_migration_initializes_existing_tournaments(baseline_database):
+    from test_lobby_architecture import tournament_fixture
+
+    from sitg_bot.services.matchmaking import InvitationMatchmakingService
+    from sitg_bot.storage.models import (
+        PregameLobbyRecord,
+        TournamentPacketAssignmentRecord,
+        TournamentPolicyVersionRecord,
+        TournamentRecord,
+    )
+
+    url, config = baseline_database
+    command.upgrade(config, "head")
+
+    async def seed():
+        database = Database(url)
+        try:
+            fixture = await tournament_fixture(database, player_count=1)
+            lobby = await InvitationMatchmakingService(database).create_lobby(
+                fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=6,
+            )
+            async with database.transaction() as session:
+                policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                    TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id,
+                ))
+                policy.default_parameters = {"theme_count": 1}
+                row = await session.get(PregameLobbyRecord, lobby.id)
+                row.settings = {"theme_count": 1}
+                tournament = await session.get(TournamentRecord, fixture.tournament_id)
+                tournament.registration_open = True
+                tournament.registration_open_override = True
+                assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
+                ))
+                assignment.library_viewing_rule = "never"
+                assignment.playable_by_members = False
+            return fixture.tournament_id, lobby.id
+        finally:
+            await database.close()
+
+    tournament_id, lobby_id = asyncio.run(seed())
+    command.downgrade(config, "0008_theme_commentary")
+
+    async def prepare_legacy():
+        database = Database(url)
+        try:
+            async with database.transaction() as session:
+                await session.execute(text("""
+                    UPDATE tournament_packet_assignments SET access_level_by_members = 'no-access'
+                """))
+        finally:
+            await database.close()
+
+    asyncio.run(prepare_legacy())
+
+    async def check(upgraded):
+        database = Database(url)
+        try:
+            async with database.sessions() as session:
+                policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                    TournamentPolicyVersionRecord.tournament_id == tournament_id,
+                ))
+                lobby = await session.get(PregameLobbyRecord, lobby_id)
+                for values in (policy.default_parameters, lobby.settings):
+                    if upgraded:
+                        assert values["minimum_players"] == values["maximum_players"] == 4
+                    else:
+                        assert "minimum_players" not in values and "maximum_players" not in values
+                assert lobby.max_players == 4
+                if upgraded:
+                    tournament = await session.get(TournamentRecord, tournament_id)
+                    assert not tournament.registration_open
+                    assert tournament.registration_open_override
+                    rule, playable = (await session.execute(text("""
+                        SELECT access_level_by_members, playable_by_members
+                        FROM tournament_packet_assignments WHERE tournament_id = :id
+                    """), {"id": tournament_id})).one()
+                    assert rule == "read-after-play"
+                    assert not playable
+        finally:
+            await database.close()
+
+    command.upgrade(config, "0009_tournament_player_limits")
+    asyncio.run(check(True))
+    command.downgrade(config, "0008_theme_commentary")
+    asyncio.run(check(False))
+    command.upgrade(config, "0009_tournament_player_limits")
+    asyncio.run(check(True))
+
+
+@pytest.mark.parametrize("old_rule,new_rule", [
+    ("no-access", "never"), ("play-only", "never"),
+    ("read-after-play", "after-play"), ("read-or-play", "anytime"),
+])
+def test_library_viewing_migration_preserves_play_permissions(
+    baseline_database, old_rule, new_rule
+):
+    from test_lobby_architecture import tournament_fixture
+
+    from sitg_bot.services.tournaments import TournamentService
+    from sitg_bot.storage.models import (
+        TournamentPacketAssignmentRecord,
+        TournamentPacketEntitlementRecord,
+        TournamentPolicyVersionRecord,
+    )
+
+    url, config = baseline_database
+    command.upgrade(config, "head")
+
+    async def seed():
+        database = Database(url)
+        try:
+            fixture = await tournament_fixture(database, player_count=3)
+            async with database.transaction() as session:
+                assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
+                ))
+                for player, playable in zip(fixture.players, (False, True, None), strict=True):
+                    session.add(TournamentPacketEntitlementRecord(
+                        assignment_id=assignment.id, player_id=player.id, playable=playable,
+                    ))
+            return fixture, assignment.id
+        finally:
+            await database.close()
+
+    fixture, assignment_id = asyncio.run(seed())
+    command.downgrade(config, "0009_tournament_player_limits")
+
+    async def legacy_values():
+        database = Database(url)
+        try:
+            async with database.transaction() as session:
+                await session.execute(text("""
+                    UPDATE tournament_packet_assignments SET access_level_by_members = :rule
+                """), {"rule": old_rule})
+                await session.execute(text("""
+                    UPDATE tournament_policy_versions SET policies = jsonb_build_object(
+                        'packet_access_rule_default', CAST(:rule AS text))
+                """), {"rule": old_rule})
+                await session.execute(text("""
+                    UPDATE tournament_packet_entitlements SET playable = false,
+                        access_level = 'read-or-play' WHERE player_id = :id
+                """), {"id": fixture.players[1].id})
+        finally:
+            await database.close()
+
+    asyncio.run(legacy_values())
+    command.upgrade(config, "head")
+
+    async def check():
+        database = Database(url)
+        try:
+            async with database.sessions() as session:
+                assignment = await session.get(TournamentPacketAssignmentRecord, assignment_id)
+                assert assignment.library_viewing_rule == new_rule
+                assert assignment.playable_by_members
+                policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                    TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id,
+                ))
+                assert policy.policies == {"library_viewing_rule_default": new_rule}
+                for player, playable in zip(fixture.players, (False, True, True), strict=True):
+                    assert await TournamentService.has_assignment_access(
+                        session, assignment, player.id, "playable"
+                    ) is playable
+            async with database.engine.connect() as connection:
+                await connection.run_sync(assert_schema_without_defaults)
+        finally:
+            await database.close()
+
+    def assert_schema_without_defaults(connection):
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        assert compare_metadata(context, Base.metadata) == []
+
+    asyncio.run(check())
 
 
 def test_token_approval_and_one_time_delivery_after_baseline_upgrade(baseline_database):
