@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0010_library_viewing_rules"
+                "0011_merge_chats_library"
             )
             types = (
                 await connection.execute(
@@ -132,6 +132,36 @@ async def assert_schema(database_url, *, empty=False):
             ).all() == [("si", 1)]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "start_revision", ["base", "0009_classic_chats", "0010_library_viewing_rules"]
+)
+def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
+    url, config = baseline_database
+    command.upgrade(config, start_revision)
+    command.upgrade(config, "head")
+
+    async def check_merge():
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                assert (await connection.execute(text(
+                    "SELECT version_num FROM alembic_version"
+                ))).scalars().all() == ["0011_merge_chats_library"]
+                # Both branches' schema changes must be present.
+                await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
+                await connection.execute(text(
+                    "SELECT library_viewing_rule FROM tournament_packet_assignments LIMIT 0"
+                ))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(check_merge())
+    command.downgrade(config, "base")
+    asyncio.run(assert_schema(url, empty=True))
+    command.upgrade(config, "head")
+    asyncio.run(check_merge())
 
 
 def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):
