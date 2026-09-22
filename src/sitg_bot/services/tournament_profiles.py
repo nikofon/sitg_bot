@@ -265,6 +265,14 @@ class TournamentProfileService:
                 "starts_at": tournament.registration_starts_at,
                 "ends_at": tournament.registration_ends_at,
             },
+            "registration_link": (
+                {
+                    "reference": f"reg_{tournament.registration_code}",
+                    "visibility": tournament.visibility,
+                }
+                if TournamentService._registration_is_open(tournament, now)
+                else None
+            ),
             "managers": await self._manager_rows(session, tournament.id),
             "authors": list(
                 await TournamentService(self.database).tournament_authors(

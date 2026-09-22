@@ -9,6 +9,9 @@
 - [services/classic.py](../src/sitg_bot/services/classic.py): Classic stages, prescribed games,
   standings, deadlines, and round entitlements. [domain/classic.py](../src/sitg_bot/domain/classic.py)
   owns scheme validation, balanced seeding, point aggregation, and play-off final places.
+- [services/tournament_chats.py](../src/sitg_bot/services/tournament_chats.py): per-match
+  Classic chats with replayed history, relay delivery, closed-chat notifications, and the
+  shared advisory game time with reminders.
 - [services/tournament_profiles.py](../src/sitg_bot/services/tournament_profiles.py): read-only
   tournament profile projections (general details, registrations, participants, games, and
   leaders) served to the Mini App through `tournaments.profile.get.v1`.
@@ -73,7 +76,9 @@ An optional positive `maximum_participants` policy narrows any limit supplied by
 tournament type and is enforced when the finite participant list is finalized.
 
 Managers and participants can share **Registration links**, granting private-tournament
-invitations with a sharing warning. Yes/No confirmation rechecks registration availability.
+invitations with a sharing warning. The bot's manager menu shows the link; the tournament
+profile Mini App general section shows it to everyone while registration is open.
+Yes/No confirmation rechecks registration availability.
 Lobby links offer registration to nonparticipants; automatically activated players then join.
 See [Telegram](telegram.md) for bot flows.
 
@@ -223,6 +228,17 @@ Assigned games retain normal join deadlines and finish normally. Unstarted games
 random places, zero scores, and the corresponding place awards. A durable reconciliation job
 records results once, resolves bracket dependencies, and completes stages after all results
 are final, including appeals. Restarting or retrying a job does not reroll results.
+
+#### Classic match chats
+
+Every prescribed match that has not been played, whose roster is known, and whose round has
+an assigned packet with playable access owns a persistent chat shared by its human seats
+(Chairs are not members). Messages are stored transactionally and relayed through the
+outbox like lobby/game chat; a chat closes permanently once its match is assigned, has
+results, or the stage completes. Participants may set one shared, advisory
+`planned_at` per chat (overwriting or removing it), which posts a system message to the
+chat and creates player-role reminders 24 hours and one hour before that time. See
+[Telegram](telegram.md) for the chat interaction flows.
 
 ## Tournament settings
 

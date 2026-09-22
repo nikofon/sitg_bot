@@ -50,6 +50,15 @@ def menu_message(
         if navigation.active_mode == "manager"
         else navigation.selected_player_tournament
     )
+    if navigation.context == "chat" and navigation.active_chat is not None:
+        return MessageModel(
+            localization.text(
+                "tournament_chat.open_menu",
+                locale,
+                tournament=navigation.active_chat.tournament_name,
+            ),
+            RemoveKeyboardModel(),
+        )
     if navigation.context in {"lobby", "lobby_other"}:
         return MessageModel(
             localization.text("lobby.menu", locale),

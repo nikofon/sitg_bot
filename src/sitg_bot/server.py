@@ -156,6 +156,7 @@ class ConsoleApplicationServer:
                 "matchmaking.scan": self._job_matchmaking,
                 "classic.reconcile": self._job_classic,
                 "tournament.start_reminder": self._job_tournament_start_reminder,
+                "classic.chat.reminder": self._job_classic_chat_reminder,
                 "suspicion.tick": self._job_suspicion,
             },
             poll_interval=poll_interval,
@@ -338,6 +339,10 @@ class ConsoleApplicationServer:
             return {"completed": True}
         if action == "telegram.chat.delivery":
             self._require_adapter(connection, channel="telegram_bot")
+            if params["payload"].get("scope") == "tournament_chat":
+                return await self.application_gateway.tournament_chats.delivery(
+                    params["payload"], key=params.get("key"), message_id=params.get("message_id")
+                )
             return await self.application_gateway.chat.delivery(
                 params["payload"], key=params.get("key"), message_id=params.get("message_id")
             )
@@ -1616,6 +1621,13 @@ class ConsoleApplicationServer:
 
     async def _job_tournament_start_reminder(self, payload: dict[str, Any]) -> None:
         await self.tournaments.remind_scheduled_starts()
+
+    async def _job_classic_chat_reminder(self, payload: dict[str, Any]) -> None:
+        from sitg_bot.services.tournament_chats import TournamentChatService
+
+        created = await TournamentChatService(self.database).send_reminders()
+        if created:
+            LOGGER.info("Classic chat reminders delivered: %s", created)
 
     async def _job_classic(self, payload: dict[str, Any]) -> None:
         from sitg_bot.services.classic import ClassicService

@@ -95,6 +95,11 @@ from sitg_bot.application.contracts import (
     TokenRequestCreateOperation,
     TokenRequestQueueOperation,
     TournamentAuthorCreateOperation,
+    TournamentChatGameTimeOperation,
+    TournamentChatInfoOperation,
+    TournamentChatListOperation,
+    TournamentChatOpenOperation,
+    TournamentChatQuitOperation,
     TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentCreateOperation,
@@ -204,6 +209,11 @@ ACTION_POLICIES.update(
         ActionCode.GAME_ACT: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.GAME_OBSERVE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.CHAT_SEND: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.TOURNAMENT_CHAT_OPEN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.TOURNAMENT_CHAT_QUIT: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.TOURNAMENT_CHAT_GAME_TIME: ActionPolicy(
+            mutation=True, idempotency_required=True
+        ),
         ActionCode.GAME_APPEAL_DECIDE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHENTICATE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.REGISTRATION_START: ActionPolicy(mutation=True, idempotency_required=True),
@@ -440,6 +450,9 @@ class ApplicationGateway:
         from sitg_bot.services.chat import ParticipantChatService
 
         self.chat = ParticipantChatService(database)
+        from sitg_bot.services.tournament_chats import TournamentChatService
+
+        self.tournament_chats = TournamentChatService(database)
         self.admin_authentication = admin_authentication
         self.launch_references = launch_references
         self.packets = packets or PacketAdminService(database)
@@ -1214,11 +1227,31 @@ class ApplicationGateway:
         if isinstance(operation, ChatMembersOperation):
             if request.metadata.channel != "telegram_bot":
                 raise PermissionError("Telegram chat adapter required")
+            if operation.scope == "tournament_chat":
+                return await self.tournament_chats.members(telegram_user_id, operation)
             return await self.chat.members(telegram_user_id, operation)
         if isinstance(operation, ChatSendOperation):
             if request.metadata.channel != "telegram_bot":
                 raise PermissionError("Telegram chat adapter required")
+            if operation.scope == "tournament_chat":
+                return await self.tournament_chats.send(telegram_user_id, operation)
             return await self.chat.send(telegram_user_id, operation)
+        if isinstance(operation, TournamentChatListOperation):
+            if request.metadata.channel != "telegram_bot":
+                raise PermissionError("Telegram chat adapter required")
+            return await self.tournament_chats.list_rooms(telegram_user_id, operation)
+        if isinstance(operation, TournamentChatOpenOperation):
+            if request.metadata.channel != "telegram_bot":
+                raise PermissionError("Telegram chat adapter required")
+            return await self.tournament_chats.open(telegram_user_id, operation)
+        if isinstance(operation, TournamentChatQuitOperation):
+            if request.metadata.channel != "telegram_bot":
+                raise PermissionError("Telegram chat adapter required")
+            return await self.tournament_chats.quit(telegram_user_id)
+        if isinstance(operation, TournamentChatInfoOperation):
+            return await self.tournament_chats.info(telegram_user_id, operation)
+        if isinstance(operation, TournamentChatGameTimeOperation):
+            return await self.tournament_chats.set_game_time(telegram_user_id, operation)
         if isinstance(operation, ReputationVoteOperation):
             return await self.trust.vote_reputation(
                 operation.game_id,
@@ -1324,6 +1357,7 @@ class ApplicationGateway:
                 "tournament_catalogue",
                 "player_tournament_lobbies",
                 "telegram_gameplay",
+                "tournament_chats",
                 "exclusive_backend_process",
                 "transactional_outbox",
                 "durable_jobs",

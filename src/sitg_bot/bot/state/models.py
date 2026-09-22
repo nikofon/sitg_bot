@@ -216,6 +216,15 @@ class NavigationGameState(FrontendState):
     can_reconnect: bool
 
 
+class NavigationChatState(FrontendState):
+    id: UUID
+    tournament_id: UUID
+    tournament_name: str
+    round_number: int
+    match_number: int
+    multiple_matches: bool
+
+
 class NavigationState(FrontendState):
     account: AccountState
     available_modes: tuple[str, ...]
@@ -228,3 +237,4 @@ class NavigationState(FrontendState):
     active_game: NavigationGameState | None
     allowed_actions: tuple[str, ...]
     ban_reason: str | None = None
+    active_chat: NavigationChatState | None = None

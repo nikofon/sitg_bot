@@ -49,6 +49,8 @@ async def chat_reply(message, backend, scope, text):
 def chat_scope(navigation):
     if navigation is None or navigation.context == "registration":
         return None
+    if navigation.active_chat is not None and navigation.context == "chat":
+        return {"scope": "tournament_chat", "scope_id": navigation.active_chat.id}
     if navigation.active_game is not None:
         return {"scope": "game", "scope_id": navigation.active_game.id}
     if navigation.active_lobby is not None:

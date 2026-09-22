@@ -107,6 +107,11 @@ class ActionCode(StrEnum):
     ONGOING_LIST = "ongoing.list.v1"
     CHAT_MEMBERS = "chat.members.v1"
     CHAT_SEND = "chat.send.v1"
+    TOURNAMENT_CHAT_LIST = "tournaments.chats.list.v1"
+    TOURNAMENT_CHAT_OPEN = "tournaments.chats.open.v1"
+    TOURNAMENT_CHAT_QUIT = "tournaments.chats.quit.v1"
+    TOURNAMENT_CHAT_INFO = "tournaments.chats.info.v1"
+    TOURNAMENT_CHAT_GAME_TIME = "tournaments.chats.game_time.v1"
     GAME_APPEAL_TICKETS = "games.appeals.manager.list.v1"
     GAME_APPEAL_DECIDE = "games.appeals.manager.decide.v1"
     PLAYER_BAN = "platform.players.ban.v1"
@@ -714,19 +719,44 @@ class GameAppealDecideOperation(ContractModel):
 
 class ChatMembersOperation(ContractModel):
     action: Literal[ActionCode.CHAT_MEMBERS]
-    scope: Literal["lobby", "game"]
+    scope: Literal["lobby", "game", "tournament_chat"]
     scope_id: UUID
 
 
 class ChatSendOperation(ContractModel):
     action: Literal[ActionCode.CHAT_SEND]
-    scope: Literal["lobby", "game"]
+    scope: Literal["lobby", "game", "tournament_chat"]
     scope_id: UUID
     message_id: int = Field(gt=0)
     text: str | None = Field(default=None, min_length=1, max_length=4096)
     target: str | None = Field(default=None, min_length=1, max_length=200)
     caption: str | None = Field(default=None, max_length=1024)
     media_group_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class TournamentChatListOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CHAT_LIST]
+    tournament_id: UUID
+
+
+class TournamentChatOpenOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CHAT_OPEN]
+    chat_id: UUID
+
+
+class TournamentChatQuitOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CHAT_QUIT]
+
+
+class TournamentChatInfoOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CHAT_INFO]
+    chat_id: UUID
+
+
+class TournamentChatGameTimeOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_CHAT_GAME_TIME]
+    chat_id: UUID
+    planned_at: datetime | None = None
 
 
 class GameViewOperation(ContractModel):
@@ -940,6 +970,11 @@ GatewayOperation = Annotated[
     | OngoingListOperation
     | ChatMembersOperation
     | ChatSendOperation
+    | TournamentChatListOperation
+    | TournamentChatOpenOperation
+    | TournamentChatQuitOperation
+    | TournamentChatInfoOperation
+    | TournamentChatGameTimeOperation
     | GameAppealTicketsOperation
     | GameAppealDecideOperation
     | ReputationVoteOperation

@@ -108,6 +108,34 @@ def notification_text(
         return localization.text(
             "notification.tournament.start_due", locale, name=payload.get("name", ""),
         )
+    if kind == "tournament_chat.game_reminder":
+        planned_raw = str(payload.get("planned_at", ""))
+        try:
+            planned: str = localization.format_datetime(
+                datetime.fromisoformat(planned_raw), locale
+            )
+        except ValueError:
+            planned = planned_raw
+        date, _, time = planned.partition(" ")
+        if payload.get("multiple_matches"):
+            round_name = localization.text(
+                "tournament_chat.round_match",
+                locale,
+                number=payload.get("round_number"),
+                match=payload.get("match_number"),
+            )
+        else:
+            round_name = localization.text(
+                "tournament_chat.round", locale, number=payload.get("round_number")
+            )
+        return localization.text(
+            "notification.tournament_chat.game_reminder",
+            locale,
+            round=round_name,
+            tournament=payload.get("tournament_name", ""),
+            date=date or planned,
+            time=time,
+        )
     if kind == "packet.substituted":
         return localization.text(
             "notification.packet.substituted", locale,
@@ -448,6 +476,7 @@ async def handle_player_menu_action(
     navigation: NavigationState,
     state: FSMContext,
     launch_links: str | None,
+    callback_references=None,
 ) -> None:
     if player_action == "lobby.reopen" and navigation.active_lobby is not None:
         updated = await backend.lobby_context(
@@ -516,6 +545,19 @@ async def handle_player_menu_action(
                     if launch_links
                     else None,
                 ),
+            )
+            return
+        if player_action == "player.tournament.chats":
+            from sitg_bot.bot.handlers.tournament_chat import send_tournament_chat_list
+
+            await send_tournament_chat_list(
+                message,
+                backend=backend,
+                claim=telegram_update_claim,
+                localization=localization,
+                locale=locale,
+                navigation=navigation,
+                callback_references=callback_references,
             )
             return
         if player_action == "player.tournament.create_lobby":

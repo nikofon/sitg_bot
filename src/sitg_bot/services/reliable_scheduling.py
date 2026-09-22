@@ -98,6 +98,9 @@ class AutomaticJobScheduler:
         scheduled += await self._periodic(
             "tournament.start_reminder", now, every=timedelta(seconds=30), priority=50
         )
+        scheduled += await self._periodic(
+            "classic.chat.reminder", now, every=timedelta(seconds=30), priority=55
+        )
         return scheduled
 
     async def _periodic(

@@ -30,12 +30,20 @@ info action, the bot's player **Info** and manager **Tournament profile** button
 **Leaders** button that adds `?section=leaders`) shows five permission-aware sections:
 general details and managers, registered
 players with approval badges, the finalized participant list (classic only), games, and
-leaders. Ladder games list the latest finalized games with per-player scores and links to
+leaders. The general section includes the tournament registration link (a
+`t.me/<bot>?start=reg_…` URL resolved by the HTTP adapter) whenever registration is open.
+Ladder games list the latest finalized games with per-player scores and links to
 the same game examination as player profiles; classic games browse first-stage and play-off
 stages with group and round selection. Ladder leaders order players by in-tournament rating;
 classic leaders switch between first-stage standings and computed play-off final places,
 where the last round keeps its in-game order and players eliminated in a multi-game round
 share `survivors + position - 1.5`.
+
+The chat schedule window (`/chats/{chat_id}/schedule`, opened by the bot's `/set_game_time`
+inside an open tournament chat) shows the match, its participants, and the current planned
+game time. Participants set a new time (replacing any previous one) or remove it; the time
+is shared for the whole match and is advisory only. Mutations go through
+`POST /api/miniapp/chats/{chat_id}/game-time` and post a system message to the chat.
 
 ## Independent website
 
@@ -197,6 +205,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |
+| GET route resolution of `/chats/{chat_id}/schedule`; POST `/chats/{chat_id}/game-time` | Classic chat scheduling window and shared game-time mutations |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
 | `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |

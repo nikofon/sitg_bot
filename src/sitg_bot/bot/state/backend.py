@@ -54,6 +54,9 @@ from sitg_bot.application.contracts import (
     TokenRequestAdminDecideOperation,
     TokenRequestCreateOperation,
     TokenRequestQueueOperation,
+    TournamentChatListOperation,
+    TournamentChatOpenOperation,
+    TournamentChatQuitOperation,
     TournamentCreateOperation,
     TournamentInfoOperation,
     TournamentManagerManagementLinkOperation,
@@ -776,6 +779,30 @@ class BotBackend:
     async def chat_send(self, claim, **values):
         response = await self._execute(
             claim, ChatSendOperation(action=ActionCode.CHAT_SEND, **values)
+        )
+        return response.data
+
+    async def tournament_chat_list(self, claim, *, tournament_id: UUID):
+        response = await self._execute(
+            claim,
+            TournamentChatListOperation(
+                action=ActionCode.TOURNAMENT_CHAT_LIST, tournament_id=tournament_id
+            ),
+        )
+        return response.data
+
+    async def tournament_chat_open(self, claim, *, chat_id: UUID):
+        response = await self._execute(
+            claim,
+            TournamentChatOpenOperation(
+                action=ActionCode.TOURNAMENT_CHAT_OPEN, chat_id=chat_id
+            ),
+        )
+        return response.data
+
+    async def tournament_chat_quit(self, claim):
+        response = await self._execute(
+            claim, TournamentChatQuitOperation(action=ActionCode.TOURNAMENT_CHAT_QUIT)
         )
         return response.data
 

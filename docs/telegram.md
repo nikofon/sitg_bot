@@ -28,8 +28,9 @@ the update's `from_user`; group-chat identities are not accepted as private sess
 Per-user event isolation prevents rapid input from bypassing an active conversation.
 
 `/start`, `/menu`, `/help`, `/cancel`, and `/language` support recovery and registration.
-Tournament menus expose **Registration link** to managers and active participants. Shared
-`/start reg_…` links ask for registration confirmation; private links include a sharing warning
+Tournament menus expose **Registration link** to managers; active participants find the same
+link in the tournament profile Mini App's general section while registration is open.
+Shared `/start reg_…` links ask for registration confirmation; private links include a sharing warning
 when requested. `/start join_…` offers registration to nonparticipants before lobby joining.
 Both flows recheck registration availability. The player menu omits rating/history placeholders.
 Real name, public nickname, locale, and Telegram visibility consent are separate choices.
@@ -145,6 +146,26 @@ giveaways, and quiz polls lacking a known correct answer are unsupported.
 Chat uses the outbox and rechecks both memberships at delivery. Abandoned players cannot send
 or receive before reconnection; queued messages from an old game session are discarded.
 Game chat and whisper receipts participate in the cleanup ledger, including late send results.
+
+## Tournament chats
+
+Classic tournaments with a preset composition offer per-match **Chats** from the player
+tournament menu. Pressing it lists every round that has not been played, whose match
+composition is already known, and whose round packet is assigned and playable; each room
+message carries an actor-bound inline button that opens the chat. Opening a chat stores it
+as the navigation context, removes all reply-keyboard buttons, and replays up to the last
+50 stored messages through the outbox, so regular typing relays to the other players of
+that match exactly like lobby and game chat (whispers included). Chats whose match has
+been played or lost are closed automatically by the navigation snapshot.
+
+While a chat is open, `/set_game_time` opens a Mini App scheduling window
+(`/chats/{chat_id}/schedule`) where any participant sets or removes the shared, advisory
+game time; the time applies to all participants, and setting or removing it posts a system
+message to the chat and schedules player-role reminders 24 hours and one hour before the
+time. `/quit` clears all chat messages for the player (cleanup ledger and best-effort
+deletion) and restores the tournament context, like quitting a game. New messages for a
+closed chat produce a single "new messages in chat" notification until the chat is opened
+again. See [tournaments](tournaments.md) for the underlying match-chat rules.
 
 ## Extending and verifying
 
