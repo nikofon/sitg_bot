@@ -71,12 +71,20 @@ async def show_lobby(
     lobby = await backend.lobby_info(claim, lobby_id=navigation.active_lobby.id)
     bot = await message.bot.get_me()
     invitation = f"https://t.me/{bot.username}?start=join_{lobby['invitation_code']}"
+    settings = lobby.get("settings") or {}
+    minimum = settings.get("minimum_players")
+    maximum = settings.get("maximum_players")
+    capacity = (
+        f"{minimum}–{maximum}"
+        if minimum is not None and maximum is not None
+        else str(lobby["max_players"])
+    )
     text = localization.text(
         "lobby.summary",
         locale,
         tournament=lobby["tournament_name"],
         count=sum(m["role"] == "player" for m in lobby["members"]),
-        capacity=lobby["max_players"],
+        capacity=capacity,
         expires=localization.format_datetime(datetime.fromisoformat(lobby["expires_at"]), locale),
         invitation=invitation,
     )
