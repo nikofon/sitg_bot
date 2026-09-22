@@ -28,8 +28,8 @@ the update's `from_user`; group-chat identities are not accepted as private sess
 Per-user event isolation prevents rapid input from bypassing an active conversation.
 
 `/start`, `/menu`, `/help`, `/command_help`, `/cancel`, and `/language` support recovery and
-registration. `/help` shows a short tutorial (registration, joining a tournament, creating a
-lobby, starting a game) and is also sent once when a player completes registration;
+registration. `/help` shows a short tutorial (choosing a tournament, joining or creating a
+lobby, starting a game, answering questions) and is also sent once when a player completes registration;
 `/command_help` lists every command with a description and the context where it applies.
 Tournament menus expose **Registration link** to managers; active participants find the same
 link in the tournament profile Mini App's general section while registration is open.
