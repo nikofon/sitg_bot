@@ -915,8 +915,8 @@ class TournamentPacketAssignmentRecord(Base, TimestampMixin):
     playable_by_members: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     content_visible_by_members: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     editable_by_members: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    access_level_by_members: Mapped[str] = mapped_column(
-        String(24), nullable=False, default="no-access"
+    library_viewing_rule: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="after-play"
     )
     assigned_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
 
@@ -924,8 +924,7 @@ class TournamentPacketAssignmentRecord(Base, TimestampMixin):
         UniqueConstraint("tournament_id", "packet_id"),
         CheckConstraint("status IN ('active', 'retired')"),
         CheckConstraint(
-            "access_level_by_members IN "
-            "('no-access', 'play-only', 'read-after-play', 'read-or-play')"
+            "library_viewing_rule IN ('never', 'after-play', 'anytime')"
         ),
     )
 
@@ -938,19 +937,12 @@ class TournamentPacketEntitlementRecord(Base, TimestampMixin):
     )
     player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
     discoverable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    playable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # None inherits member-wide playability; False explicitly revokes it.
+    playable: Mapped[bool | None] = mapped_column(Boolean)
     content_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     editable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    access_level: Mapped[str | None] = mapped_column(String(24))
     granted_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        CheckConstraint(
-            "access_level IS NULL OR access_level IN "
-            "('no-access', 'play-only', 'read-after-play', 'read-or-play')"
-        ),
-    )
 
 
 class PacketDraftTournamentRecord(Base, TimestampMixin):

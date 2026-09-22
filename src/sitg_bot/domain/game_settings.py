@@ -32,8 +32,16 @@ class GameSettings:
     question_values: tuple[int, ...] = (10, 20, 30, 40, 50)
     minus_multiplier: float = 1.0
     theme_count: int = 8
+    minimum_players: int = 4
+    maximum_players: int = 4
 
     def __post_init__(self) -> None:
+        for name in ("minimum_players", "maximum_players"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 12:
+                raise ValueError(f"{name} must be between 1 and 12")
+        if self.minimum_players > self.maximum_players:
+            raise ValueError("minimum_players cannot exceed maximum_players")
         for name in (
             "ready_delay",
             "message_delay",

@@ -315,6 +315,40 @@ class FakeManagementLaunchReferences:
         return SimpleNamespace(route="manager_management", target_id=UUID(int=10))
 
 
+@pytest.mark.parametrize("command", ["preview", "add"])
+async def test_existing_packet_uses_launch_scope(command):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences()
+    )
+    request = make_mocked_request(
+        "POST", f"/api/miniapp/manager/tournaments/opaque-reference/existing-packets/{command}",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "existing-packet-test",
+        },
+        match_info={"launch_ref": "opaque-reference", "command": command},
+    )
+    body = {"packet_id": str(UUID(int=30)), "tournament_id": str(UUID(int=99))}
+    if command == "add":
+        body["expected_version_id"] = str(UUID(int=31))
+    request._read_bytes = json.dumps(body).encode()
+    result = await http._existing_packet(request)
+    assert result.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.packet_id == UUID(int=30)
+    assert operation.action == (
+        ActionCode.PACKET_EXISTING_ADD if command == "add" else ActionCode.PACKET_EXISTING_PREVIEW
+    )
+    if command == "add":
+        assert operation.expected_version_id == UUID(int=31)
+        assert gateway.requests[0].metadata.idempotency_key == "existing-packet-test"
+
+
 @pytest.mark.parametrize(
     "command, action",
     [

@@ -115,6 +115,8 @@ async def tournament_fixture(
     hybrid_matchmaking_enabled: bool = True,
     finalized: bool = True,
     started: bool = True,
+    minimum_players: int = 1,
+    mutable_parameters: tuple[str, ...] = ("theme_count", "maximum_players"),
 ) -> TournamentFixture:
     suffix = int(secrets.token_hex(4), 16)
     inputs = tuple(
@@ -169,6 +171,7 @@ async def tournament_fixture(
         session.add(tournament)
         await session.flush()
         settings = GameSettings(
+            minimum_players=minimum_players,
             theme_count=1,
             ready_delay=0,
             message_delay=0,
@@ -180,7 +183,7 @@ async def tournament_fixture(
                     tournament_id=tournament.id,
                     version=1,
                     default_parameters=settings.to_dict(),
-                    player_mutable_parameters=["theme_count"],
+                    player_mutable_parameters=list(mutable_parameters),
                     policies={
                         "rating_enabled": True,
                         "hybrid_matchmaking_enabled": hybrid_matchmaking_enabled,
@@ -307,9 +310,9 @@ async def test_publication_applies_current_access_defaults_per_tournament(
             )
             assert assignment is not None
             assert assignment.editable_by_members is False
-            assert await tournaments.packet_access_level(
+            assert await tournaments.library_viewing_rule(
                 session, assignment, fixture.players[0].id
-            ) == ("play-only" if playable else "no-access")
+            ) == "after-play"
     finally:
         await database.close()
 
@@ -1121,7 +1124,7 @@ async def test_pairwise_settlement_updates_tournament_and_ruleset_ratings(
     assert sorted(ruleset_states) == [Decimal("990.0000"), Decimal("1010.0000")]
 
 
-async def test_registration_packet_metadata_and_access_levels(database_url: str) -> None:
+async def test_registration_packet_metadata_and_viewing_rules(database_url: str) -> None:
     database = Database(database_url)
     fixture = await tournament_fixture(database, player_count=1)
     tournaments = TournamentService(database)
@@ -1185,13 +1188,13 @@ async def test_registration_packet_metadata_and_access_levels(database_url: str)
         fixture.manager.id,
         adopted_version_id=version_id,
         discoverable=True,
-        access_level="read-after-play",
+        playable=True, library_viewing_rule="after-play",
     )
     await tournaments.set_packet_entitlement(
         assignment_id,
         invited_player_id,
         fixture.manager.id,
-        access_level="no-access",
+        playable=False,
     )
     await packets.set_library_release(
         fixture.packet_id,
@@ -1219,8 +1222,8 @@ async def test_registration_packet_metadata_and_access_levels(database_url: str)
         }
         assert assignment is not None
         assert (
-            await tournaments.packet_access_level(session, assignment, invited_player_id)
-            == "no-access"
+            await tournaments.library_viewing_rule(session, assignment, invited_player_id)
+            == "after-play"
         )
         assert not await tournaments.has_assignment_access(
             session, assignment, invited_player_id, "playable"
@@ -1665,7 +1668,7 @@ async def test_lobby_packet_cards_report_metadata_freshness_and_all_player_acces
             ))
             session.add(TournamentPacketEntitlementRecord(
                 assignment_id=assignment.id, player_id=fixture.players[2].id,
-                discoverable=True, playable=False, access_level="no-access",
+                discoverable=True, playable=False,
             ))
             tournament = await session.get(TournamentRecord, fixture.tournament_id)
             game = GameRecord(
@@ -1710,7 +1713,7 @@ async def test_lobby_packet_cards_report_metadata_freshness_and_all_player_acces
         async with database.transaction() as session:
             session.add(TournamentPacketEntitlementRecord(
                 assignment_id=assignment_id, player_id=fixture.players[1].id,
-                discoverable=True, playable=False, access_level="no-access",
+                discoverable=True, playable=False,
             ))
         suggestion, = await service.suggest_packets(lobby.id)
         assert suggestion.playable_for_all is False

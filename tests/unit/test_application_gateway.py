@@ -129,6 +129,21 @@ def test_manager_tournament_settings_mutations_are_versioned_and_idempotent() ->
     assert ACTION_POLICIES[ActionCode.TOURNAMENT_FINALIZE].stale_write_field == "expected_version"
 
 
+def test_packet_rule_contract_requires_version_and_packet_scope():
+    operation = {
+        "action": ActionCode.TOURNAMENT_PACKET_ACCESS_UPDATE,
+        "assignment_id": str(UUID(int=1)), "right": "library_viewing_rule",
+        "library_viewing_rule": "after-play", "expected_version": 3,
+    }
+    request = _request(operation, idempotency_key="packet-rule")
+    assert request.operation.expected_version == 3
+    assert ACTION_POLICIES[ActionCode.TOURNAMENT_PACKET_ACCESS_UPDATE].idempotency_required
+    for changes in ({"expected_version": None}, {"player_id": str(UUID(int=2))},
+                    {"library_viewing_rule": "invalid"}):
+        with pytest.raises(ValidationError):
+            _request({**operation, **changes}, idempotency_key="packet-rule")
+
+
 def test_contract_rejects_unknown_fields_and_missing_stale_write_version() -> None:
     with pytest.raises(ValidationError):
         _request(

@@ -62,8 +62,7 @@ from sitg_bot.storage.models import (
 )
 
 PACKET_RIGHTS = frozenset({"discoverable", "playable", "content_visible", "editable"})
-PACKET_ACCESS_LEVELS = frozenset({"no-access", "play-only", "read-after-play", "read-or-play"})
-PLAYABLE_ACCESS_LEVELS = PACKET_ACCESS_LEVELS - {"no-access"}
+LIBRARY_VIEWING_RULES = frozenset({"never", "after-play", "anytime"})
 PAYMENT_TYPES = frozenset({"free", "one-time", "per-stage"})
 _UNSET = object()
 HYBRID_MATCHMAKING_POLICY = "hybrid_matchmaking_enabled"
@@ -83,6 +82,19 @@ REGISTRATION_REQUIREMENT_KINDS = frozenset(
 )
 
 
+def tournament_parameters(
+    type_key: str, ruleset_key: str, parameters: dict[str, object] | None,
+    mutable: set[str] | frozenset[str] | list[str],
+) -> tuple[dict[str, object], frozenset[str]]:
+    """Classic SI uses the maximum; each lobby resolves it to its full packet size."""
+    parameters = dict(parameters or {})
+    mutable = frozenset(mutable)
+    if type_key == "classic" and ruleset_key == "si":
+        parameters["theme_count"] = 128
+        mutable -= {"theme_count"}
+    return parameters, mutable
+
+
 def hybrid_matchmaking_supported(type_rules: dict[str, object]) -> bool:
     return type_rules.get("supports_hybrid_matchmaking") is True
 
@@ -91,6 +103,12 @@ def normalize_tournament_policies(
     type_rules: dict[str, object], policies: dict[str, object] | None
 ) -> dict[str, object]:
     normalized = dict(policies or {})
+    library_viewing_rule = normalized.setdefault("library_viewing_rule_default", "after-play")
+    if (
+        not isinstance(library_viewing_rule, str)
+        or library_viewing_rule not in LIBRARY_VIEWING_RULES
+    ):
+        raise ValueError("Unknown default library viewing rule")
     for name, default in PACKET_ACCESS_DEFAULT_POLICIES.items():
         if not isinstance(normalized.setdefault(name, default), bool):
             raise ValueError(f"{name} must be a boolean")
@@ -309,6 +327,7 @@ class ManagementPacket:
     released: bool = False
     packet_version_id: UUID | None = None
     default_access: dict[str, bool] | None = None
+    library_viewing_rule: str = "after-play"
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,6 +607,9 @@ class TournamentService:
             if compatible and game_ruleset_key not in compatible:
                 raise ValueError("Tournament type is incompatible with the selected game ruleset")
             ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                type_key, ruleset_version.key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown_mutable = mutable - ruleset.parameter_names
@@ -1034,6 +1056,9 @@ class TournamentService:
             ):
                 raise ValueError("Registration end is required for a finite tournament")
             ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                type_version.key, ruleset_version.key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
@@ -1056,6 +1081,8 @@ class TournamentService:
             tournament.visibility = normalized_visibility
             tournament.language = normalize_language_tag(language)
             tournament.payment_type = normalized_payment_type
+            if tournament.registration_open != registration_open:
+                tournament.registration_open_override = None
             tournament.registration_open = registration_open
             if registration_open_override is not None:
                 if not isinstance(registration_open_override, bool):
@@ -1063,6 +1090,7 @@ class TournamentService:
                 if tournament.finalized_at is None:
                     raise ValueError("Finalize tournament setup before changing availability")
                 tournament.registration_open_override = registration_open_override
+                tournament.registration_open = False
             tournament.ignore_late_registrations = ignore_late_registrations
             tournament.registration_starts_at = registration_starts_at
             tournament.registration_ends_at = registration_ends_at
@@ -1804,6 +1832,8 @@ class TournamentService:
             if registration_open is not _UNSET:
                 if not isinstance(registration_open, bool):
                     raise ValueError("registration_open must be a boolean")
+                if tournament.registration_open != registration_open:
+                    tournament.registration_open_override = None
                 tournament.registration_open = registration_open
             if ignore_late_registrations is not _UNSET:
                 if not isinstance(ignore_late_registrations, bool):
@@ -1979,6 +2009,7 @@ class TournamentService:
                 raise StaleWriteError("Tournament settings have changed")
             if tournament.finalized_at is None:
                 raise ValueError("Finalize tournament setup before opening registration")
+            tournament.registration_open = False
             tournament.registration_open_override = registration_open
             tournament.settings_version += 1
             await session.flush()
@@ -1991,20 +2022,26 @@ class TournamentService:
         manager_id: UUID,
         *,
         right: str,
-        enabled: bool,
+        enabled: bool | None = None,
         player_id: UUID | None,
+        library_viewing_rule: str | None = None,
+        expected_version: int | None = None,
     ) -> TournamentManagement:
         right_map = {
             "playable": ("playable", "playable_by_members"),
             "discoverable": ("discoverable", "discoverable_by_members"),
             "readable": ("content_visible", "content_visible_by_members"),
         }
-        if right not in right_map:
+        if right == "library_viewing_rule":
+            if library_viewing_rule not in LIBRARY_VIEWING_RULES or player_id is not None:
+                raise ValueError("A valid packet-wide library viewing rule is required")
+        elif right not in right_map or not isinstance(enabled, bool):
             raise ValueError("Unknown managed packet right")
-        entitlement_field, assignment_field = right_map[right]
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            await self.require_modifiable(session, tournament_id)
+            tournament = await self.require_modifiable(session, tournament_id)
+            if right == "library_viewing_rule" and tournament.settings_version != expected_version:
+                raise StaleWriteError("Tournament settings have changed")
             assignment = await session.scalar(
                 select(TournamentPacketAssignmentRecord)
                 .where(
@@ -2016,6 +2053,12 @@ class TournamentService:
             )
             if assignment is None:
                 raise LookupError("Active tournament packet assignment not found")
+            if right == "library_viewing_rule":
+                assignment.library_viewing_rule = library_viewing_rule
+                tournament.settings_version += 1
+                await session.flush()
+                return await self._manager_management_snapshot(session, tournament_id, manager_id)
+            entitlement_field, assignment_field = right_map[right]
             participants = tuple(
                 (
                     await session.execute(
@@ -2062,29 +2105,10 @@ class TournamentService:
                     else effective[membership.player_id]
                 )
                 setattr(entitlement, entitlement_field, value)
-                if right == "playable":
-                    inherited_level = (
-                        entitlement.access_level
-                        if entitlement.access_level in PLAYABLE_ACCESS_LEVELS
-                        else assignment.access_level_by_members
-                    )
-                    entitlement.access_level = (
-                        inherited_level
-                        if enabled and inherited_level in PLAYABLE_ACCESS_LEVELS
-                        else "play-only"
-                        if enabled
-                        else "no-access"
-                    )
                 entitlement.granted_by_id = manager_id
                 entitlement.revoked_at = None
             if player_id is None:
                 setattr(assignment, assignment_field, enabled)
-                if right == "playable":
-                    assignment.access_level_by_members = (
-                        assignment.access_level_by_members
-                        if enabled and assignment.access_level_by_members in PLAYABLE_ACCESS_LEVELS
-                        else "play-only" if enabled else "no-access"
-                    )
             await self._invalidate_assembling_lobbies(session, tournament_id)
             await session.flush()
             return await self._manager_management_snapshot(session, tournament_id, manager_id)
@@ -2377,14 +2401,19 @@ class TournamentService:
             ManagerAuthorDescriptor(author.id, author.display_name) for author in author_records
         )
         ruleset = self.rulesets.get(item.ruleset_key, item.ruleset_version)
+        parameters, mutable = tournament_parameters(
+            item.type_key, item.ruleset_key,
+            policy.default_parameters, policy.player_mutable_parameters,
+        )
         setting_descriptors = tuple(
             ManagerSettingDescriptor(
                 definition.name,
                 definition.value_type,
                 definition.description_key,
-                policy.default_parameters.get(definition.name),
+                parameters.get(definition.name),
             )
             for definition in ruleset.parameter_definitions
+            if not (item.type_key == "classic" and definition.name == "theme_count")
         )
         policy_descriptors = self._manager_policy_descriptors(policy.policies)
         counts = []
@@ -2421,8 +2450,8 @@ class TournamentService:
                 for key, value in policy.policies.items()
                 if key != RULESET_RATING_WEIGHT_POLICY
             },
-            default_parameters=dict(policy.default_parameters),
-            player_mutable_parameters=tuple(policy.player_mutable_parameters),
+            default_parameters=parameters,
+            player_mutable_parameters=tuple(sorted(mutable)),
             author_names=tuple(author.display_name for author in author_records),
             authors=authors,
             setting_descriptors=setting_descriptors,
@@ -2577,6 +2606,7 @@ class TournamentService:
                     )).all()) if version else (),
                     released=bool(version and version.library_released_at),
                     packet_version_id=version.id if version else None,
+                    library_viewing_rule=assignment.library_viewing_rule,
                     default_access={
                         "discoverable": assignment.discoverable_by_members,
                         "playable": assignment.playable_by_members,
@@ -2665,6 +2695,9 @@ class TournamentService:
                 context.type_rules, effective_policies
             )
             ruleset = self.rulesets.get(context.ruleset_key, context.ruleset_version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                context.type_key, context.ruleset_key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
@@ -2703,6 +2736,8 @@ class TournamentService:
                 }
                 effective = settings.updated(retained_overrides)
                 lobby.settings = effective.to_dict()
+                if context.type_key != "classic":
+                    lobby.max_players = int(lobby.settings["maximum_players"])
                 lobby.tournament_policy_version_id = policy.id
                 lobby.validation = []
                 if not (
@@ -2775,16 +2810,14 @@ class TournamentService:
         playable: bool = False,
         content_visible: bool = False,
         editable: bool = False,
-        access_level: str | None = None,
+        library_viewing_rule: str | None = None,
     ) -> UUID:
-        normalized_access = access_level or (
-            "read-or-play" if content_visible else "play-only" if playable else "no-access"
-        )
-        if normalized_access not in PACKET_ACCESS_LEVELS:
-            raise ValueError(f"Unknown packet access level: {normalized_access}")
+        if library_viewing_rule is not None and library_viewing_rule not in LIBRARY_VIEWING_RULES:
+            raise ValueError(f"Unknown library viewing rule: {library_viewing_rule}")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
             await self.require_modifiable(session, tournament_id)
+            context = await self.context(session, tournament_id)
             if await session.get(LogicalPacketRecord, packet_id) is None:
                 raise LookupError("Packet not found")
             if adopted_version_id is not None:
@@ -2804,12 +2837,12 @@ class TournamentService:
             values = {
                 "adopted_version_id": adopted_version_id,
                 "discoverable_by_members": discoverable,
-                "playable_by_members": normalized_access in PLAYABLE_ACCESS_LEVELS,
-                "content_visible_by_members": (
-                    content_visible or normalized_access == "read-or-play"
-                ),
+                "playable_by_members": playable,
+                "content_visible_by_members": content_visible,
                 "editable_by_members": editable,
-                "access_level_by_members": normalized_access,
+                "library_viewing_rule": library_viewing_rule or context.policies.get(
+                    "library_viewing_rule_default", "after-play"
+                ),
                 "assigned_by_id": manager_id,
                 "status": "active",
             }
@@ -2846,14 +2879,13 @@ class TournamentService:
         assignment_id: UUID,
         player_id: UUID,
         manager_id: UUID,
-        access_level: str | None = None,
         **rights: bool,
     ) -> None:
         unknown = set(rights) - PACKET_RIGHTS
         if unknown:
             raise ValueError(f"Unknown packet entitlement: {sorted(unknown)[0]}")
-        if access_level is not None and access_level not in PACKET_ACCESS_LEVELS:
-            raise ValueError(f"Unknown packet access level: {access_level}")
+        if any(not isinstance(value, bool) for value in rights.values()):
+            raise ValueError("Packet rights must be boolean")
         async with self.database.transaction() as session:
             assignment = await session.get(TournamentPacketAssignmentRecord, assignment_id)
             if assignment is None:
@@ -2872,9 +2904,6 @@ class TournamentService:
                 session.add(entitlement)
             for right, granted in rights.items():
                 setattr(entitlement, right, granted)
-            if access_level is not None:
-                entitlement.access_level = access_level
-                entitlement.playable = access_level in PLAYABLE_ACCESS_LEVELS
             entitlement.revoked_at = None
             await self._invalidate_assembling_lobbies(session, assignment.tournament_id)
 
@@ -2957,10 +2986,10 @@ class TournamentService:
             session, assignment, player_id, "content_visible"
         ):
             return False
-        level = await cls.packet_access_level(session, assignment, player_id)
-        if level == "read-or-play":
+        rule = await cls.library_viewing_rule(session, assignment, player_id)
+        if rule == "anytime":
             return True
-        if level != "read-after-play":
+        if rule != "after-play":
             return False
         return bool(
             await session.scalar(
@@ -3027,15 +3056,13 @@ class TournamentService:
         entitlement = await session.get(
             TournamentPacketEntitlementRecord, (assignment.id, player_id)
         )
-        if right == "playable":
-            if (
-                entitlement is not None
-                and entitlement.revoked_at is None
-                and entitlement.access_level is not None
-            ):
-                return entitlement.access_level in PLAYABLE_ACCESS_LEVELS
-            if assignment.access_level_by_members in PLAYABLE_ACCESS_LEVELS:
-                return True
+        if (
+            right == "playable"
+            and entitlement is not None
+            and entitlement.revoked_at is None
+            and entitlement.playable is not None
+        ):
+            return entitlement.playable
         return bool(
             getattr(assignment, f"{right}_by_members")
             or (
@@ -3046,35 +3073,22 @@ class TournamentService:
         )
 
     @classmethod
-    async def packet_access_level(
+    async def library_viewing_rule(
         cls,
         session: AsyncSession,
         assignment: TournamentPacketAssignmentRecord,
         player_id: UUID,
     ) -> str:
         if assignment.status != "active":
-            return "no-access"
+            return "never"
         if await cls._is_manager(session, assignment.tournament_id, player_id):
-            return "read-or-play"
+            return "anytime"
         membership = await session.get(
             TournamentMembershipRecord, (assignment.tournament_id, player_id)
         )
         if membership is None or membership.status != "active":
-            return "no-access"
-        entitlement = await session.get(
-            TournamentPacketEntitlementRecord, (assignment.id, player_id)
-        )
-        if (
-            entitlement is not None
-            and entitlement.revoked_at is None
-            and entitlement.access_level is not None
-        ):
-            return entitlement.access_level
-        if assignment.access_level_by_members != "no-access":
-            return assignment.access_level_by_members
-        if entitlement is not None and entitlement.revoked_at is None and entitlement.playable:
-            return "play-only"
-        return "play-only" if assignment.playable_by_members else "no-access"
+            return "never"
+        return assignment.library_viewing_rule
 
     async def effective_parameters(
         self, tournament_id: UUID, overrides: dict[str, object] | None = None
@@ -3118,6 +3132,10 @@ class TournamentService:
                 or tournament.participants_finalized_at is not None
             )
         )
+        parameters, mutable = tournament_parameters(
+            type_version.key, ruleset_version.key,
+            policy.default_parameters, policy.player_mutable_parameters,
+        )
         return TournamentContext(
             tournament.id,
             type_version.id,
@@ -3127,15 +3145,16 @@ class TournamentService:
             ruleset_version.version,
             policy.id,
             policy.version,
-            ruleset.parameters(policy.default_parameters),
-            frozenset(policy.player_mutable_parameters),
+            ruleset.parameters(parameters),
+            mutable,
             dict(policy.policies),
             dict(type_version.rules),
             assembly_open,
         )
 
-    @staticmethod
-    async def _invalidate_assembling_lobbies(session: AsyncSession, tournament_id: UUID) -> None:
+    async def _invalidate_assembling_lobbies(
+        self, session: AsyncSession, tournament_id: UUID
+    ) -> None:
         lobbies = tuple(
             (
                 await session.execute(
@@ -3149,7 +3168,23 @@ class TournamentService:
             ).scalars()
         )
         now = datetime.now(UTC)
+        context = await self.context(session, tournament_id) if lobbies else None
         for lobby in lobbies:
+            if context and lobby.tournament_policy_version_id != context.policy_version_id:
+                previous = await session.get(
+                    TournamentPolicyVersionRecord, lobby.tournament_policy_version_id
+                )
+                overrides = {
+                    key: value for key, value in lobby.settings.items()
+                    if key in context.mutable_parameters
+                    and previous.default_parameters.get(key) != value
+                }
+                lobby.settings = context.settings.updated(overrides).to_dict()
+                lobby.tournament_policy_version_id = context.policy_version_id
+                if context.type_key != "classic":
+                    lobby.max_players = int(lobby.settings["maximum_players"])
+                lobby.searching = False
+                lobby.search_started_at = None
             lobby.validation = []
             lobby.version += 1
             lobby.updated_at = now
@@ -3955,6 +3990,9 @@ class TournamentService:
     ) -> tuple[ManagerSettingDescriptor, ...]:
         appeal = AppealPolicy.from_mapping(policies)
         effective: dict[str, object] = {
+            "library_viewing_rule_default": policies.get(
+                "library_viewing_rule_default", "after-play"
+            ),
             **{
                 name: policies.get(name, default)
                 for name, default in PACKET_ACCESS_DEFAULT_POLICIES.items()
@@ -3987,6 +4025,9 @@ class TournamentService:
             if key not in {RULESET_RATING_WEIGHT_POLICY}:
                 effective.setdefault(key, value)
         enum_options = {
+            "library_viewing_rule_default": (
+                "never", "after-play", "anytime"
+            ),
             "observing": ("unlimited", "burnt-only", "forbidden"),
             "appeal_voting_rule": ("majority", "unanimous"),
         }

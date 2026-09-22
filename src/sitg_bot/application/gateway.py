@@ -72,6 +72,8 @@ from sitg_bot.application.contracts import (
     PacketDraftGetOperation,
     PacketDraftTelegramBindOperation,
     PacketDraftUpdateOperation,
+    PacketExistingAddOperation,
+    PacketExistingPreviewOperation,
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
@@ -320,6 +322,9 @@ ACTION_POLICIES.update(
         ActionCode.LIBRARY_DOWNLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.PACKET_MANAGEMENT_UPDATE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.PACKET_EXISTING_ADD: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version_id"
         ),
         ActionCode.PACKET_MANAGEMENT_DELETE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
@@ -897,6 +902,8 @@ class ApplicationGateway:
                 right=operation.right,
                 enabled=operation.enabled,
                 player_id=operation.player_id,
+                library_viewing_rule=operation.library_viewing_rule,
+                expected_version=operation.expected_version,
             )
         if isinstance(operation, TournamentCompleteOperation):
             tournament_id = await self._manager_tournament_id(
@@ -934,6 +941,17 @@ class ApplicationGateway:
             return await self.packets.management_editor(
                 operation.tournament_id, operation.assignment_id, player_id
             )
+        if isinstance(operation, (PacketExistingPreviewOperation, PacketExistingAddOperation)):
+            preview = await self.packets.existing_packet(
+                operation.tournament_id, operation.packet_id, player_id,
+                expected_version_id=(
+                    operation.expected_version_id
+                    if isinstance(operation, PacketExistingAddOperation) else None
+                ),
+            )
+            if isinstance(operation, PacketExistingAddOperation):
+                return await self.tournaments.manager_management(operation.tournament_id, player_id)
+            return preview
         if isinstance(operation, PacketManagementUpdateOperation):
             await self.packets.modify_packet(
                 operation.tournament_id, operation.assignment_id, player_id,

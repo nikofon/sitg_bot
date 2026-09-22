@@ -4,8 +4,8 @@
 
 ## Source map
 
-- [services/tournaments.py](../src/sitg_bot/services/tournaments.py): type descriptors,
-  creation, settings, registration, roles, policy, assignments, and entitlements.
+- [services/tournaments.py](../src/sitg_bot/services/tournaments.py): settings, registration,
+  roles, policy, and access.
 - [services/classic.py](../src/sitg_bot/services/classic.py): Classic stages, prescribed games,
   standings, deadlines, and round entitlements. [domain/classic.py](../src/sitg_bot/domain/classic.py)
   owns scheme validation, balanced seeding, point aggregation, and play-off final places.
@@ -25,19 +25,15 @@
 
 ## Ownership and roles
 
-A packet must be assigned to at least one tournament and may be assigned to several.
-The logical packet and its immutable versions are shared content; an explicit
-tournament-packet assignment controls how each tournament may use and expose them.
-Drafts record the tournament context in which they are created and any intended packet
-assignments. Lobbies, games, results, and rating events each belong to one tournament.
+A packet belongs to one or more tournaments, with independent assignments controlling access
+to shared immutable versions. Drafts retain their creation context and intended assignments.
+Lobbies, games, results, and rating events each belong to one tournament.
 
-- **Administrators** direct the bot as a whole. They authorize tournament creation and
-  perform platform-wide moderation and operations.
-- **Managers** run one concrete tournament. A tournament may have multiple managers.
-- **Players** enroll in and play a concrete tournament.
+- **Administrators** authorize tournament creation and perform platform-wide moderation.
+- **Managers** run a tournament, potentially together.
+- **Players** enroll and play.
 
-Administrator roles are independent from tournament roles. An administrator may manage a
-tournament they organize and be only a player in another tournament. Within one tournament,
+Administrator roles are independent from tournament roles. Within one tournament,
 active manager and player roles are mutually exclusive: managers have access to all assigned
 packets and therefore cannot discover, select, register for, or play that tournament. Every
 packet version a manager can read through their role — published into, assigned to, or edited
@@ -106,19 +102,18 @@ Exposure claims record their source packet version independently of ruleset-spec
 namespaces. Source packet provenance is required for every claim, including permanent
 authorship and uploader burns outside games.
 
-Tournaments carry a BCP 47-style language tag (`und` means unspecified), explicit authors,
-and packet-derived lead/theme/question authors. Payment is `free`, `one-time`, or
-`per-stage`. A paid tournament has one or more named pricing plans, and every plan has one
-or more positive two-decimal prices in distinct three-letter ISO currencies. For example,
-`Students: 10 USD / 9 EUR` and `Adults: 15 USD / 13 EUR`. Free tournaments have no pricing
-plans.
+Tournaments carry a BCP 47 language tag (`und` means unspecified), explicit authors, and
+packet-derived authors. Payment is `free`, `one-time`, or `per-stage`. Paid tournaments have
+named pricing plans with positive two-decimal prices in distinct three-letter ISO currencies.
+Free tournaments have no pricing plans.
 
 Registration start/end, planned start/finish, and actual start/finish are separate
 timezone-aware facts. Without a manual override, the enabled registration flag is bounded
 by its dates (the end is enforced when late registrations are disabled). The manager's
-explicit open/closed override takes precedence over that window. Settings exposes the
-date-based registration enable switch and a current-availability checkbox. Changing current
-availability and saving applies a manual override. Dates use the device timezone in the Mini App.
+explicit open/closed override takes precedence over that window. Settings exposes only the
+date-based registration switch. Management shows current availability; changing it disables
+scheduling and sets availability immediately. Re-enabling scheduling clears the manual override.
+Dates use the device timezone in the Mini App.
 The creation wizard omits dates for both types; managers set them later in Settings. Finite
 tournaments require registration end at setup finalization; unfinalized drafts may omit it.
 Tournament start and planned finish dates are optional guidance. Ladder managers use
@@ -167,8 +162,6 @@ The database registers two type descriptors:
   and unable to use hybrid matchmaking. Its prescribed games follow a group, solo quiz,
   play-off, or double-elimination scheme. Invitation lobbies must match the prescribed roster.
 
-The descriptors constrain lobby assembly and tournament-rating eligibility.
-
 ### Classic competition
 
 Managers configure an optional first stage (groups or solo quiz) and optional play-off in
@@ -214,7 +207,7 @@ switches for its prescribed participants. A packet cannot serve two rounds in th
 tournament. Round discovery/play switches inherit the assigned packet's member defaults
 (or tournament defaults before packet selection), unless explicitly overridden. Unstarted
 rounds from older setups inherit defaults after migration; existing started-round choices
-are preserved. **Use packet defaults** restores inheritance for either switch. Unstarted
+are preserved. Unstarted
 stages show these configured values with a warning and disabled switches; actual access
 still requires a started stage. Packets and deadlines can be prepared
 before starting. After a human game starts or resolves, the round's packet is locked. General packet
@@ -222,6 +215,7 @@ accessibility controls only reading. Reading still requires the existing release
 Selecting a round packet sends lobby members its roster or solo restriction. Readiness and
 game assignment recheck exact human membership, round access, and the deadline. A prescribed
 game can be assigned only once; failed or cancelled attempts can retry subject to exposure rules.
+Round cards show game details in a separate **Game statuses** window.
 
 Round deadlines are **game start** cutoffs: successful lobby assignment counts as starting.
 Assigned games retain normal join deadlines and finish normally. Unstarted games receive
@@ -242,17 +236,18 @@ chat and creates player-role reminders 24 hours and one hour before that time. S
 
 ## Tournament settings
 
-Each configurable gameplay setting has both:
+Managers choose defaults and per-parameter player mutability. Effective parameters must satisfy
+tournament type, ruleset, and technical limits. Assignment snapshots preserve them for existing
+games; changes to assembling lobbies clear readiness.
 
-1. a tournament default chosen by managers; and
-2. a manager-selected mutability policy defining whether lobby players may override
-   it.
+Classic SI games always use every theme in the round packet. Theme count is fixed for
+managers and players, including existing tournaments; unavailable themes block the game
+instead of reducing its length. Ladder theme count remains configurable.
 
-The policy may lock every parameter, allow every parameter, or grant override
-permission per parameter. Effective parameters are validated against the tournament
-type, selected game ruleset, and technical limits, then copied into the assigned game
-so later changes cannot alter an existing game. Changes that affect an assembling
-lobby clear player readiness.
+`minimum_players` and `maximum_players` default to four, including existing tournaments.
+Each has its own mutability grant. They must satisfy `1 <= minimum <= maximum <= 12`;
+the maximum controls lobby capacity and both limits govern game starts. Classic uses its
+prescribed roster, including solo games and Chairs, instead of these limits.
 
 The runtime currently interprets policies for:
 
@@ -260,6 +255,10 @@ The runtime currently interprets policies for:
 - rating enablement when the tournament type is rated;
 - an optional positive `maximum_participants` limit;
 - `auto_approve_registrations` (default `false`), which approves new qualifying registrations;
+- `library_viewing_rule_default` (default `after-play`): copied to new packet assignments.
+  Managers choose `never`, `after-play`, or `anytime` in Packet management. Rules govern
+  viewing readable packets in the library, never playing. They are tournament-scoped;
+  changing the default affects future uploads only;
 - `packets_discoverable_by_default` (default `true`), `packets_playable_by_default`
   (default `false`), and `packets_readable_by_default` (default `false`): independent boolean
   access defaults for newly uploaded packets. Publication copies each destination tournament's
@@ -288,14 +287,18 @@ and positive. Escalation depends only on the snapshotted tournament appeal polic
 Policy changes are versioned. A game records the policy version under which it was
 assigned, and results record the policy relevant to their interpretation.
 
+A durable job checks packet availability every 30 seconds, notifying active participants once
+per tournament packet with discoverable, playable, fresh content. Classic adds opponents,
+Chairs, and start deadlines, excluding unstarted stages and expired/resolved matches.
+Transactional notifications and Telegram alerts survive restarts without duplicates.
+
 `hybrid_matchmaking_enabled` is a boolean and defaults to `false`. Managers may set it to
 `true` for Ladder tournaments. Enabling it for Classic or any other type without the
 `supports_hybrid_matchmaking` capability is rejected. Disabling it also stops searches in
 assembling lobbies; direct invitation remains available.
 
-Tournaments also carry an optional plain-text description (at most 2000 characters),
-maintained with the other manager-editable metadata. Listing projections include it, and
-the Mini App shows it on tournament cards.
+Tournament cards show the optional plain-text description (at most 2000 characters),
+editable with other metadata.
 
 ## Universal and technical constraints
 
@@ -338,13 +341,15 @@ Historical games retain their pinned packet revisions even if later access polic
 changes, while post-game access to their full content follows a separately defined
 tournament policy.
 
-Gameplay/library access has an assignment-wide default and optional per-player override:
+Each assignment has a **Library viewing rule**:
 
-- `no-access`: neither play nor library eligibility;
-- `play-only`: may play, but play does not grant library eligibility;
-- `read-after-play`: may play and becomes library-eligible only after actually playing;
-- `read-or-play`: may play or read; reading first must burn the version's canonical claims
-  and thereby prevent later play of that content.
+- `never` — **No library viewing**;
+- `after-play` — **After playing**, requiring actual play in this tournament;
+- `anytime` — **Before or after playing**.
+
+These rules never grant or revoke playability or discoverability. Player-specific play
+permission overrides the member default; an absent override inherits it. Reading still burns
+canonical claims, preventing replay of seen content under the universal exposure rule.
 
 Library eligibility is not sufficient for reading. The owner must also release the adopted
 packet version for library viewing. Release is version-specific and global, while access is

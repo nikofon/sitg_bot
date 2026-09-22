@@ -751,6 +751,17 @@ p {
   border-collapse: collapse;
 }
 
+.packet-access-table-classic {
+  min-width: 0;
+  table-layout: fixed;
+  overflow-wrap: anywhere;
+}
+
+.classic-rounds .settings-actions {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+
 .packet-access-table th,
 .packet-access-table td {
   padding: 0.7rem 0.55rem;

@@ -209,6 +209,14 @@ followed the latest version are pinned before branching so substitutions cannot 
 
 ## Modification workflow
 
+Managers can use **Add existing packet** in Tournament management to look up a packet
+by its displayed logical ID, review its metadata, and confirm or cancel. Lookup requires
+an active assignment in another tournament they manage. If managed tournaments use
+different versions, lookup selects the newest published version among those assignments.
+Confirmation rechecks both roles, version, and destination ruleset compatibility; duplicate
+active assignments are rejected. New assignments use destination access defaults and burn
+the content for its managers. Re-adding a retired assignment preserves its access settings.
+
 1. A tournament manager selects Modify on a packet card in Tournament management.
 2. The upload-style editor displays the assignment's adopted version with every field locked.
 3. A green pencil enables a field as a correction. Theme names and question text/answer fields
@@ -274,7 +282,7 @@ The implemented initial-publication model stores:
 - the source file name, checksum, uploader, and confirmation timestamps;
 - the packet version pinned to each game and question revision pinned to each round;
 - assignment-wide member rights and per-player packet entitlement grants/revocations;
-- assignment-wide and per-player gameplay/library access levels.
+- assignment-wide library viewing rules, independent of playability.
 
 Correction and substitution saves also store field classifications, publishing actor, previous
 version, and logical statistical attribution. They enforce assignment-version concurrency checks.

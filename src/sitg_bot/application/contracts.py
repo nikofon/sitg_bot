@@ -55,6 +55,8 @@ class ActionCode(StrEnum):
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
+    PACKET_EXISTING_PREVIEW = "packets.existing.preview.v1"
+    PACKET_EXISTING_ADD = "packets.existing.add.v1"
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
@@ -477,8 +479,24 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
     tournament_id: UUID | None = None
     assignment_id: UUID
     player_id: UUID | None = None
-    right: Literal["playable", "discoverable", "readable"]
-    enabled: bool
+    right: Literal["playable", "discoverable", "readable", "library_viewing_rule"]
+    enabled: bool | None = None
+    library_viewing_rule: Literal["never", "after-play", "anytime"] | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_access_update(self) -> "TournamentPacketAccessUpdateOperation":
+        if self.right == "library_viewing_rule":
+            if (
+                self.library_viewing_rule is None or self.expected_version is None
+                or self.player_id is not None
+            ):
+                raise ValueError(
+                    "Library viewing rules require a rule, settings version, and no player"
+                )
+        elif self.enabled is None or self.library_viewing_rule is not None:
+            raise ValueError("Packet rights require an enabled flag")
+        return self
 
 
 class TournamentCompleteOperation(ContractModel):
@@ -527,6 +545,19 @@ class PlayerGameResultsOperation(ContractModel):
 class PlayerResolveOperation(ContractModel):
     action: Literal[ActionCode.PLAYER_RESOLVE]
     reference: str = Field(min_length=2, max_length=66)
+
+
+class PacketExistingPreviewOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_EXISTING_PREVIEW]
+    tournament_id: UUID
+    packet_id: UUID
+
+
+class PacketExistingAddOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_EXISTING_ADD]
+    tournament_id: UUID
+    packet_id: UUID
+    expected_version_id: UUID
 
 
 class PacketManagementGetOperation(ContractModel):
@@ -646,7 +677,7 @@ class LobbyInviteOperation(ContractModel):
 class LobbyCreateOperation(ContractModel):
     action: Literal[ActionCode.LOBBY_CREATE]
     tournament_id: UUID | None = None
-    max_players: int = Field(default=4, ge=1, le=12)
+    max_players: int | None = Field(default=None, ge=1, le=12)
 
 
 class LobbyLinkOperation(ContractModel):
@@ -930,6 +961,8 @@ GatewayOperation = Annotated[
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation
+    | PacketExistingPreviewOperation
+    | PacketExistingAddOperation
     | LibraryListOperation
     | LibraryAccessOperation
     | PlayerListOperation

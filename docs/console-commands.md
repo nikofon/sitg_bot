@@ -259,18 +259,17 @@ Use `tournament info` for current policies, defaults, and permitted overrides.
 tournament packet assign <packet-id> [--version <packet-version-id>] [options]
 ```
 
-Options: `--access-level` accepts `no-access`, `play-only`, `read-after-play`, or
-`read-or-play`; flags are `--discoverable`, `--playable`, `--content-visible`, and
+Options: `--library-viewing-rule` accepts `never`, `after-play`, or `anytime`;
+flags are `--discoverable`, `--playable`, `--content-visible`, and
 `--editable`. Omitting a version follows the newest published version. Reissuing the
 command replaces member-wide access flags.
 
 ```text
 tournament packet entitlement <assignment-id> <player-uuid> <right> <on-or-off>
-tournament packet entitlement <assignment-id> <player-uuid> access-level <level>
 ```
 
 Rights are `discoverable`, `playable`, `content-visible`, and `editable`. Membership alone
-does not grant packet rights. Read-related settings prepare access for the planned library;
+does not grant packet rights. Library viewing rules never change these rights;
 there is no console library reader.
 
 | Command | Use |

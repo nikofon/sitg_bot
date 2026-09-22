@@ -170,7 +170,9 @@ class SIGameRuleset:
             "between_themes_delay",
             "minus_multiplier",
         }
-        integer_names = {"question_token_target_chars", "theme_count"}
+        integer_names = {
+            "question_token_target_chars", "theme_count", "minimum_players", "maximum_players"
+        }
         return tuple(
             ParameterDefinition(
                 name,

@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -7,12 +8,13 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
-from test_lobby_architecture import tournament_fixture
+from test_lobby_architecture import packet, tournament_fixture
 
 from sitg_bot.server import ConsoleApplicationServer
 from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
+from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.telegram_game import TelegramGameService
 from sitg_bot.services.tournaments import TournamentService
@@ -24,6 +26,7 @@ from sitg_bot.storage.models import (
     OutboxEventRecord,
     RulesetRatingLedgerRecord,
     ScoreLedgerRecord,
+    ThemeRevisionRecord,
     TournamentCreationTokenRecord,
     TournamentRecord,
 )
@@ -46,11 +49,23 @@ async def mutate(database, fixture, command, kind="first", **values):
     )
 
 
-async def setup(database, count, stage_type="groups", scheme="groups-9-4", kind="first"):
+async def setup(database, count, stage_type="groups", scheme="groups-9-4", kind="first", themes=1):
     fixture = await tournament_fixture(
         database, player_count=count, type_key="classic", hybrid_matchmaking_enabled=False,
         started=False,
     )
+    if themes > 1:
+        content = packet()
+        content = replace(content, themes=tuple(
+            replace(content.themes[0], name=f"Theme {index}") for index in range(themes)
+        ))
+        packets = PacketAdminService(database)
+        draft = await packets.create_draft(
+            content, source_filename="full-packet.json", uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        stored = await packets.publish(draft, administrator_id=fixture.manager.id)
+        fixture = replace(fixture, packet_id=stored.logical_id)
     await mutate(database, fixture, "configure", kind, stage_type=stage_type, scheme_key=scheme)
     return fixture
 
@@ -60,7 +75,29 @@ async def first_round(database, fixture, kind="first"):
         fixture.tournament_id, fixture.manager.id
     )
     stage = next(s for s in view.classic["stages"] if s["kind"] == kind)
-    return stage["rounds"][0], view.packets[0].assignment_id
+    return stage["rounds"][0], next(
+        item.assignment_id for item in view.packets if item.packet_id == fixture.packet_id
+    )
+
+
+async def test_classic_theme_count_is_fixed_for_existing_tournaments_and_updates(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await setup(database, 1, stage_type="quiz", scheme=None)
+        tournaments = TournamentService(database)
+        settings = await tournaments.manager_settings(fixture.tournament_id, fixture.manager.id)
+        assert settings.default_parameters["theme_count"] == 128
+        assert "theme_count" not in settings.player_mutable_parameters
+        assert "theme_count" not in {item.name for item in settings.setting_descriptors}
+        updated = await tournaments.update_policy(
+            fixture.tournament_id, fixture.manager.id,
+            default_parameters={**settings.default_parameters, "theme_count": 1},
+            player_mutable_parameters={"theme_count"}, policies=settings.policies,
+        )
+        assert updated.settings.theme_count == 128
+        assert "theme_count" not in updated.mutable_parameters
+    finally:
+        await database.close()
 
 
 @pytest.mark.parametrize("kind", ["first", "playoff"])
@@ -175,9 +212,15 @@ async def test_classic_creation_defers_dates_and_settings_enable_registration(da
             registration_open_override=False, **values,
         )
         management = await tournaments.manager_management(created.id, fixture.manager.id)
-        assert management.registration_scheduled_open and not management.registration_open
+        assert not management.registration_scheduled_open and not management.registration_open
+        await tournaments.update_manager_settings(
+            created.id, fixture.manager.id, expected_version=management.settings_version, **values,
+        )
+        management = await tournaments.manager_management(created.id, fixture.manager.id)
+        assert management.registration_scheduled_open and management.registration_open
+        assert management.registration_open_override is None
         settings = await tournaments.manager_settings(created.id, fixture.manager.id)
-        assert not settings.tournament.registration_open
+        assert settings.tournament.registration_open
     finally:
         await database.close()
 
@@ -237,7 +280,7 @@ async def test_classic_prescribed_game_chairs_scoring_and_no_replay(
 ):
     database = Database(database_url)
     try:
-        fixture = await setup(database, 2)
+        fixture = await setup(database, 2, themes=3)
         if scheduled_in_future:
             async with database.transaction() as session:
                 tournament = await session.get(TournamentRecord, fixture.tournament_id)
@@ -274,6 +317,14 @@ async def test_classic_prescribed_game_chairs_scoring_and_no_replay(
             await service.set_ready(lobby.id, player.telegram_user_id)
         result = await service.start(lobby.id, fixture.inputs[0].telegram_user_id)
         assert result.started
+        async with database.sessions() as session:
+            game = await session.get(GameRecord, result.game.id)
+            themes = (await session.scalars(select(ThemeRevisionRecord).where(
+                ThemeRevisionRecord.packet_version_id == result.game.packet_version_ids[0],
+            ))).all()
+            assert len(themes) > 1  # The fixture's old Classic default requests just one.
+            assert game.assignment_plan["parameters"]["theme_count"] == len(themes)
+            assert len(game.assignment_plan["play_units"]) == len(themes)
         games = PersistentGameService(database)
         for player in fixture.inputs:
             await games.join(result.game.id, player.telegram_user_id)

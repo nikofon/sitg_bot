@@ -269,6 +269,7 @@ export interface ManagementPacketPlayerAccess {
 }
 
 export interface ManagementPacket {
+  library_viewing_rule?: "never" | "after-play" | "anytime";
   default_access?: Record<"playable" | "discoverable" | "readable", boolean> | null;
   assignment_id: string;
   packet_id: string;

@@ -1,6 +1,7 @@
 import base64
 import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -38,6 +39,63 @@ from sitg_bot.storage.packets import PostgresPacketRepository
 
 pytestmark = pytest.mark.integration
 database_url = _database_url
+
+
+async def test_add_existing_packet_checks_both_roles_and_confirmation(database_url):
+    database = Database(database_url)
+    try:
+        source = await tournament_fixture(database, player_count=1)
+        target = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        args = (target.tournament_id, source.packet_id, target.manager.id)
+        with pytest.raises(LookupError):
+            await service.existing_packet(*args)
+        with pytest.raises(PermissionError):
+            await service.existing_packet(target.tournament_id, source.packet_id, source.manager.id)
+        async with database.transaction() as session:
+            session.add(TournamentManagerRecord(
+                tournament_id=source.tournament_id, player_id=target.manager.id,
+            ))
+        preview = await service.existing_packet(*args)
+        assert preview["name"].startswith("Architecture ")
+        version_id = UUID(preview["packet_version_id"])
+        assert preview["theme_count"] == len(packet().themes)
+        async with database.transaction() as session:
+            assert await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.tournament_id == target.tournament_id,
+                TournamentPacketAssignmentRecord.packet_id == source.packet_id,
+            )) is None
+        with pytest.raises(StaleWriteError):
+            await service.existing_packet(*args, expected_version_id=UUID(int=999))
+        async with database.transaction() as session:
+            role = await session.get(
+                TournamentManagerRecord, (source.tournament_id, target.manager.id)
+            )
+            role.revoked_at = datetime.now(UTC)
+        with pytest.raises(LookupError):
+            await service.existing_packet(*args, expected_version_id=version_id)
+        async with database.transaction() as session:
+            role = await session.get(
+                TournamentManagerRecord, (source.tournament_id, target.manager.id)
+            )
+            role.revoked_at = None
+        await service.existing_packet(*args, expected_version_id=UUID(preview["packet_version_id"]))
+        async with database.transaction() as session:
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.tournament_id == target.tournament_id,
+                TournamentPacketAssignmentRecord.packet_id == source.packet_id,
+            ))
+            assert assignment.adopted_version_id == UUID(preview["packet_version_id"])
+            assert assignment.assigned_by_id == target.manager.id
+            assert await session.scalar(select(PlayerExposureClaimRecord).where(
+                PlayerExposureClaimRecord.player_id == target.manager.id,
+                PlayerExposureClaimRecord.packet_version_id == assignment.adopted_version_id,
+                PlayerExposureClaimRecord.state == "burnt",
+            )) is not None
+        with pytest.raises(ValueError, match="already assigned"):
+            await service.existing_packet(*args, expected_version_id=version_id)
+    finally:
+        await database.close()
 
 
 async def test_console_manager_packet_workflow_uses_tournament_permissions(database_url):
@@ -151,13 +209,15 @@ async def test_correction_and_deletion_preserve_game_history_and_entitlements(da
         tournaments = TournamentService(database)
         assignment = await assigned(database, fixture)
         async with database.transaction() as session:
+            current = await session.get(TournamentPacketAssignmentRecord, assignment.id)
+            current.library_viewing_rule = "anytime"
             session.add(
                 TournamentPacketEntitlementRecord(
                     assignment_id=assignment.id,
                     player_id=fixture.players[0].id,
                     content_visible=True,
                     discoverable=True,
-                    access_level="read-or-play",
+                    playable=True,
                 )
             )
         matchmaking = InvitationMatchmakingService(database)
@@ -183,6 +243,7 @@ async def test_correction_and_deletion_preserve_game_history_and_entitlements(da
                 service, fixture, assignment, editor, {"themes.0.questions.0.text": "correction"}
             )
         updated = await assigned(database, fixture)
+        assert updated.library_viewing_rule == "anytime"
         async with database.sessions() as session:
             old = await session.get(PacketVersionRecord, assignment.adopted_version_id)
             assert old.state == "archived" and old.deleted_at is not None

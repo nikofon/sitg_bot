@@ -1386,6 +1386,10 @@ export class MiniAppShell {
     }
     section("packet_accessibility", packetAccessibility);
     const managedPackets = element("div", { className: "lobby-packets" });
+    if (can("packet_management")) managedPackets.append(element("button", {
+      type: "button", className: "primary-button",
+      onclick: (() => this.showExistingPacketDialog(route)) as EventListener,
+    }, this.i18n.t("packet_management.add_existing")));
     for (const packet of resource.packets) {
       const card = element("article", { className: "resource-card lobby-packet-card", "data-packet-id": packet.packet_id },
         element("h3", {}, packet.name),
@@ -1402,6 +1406,17 @@ export class MiniAppShell {
         ),
       );
       const actions = element("div", { className: "inline-actions" });
+      const viewingRule = element("select", { disabled: !can("packet_access") },
+        ...["never", "after-play", "anytime"].map((rule) => element(
+          "option", { value: rule, selected: rule === packet.library_viewing_rule },
+          this.i18n.t(`packet_management.library_viewing_rule.${rule}` as MessageKey),
+        )));
+      viewingRule.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
+        assignment_id: packet.assignment_id, right: "library_viewing_rule", library_viewing_rule: viewingRule.value,
+        expected_version: resource.settings_version,
+      }));
+      card.append(element("label", {}, this.i18n.t("packet_management.library_viewing_rule"), viewingRule));
+      card.append(element("p", { className: "field-help" }, this.i18n.t("packet_management.library_viewing_help")));
       if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
         const button = element("button", {
           type: "button", className: command === "delete" ? "danger-button" : "secondary-button",
@@ -1493,7 +1508,7 @@ export class MiniAppShell {
     classic = false,
   ): HTMLElement {
     const rights: Array<"playable" | "discoverable" | "readable"> = classic ? ["readable"] : ["playable", "discoverable", "readable"];
-    const table = element("table", { className: "packet-access-table" });
+    const table = element("table", { className: `packet-access-table${classic ? " packet-access-table-classic" : ""}` });
     const head = element("thead", {}, element(
       "tr",
       {},
@@ -1783,11 +1798,6 @@ export class MiniAppShell {
       group(
         "manager_settings.registration",
         element("label", { className: "checkbox-label" }, element("input", {
-          name: "registration_available", type: "checkbox", checked: item.registration_open,
-          disabled: resource.finalized_at == null,
-        }), this.i18n.t("manager_management.registration_available")),
-        element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_override_help")),
-        element("label", { className: "checkbox-label" }, element("input", {
           name: "registration_open", type: "checkbox", checked: resource.registration_enabled,
         }), this.i18n.t("manager_settings.registration_enabled")),
         element("p", { className: "field-help" }, this.i18n.t("manager_settings.registration_help")),
@@ -1803,6 +1813,8 @@ export class MiniAppShell {
       group(
         "manager_settings.gameplay",
         element("h3", {}, this.i18n.t("tournament.defaults")),
+        ...(item.type_key === "classic"
+          ? [element("p", { className: "field-help" }, this.i18n.t("classic.full_packet"))] : []),
         this.renderDescriptorGroup(settingDescriptors, "setting"),
         element("h3", {}, this.i18n.t("tournament.mutable")),
         mutable,
@@ -1915,22 +1927,17 @@ export class MiniAppShell {
         element("label", { className: "switch-label" }, playable, this.i18n.t("manager_management.playable")),
         element("label", {}, this.i18n.t("classic.deadline"), deadline),
         element("p", { className: "field-help" }, this.i18n.t("classic.deadline_help")),
-        element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
+        element("div", { className: "settings-actions" }, element("button", { type: "button", className: "primary-button", disabled: resource.tournament.status !== "active",
           onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
             round_id: round.id, assignment_id: packet.value || null,
             ...(stageStarted ? accessChanges : {}),
             start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
           })) as EventListener }, this.i18n.t("classic.save_round")),
-        element("button", { type: "button", className: "secondary-button", disabled: resource.tournament.status !== "active",
-          onclick: (() => void this.mutateClassic(route, resource.settings_version, "round", stage.kind, {
-            round_id: round.id, assignment_id: packet.value || null, discoverable: null, playable: null,
-            start_deadline: deadline.value ? new Date(deadline.value).toISOString() : null,
-          })) as EventListener }, this.i18n.t("classic.use_packet_defaults")),
-        ...round.matches.map((m) => {
+        element("button", { type: "button", className: "secondary-button",
+          onclick: (() => this.showTextDialog(this.i18n.t("classic.game_statuses"), round.matches.map((m) => {
           const results = m.results?.map((r) => `${r.place}. ${r.seat.startsWith("chair:") ? this.i18n.t("classic.chair") : names.get(r.seat) ?? r.seat} (${r.score})`).join("; ");
-          return element("p", {},
-            `${this.i18n.t("classic.group")} ${m.group} · ${this.i18n.t("classic.game")} ${m.number}: ${results || m.players.join(", ") || this.i18n.t("classic.awaiting_results")} · ${this.i18n.t(m.randomized ? "classic.randomized" : m.results ? "classic.completed" : m.game_id ? "classic.running" : "classic.pending")}`);
-        }),
+          return `${this.i18n.t("classic.group")} ${m.group} · ${this.i18n.t("classic.game")} ${m.number}: ${results || m.players.join(", ") || this.i18n.t("classic.awaiting_results")} · ${this.i18n.t(m.randomized ? "classic.randomized" : m.results ? "classic.completed" : m.game_id ? "classic.running" : "classic.pending")}`;
+        }))) as EventListener }, this.i18n.t("classic.game_statuses"))),
       ));
     }
     if (stage.standings.length) container.append(element("table", {},
@@ -2010,7 +2017,8 @@ export class MiniAppShell {
       } else if (descriptor.value_type === "enum") {
         control = element("select", { name: fieldName }, ...descriptor.options.map((option) => element("option", {
           value: option, selected: option === descriptor.value,
-        }, option)));
+        }, descriptor.name === "library_viewing_rule_default"
+          ? this.i18n.t(`packet_management.library_viewing_rule.${option}` as MessageKey) : option)));
       } else {
         const serialized = descriptor.value_type === "array"
           ? JSON.stringify(descriptor.value)
@@ -2020,6 +2028,8 @@ export class MiniAppShell {
           value: serialized,
           type: descriptor.value_type === "array" || descriptor.value_type === "string" ? "text" : "number",
           step: descriptor.value_type === "integer" ? "1" : "any",
+          ...(["minimum_players", "maximum_players"].includes(descriptor.name)
+            ? { min: "1", max: "12", required: true } : {}),
         });
       }
       const panelChildren: Node[] = [
@@ -2249,8 +2259,6 @@ export class MiniAppShell {
             payment_type: value("payment_type"),
             pricing_plans: value("payment_type") === "free" ? [] : this.pricingPlans(form),
             registration_open: value("registration_open") === "on",
-            ...(resource.finalized_at != null && data.has("registration_available") !== resource.tournament.registration_open
-              ? { registration_open_override: data.has("registration_available") } : {}),
             ignore_late_registrations: data.has("ignore_late_registrations"),
             registration_starts_at: timestamp("registration_starts_at"),
             registration_ends_at: timestamp("registration_ends_at"),
@@ -2495,6 +2503,67 @@ export class MiniAppShell {
       return;
     }
     this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion");
+  }
+
+  private showExistingPacketDialog(route: RouteMatch): void {
+    const input = element("input", { type: "text", required: true, autocomplete: "off" });
+    const details = element("div", { "aria-live": "polite" });
+    const errorMessage = element("p", { role: "alert" });
+    const submit = element("button", { type: "submit", className: "primary-button" }, this.i18n.t("packet_management.add"));
+    const cancel = element("button", { type: "button", className: "secondary-button" }, this.i18n.t("packet_management.cancel"));
+    const form = element("form", {},
+      element("label", {}, this.i18n.t("packet_management.packet_id"), input), details, errorMessage,
+      element("div", { className: "inline-actions" }, submit, cancel));
+    const dialog = element("dialog", { className: "tournament-dialog", "aria-labelledby": "existing-packet-title" },
+      element("h2", { id: "existing-packet-title" }, this.i18n.t("packet_management.add_existing")), form);
+    type Preview = { packet_id: string; packet_version_id: string; name: string; year: number | null;
+      lead_author: string; authors: string[]; theme_count: number; question_count: number };
+    let preview: Preview | null = null;
+    const close = (): void => { if (typeof dialog.close === "function") dialog.close(); dialog.remove(); };
+    cancel.addEventListener("click", close);
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      submit.disabled = true;
+      errorMessage.textContent = "";
+      const path = `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/existing-packets`;
+      try {
+        if (preview) {
+          const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/add`, {
+            method: "POST", body: { packet_id: preview.packet_id, expected_version_id: preview.packet_version_id },
+          });
+          close();
+          this.platform.notifySuccess();
+          this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
+        } else {
+          preview = await this.api.request<Preview>(`${path}/preview`, {
+            method: "POST", body: { packet_id: input.value.trim() },
+          });
+          input.disabled = true;
+          details.replaceChildren(element("h3", {}, preview.name), element("dl", { className: "detail-list" },
+            ...([
+              ["lobby.packet_year", preview.year?.toString() ?? "—"],
+              ["lobby.packet_lead_author", preview.lead_author || "—"],
+              ["lobby.packet_authors", preview.authors.join(", ") || "—"],
+              ["packet_management.themes", String(preview.theme_count)],
+              ["packet_management.questions", String(preview.question_count)],
+            ] as const).flatMap(([key, value]) => [element("dt", {}, this.i18n.t(key)), element("dd", {}, value)])));
+          submit.textContent = this.i18n.t("packet_management.confirm_add");
+        }
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        errorMessage.textContent = this.i18n.t(`error.${code}`);
+        preview = null;
+        input.disabled = false;
+        details.replaceChildren();
+        submit.textContent = this.i18n.t("packet_management.add");
+      } finally { submit.disabled = false; }
+    });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    input.focus();
   }
 
   private showTextDialog(title: string, lines: string[]): void {
