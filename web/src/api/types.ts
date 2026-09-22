@@ -201,6 +201,7 @@ export interface TournamentProfileResource {
     finalized_at?: string | null;
     settings_version: number;
     registration: { open: boolean; starts_at?: string | null; ends_at?: string | null };
+    registration_link?: { reference: string; url?: string; visibility: string } | null;
     managers: Array<{ player_id: string; name: string }>;
     authors: string[];
     registration_count: number;
@@ -765,6 +766,7 @@ export interface RoutePayload {
     | RouteResource
     | TournamentRouteResource
     | TournamentProfileResource
+    | TournamentChatResource
     | TournamentManagerSettingsResource
     | TournamentManagerManagementResource
     | LobbyResource
@@ -777,6 +779,21 @@ export interface RoutePayload {
     | AdminManagementResource
     | AuthorLinksResource;
   pagination?: PageCursor;
+}
+
+export interface TournamentChatResource {
+  kind: "tournament_chat";
+  state: "ready";
+  chat_id: string;
+  tournament_id: string;
+  tournament_name: string;
+  round_number: number;
+  match_number: number;
+  multiple_matches: boolean;
+  planned_at?: string | null;
+  planned_by_id?: string | null;
+  participants: Array<{ player_id: string; nickname: string }>;
+  unread?: boolean;
 }
 
 export interface RequestOptions {

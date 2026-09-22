@@ -91,6 +91,22 @@ function generalPanel(
         i18n.t("tournament_profile.counts"),
         `${general.registration_count} / ${general.participant_count}`,
       ),
+      general.registration_link?.url
+        ? element(
+            "li",
+            {},
+            `${i18n.t("tournament_profile.registration_link")}: `,
+            element(
+              "a",
+              {
+                href: general.registration_link.url,
+                target: "_blank",
+                rel: "noopener noreferrer",
+              },
+              general.registration_link.url,
+            ),
+          )
+        : null,
     ),
   );
 }

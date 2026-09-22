@@ -13,6 +13,7 @@ import type {
   TournamentDetailsPayload,
   TournamentListItem,
   TournamentProfileResource,
+  TournamentChatResource,
   TournamentManagerSettingsResource,
   TournamentManagerManagementResource,
   ManagementPacket,
@@ -46,6 +47,7 @@ import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderTournamentProfile } from "./ui/tournament";
+import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
 
 export class MiniAppShell {
@@ -217,6 +219,10 @@ export class MiniAppShell {
       route.id === "tournament_profile" && isTournamentProfileResource(payload.resource)
     ) {
       this.renderTournamentProfileRoute(route, payload.resource);
+      return;
+    }
+    if (route.id === "chat_schedule" && isTournamentChatResource(payload.resource)) {
+      this.renderChatScheduleRoute(route, payload.resource);
       return;
     }
     if (route.id === "manager_settings" && isManagerSettingsResource(payload.resource)) {
@@ -1109,6 +1115,41 @@ export class MiniAppShell {
     );
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderChatScheduleRoute(
+    route: RouteMatch,
+    resource: TournamentChatResource,
+  ): void {
+    const content = renderChatSchedule(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        set: (plannedAt) => void this.setChatGameTime(route, resource.chat_id, plannedAt),
+      },
+    );
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private async setChatGameTime(
+    route: RouteMatch,
+    chatId: string,
+    plannedAt: string | null,
+  ): Promise<void> {
+    try {
+      await this.api.request(`/api/miniapp/chats/${encodeURIComponent(chatId)}/game-time`, {
+        method: "POST",
+        body: { planned_at: plannedAt },
+      });
+      await this.load(route);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.renderError(route, code);
+      this.platform.notifyError();
+    }
   }
 
   private renderPlayerProfileRoute(route: RouteMatch, resource: PlayerProfileResource): void {
@@ -2948,6 +2989,12 @@ function isTournamentProfileResource(
   value: RoutePayload["resource"],
 ): value is TournamentProfileResource {
   return "kind" in value && value.kind === "tournament_profile";
+}
+
+function isTournamentChatResource(
+  value: RoutePayload["resource"],
+): value is TournamentChatResource {
+  return "kind" in value && value.kind === "tournament_chat";
 }
 
 function isManagerSettingsResource(
