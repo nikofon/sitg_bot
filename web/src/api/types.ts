@@ -109,6 +109,114 @@ export interface TournamentDetailsPayload {
   player_mutable_parameters: string[];
 }
 
+export type TournamentProfileStatus =
+  | "invited"
+  | "registered"
+  | "approved"
+  | "active"
+  | "rejected"
+  | (string & {});
+
+export interface TournamentProfileRegistration {
+  player_id: string;
+  nickname: string;
+  status: TournamentProfileStatus;
+  registered_at?: string | null;
+}
+
+export interface TournamentProfileGameParticipant {
+  player_id: string;
+  nickname: string;
+  score: number | string;
+  place: number | string | null;
+}
+
+export interface TournamentProfileGame {
+  game_id: string;
+  played_at?: string | null;
+  participants: TournamentProfileGameParticipant[];
+}
+
+export interface TournamentProfileManualResult {
+  player_id: string;
+  nickname: string;
+  place: string;
+  score: string;
+  points: string;
+}
+
+export interface TournamentProfileMatch {
+  id: string;
+  group: number;
+  number: number;
+  game_id: string | null;
+  played_at?: string | null;
+  participants: TournamentProfileGameParticipant[];
+  players: Array<{ player_id: string; nickname: string }>;
+  manual_results: TournamentProfileManualResult[];
+}
+
+export interface TournamentProfileStage {
+  kind: "first" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "playoff";
+  scheme_key: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  groups: number[];
+  rounds: Array<{ number: number; matches: TournamentProfileMatch[] }>;
+}
+
+export interface TournamentProfileLeadersStage {
+  kind: "first" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "playoff";
+  standings?: Array<{
+    player_id: string;
+    nickname: string;
+    points: string;
+    score: string;
+  }>;
+  places?: Array<{ player_id: string; nickname: string; place: string }>;
+}
+
+export interface TournamentProfileResource {
+  kind: "tournament_profile";
+  state: "ready";
+  type_key: string;
+  tournament: { id: string; name: string; slug: string };
+  general: {
+    name: string;
+    slug: string;
+    description: string;
+    status: string;
+    moderation_status: string;
+    visibility: "public" | "private";
+    language: string;
+    payment_type: string;
+    type: { key: string; name: string; version: number } | null;
+    ruleset: { key: string; name: string; version: number } | null;
+    starts_at?: string | null;
+    planned_ends_at?: string | null;
+    actual_starts_at?: string | null;
+    actual_ends_at?: string | null;
+    finalized_at?: string | null;
+    settings_version: number;
+    registration: { open: boolean; starts_at?: string | null; ends_at?: string | null };
+    registration_link?: { reference: string; url?: string; visibility: string } | null;
+    managers: Array<{ player_id: string; name: string }>;
+    authors: string[];
+    registration_count: number;
+    participant_count: number;
+  };
+  registrations: TournamentProfileRegistration[];
+  participants: Array<{ player_id: string; nickname: string }> | null;
+  games:
+    | { kind: "ladder"; items: TournamentProfileGame[] }
+    | { kind: "classic"; stages: TournamentProfileStage[] };
+  leaders:
+    | { kind: "ladder"; items: Array<{ player_id: string; nickname: string; rating: number }> }
+    | { kind: "classic"; stages: TournamentProfileLeadersStage[] };
+}
+
 export interface TournamentManagerSettingsResource {
   classic?: ClassicTournament | null;
   kind: "manager_settings";
@@ -657,6 +765,8 @@ export interface RoutePayload {
   resource:
     | RouteResource
     | TournamentRouteResource
+    | TournamentProfileResource
+    | TournamentChatResource
     | TournamentManagerSettingsResource
     | TournamentManagerManagementResource
     | LobbyResource
@@ -669,6 +779,21 @@ export interface RoutePayload {
     | AdminManagementResource
     | AuthorLinksResource;
   pagination?: PageCursor;
+}
+
+export interface TournamentChatResource {
+  kind: "tournament_chat";
+  state: "ready";
+  chat_id: string;
+  tournament_id: string;
+  tournament_name: string;
+  round_number: number;
+  match_number: number;
+  multiple_matches: boolean;
+  planned_at?: string | null;
+  planned_by_id?: string | null;
+  participants: Array<{ player_id: string; nickname: string }>;
+  unread?: boolean;
 }
 
 export interface RequestOptions {

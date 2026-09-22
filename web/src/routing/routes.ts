@@ -2,6 +2,8 @@ import type { MessageKey } from "../i18n/en";
 
 export type RouteId =
   | "tournaments"
+  | "tournament_profile"
+  | "chat_schedule"
   | "ongoing"
   | "history"
   | "library"
@@ -52,6 +54,20 @@ const routes: RouteDefinition[] = [
     titleKey: "route.tournaments.title",
     emptyKey: "route.tournaments.empty",
     isRoot: true,
+  },
+  {
+    id: "tournament_profile",
+    pattern: /^\/tournaments\/([0-9a-fA-F-]{36})\/?$/,
+    parameterNames: ["tournament_id"],
+    titleKey: "route.tournament_profile.title",
+    emptyKey: "route.tournament_profile.empty",
+  },
+  {
+    id: "chat_schedule",
+    pattern: /^\/chats\/([0-9a-fA-F-]{36})\/schedule\/?$/,
+    parameterNames: ["chat_id"],
+    titleKey: "route.chat_schedule.title",
+    emptyKey: "route.chat_schedule.empty",
   },
   {
     id: "ongoing",

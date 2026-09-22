@@ -26,6 +26,7 @@ from sitg_bot.application.contracts import (
     LobbyInviteOperation,
     LobbyJoinOperation,
     LobbyLinkOperation,
+    LobbyPacketBulkSelectOperation,
     LobbyReadyUpdateOperation,
     LobbySimpleMutationOperation,
     NavigationContextSetOperation,
@@ -53,10 +54,12 @@ from sitg_bot.application.contracts import (
     TokenRequestAdminDecideOperation,
     TokenRequestCreateOperation,
     TokenRequestQueueOperation,
+    TournamentChatListOperation,
+    TournamentChatOpenOperation,
+    TournamentChatQuitOperation,
     TournamentCreateOperation,
     TournamentInfoOperation,
     TournamentManagerManagementLinkOperation,
-    TournamentManagerSettingsLinkOperation,
     TournamentRegisterOperation,
     TournamentRegistrationInvitationOperation,
     TournamentRegistrationLinkOperation,
@@ -424,17 +427,6 @@ class BotBackend:
             {"id": data["id"], "name": data["name"], "slug": data["slug"]}
         )
 
-    async def tournament_settings_link(
-        self, claim: TelegramUpdateClaim
-    ) -> TournamentSettingsLinkState:
-        response = await self._execute(
-            claim,
-            TournamentManagerSettingsLinkOperation(
-                action=ActionCode.TOURNAMENT_MANAGER_SETTINGS_LINK
-            ),
-        )
-        return TournamentSettingsLinkState.model_validate(response.data)
-
     async def tournament_management_link(
         self, claim: TelegramUpdateClaim
     ) -> TournamentSettingsLinkState:
@@ -655,6 +647,27 @@ class BotBackend:
         )
         return cast(dict, response.data)
 
+    async def select_lobby_packets(
+        self,
+        claim: TelegramUpdateClaim,
+        *,
+        lobby_id: UUID,
+        packet_ids: tuple[UUID, ...] | list[UUID],
+        expected_version: int,
+    ) -> dict:
+        response = await self._execute(
+            claim,
+            LobbyPacketBulkSelectOperation.model_validate(
+                {
+                    "action": ActionCode.LOBBY_PACKET_SELECT_MANY,
+                    "lobby_id": lobby_id,
+                    "expected_version": expected_version,
+                    "packet_ids": [str(packet_id) for packet_id in packet_ids],
+                }
+            ),
+        )
+        return cast(dict, response.data)
+
     async def join_lobby(
         self,
         claim: TelegramUpdateClaim,
@@ -768,6 +781,30 @@ class BotBackend:
     async def chat_send(self, claim, **values):
         response = await self._execute(
             claim, ChatSendOperation(action=ActionCode.CHAT_SEND, **values)
+        )
+        return response.data
+
+    async def tournament_chat_list(self, claim, *, tournament_id: UUID):
+        response = await self._execute(
+            claim,
+            TournamentChatListOperation(
+                action=ActionCode.TOURNAMENT_CHAT_LIST, tournament_id=tournament_id
+            ),
+        )
+        return response.data
+
+    async def tournament_chat_open(self, claim, *, chat_id: UUID):
+        response = await self._execute(
+            claim,
+            TournamentChatOpenOperation(
+                action=ActionCode.TOURNAMENT_CHAT_OPEN, chat_id=chat_id
+            ),
+        )
+        return response.data
+
+    async def tournament_chat_quit(self, claim):
+        response = await self._execute(
+            claim, TournamentChatQuitOperation(action=ActionCode.TOURNAMENT_CHAT_QUIT)
         )
         return response.data
 

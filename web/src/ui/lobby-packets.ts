@@ -22,6 +22,7 @@ export function renderLobbyPackets(
     ...(editable ? lobby.packet_suggestions.filter((packet) => !selected.has(packet.packet_id)) : []),
   ];
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
+  let sortMode: "default" | "fresh" = "default";
   const inRange = (year: number | null, from?: string, to?: string): boolean =>
     (!from && !to) || (year !== null && (!from || year >= Number(from)) && (!to || year <= Number(to)));
   const matches = (packet: LobbyPacket): boolean => {
@@ -39,6 +40,11 @@ export function renderLobbyPackets(
   );
   const render = (): void => {
     const visible = packets.filter(matches);
+    if (sortMode === "fresh") {
+      visible.sort((a, b) =>
+        (b.fresh_play_unit_count ?? 0) - (a.fresh_play_unit_count ?? 0)
+        || a.name.localeCompare(b.name, i18n.locale));
+    }
     list.replaceChildren(...visible.map((packet) => {
       const added = selected.has(packet.packet_id);
       const command = added ? "packet-remove" : "packet-select";
@@ -79,6 +85,18 @@ export function renderLobbyPackets(
       }),
     );
     controls.append(input("name", "lobby.packet_search"), input("author", "lobby.packet_authors"));
+    const sort = element("select", {
+      "aria-label": i18n.t("lobby.packet_sort"),
+      onchange: (() => {
+        sortMode = (sort.value as typeof sortMode) || "default";
+        render();
+      }) as EventListener,
+    });
+    sort.append(
+      element("option", { value: "default" }, i18n.t("lobby.packet_sort_default")),
+      element("option", { value: "fresh" }, i18n.t("lobby.packet_sort_fresh")),
+    );
+    controls.append(sort);
     for (const [label, from, to] of [
       ["lobby.packet_year", "year_from", "year_to"],
       ["lobby.packet_publication_year", "publication_from", "publication_to"],

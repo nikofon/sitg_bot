@@ -12,6 +12,8 @@ import type {
   TournamentAction,
   TournamentDetailsPayload,
   TournamentListItem,
+  TournamentProfileResource,
+  TournamentChatResource,
   TournamentManagerSettingsResource,
   TournamentManagerManagementResource,
   ManagementPacket,
@@ -44,6 +46,8 @@ import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets"
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
+import { renderTournamentProfile } from "./ui/tournament";
+import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
 
 export class MiniAppShell {
@@ -209,6 +213,16 @@ export class MiniAppShell {
       this.renderTournamentRoute(route, payload.resource, payload.pagination);
       const info = route.query.get("info");
       if (info) void this.openLibraryTournament({ id: info, role: payload.resource.role });
+      return;
+    }
+    if (
+      route.id === "tournament_profile" && isTournamentProfileResource(payload.resource)
+    ) {
+      this.renderTournamentProfileRoute(route, payload.resource);
+      return;
+    }
+    if (route.id === "chat_schedule" && isTournamentChatResource(payload.resource)) {
+      this.renderChatScheduleRoute(route, payload.resource);
       return;
     }
     if (route.id === "manager_settings" && isManagerSettingsResource(payload.resource)) {
@@ -1079,6 +1093,63 @@ export class MiniAppShell {
     if (page?.previous || page?.next) content.append(this.pagination(route, page));
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderTournamentProfileRoute(
+    route: RouteMatch,
+    resource: TournamentProfileResource,
+  ): void {
+    const content = renderTournamentProfile(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        openPlayer: (playerId) =>
+          this.router.navigate(`/players/${encodeURIComponent(playerId)}`),
+        openGame: (playerId, gameId) =>
+          this.router.navigate(
+            `/players/${encodeURIComponent(playerId)}/games/${encodeURIComponent(gameId)}`,
+          ),
+      },
+      route.query.get("section") ?? undefined,
+    );
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderChatScheduleRoute(
+    route: RouteMatch,
+    resource: TournamentChatResource,
+  ): void {
+    const content = renderChatSchedule(
+      resource,
+      this.i18n,
+      (value) => this.formatDate(value),
+      {
+        set: (plannedAt) => void this.setChatGameTime(route, resource.chat_id, plannedAt),
+      },
+    );
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private async setChatGameTime(
+    route: RouteMatch,
+    chatId: string,
+    plannedAt: string | null,
+  ): Promise<void> {
+    try {
+      await this.api.request(`/api/miniapp/chats/${encodeURIComponent(chatId)}/game-time`, {
+        method: "POST",
+        body: { planned_at: plannedAt },
+      });
+      await this.load(route);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.renderError(route, code);
+      this.platform.notifyError();
+    }
   }
 
   private renderPlayerProfileRoute(route: RouteMatch, resource: PlayerProfileResource): void {
@@ -2244,10 +2315,7 @@ export class MiniAppShell {
     button.disabled = true;
     try {
       if (action === "info") {
-        const details = await this.api.request<TournamentDetailsPayload>(
-          `/api/miniapp/tournaments/${encodeURIComponent(item.id)}?role=${resource.role}`,
-        );
-        this.showTournamentDetails(details);
+        this.router.navigate(`/tournaments/${encodeURIComponent(item.id)}`);
         return;
       }
       if (action === "register") {
@@ -2915,6 +2983,18 @@ export class MiniAppShell {
 
 function isTournamentResource(value: RoutePayload["resource"]): value is TournamentRouteResource {
   return "kind" in value && value.kind === "tournaments";
+}
+
+function isTournamentProfileResource(
+  value: RoutePayload["resource"],
+): value is TournamentProfileResource {
+  return "kind" in value && value.kind === "tournament_profile";
+}
+
+function isTournamentChatResource(
+  value: RoutePayload["resource"],
+): value is TournamentChatResource {
+  return "kind" in value && value.kind === "tournament_chat";
 }
 
 function isManagerSettingsResource(

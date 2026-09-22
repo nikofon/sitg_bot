@@ -10,18 +10,40 @@
 | [web/src/routing](../web/src/routing) | Route parsing and navigation |
 | [web/src/api](../web/src/api) | Typed payloads, credentialed requests, stable errors |
 | [web/src/platform](../web/src/platform) | Telegram chrome and local development harness |
-| [web/src/ui](../web/src/ui), [state](../web/src/state) | DOM helpers, packet cards, filters, filter persistence, and message-flow setting previews |
+| [web/src/ui](../web/src/ui), [state](../web/src/state) | DOM helpers, packet cards, tournament profile sections, filters, filter persistence, and message-flow setting previews |
 | [web/src/i18n](../web/src/i18n), [styles.css](../web/src/styles.css) | Russian/English catalogs and responsive layout |
 | [miniapp_http.py](../src/sitg_bot/miniapp_http.py) | aiohttp routes, session resolution, gateway translation, static files |
 | [services/miniapp_auth.py](../src/sitg_bot/services/miniapp_auth.py), [launch_references.py](../src/sitg_bot/services/launch_references.py) | Telegram signature validation, sessions, CSRF, actor-bound launch targets |
+| [services/tournament_profiles.py](../src/sitg_bot/services/tournament_profiles.py) | Read-only tournament profile projections for the Mini App window |
 
 One TypeScript/Vite app shares authentication, navigation, localization, and Telegram chrome
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`. Descriptor editors for ruleset settings
-that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`);
+that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`),
+replayed through a `⏵` (U+23F5) button;
 the lobby settings section lists changeable options before fixed ones. The author-link
 window (`/authors/link`) lets a registered player search authors, submit a link request
 with an optional note, and follow their own request statuses; the bot's player menu opens it.
+
+The tournament profile window (`/tournaments/{tournament_id}`, opened by the catalogue's
+info action, the bot's player **Info** and manager **Tournament profile** buttons, and the
+**Leaders** button that adds `?section=leaders`) shows five permission-aware sections:
+general details and managers, registered
+players with approval badges, the finalized participant list (classic only), games, and
+leaders. The general section includes the tournament registration link (a
+`t.me/<bot>?start=reg_…` URL resolved by the HTTP adapter) whenever registration is open.
+Ladder games list the latest finalized games with per-player scores and links to
+the same game examination as player profiles; classic games browse first-stage and play-off
+stages with group and round selection. Ladder leaders order players by in-tournament rating;
+classic leaders switch between first-stage standings and computed play-off final places,
+where the last round keeps its in-game order and players eliminated in a multi-game round
+share `survivors + position - 1.5`.
+
+The chat schedule window (`/chats/{chat_id}/schedule`, opened by the bot's `/set_game_time`
+inside an open tournament chat) shows the match, its participants, and the current planned
+game time. Participants set a new time (replacing any previous one) or remove it; the time
+is shared for the whole match and is advisory only. Mutations go through
+`POST /api/miniapp/chats/{chat_id}/game-time` and post a system message to the chat.
 
 ## Independent website
 
@@ -78,7 +100,8 @@ alternatives are `starts_desc`, `name_asc`, and `name_desc`.
 **Lobbies:** overview, packet selection, and settings. The overview shows current selections
 and validation warnings. Packet cards show author/year metadata, shared fresh-theme counts,
 and playability for all players; observers do not affect freshness/playability. Selected cards
-come first. Text and inclusive packet/publication year filters survive refresh. Mutations
+come first. Text and inclusive packet/publication year filters survive refresh, and a sort
+control reorders cards by fresh-theme count. Mutations
 use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
@@ -181,6 +204,8 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
+| GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |
+| GET route resolution of `/chats/{chat_id}/schedule`; POST `/chats/{chat_id}/game-time` | Classic chat scheduling window and shared game-time mutations |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
 | `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |

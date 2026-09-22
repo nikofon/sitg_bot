@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     LargeBinary,
@@ -177,6 +178,7 @@ class PlayerTelegramNavigationRecord(Base):
     selected_manager_tournament_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tournaments.id")
     )
+    active_chat_id: Mapped[UUID | None] = mapped_column(ForeignKey("classic_chats.id"))
     version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default=text("1")
     )
@@ -1241,6 +1243,57 @@ class ClassicMatchRecord(Base):
     __table_args__ = (
         UniqueConstraint("round_id", "group_number", "number"),
         CheckConstraint("group_number >= 1 AND number >= 1"),
+    )
+
+
+class ClassicChatRecord(Base, TimestampMixin):
+    """Persistent chat and shared advisory game time for one prescribed match."""
+
+    __tablename__ = "classic_chats"
+
+    id: Mapped[UUID] = uuid_column()
+    match_id: Mapped[UUID] = mapped_column(
+        ForeignKey("classic_matches.id"), nullable=False, unique=True
+    )
+    tournament_id: Mapped[UUID] = mapped_column(ForeignKey("tournaments.id"), nullable=False)
+    planned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    planned_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+
+
+class ClassicChatMessageRecord(Base, TimestampMixin):
+    __tablename__ = "classic_chat_messages"
+
+    id: Mapped[UUID] = uuid_column()
+    chat_id: Mapped[UUID] = mapped_column(
+        ForeignKey("classic_chats.id"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(
+        BigInteger, Identity(), nullable=False, unique=True
+    )
+    sender_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    caption: Mapped[str | None] = mapped_column(Text)
+    source_chat_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    system: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    __table_args__ = (CheckConstraint("kind IN ('text', 'media', 'system')"),)
+
+
+class ClassicChatMemberRecord(Base, TimestampMixin):
+    __tablename__ = "classic_chat_members"
+
+    chat_id: Mapped[UUID] = mapped_column(ForeignKey("classic_chats.id"), primary_key=True)
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    last_read_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    notified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    message_ids: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
 

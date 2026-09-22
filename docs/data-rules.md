@@ -18,7 +18,7 @@ concurrent operations or commit halfway through an atomic assignment/publication
 | --- | --- |
 | Identity | `players`, `platform_administrators`, `player_telegram_navigation`, author-link records |
 | Organization | `tournaments` references type/ruleset/policy versions; managers, memberships, registration attempts, pricing and authors are related records |
-| Classic competition | `classic_stages` owns seeds/scoring; `classic_rounds` owns packets/deadlines; `classic_matches` stores prescribed seats, advancement, assigned game, and final results |
+| Classic competition | `classic_stages` owns seeds/scoring; `classic_rounds` owns packets/deadlines; `classic_matches` stores prescribed seats, advancement, assigned game, and final results; `classic_chats`/`classic_chat_messages`/`classic_chat_members` store per-match chat state, replayable history, and per-player read/cleanup ledgers |
 | Content | `logical_packets` → `packet_versions`; `themes` → `theme_revisions`; `logical_questions` → `question_revisions`; `packet_questions` stores placements |
 | Access | `tournament_packet_assignments` joins tournaments to content; `tournament_packet_entitlements` stores player overrides; drafts retain intended tournaments |
 | Assembly | `pregame_lobbies` owns member, packet, and event rows and references its assigned game |

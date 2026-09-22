@@ -39,9 +39,9 @@ All Python paths below are relative to [src/sitg_bot](../src/sitg_bot).
 | Area | Entry points | Implementation guide |
 | --- | --- | --- |
 | Application boundary, identity, delivery | `application/`, `server.py`, `services/players.py`, `services/reliable_*.py` | [Application services and protocol](application.md) |
-| Telegram routing, state, gameplay, chat | `bot/`, `services/telegram_game.py`, `services/chat.py` | [Telegram adapter](telegram.md) |
+| Telegram routing, state, gameplay, chat | `bot/`, `services/telegram_game.py`, `services/chat.py`, `services/tournament_chats.py` | [Telegram adapter](telegram.md) |
 | Browser UI and HTTP | `miniapp_http.py`, [web/src](../web/src) | [Mini App](mini-app.md) |
-| Tournament roles, registration, policy, access | `services/tournaments.py` | [Tournaments](tournaments.md) |
+| Tournament roles, registration, policy, access | `services/tournaments.py`, `services/tournament_profiles.py` | [Tournaments](tournaments.md) |
 | Packet import, publication, revisions, authorship | `domain/packet.py`, `services/packets.py`, `storage/packets.py` | [Packet administration](packet-administration.md) |
 | Assembly, validation, exposure planning, matching | `services/matchmaking.py`, `services/ruleset_content.py` | [Lobbies and assignment](lobby-architecture.md) |
 | SI progression, answers, scoring, appeals | `domain/game*.py`, `services/persistent_game.py` | [Game rulesets and execution](game-rulesets.md) |

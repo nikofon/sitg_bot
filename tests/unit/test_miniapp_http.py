@@ -204,6 +204,16 @@ class FakeGateway:
                 "participants": [],
                 "themes": [],
             }
+        elif operation.action == ActionCode.TOURNAMENT_PROFILE:
+            data = {
+                "type_key": "classic",
+                "tournament": {"id": str(UUID(int=10)), "name": "Managed Cup", "slug": "cup"},
+                "general": {"name": "Managed Cup"},
+                "registrations": [],
+                "participants": [],
+                "games": {"kind": "classic", "stages": []},
+                "leaders": {"kind": "classic", "stages": []},
+            }
         elif operation.action == ActionCode.ONGOING_LIST:
             data = {
                 "lobbies": [
@@ -532,6 +542,34 @@ async def test_player_game_route_resolves_theme_grids_without_content() -> None:
     assert operation.action == ActionCode.PLAYER_GAME_RESULTS
     assert operation.player_id == player_id
     assert operation.game_id == game_id
+
+
+async def test_tournament_profile_route_resolves_sections() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    tournament_id = UUID(int=10)
+    request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/routes/resolve?path=/tournaments/{tournament_id}",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "tournament_profile"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["type_key"] == "classic"
+    assert payload["resource"]["games"]["kind"] == "classic"
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.TOURNAMENT_PROFILE
+    assert operation.tournament_id == tournament_id
 
 
 async def test_ongoing_route_resolves_lobbies_and_games() -> None:

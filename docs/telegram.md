@@ -28,8 +28,9 @@ the update's `from_user`; group-chat identities are not accepted as private sess
 Per-user event isolation prevents rapid input from bypassing an active conversation.
 
 `/start`, `/menu`, `/help`, `/cancel`, and `/language` support recovery and registration.
-Tournament menus expose **Registration link** to managers and active participants. Shared
-`/start reg_…` links ask for registration confirmation; private links include a sharing warning
+Tournament menus expose **Registration link** to managers; active participants find the same
+link in the tournament profile Mini App's general section while registration is open.
+Shared `/start reg_…` links ask for registration confirmation; private links include a sharing warning
 when requested. `/start join_…` offers registration to nonparticipants before lobby joining.
 Both flows recheck registration availability. The player menu omits rating/history placeholders.
 Real name, public nickname, locale, and Telegram visibility consent are separate choices.
@@ -52,7 +53,7 @@ Unknown tournament action descriptors are ignored and logged.
   and notify every active administrator through the admin notification audience and the
   throttled Telegram alert.
 - Manager token requests, inventory, token-backed tournament creation, anonymous appeal
-  review, selected tournament management/settings, and JSON/DOCX packet upload.
+  review, selected tournament management and profiles, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
 - Administrator moderation is opened through the **Management** keyboard button. Player
@@ -60,8 +61,17 @@ Unknown tournament action descriptors are ignored and logged.
   "You have been banned! Reason: … You can still use your library" on every interaction
   except opening their packet library, which stays available in both the bot and the Mini App.
 - Mini App buttons for tournament lists, ongoing games/lobbies ("Ongoing games"), the player profile ("My profile"), lobby
-  packet/settings views, manager settings, management, packet draft/editing flows,
+  packet/settings views, management, packet draft/editing flows,
   and administrator management (Tournaments, Authors, Players, Packets).
+
+The player tournament context opens the tournament profile Mini App window through the
+**Info** button (**Leaders** deep-links the same window on its leaders section), and the
+manager tournament context opens it through the **Tournament profile** button. Starting a
+lobby without selected packets proposes an
+automatic assignment instead of refusing: packets playable for every member are picked,
+preferring the least (but non-zero) fresh themes and adding packets until the theme count
+is satisfied, then a Yes/No inline confirmation applies the selection and starts the game.
+Without a valid packet the bot reports that the tournament does not contain one.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,
@@ -136,6 +146,26 @@ giveaways, and quiz polls lacking a known correct answer are unsupported.
 Chat uses the outbox and rechecks both memberships at delivery. Abandoned players cannot send
 or receive before reconnection; queued messages from an old game session are discarded.
 Game chat and whisper receipts participate in the cleanup ledger, including late send results.
+
+## Tournament chats
+
+Classic tournaments with a preset composition offer per-match **Chats** from the player
+tournament menu. Pressing it lists every round that has not been played, whose match
+composition is already known, and whose round packet is assigned and playable; each room
+message carries an actor-bound inline button that opens the chat. Opening a chat stores it
+as the navigation context, removes all reply-keyboard buttons, and replays up to the last
+50 stored messages through the outbox, so regular typing relays to the other players of
+that match exactly like lobby and game chat (whispers included). Chats whose match has
+been played or lost are closed automatically by the navigation snapshot.
+
+While a chat is open, `/set_game_time` opens a Mini App scheduling window
+(`/chats/{chat_id}/schedule`) where any participant sets or removes the shared, advisory
+game time; the time applies to all participants, and setting or removing it posts a system
+message to the chat and schedules player-role reminders 24 hours and one hour before the
+time. `/quit` clears all chat messages for the player (cleanup ledger and best-effort
+deletion) and restores the tournament context, like quitting a game. New messages for a
+closed chat produce a single "new messages in chat" notification until the chat is opened
+again. See [tournaments](tournaments.md) for the underlying match-chat rules.
 
 ## Extending and verifying
 

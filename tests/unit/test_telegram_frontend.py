@@ -446,7 +446,7 @@ def test_manager_menu_keyboard_is_derived_from_allowed_actions() -> None:
     )
 
 
-def test_manager_tournament_context_renders_settings_profile_and_quit() -> None:
+def test_manager_tournament_context_renders_profile_and_quit() -> None:
     state = navigation(
         available_modes=["player", "manager"],
         active_mode="manager",
@@ -459,7 +459,6 @@ def test_manager_tournament_context_renders_settings_profile_and_quit() -> None:
         },
         allowed_actions=[
             "manager.tournament",
-            "manager.tournament.settings",
             "manager.tournament.profile",
             "notifications",
             "manager.tournament.quit",
@@ -470,7 +469,6 @@ def test_manager_tournament_context_renders_settings_profile_and_quit() -> None:
 
     assert isinstance(model.keyboard, ReplyKeyboardModel)
     assert tuple(label for row in model.keyboard.rows for label in row) == (
-        "Settings",
         "Tournament profile",
         "Quit to menu",
     )
@@ -636,6 +634,75 @@ async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:
     assert button.web_app.url == "https://mini.example.test/app/ongoing?_launch=1"
 
 
+async def test_player_tournament_info_action_opens_tournament_profile_window() -> None:
+    backend = SimpleNamespace(
+        tournament_info=AsyncMock(return_value={"tournament": {"status": "completed"}}),
+    )
+    message = SimpleNamespace(answer=AsyncMock())
+
+    await handle_player_menu_action(
+        message,  # type: ignore[arg-type]
+        player_action="player.tournament.info",
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="en",
+        navigation=navigation(
+            context="tournament",
+            selected_player_tournament={
+                "id": str(UUID(int=8)),
+                "name": "Player Cup",
+                "slug": "player-cup",
+                "status": "active",
+            },
+            allowed_actions=["player.tournament.info"],
+        ),
+        state=SimpleNamespace(),  # type: ignore[arg-type]
+        launch_links="https://mini.example.test/app",
+    )
+
+    backend.tournament_info.assert_awaited_once()
+    assert "Player Cup" in message.answer.await_args.args[0]
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.web_app.url == (
+        f"https://mini.example.test/app/tournaments/{UUID(int=8)}?_launch=1"
+    )
+
+
+async def test_player_tournament_leaders_action_opens_profile_leaders_section() -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+
+    await handle_player_menu_action(
+        message,  # type: ignore[arg-type]
+        player_action="player.tournament.leaders",
+        backend=SimpleNamespace(),  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="en",
+        navigation=navigation(
+            context="tournament",
+            selected_player_tournament={
+                "id": str(UUID(int=8)),
+                "name": "Player Cup",
+                "slug": "player-cup",
+                "status": "active",
+            },
+            allowed_actions=["player.tournament.leaders"],
+        ),
+        state=SimpleNamespace(),  # type: ignore[arg-type]
+        launch_links="https://mini.example.test/app",
+    )
+
+    assert "Open the tournament profile" in message.answer.await_args.args[0]
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Leaders"
+    url = urlsplit(button.web_app.url)
+    assert url._replace(query="").geturl() == (
+        f"https://mini.example.test/app/tournaments/{UUID(int=8)}"
+    )
+    assert parse_qs(url.query)["section"] == ["leaders"]
+
+
 async def test_player_ongoing_action_without_launch_links_keeps_placeholder() -> None:
     message = SimpleNamespace(answer=AsyncMock())
 
@@ -655,21 +722,14 @@ async def test_player_ongoing_action_without_launch_links_keeps_placeholder() ->
     assert message.answer.await_args.kwargs["reply_markup"] is None
 
 
-async def test_manager_settings_action_uses_an_actor_bound_launch_reference() -> None:
-    backend = SimpleNamespace(
-        tournament_settings_link=AsyncMock(
-            return_value=SimpleNamespace(
-                value="opaque-reference",
-                telegram_payload="lr_opaque-reference",
-            )
-        )
-    )
+async def test_manager_profile_action_opens_the_selected_tournament_profile() -> None:
+    backend = SimpleNamespace()
     message = SimpleNamespace(answer=AsyncMock())
     claim = SimpleNamespace()
 
     await handle_manager_tournament_action(
         message,  # type: ignore[arg-type]
-        manager_tournament_action="manager.tournament.settings",
+        manager_tournament_action="manager.tournament.profile",
         backend=backend,  # type: ignore[arg-type]
         telegram_update_claim=claim,  # type: ignore[arg-type]
         localization=LocalizationService(),
@@ -684,16 +744,14 @@ async def test_manager_settings_action_uses_an_actor_bound_launch_reference() ->
                 "slug": "managed-cup",
                 "status": "active",
             },
-            allowed_actions=["manager.tournament.settings"],
+            allowed_actions=["manager.tournament.profile"],
         ),
         launch_links="https://mini.example.test/app",
     )
 
-    backend.tournament_settings_link.assert_awaited_once_with(claim)
     markup = message.answer.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].web_app.url == (
-        "https://mini.example.test/app/manager/tournaments/opaque-reference/settings"
-        "?tgWebAppStartParam=lr_opaque-reference"
+        f"https://mini.example.test/app/tournaments/{UUID(int=8)}?_launch=1"
     )
 
 
@@ -1359,6 +1417,223 @@ async def test_lobby_back_changes_context_without_leaving_membership() -> None:
         claim, context="tournament", expected_version=current.navigation_version
     )
     backend.lobby_action.assert_not_awaited()
+
+
+async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.start"],
+    )
+    lobby = {
+        "version": 3,
+        "settings": {"theme_count": 1},
+        "selected_packets": [],
+        "packet_suggestions": [
+            {
+                "packet_id": str(UUID(int=31)),
+                "name": "Large packet",
+                "fresh_play_unit_count": 5,
+                "playable_for_all": True,
+            },
+            {
+                "packet_id": str(UUID(int=32)),
+                "name": "Small packet",
+                "fresh_play_unit_count": 1,
+                "playable_for_all": True,
+            },
+        ],
+    }
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value=lobby), lobby_action=AsyncMock()
+    )
+    message = SimpleNamespace(answer=AsyncMock())
+    claim = SimpleNamespace()
+    await handle_lobby_action(
+        message,  # type: ignore[arg-type]
+        "lobby.start",
+        backend,  # type: ignore[arg-type]
+        claim,  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        current,
+        SimpleNamespace(clear=AsyncMock()),  # type: ignore[arg-type]
+        None,
+    )
+
+    backend.lobby_action.assert_not_awaited()
+    text = message.answer.await_args.args[0]
+    markup = message.answer.await_args.kwargs["reply_markup"]
+    assert "Small packet" in text and "Large packet" not in text
+    assert "automatically assigned" in text
+    buttons = markup.inline_keyboard[0]
+    assert buttons[0].callback_data == f"lobbystart:yes:{UUID(int=9).hex}"
+    assert buttons[1].callback_data == f"lobbystart:no:{UUID(int=9).hex}"
+
+
+async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.start"],
+    )
+    lobby = {
+        "version": 3,
+        "settings": {"theme_count": 3},
+        "selected_packets": [],
+        "packet_suggestions": [
+            {
+                "packet_id": str(UUID(int=31)),
+                "name": "Exhausted packet",
+                "fresh_play_unit_count": 0,
+                "playable_for_all": True,
+            },
+            {
+                "packet_id": str(UUID(int=32)),
+                "name": "Restricted packet",
+                "fresh_play_unit_count": 4,
+                "playable_for_all": False,
+            },
+        ],
+    }
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value=lobby), lobby_action=AsyncMock()
+    )
+    message = SimpleNamespace(answer=AsyncMock())
+    await handle_lobby_action(
+        message,  # type: ignore[arg-type]
+        "lobby.start",
+        backend,  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        current,
+        SimpleNamespace(clear=AsyncMock()),  # type: ignore[arg-type]
+        None,
+    )
+
+    backend.lobby_action.assert_not_awaited()
+    assert "does not contain a valid packet" in message.answer.await_args.args[0]
+
+
+async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_start_confirmation_callback
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.start"],
+    )
+    lobby = {
+        "version": 3,
+        "settings": {"theme_count": 2},
+        "selected_packets": [],
+        "packet_suggestions": [
+            {
+                "packet_id": str(UUID(int=32)),
+                "name": "Small packet",
+                "fresh_play_unit_count": 1,
+                "playable_for_all": True,
+            },
+            {
+                "packet_id": str(UUID(int=31)),
+                "name": "Large packet",
+                "fresh_play_unit_count": 5,
+                "playable_for_all": True,
+            },
+        ],
+    }
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value=lobby),
+        select_lobby_packets=AsyncMock(return_value={"version": 5}),
+        lobby_action=AsyncMock(return_value={"started": True}),
+        navigation=AsyncMock(
+            return_value=current.model_copy(update={"context": "tournament"})
+        ),
+    )
+    message = AsyncMock(spec=Message)
+    message.answer = AsyncMock()
+    message.edit_reply_markup = AsyncMock()
+    callback = SimpleNamespace(
+        data=f"lobbystart:yes:{UUID(int=9).hex}",
+        answer=AsyncMock(),
+        message=message,
+    )
+    await handle_start_confirmation_callback(
+        callback,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        current,
+    )
+
+    callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    backend.select_lobby_packets.assert_awaited_once_with(
+        SimpleNamespace(),
+        lobby_id=UUID(int=9),
+        packet_ids=(str(UUID(int=32)), str(UUID(int=31))),
+        expected_version=3,
+    )
+    start = backend.lobby_action.await_args.kwargs
+    assert start["action"] == "start"
+    assert start["expected_version"] == 5
+
+
+async def test_lobby_start_confirmation_decline_keeps_the_lobby_unchanged() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_start_confirmation_callback
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.start"],
+    )
+    backend = SimpleNamespace(lobby_info=AsyncMock(), lobby_action=AsyncMock())
+    message = AsyncMock(spec=Message)
+    message.answer = AsyncMock()
+    message.edit_reply_markup = AsyncMock()
+    callback = SimpleNamespace(
+        data=f"lobbystart:no:{UUID(int=9).hex}",
+        answer=AsyncMock(),
+        message=message,
+    )
+    await handle_start_confirmation_callback(
+        callback,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        current,
+    )
+
+    callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    backend.lobby_info.assert_not_awaited()
+    backend.lobby_action.assert_not_awaited()
+    callback.message.answer.assert_not_awaited()
 
 
 async def test_unknown_invitee_keeps_the_username_prompt_active() -> None:

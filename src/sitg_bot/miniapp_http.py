@@ -58,6 +58,8 @@ from sitg_bot.application.contracts import (
     PlayerProfileOperation,
     PlayerUnbanOperation,
     TournamentAuthorCreateOperation,
+    TournamentChatGameTimeOperation,
+    TournamentChatInfoOperation,
     TournamentClassicUpdateOperation,
     TournamentCompleteOperation,
     TournamentFinalizeOperation,
@@ -67,6 +69,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
+    TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
@@ -156,6 +159,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/tournaments/{tournament_id}/register",
             self._register,
+        )
+        app.router.add_post(
+            "/api/miniapp/chats/{chat_id}/game-time",
+            self._set_chat_game_time,
         )
         app.router.add_get(
             "/api/miniapp/lobbies/{launch_ref}/events",
@@ -501,6 +508,12 @@ class MiniAppHttpServer:
             r"/players/([0-9a-fA-F-]{36})/games/([0-9a-fA-F-]{36})", normalized_path
         )
         player_match = re.fullmatch(r"/players/([0-9a-fA-F-]{36})", normalized_path)
+        tournament_profile_match = re.fullmatch(
+            r"/tournaments/([0-9a-fA-F-]{36})", normalized_path
+        )
+        chat_schedule_match = re.fullmatch(
+            r"/chats/([0-9a-fA-F-]{36})/schedule", normalized_path
+        )
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
@@ -577,6 +590,68 @@ class MiniAppHttpServer:
                     "authorization": {"allowed": True},
                     "resource": {
                         "kind": "player_game",
+                        "state": "ready",
+                        **result.data,
+                    },
+                }
+            )
+        if tournament_profile_match is not None:
+            session, result = await self._query(
+                request,
+                TournamentProfileOperation(
+                    action=ActionCode.TOURNAMENT_PROFILE,
+                    tournament_id=UUID(tournament_profile_match.group(1)),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            data = dict(result.data)
+            general = dict(data.get("general") or {})
+            link = general.get("registration_link")
+            if isinstance(link, dict) and self.selection_notifier is not None:
+                try:
+                    username = await self.selection_notifier.bot_username()
+                    if re.fullmatch(r"[A-Za-z0-9_]+", username):
+                        general["registration_link"] = {
+                            **link,
+                            "url": (
+                                f"https://t.me/{username}?start={link['reference']}"
+                            ),
+                        }
+                        data["general"] = general
+                except Exception:
+                    LOGGER.exception(
+                        "Failed to resolve the registration link bot identity"
+                    )
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "tournament_profile",
+                        "state": "ready",
+                        **data,
+                    },
+                }
+            )
+        if chat_schedule_match is not None:
+            session, result = await self._query(
+                request,
+                TournamentChatInfoOperation(
+                    action=ActionCode.TOURNAMENT_CHAT_INFO,
+                    chat_id=UUID(chat_schedule_match.group(1)),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "tournament_chat",
                         "state": "ready",
                         **result.data,
                     },
@@ -792,6 +867,21 @@ class MiniAppHttpServer:
         operation = TournamentRegisterOperation(
             action=ActionCode.TOURNAMENT_REGISTER,
             tournament_id=self._tournament_id(request),
+        )
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _set_chat_game_time(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        planned_at = body.get("planned_at")
+        if planned_at is not None and not isinstance(planned_at, str):
+            raise ValueError("planned_at must be an ISO 8601 string or null")
+        operation = TournamentChatGameTimeOperation.model_validate(
+            {
+                "action": ActionCode.TOURNAMENT_CHAT_GAME_TIME,
+                "chat_id": self._path_uuid(request, "chat_id"),
+                "planned_at": planned_at,
+            }
         )
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
@@ -1457,6 +1547,7 @@ class MiniAppHttpServer:
         public_actions = {
             ActionCode.PLAYER_LIST, ActionCode.PLAYER_PROFILE, ActionCode.PLAYER_GAME_RESULTS,
             ActionCode.TOURNAMENT_LIST, ActionCode.TOURNAMENT_INFO,
+            ActionCode.TOURNAMENT_PROFILE,
         }
         if SESSION_COOKIE not in request.cookies and operation.action in public_actions:
             self.auth.security_policy.response_headers(self._origin(request))

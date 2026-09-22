@@ -8,6 +8,10 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.players import AccountSnapshot, PlayerAccountService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    ClassicChatRecord,
+    ClassicMatchRecord,
+    ClassicRoundRecord,
+    ClassicStageRecord,
     GameObserverRecord,
     GameParticipantRecord,
     GameRecord,
@@ -63,6 +67,16 @@ class NavigationGame:
 
 
 @dataclass(frozen=True, slots=True)
+class NavigationChat:
+    id: UUID
+    tournament_id: UUID
+    tournament_name: str
+    round_number: int
+    match_number: int
+    multiple_matches: bool
+
+
+@dataclass(frozen=True, slots=True)
 class NavigationSnapshot:
     account: AccountSnapshot
     available_modes: tuple[str, ...]
@@ -75,6 +89,7 @@ class NavigationSnapshot:
     active_game: NavigationGame | None
     allowed_actions: tuple[str, ...]
     ban_reason: str | None = None
+    active_chat: NavigationChat | None = None
 
 
 class TelegramNavigationService:
@@ -274,9 +289,35 @@ class TelegramNavigationService:
         active_game = await self._active_game(session, account.player_id)
         active_lobby = await self._active_lobby(session, account.player_id)
 
+        active_chat = None
+        if (
+            active_mode == "player"
+            and navigation is not None
+            and navigation.player_context == "chat"
+        ):
+            active_chat = await self._active_chat(
+                session, navigation.active_chat_id, account.player_id
+            )
+        if (
+            navigation is not None
+            and navigation.player_context == "chat"
+            and active_chat is None
+        ):
+            # A played or lost chat cannot stay open; recover the tournament context.
+            navigation.player_context = "tournament"
+            navigation.active_chat_id = None
+            navigation.version += 1
+            version = navigation.version
+            await session.flush()
+
         if active_game is not None and active_game.active:
             active_mode = "player"
             context = "game"
+        elif (
+            active_mode == "player"
+            and active_chat is not None
+        ):
+            context = "chat"
         elif (
             active_mode == "player"
             and active_lobby is not None
@@ -325,6 +366,7 @@ class TelegramNavigationService:
             selected_manager_tournament=selected_manager,
             active_lobby=active_lobby,
             active_game=active_game,
+            active_chat=active_chat,
             allowed_actions=lobby_actions
             or self._allowed_actions(
                 active_mode=active_mode,
@@ -334,6 +376,51 @@ class TelegramNavigationService:
                 active_game=active_game,
                 selected_player=selected_player,
             ),
+        )
+
+    @staticmethod
+    async def _active_chat(
+        session: AsyncSession, chat_id: UUID | None, player_id: UUID
+    ) -> NavigationChat | None:
+        if chat_id is None:
+            return None
+        chat = await session.get(ClassicChatRecord, chat_id)
+        if chat is None:
+            return None
+        match = await session.get(ClassicMatchRecord, chat.match_id)
+        if (
+            match is None
+            or match.game_id is not None
+            or match.results is not None
+            or str(player_id) not in (match.seats or ())
+        ):
+            return None
+        round_record = await session.get(ClassicRoundRecord, match.round_id)
+        stage = await session.get(ClassicStageRecord, round_record.stage_id)
+        if (
+            round_record.assignment_id is None
+            or stage.started_at is None
+            or stage.completed_at is not None
+        ):
+            return None
+        tournament = await session.get(TournamentRecord, stage.tournament_id)
+        if tournament is None:
+            return None
+        matches_in_round = (
+            await session.scalar(
+                select(func.count(ClassicMatchRecord.id)).where(
+                    ClassicMatchRecord.round_id == round_record.id
+                )
+            )
+            or 1
+        )
+        return NavigationChat(
+            chat.id,
+            tournament.id,
+            tournament.name,
+            round_record.number,
+            match.number,
+            matches_in_round > 1,
         )
 
     @staticmethod
@@ -521,6 +608,9 @@ class TelegramNavigationService:
             actions.append("lobby.reopen")
         if context == "game" and active_game is not None:
             actions.append("game.reconnect" if active_game.can_reconnect else "game.open")
+        elif context == "chat":
+            # An open tournament chat deliberately exposes no keyboard actions.
+            pass
         elif active_mode == "player":
             if context == "menu":
                 actions.append("notifications")
@@ -543,7 +633,7 @@ class TelegramNavigationService:
                         "player.tournament",
                         "player.tournament.create_lobby",
                         "player.tournament.info",
-                        "tournament.registration_link",
+                        "player.tournament.chats",
                         "player.tournament.quit",
                     )
                 )
@@ -566,7 +656,6 @@ class TelegramNavigationService:
                 actions.extend(
                     (
                         "manager.tournament",
-                        "manager.tournament.settings",
                         "manager.tournament.management",
                         "manager.tournament.packet_upload",
                         "manager.tournament.profile",
@@ -654,6 +743,12 @@ class TelegramNavigationService:
         keys = [item for item in configured if isinstance(item, str)]
         if type_version is not None and type_version.key == "ladder" and not keys:
             keys = ["player.tournament.leaders"]
+        if (
+            type_version is not None
+            and type_version.key == "classic"
+            and "player.tournament.chats" not in keys
+        ):
+            keys = [*keys, "player.tournament.chats"]
         return NavigationTournament(
             tournament.id,
             tournament.name,

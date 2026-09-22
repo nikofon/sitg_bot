@@ -90,8 +90,10 @@ export function createSettingDemo(
   const replay = element("button", {
     type: "button",
     className: "secondary-button",
+    "aria-label": i18n.t("setting_demo.replay"),
+    title: i18n.t("setting_demo.replay"),
     onclick: (() => run()) as EventListener,
-  }, i18n.t("setting_demo.replay"));
+  }, "⏵");
   const log = element("ol", { className: "setting-demo-log", "aria-live": "polite" });
   const status = element("p", { className: "setting-demo-status" });
   root.append(element("div", { className: "setting-demo-toolbar" }, caption, replay), log, status);

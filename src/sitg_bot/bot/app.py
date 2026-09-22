@@ -21,7 +21,10 @@ from sitg_bot.application.protocol import (
 )
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.callbacks import CallbackReferenceStore
-from sitg_bot.bot.chat_delivery import chat_delivery_handler
+from sitg_bot.bot.chat_delivery import (
+    chat_cleanup_delivery_handler,
+    chat_delivery_handler,
+)
 from sitg_bot.bot.game_delivery import game_delivery_handler
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.library_delivery import library_document_delivery_handler
@@ -130,6 +133,7 @@ async def configure_bot_commands(bot: Bot, localization: LocalizationService) ->
         "report",
         "bug",
         "quit",
+        "set_game_time",
     )
     scope = BotCommandScopeAllPrivateChats()
     for locale, language_code in (("ru", None), ("ru", "ru"), ("en", "en")):
@@ -197,6 +201,7 @@ async def run_polling(settings: Settings) -> None:
                 "telegram.chat.message": chat_delivery_handler(
                     bot, dependencies.localization, protocol, game_delivery
                 ),
+                "telegram.chat.cleanup": chat_cleanup_delivery_handler(bot),
                 "game.event": game_delivery,
                 "telegram.game.cleanup": game_delivery.cleanup,
                 "telegram.lobby.notice": lobby_notice_delivery_handler(

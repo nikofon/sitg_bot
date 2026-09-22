@@ -4,6 +4,8 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from sitg_bot.services.launch_references import LaunchReference
 
 _PLAYER_PROFILE_ROUTE = re.compile(r"players/[0-9a-fA-F-]{36}")
+_TOURNAMENT_PROFILE_ROUTE = re.compile(r"tournaments/[0-9a-fA-F-]{36}")
+_CHAT_SCHEDULE_ROUTE = re.compile(r"chats/[0-9a-fA-F-]{36}/schedule")
 
 
 def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | None = None) -> str:
@@ -11,10 +13,16 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("Mini App base URL must be HTTPS")
     normalized_route = route.strip("/")
-    if normalized_route not in {
-        "tournaments", "history", "library", "ongoing", "authors/link", "admin/suspicion",
-        "admin/management",
-    } and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None:
+    if (
+        normalized_route
+        not in {
+            "tournaments", "history", "library", "ongoing", "authors/link", "admin/suspicion",
+            "admin/management",
+        }
+        and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
+        and _TOURNAMENT_PROFILE_ROUTE.fullmatch(normalized_route) is None
+        and _CHAT_SCHEDULE_ROUTE.fullmatch(normalized_route) is None
+    ):
         raise ValueError("Unsupported Mini App route")
     path = f"{parsed.path.rstrip('/')}/{normalized_route}"
     # A stable transition URL bypasses pre-cache-policy HTML while permitting reuse.
