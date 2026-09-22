@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0011_merge_chats_library"
+                "0012_appeals_per_answer"
             )
             types = (
                 await connection.execute(
@@ -148,7 +148,7 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
                     "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0011_merge_chats_library"]
+                ))).scalars().all() == ["0012_appeals_per_answer"]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(
@@ -162,6 +162,29 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
     asyncio.run(assert_schema(url, empty=True))
     command.upgrade(config, "head")
     asyncio.run(check_merge())
+
+
+def test_appeals_per_answer_migration_round_trip(baseline_database):
+    url, config = baseline_database
+
+    async def unique_columns():
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                return await connection.run_sync(lambda sync: [
+                    c["column_names"] for c in inspect(sync).get_unique_constraints("appeals")
+                ])
+        finally:
+            await engine.dispose()
+
+    command.upgrade(config, "0011_merge_chats_library")
+    assert asyncio.run(unique_columns()) == [["game_id", "round_id"]]
+    command.upgrade(config, "head")
+    assert asyncio.run(unique_columns()) == [["game_id", "target_attempt_id"]]
+    command.downgrade(config, "0011_merge_chats_library")
+    assert asyncio.run(unique_columns()) == [["game_id", "round_id"]]
+    command.upgrade(config, "head")
+    assert asyncio.run(unique_columns()) == [["game_id", "target_attempt_id"]]
 
 
 def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):

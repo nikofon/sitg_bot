@@ -5,6 +5,10 @@
 
 ## Source map
 
+After an appeal decision or escalation submission, delivery waits the game's
+`message_delay` before subsequent events. The per-chat deadline persists across
+retries and restarts, including when several events arrive in one batch.
+
 | Module | Responsibility |
 | --- | --- |
 | [bot/app.py](../src/sitg_bot/bot/app.py), [router.py](../src/sitg_bot/bot/router.py) | Polling composition, middleware order, routers, remote clients, consumers |

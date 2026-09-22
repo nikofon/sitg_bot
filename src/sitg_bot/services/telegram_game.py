@@ -760,14 +760,26 @@ class TelegramGameService:
                     select(AppealRecord.id).where(
                         AppealRecord.game_id == game.id,
                         AppealRecord.round_id == game.current_round_id,
+                        AppealRecord.status != "rejected",
                     )
                 )
                 if existing is None:
+                    appealed_attempts = {
+                        str(attempt_id) for attempt_id in await session.scalars(
+                            select(AppealRecord.target_attempt_id).where(
+                                AppealRecord.game_id == game.id,
+                                AppealRecord.round_id == game.current_round_id,
+                            )
+                        )
+                    }
                     appeal_targets = [
                         a
                         for a in question["attempts"]
-                        if a["original_correct"]
-                        or (a["player_id"] == str(player.id) and not a["timed_out"])
+                        if str(a["id"]) not in appealed_attempts
+                        and (
+                            a["original_correct"]
+                            or (a["player_id"] == str(player.id) and not a["timed_out"])
+                        )
                     ]
                     if appeal_targets:
                         actions.append("appeal")
@@ -841,6 +853,7 @@ class TelegramGameService:
             "answer_deadline": snapshot.answer_deadline,
             "buzz_deadline": snapshot.buzz_deadline,
             "progression_deadline": snapshot.progression_deadline,
+            "message_delay": snapshot.settings.message_delay,
             "rating_pending": snapshot.rating_pending,
             "rating_changes": [
                 {key: change[key] for key in ("player_id", "scope", "before", "after", "delta")}

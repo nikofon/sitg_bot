@@ -22,8 +22,10 @@ from sitg_bot.storage.models import (
     GameThemeRecord,
     OutboxEventRecord,
     PlayerRecord,
+    RatingLedgerRecord,
     TelegramGameViewRecord,
     ThemeRevisionRecord,
+    TournamentMembershipRecord,
     TournamentPolicyVersionRecord,
 )
 
@@ -105,6 +107,107 @@ async def assigned_game(database, count, *, escalation=False):
         await matchmaking.set_ready(lobby.id, participant.telegram_user_id)
     result = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
     return fixture, result.game.id
+
+
+@pytest.mark.parametrize("rating_enabled", [None, False])
+async def test_ladder_default_rating_settlement(database_url, rating_enabled):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 2)
+        async with database.transaction() as session:
+            game = await session.get(GameRecord, game_id)
+            policy = await session.get(
+                TournamentPolicyVersionRecord, game.tournament_policy_version_id
+            )
+            policies = dict(policy.policies)
+            policies.pop("rating_enabled", None)
+            if rating_enabled is not None:
+                policies["rating_enabled"] = rating_enabled
+            policy.policies = policies
+        service = TelegramGameService(database)
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        player = fixture.inputs[0]
+        view = await progress_until(database, game_id, player, lambda v: "buzz" in v["actions"])
+        round_id = view["question"]["round_id"]
+        await act(service, player, game_id, "buzz", round_id=round_id)
+        await act(service, player, game_id, "answer", round_id=round_id, text="answer 10")
+        result = await progress_until(
+            database, game_id, player, lambda v: v["status"] == "finalized"
+        )
+        changes = result["rating_changes"]
+        assert len([c for c in changes if c["scope"] == "ruleset"]) == 2
+        local = [c for c in changes if c["scope"] == "tournament"]
+        assert len(local) == (2 if rating_enabled is None else 0)
+        async with database.sessions() as session:
+            ledger = list(await session.scalars(
+                select(RatingLedgerRecord).where(RatingLedgerRecord.game_id == game_id)
+            ))
+            assert len(ledger) == len(local)
+            for row in ledger:
+                membership = await session.get(
+                    TournamentMembershipRecord, (fixture.tournament_id, row.player_id)
+                )
+                assert row.delta != 0
+                assert membership.rating == row.rating_after == row.rating_before + row.delta
+        await PersistentGameService(database).settle_pending_ratings()
+        assert (await service.view(player.telegram_user_id, game_id))["rating_changes"] == changes
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("approve_second", [True, False])
+async def test_second_wrong_answer_can_be_appealed_after_rejection_during_pause(
+    database_url, approve_second
+):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 2)
+        service = TelegramGameService(database)
+        games = PersistentGameService(database)
+        first, second = fixture.inputs
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        view = await progress_until(database, game_id, first, lambda v: "buzz" in v["actions"])
+        round_id = view["question"]["round_id"]
+        for player in fixture.inputs:
+            await act(service, player, game_id, "buzz", round_id=round_id)
+            await act(service, player, game_id, "answer", round_id=round_id, text="wrong")
+        await act(service, first, game_id, "pause", round_id=round_id)
+        await act(service, first, game_id, "appeal", round_id=round_id)
+        voting = await service.view(first.telegram_user_id, game_id)
+        first_appeal = voting["appeal"]["id"]
+        assert "appeal" not in (await service.view(second.telegram_user_id, game_id))["actions"]
+        await act(service, second, game_id, "vote", appeal_id=first_appeal, approve=False)
+        assert "appeal" not in (await service.view(first.telegram_user_id, game_id))["actions"]
+        with pytest.raises(ValueError, match="no answer"):
+            await games.submit_appeal(
+                game_id, first.telegram_user_id, {p.telegram_user_id for p in fixture.inputs}
+            )
+        # An expired progression deadline cannot close the window during a manual pause.
+        async with database.transaction() as session:
+            game = await session.get(GameRecord, game_id)
+            game.progression_deadline = datetime.now(UTC) - timedelta(seconds=1)
+        assert not (await games.progress_due(game_id)).accepted
+        view = await service.view(second.telegram_user_id, game_id)
+        assert view["paused"] and "appeal" in view["actions"]
+        assert len(view["appeal_targets"]) == 1
+        assert view["appeal_targets"][0]["player_id"] == str(fixture.players[1].id)
+        await act(service, second, game_id, "appeal", round_id=round_id)
+        view = await TelegramGameService(database).view(second.telegram_user_id, game_id)
+        second_appeal = view["appeal"]["id"]
+        assert second_appeal != first_appeal
+        await act(service, first, game_id, "vote", appeal_id=second_appeal, approve=approve_second)
+        if approve_second:
+            await act(service, second, game_id, "vote", appeal_id=second_appeal, approve=True)
+        view = await service.view(second.telegram_user_id, game_id)
+        assert view["paused"]
+        assert "appeal" not in view["actions"]
+        scores = {p["id"]: p["score"] for p in view["participants"]}
+        assert scores[str(fixture.players[0].id)] == -10
+        assert scores[str(fixture.players[1].id)] == (10 if approve_second else -10)
+    finally:
+        await database.close()
 
 
 async def test_rejected_appeal_escalates_and_manager_corrects_completed_game(database_url):

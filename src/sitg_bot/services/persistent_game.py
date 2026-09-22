@@ -1252,9 +1252,16 @@ class PersistentGameService:
                 select(AppealRecord.id).where(
                     AppealRecord.game_id == game.id,
                     AppealRecord.round_id == game.current_round_id,
+                    AppealRecord.status != "rejected",
                 )
             )
-            self._require(existing is None, "This question has already been appealed")
+            self._require(existing is None, "This question has an unresolved or accepted appeal")
+            appealed_attempts = set(await session.scalars(
+                select(AppealRecord.target_attempt_id).where(
+                    AppealRecord.game_id == game.id,
+                    AppealRecord.round_id == game.current_round_id,
+                )
+            ))
             appellant = await self._participant(session, game.id, telegram_user_id)
             attempts = list(
                 (
@@ -1268,11 +1275,14 @@ class PersistentGameService:
             eligible = [
                 attempt
                 for attempt in attempts
-                if attempt.original_correct
-                or (
-                    attempt.participant_id == appellant.id
-                    and not attempt.original_correct
-                    and not attempt.timed_out
+                if attempt.id not in appealed_attempts
+                and (
+                    attempt.original_correct
+                    or (
+                        attempt.participant_id == appellant.id
+                        and not attempt.original_correct
+                        and not attempt.timed_out
+                    )
                 )
             ]
             self._require(eligible, "There is no answer this player may appeal")
@@ -3828,7 +3838,7 @@ class PersistentGameService:
             raise RuntimeError("Tournament configuration snapshot is missing")
         return bool(
             tournament_type.rules.get("rated", False)
-            and policy.policies.get("rating_enabled", False)
+            and policy.policies.get("rating_enabled", True)
         )
 
     @staticmethod

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import html
+import math
 import time
 from collections import defaultdict
 
@@ -146,6 +147,12 @@ class GameDelivery:
                 index = 0
                 while index < len(events):
                     event = events[index]
+                    pause = messages.get("_appeal_delay", {})
+                    remaining = pause.get("until", 0) - time.time()
+                    if event["sequence"] > pause.get("sequence", 0) and remaining > 0:
+                        raise RetryableDeliveryError(
+                            "Appeal message delay", retry_after_seconds=math.ceil(remaining)
+                        )
                     # Collapse only consecutive reveal frames; never cross a buzz,
                     # verdict, question cost, completion or other lifecycle boundary.
                     if event["kind"] == "question_token_revealed":
@@ -162,6 +169,16 @@ class GameDelivery:
                             index += 1
                             continue
                     await self._event(chat, str(game), messages, view, event)
+                    if (
+                        event["kind"] in {"appeal_resolved", "appeal_escalated"}
+                        and pause.get("sequence") != event["sequence"]
+                    ):
+                        pause = {
+                            "sequence": event["sequence"],
+                            "until": time.time() + view["message_delay"],
+                        }
+                        await self.record(chat, game, key="_appeal_delay", value=pause)
+                        messages["_appeal_delay"] = pause
                     await self.record(chat, game, sequence=event["sequence"])
                     index += 1
                 if len(events) < 100:

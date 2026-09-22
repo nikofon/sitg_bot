@@ -1698,7 +1698,7 @@ class AppealRecord(Base, TimestampMixin):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        UniqueConstraint("game_id", "round_id"),
+        UniqueConstraint("game_id", "target_attempt_id"),
         CheckConstraint("kind IN ('accept_incorrect', 'reject_correct')"),
         CheckConstraint(
             "status IN ('voting', 'awaiting_escalation', 'awaiting_commentary', "

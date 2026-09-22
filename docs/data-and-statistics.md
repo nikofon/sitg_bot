@@ -24,6 +24,9 @@ and [technical index](architecture.md) for their callers.
 
 ## Storage principles
 
+- Rated tournament types (including Ladder) settle tournament ratings by default;
+  an explicit `rating_enabled: false` policy disables them. Telegram results show
+  tournament and global rating deltas after settlement.
 - Store stable source facts and relationships; calculate counts, percentages, and
   totals from those facts. Frequently used aggregates may later be cached, but they
   are not the authoritative record.

@@ -140,6 +140,10 @@ other players. When an incorrect answer is accepted, earlier incorrect attempts 
 penalties, the appealed attempt receives the correct-answer score, and later attempts on that
 question are neutralized.
 
+After a rejected appeal, another eligible answer on the same question may be appealed
+while its appeal window remains open, including during a pause. Each answer can be
+appealed only once; unresolved or accepted appeals still block further appeals on that question.
+
 SI ranks participants by score, then points earned from correct answers before deductions,
 then correct-answer counts for every configured value except the lowest in descending-value
 order. Players still equal split the occupied places; the tied pairwise rating result is a

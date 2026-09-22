@@ -145,6 +145,7 @@ def view(**changes):
         "phase": "question",
         "locale": "ru",
         "paused": False,
+        "message_delay": 3.0,
         "actions": ["buzz", "pause", "appeal"],
         "dismissed": False,
         "messages": {},
@@ -228,6 +229,48 @@ def fixture(snapshot=None):
     )
     delivery = GameDelivery(bot, LocalizationService(), protocol, None)
     return bot, protocol, delivery
+
+
+@pytest.mark.parametrize("kind", ["appeal_resolved", "appeal_escalated"])
+@pytest.mark.parametrize(
+    "next_kind", ["question_cost_announced", "theme_completed", "game_finalized"]
+)
+async def test_appeal_delivery_delay_survives_restart(monkeypatch, kind, next_kind):
+    now = 1000.0
+    monkeypatch.setattr("sitg_bot.bot.game_delivery.time.time", lambda: now)
+    bot, protocol, delivery = fixture()
+    protocol.events = [
+        event(1, kind, appeal_id=str(UUID(int=9)), approved=True),
+        event(2, next_kind, theme="Theme", value=10, name="Theme"),
+    ]
+    with pytest.raises(RetryableDeliveryError):
+        await delivery.sync(42, GAME)
+    assert protocol.sequence == 1
+    assert bot.send_message.await_count == 1
+    restarted = GameDelivery(bot, LocalizationService(), protocol, None)
+    now += 2
+    with pytest.raises(RetryableDeliveryError):
+        await restarted.sync(42, GAME)
+    assert bot.send_message.await_count == 1
+    now += 1
+    await restarted.sync(42, GAME)
+    assert protocol.sequence == 2
+    assert bot.send_message.await_count > 1
+
+
+def test_final_scores_include_both_rating_deltas():
+    snapshot = view(
+        rating_changes=[
+            {
+                "player_id": str(UUID(int=2)), "scope": scope,
+                "before": 1500, "after": 1516, "delta": 16,
+            }
+            for scope in ("ruleset", "tournament")
+        ]
+    )
+    text = score_text(snapshot, LocalizationService(), "ru", final=True)
+    assert "Глобальный рейтинг: 1500.00 → 1516.00 (+16.00)" in text
+    assert "Рейтинг турнира: 1500.00 → 1516.00 (+16.00)" in text
 
 
 @pytest.mark.parametrize("locale", ["ru", "en"])

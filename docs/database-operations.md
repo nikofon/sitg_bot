@@ -56,6 +56,8 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0012_appeals_per_answer` allows distinct answers on one question to have separate
+appeals, preserving existing appeal records. Apply it before deploying the appeal fix.
 Revision `0005_manual_tournament_start` adds manual starts and scheduled reminders, preserving
 existing tournaments with games or started Classic stages. Others require a manual start.
 Revision `0009_tournament_player_limits` initializes minimum/maximum players to four and
