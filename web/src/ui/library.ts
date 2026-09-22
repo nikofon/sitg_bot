@@ -12,6 +12,7 @@ export function renderLibrary(
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
   const controls = element("div", { className: "lobby-packet-filters", role: "search" });
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
+  let sortMode: "default" | "fresh" = "fresh";
   const inRange = (year: number | null, from: string, to: string): boolean =>
     (!filters[from] && !filters[to]) || (year !== null
       && (!filters[from] || year >= Number(filters[from]))
@@ -23,6 +24,11 @@ export function renderLibrary(
       && normalize([packet.lead_author, ...packet.authors].join(" ")).includes(normalize(filters.author ?? ""))
       && inRange(packet.year, "year_from", "year_to")
       && inRange(Number(packet.published_at.slice(0, 4)), "publication_from", "publication_to"));
+    if (sortMode === "fresh") {
+      visible.sort((a, b) =>
+        (a.fresh_play_unit_count ?? 0) - (b.fresh_play_unit_count ?? 0)
+        || a.name.localeCompare(b.name, i18n.locale));
+    }
     list.replaceChildren(...visible.map((packet) => {
       const button = (command: "view" | "download"): HTMLButtonElement => element("button", {
         type: "button", className: command === "view" ? "primary-button" : "secondary-button",
@@ -36,7 +42,8 @@ export function renderLibrary(
           detail("lobby.packet_year", packet.year?.toString() ?? ""),
           detail("lobby.packet_publication_year", packet.published_at.slice(0, 4)),
           detail("lobby.packet_lead_author", packet.lead_author),
-          detail("lobby.packet_authors", packet.authors.join(", "))),
+          detail("lobby.packet_authors", packet.authors.join(", ")),
+          detail("library.packet_fresh", `${packet.fresh_play_unit_count ?? 0} / ${packet.total_play_unit_count ?? 0}`)),
         element("ul", {}, ...packet.tournaments.map((tournament) => element("li", {},
           element("a", {
             href: `/tournaments?role=${tournament.role}&info=${encodeURIComponent(tournament.id)}`,
@@ -57,6 +64,18 @@ export function renderLibrary(
       }) as EventListener,
     }));
   controls.append(input("search", "library.search"), input("author", "lobby.packet_authors"));
+  const sort = element("select", {
+    "aria-label": i18n.t("lobby.packet_sort"),
+    onchange: (() => {
+      sortMode = (sort.value as typeof sortMode) || "fresh";
+      render();
+    }) as EventListener,
+  });
+  sort.append(
+    element("option", { value: "fresh", selected: true }, i18n.t("lobby.packet_sort_fresh_asc")),
+    element("option", { value: "default" }, i18n.t("lobby.packet_sort_default")),
+  );
+  controls.append(sort);
   for (const [label, from, to] of [
     ["lobby.packet_year", "year_from", "year_to"],
     ["lobby.packet_publication_year", "publication_from", "publication_to"],

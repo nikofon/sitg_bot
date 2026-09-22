@@ -100,7 +100,7 @@ class PacketLibraryService:
     async def list_packets(self, player_id: UUID) -> dict[str, object]:
         async with self.database.sessions() as session:
             cards = {}
-            for _, version in await self._assignments(session, player_id):
+            for assignment, version in await self._assignments(session, player_id):
                 if version.id not in cards:
                     author_ids = select(ThemeRevisionRecord.author_id).where(
                         ThemeRevisionRecord.packet_version_id == version.id
@@ -120,12 +120,23 @@ class PacketLibraryService:
                         await session.get(AuthorRecord, version.lead_author_id)
                         if version.lead_author_id else None
                     )
+                    context = await self.tournaments.context(session, assignment.tournament_id)
+                    adapter = DEFAULT_CONTENT_ADAPTERS.get(
+                        context.ruleset_key, context.ruleset_version
+                    )
+                    available = await adapter.available_play_units(
+                        session, [PacketSelection(version.id, 1)], [player_id]
+                    )
                     cards[version.id] = {
                         "packet_id": str(version.packet_id), "version_id": str(version.id),
                         "name": version.name, "year": version.year,
                         "published_at": version.published_at.isoformat(),
                         "lead_author": lead.display_name if lead else "",
                         "authors": authors, "tournaments": [],
+                        "fresh_play_unit_count": len(available),
+                        "total_play_unit_count": await adapter.play_unit_count(
+                            session, version.id
+                        ),
                     }
             for card in cards.values():
                 visible = select(TournamentRecord).join(TournamentPacketAssignmentRecord).where(

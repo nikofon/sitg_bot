@@ -101,8 +101,9 @@ alternatives are `starts_desc`, `name_asc`, and `name_desc`.
 and validation warnings. Packet cards show author/year metadata, shared fresh-theme counts,
 and playability for all players; observers do not affect freshness/playability. Selected cards
 come first. Text and inclusive packet/publication year filters survive refresh, and a sort
-control reorders cards by fresh-theme count. Mutations
-use current capabilities and versions; ordered lobby events trigger refresh.
+control reorders cards by fresh-theme count; the default mode sorts fresh-theme counts
+ascending with zero-fresh packets last, and plain descending/default modes remain available.
+Mutations use current capabilities and versions; ordered lobby events trigger refresh.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
@@ -153,8 +154,10 @@ See [packet administration](packet-administration.md) for identity and propagati
 
 **Library:** readable packets and all managed tournament packets, grouped by adopted version.
 Opened from the player menu only; managed tournament packets remain available in player mode.
-Cards link visible tournament profiles and filter by packet/tournament name or slug, author,
-and packet/publication years. View opens ruleset-defined pages (SI themes), with a dropdown
+Cards link visible tournament profiles, show viewer-specific fresh/total theme counts, and
+filter by packet/tournament name or slug, author, and packet/publication years; a sort control
+orders cards by fresh-theme count ascending by default or by the default order. View opens
+ruleset-defined pages (SI themes), with a dropdown
 and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
 and request confirmation before burning fresh content.
 

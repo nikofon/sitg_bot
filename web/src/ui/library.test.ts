@@ -6,10 +6,27 @@ import { renderLibrary, renderLibraryReader } from "./library";
 const packet: LibraryPacket = {
   packet_id: "packet", version_id: "version", name: "Example <packet>", year: 2020,
   published_at: "2024-01-01", lead_author: "Anna", authors: ["Anna", "Boris"],
+  fresh_play_unit_count: 3, total_play_unit_count: 5,
   tournaments: [{ id: "cup", name: "Autumn Cup", slug: "autumn-2026", role: "player" }],
 };
 
 describe("library", () => {
+  it("sorts by fresh themes ascending by default and shows fresh counts on cards", () => {
+    const read: LibraryPacket = { ...packet, version_id: "read", name: "Read packet", fresh_play_unit_count: 0 };
+    const fresh: LibraryPacket = { ...packet, version_id: "fresh", name: "Fresh packet", fresh_play_unit_count: 8 };
+    const root = renderLibrary([fresh, packet, read], new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    const ids = (): string[] => Array.from(root.querySelectorAll("article"), (card) => card.getAttribute("data-packet-id") ?? "");
+    expect(ids()).toEqual(["read", "version", "fresh"]);
+    expect(root.querySelector("article")!.textContent).toContain("0 / 5");
+
+    const sort = root.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']");
+    expect(sort).not.toBeNull();
+    expect(sort!.value).toBe("fresh");
+    sort!.value = "default";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["fresh", "version", "read"]);
+  });
+
   it("filters by tournament name/slug, authors and inclusive years, and resets", () => {
     const save = vi.fn();
     const root = renderLibrary([packet], new I18n("en"), {}, save, vi.fn(), vi.fn());

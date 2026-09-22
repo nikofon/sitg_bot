@@ -581,6 +581,8 @@ export interface LibraryPacket {
   published_at: string;
   lead_author: string;
   authors: string[];
+  fresh_play_unit_count: number;
+  total_play_unit_count: number;
   tournaments: Array<{ id: string; name: string; slug: string; role: "player" | "manager" }>;
 }
 

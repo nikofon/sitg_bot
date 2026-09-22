@@ -91,7 +91,7 @@ describe("MiniAppShell", () => {
         });
       }
       return response({ locale: "en", authorization: { allowed: true }, resource: {
-        kind: "library", state: "ready", items: [{ packet_id: "packet", version_id: "version", name: "Packet", year: 2020, published_at: "2026-01-01", lead_author: "Writer", authors: [], tournaments: [] }],
+        kind: "library", state: "ready", items: [{ packet_id: "packet", version_id: "version", name: "Packet", year: 2020, published_at: "2026-01-01", lead_author: "Writer", authors: [], fresh_play_unit_count: 2, total_play_unit_count: 4, tournaments: [] }],
       } });
     });
     const root = document.createElement("div");

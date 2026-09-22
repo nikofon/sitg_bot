@@ -12,6 +12,11 @@ const lobby = {
       total_play_unit_count: 5, playable_for_all: true,
     },
     {
+      packet_id: "delta", name: "Delta", year: 2019, published_at: "2023-01-01T00:00:00Z",
+      lead_author: "Diana", authors: ["Diana"], fresh_play_unit_count: 0,
+      total_play_unit_count: 4, playable_for_all: true,
+    },
+    {
       packet_id: "bravo", name: "Bravo", year: 2021, published_at: "2025-01-01T00:00:00Z",
       lead_author: "Boris", authors: ["Boris"], fresh_play_unit_count: 4,
       total_play_unit_count: 6, playable_for_all: true,
@@ -26,19 +31,24 @@ const lobby = {
 } as unknown as LobbyResource;
 
 describe("renderLobbyPackets sorting", () => {
-  it("keeps the default order and sorts by fresh themes on demand", () => {
+  it("sorts by fresh themes with zero-fresh packets last by default", () => {
     const root = renderLobbyPackets(lobby, new I18n("en"), {}, true, vi.fn());
     const ids = (): string[] => Array.from(
       root.querySelectorAll("[data-packet-id]"),
       (node) => (node as HTMLElement).dataset.packetId ?? "",
     );
-    expect(ids()).toEqual(["alpha", "bravo", "charlie"]);
+    expect(ids()).toEqual(["alpha", "bravo", "charlie", "delta"]);
 
     const sort = root.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']");
     expect(sort).not.toBeNull();
+    expect(sort!.value).toBe("fresh_zeroes_last");
+
     sort!.value = "fresh";
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["charlie", "bravo", "alpha", "delta"]);
 
-    expect(ids()).toEqual(["charlie", "bravo", "alpha"]);
+    sort!.value = "default";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["alpha", "delta", "bravo", "charlie"]);
   });
 });

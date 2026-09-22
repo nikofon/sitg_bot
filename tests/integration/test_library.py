@@ -71,7 +71,9 @@ async def test_cards_are_listed_but_actions_check_release_and_view_rules(
         player_id = fixture.players[0].id
         listed = await library.list_packets(player_id)
         assert [item["version_id"] for item in listed["items"]] == [str(version_id)]
-        assert "pages" not in listed["items"][0]
+        card = listed["items"][0]
+        assert card["fresh_play_unit_count"] == card["total_play_unit_count"] == 1
+        assert "pages" not in card
         with pytest.raises(PermissionError):
             await library.access(player_id, version_id, confirm=True, download=download,
                                  request_key=str(uuid4()))
@@ -254,7 +256,11 @@ async def test_partial_exposure_still_requires_confirmation(database_url):
                 claim_namespace="theme", claim_id=theme.theme_id,
                 state="burnt", burnt_at=datetime.now(UTC),
             ))
-        result = await PacketLibraryService(database).access(
+        library = PacketLibraryService(database)
+        card = (await library.list_packets(fixture.players[0].id))["items"][0]
+        assert card["fresh_play_unit_count"] == 0
+        assert card["total_play_unit_count"] == 1
+        result = await library.access(
             fixture.players[0].id, version_id, request_key="partial"
         )
         assert result == {"confirmation_required": True, "fresh_unit_count": 1}
