@@ -41,6 +41,8 @@ Mutations requiring idempotency persist request identity and results. A reused k
 different content conflicts; in-progress and indeterminate requests have distinct outcomes.
 Do not blindly retry an indeterminate operation under a new key. Versioned edits supply the
 expected resource version and return `stale_write` if another actor has changed it.
+The Telegram adapter derives the key from the update identity; operations that one update
+issues several times (draft binds, per-notification reads) append a per-target suffix.
 Queries use permission-aware projections and cursor pagination where supported.
 
 Errors are stable codes, including `forbidden`, `not_found`, `validation_failed`,

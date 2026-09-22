@@ -78,11 +78,10 @@ def menu_message(
 def help_message(
     navigation: NavigationState | None, localization: LocalizationService, locale: str
 ) -> MessageModel:
-    registering = navigation is None or navigation.context == "registration"
     if navigation is not None and navigation.context == "unavailable":
         return MessageModel(localization.text("help.unavailable", locale))
-    text = localization.text("help.registration" if registering else "help.active", locale)
-    if not registering and (navigation.active_lobby or navigation.active_game):
+    text = localization.text("help.tutorial", locale)
+    if navigation is not None and (navigation.active_lobby or navigation.active_game):
         text += "\n\n" + localization.text("chat.help", locale)
     return MessageModel(text)
 

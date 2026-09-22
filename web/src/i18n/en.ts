@@ -448,7 +448,7 @@ export const en = {
   "packet_editor.author_associate": "Associate this author with an existing one:",
   "packet_editor.author_select": "Select existing author",
   "packet_editor.or": "Or",
-  "packet_editor.authors_help": "Saving adds these authors to the tournament. Names without an association are registered as separate authors.",
+  "packet_editor.authors_help": "Saving adds these authors to the tournament. Names without an association are matched with the existing author of the same name, ignoring word order and capitalisation. Add a new author to keep a genuine namesake separate.",
   "packet_editor.authors_no_matches": "No authors found. Try another name or add a new author.",
   "packet_editor.name": "Packet name",
   "packet_editor.language": "Language",

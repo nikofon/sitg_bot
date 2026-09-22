@@ -10,6 +10,7 @@ from sitg_bot.application.contracts import (
     GatewayOperation,
     GatewayRequest,
     GatewayResponse,
+    NotificationReadOperation,
     PacketDraftTelegramBindOperation,
     RequestMetadata,
 )
@@ -76,6 +77,9 @@ class TelegramGatewayAdapter:
         if isinstance(operation, PacketDraftTelegramBindOperation):
             # One document update can produce several independently bound draft messages.
             idempotency_key += f":draft:{operation.draft_id}"
+        if isinstance(operation, NotificationReadOperation):
+            # One menu action displays many notifications; each is marked read separately.
+            idempotency_key += f":notification:{operation.notification_id}"
         request = GatewayRequest(
             metadata=RequestMetadata(
                 correlation_id=claim.correlation_id,

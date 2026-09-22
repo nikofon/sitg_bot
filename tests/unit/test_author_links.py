@@ -37,21 +37,50 @@ class AuthorCreationSession:
         self.added.append(value)
 
 
-async def test_author_name_is_not_reused_across_import_operations() -> None:
+async def test_author_name_is_reused_across_import_operations() -> None:
     session = AuthorCreationSession()
+    session.scalar = AsyncMock(return_value=None)
 
     first_cache: dict[str, AuthorRecord] = {}
     first = await PacketAdminService._author(session, "Same Name", first_cache)  # type: ignore[arg-type]
     repeated = await PacketAdminService._author(  # type: ignore[arg-type]
         session, " Same   Name ", first_cache
     )
-    second = await PacketAdminService._author(  # type: ignore[arg-type]
-        session, "Same Name", {}
-    )
 
     assert first is repeated
-    assert first is not second
+    assert len(session.added) == 1
+
+    # A later import treats a namesake as the same person when a registered
+    # author with the same name (ignoring capitalisation and word order)
+    # already exists.
+    registered = AuthorRecord(id=UUID(int=1), display_name="Name Same")
+    session.scalar = AsyncMock(return_value=registered)
+    matched = await PacketAdminService._author(session, "Same Name", {})  # type: ignore[arg-type]
+
+    assert matched is registered
+    assert len(session.added) == 1
+
+    # Without a match a fresh author record is still registered.
+    session.scalar = AsyncMock(return_value=None)
+    created = await PacketAdminService._author(session, "Another Name", {})  # type: ignore[arg-type]
+
+    assert created is not None
+    assert created.display_name == "Another Name"
     assert len(session.added) == 2
+
+
+def test_author_name_match_forms_ignore_case_and_word_order() -> None:
+    assert PacketAdminService._name_match_forms("Name Surname") == (
+        PacketAdminService._name_match_forms("surname   name")
+    )
+    assert set(PacketAdminService._name_match_forms("Name Surname")) == {
+        "name surname",
+        "surname name",
+    }
+    assert PacketAdminService._name_match_forms("  ") == ()
+    assert PacketAdminService._name_match_forms("Name Surname") != (
+        PacketAdminService._name_match_forms("Name Surname Jr")
+    )
 
 
 def test_author_names_are_non_unique_and_pending_request_is_uniquely_indexed() -> None:
