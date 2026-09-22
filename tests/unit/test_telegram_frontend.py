@@ -1901,3 +1901,66 @@ def test_notification_text_renders_bug_reports() -> None:
     assert "Reporter" in text
     assert "The answer prompt disappeared" in text
     assert "2026-09-12" in text
+
+
+async def test_notifications_menu_marks_every_displayed_notification_read() -> None:
+    from sitg_bot.bot.handlers.navigation import handle_notifications
+    from sitg_bot.bot.state.models import NotificationPageState, NotificationState
+
+    created_at = "2026-01-01T00:00:00+00:00"
+    unseen_page = NotificationPageState(
+        items=tuple(
+            NotificationState(
+                notification_id=UUID(int=index),
+                kind="tournament.start_due",
+                payload={"name": f"Cup {index} " + "N" * 3000},
+                created_at=created_at,
+                read_at=None,
+            )
+            for index in (1, 2, 3)
+        ),
+        next_cursor=None,
+    )
+    seen_page = NotificationPageState(
+        items=(
+            NotificationState(
+                notification_id=UUID(int=10),
+                kind="tournament.start_due",
+                payload={"name": "Old cup"},
+                created_at=created_at,
+                read_at=created_at,
+            ),
+        ),
+        next_cursor=None,
+    )
+    backend = SimpleNamespace(
+        notifications=AsyncMock(side_effect=[unseen_page, seen_page]),
+        mark_notification_read=AsyncMock(
+            return_value=NotificationState(
+                notification_id=UUID(int=0),
+                kind="tournament.start_due",
+                payload={"name": ""},
+                created_at=created_at,
+                read_at=created_at,
+            )
+        ),
+    )
+    message = SimpleNamespace(answer=AsyncMock(return_value=SimpleNamespace()))
+
+    await handle_notifications(
+        message,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        SimpleNamespace(active_mode="player"),  # type: ignore[arg-type]
+    )
+
+    # Long unseen notifications are split across several messages
+    # (one per overflow chunk, the seen section joins the last one)...
+    assert message.answer.await_count == 3
+    assert "Old cup" in message.answer.await_args.args[0]
+    # ...and every displayed unseen notification is marked read, including
+    # those in overflow chunks, so no idempotency conflict aborts the loop.
+    marked = [call.args[1] for call in backend.mark_notification_read.await_args_list]
+    assert marked == [UUID(int=index) for index in (1, 2, 3)]

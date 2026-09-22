@@ -463,6 +463,103 @@ async def test_packet_author_associations_reuse_identities_and_extend_tournament
     await database.close()
 
 
+async def test_packet_upload_defaults_namesake_authors_to_existing_identity(
+    database_url: str,
+) -> None:
+    database = Database(database_url)
+    fixture = await tournament_fixture(database, player_count=1)
+    packets = PacketAdminService(database)
+    suffix = secrets.token_hex(6)
+    async with database.transaction() as session:
+        existing = AuthorRecord(display_name=f"Anna Karenina {suffix}")
+        session.add(existing)
+        await session.flush()
+    source = packet()
+    source = replace(
+        source,
+        lead_author=f"Anna Karenina {suffix}",
+        themes=(replace(source.themes[0], author=f"karenina {suffix} anna"),),
+    )
+    draft_id = await packets.create_draft(
+        source,
+        source_filename="namesakes.json",
+        uploader_id=fixture.manager.id,
+        tournament_id=fixture.tournament_id,
+    )
+    stored = await packets.publish(draft_id, administrator_id=fixture.manager.id)
+    async with database.sessions() as session:
+        version = await session.get(PacketVersionRecord, stored.version_id)
+        assert version.lead_author_id == existing.id
+        theme = await session.scalar(
+            select(ThemeRevisionRecord).where(
+                ThemeRevisionRecord.packet_version_id == stored.version_id,
+            )
+        )
+        assert theme.author_id == existing.id
+        question_authors = set(
+            await session.scalars(
+                select(QuestionRevisionRecord.author_id)
+                .join(
+                    PacketQuestionRecord,
+                    PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
+                )
+                .where(PacketQuestionRecord.packet_version_id == stored.version_id)
+            )
+        )
+        assert question_authors == {existing.id}
+        draft = await session.get(PacketDraftRecord, draft_id)
+        assert draft.author_bindings == {
+            f"Anna Karenina {suffix}": str(existing.id),
+            f"karenina {suffix} anna": str(existing.id),
+        }
+    await database.close()
+
+    # An explicit association with a newly registered author still keeps a
+    # genuine namesake separate from the matching existing author.
+    database = Database(database_url)
+    fixture = await tournament_fixture(database, player_count=1)
+    packets = PacketAdminService(database)
+    async with database.transaction() as session:
+        existing = AuthorRecord(display_name=f"Leo Tolstoy {suffix}")
+        session.add(existing)
+        await session.flush()
+    override = packet()
+    override = replace(override, themes=(replace(override.themes[0], author=f"leo tolstoy {suffix}"),))
+    override_id = await packets.create_draft(
+        override,
+        source_filename="namesake-override.json",
+        uploader_id=fixture.manager.id,
+        tournament_id=fixture.tournament_id,
+    )
+    created = await packets.create_author(
+        override_id,
+        fixture.manager.id,
+        first_name=f"Leo {suffix}",
+        second_name=None,
+        surname=f"Tolstoy {suffix}",
+        telegram_link=None,
+    )
+    namesake_id = UUID(created["author_id"])
+    saved = await packets.update_draft(
+        override_id,
+        fixture.manager.id,
+        expected_version=1,
+        content=asdict(override),
+        author_bindings={f"leo tolstoy {suffix}": namesake_id},
+    )
+    assert UUID(saved["author_bindings"][f"leo tolstoy {suffix}"]) == namesake_id
+    stored_override = await packets.publish(override_id, administrator_id=fixture.manager.id)
+    async with database.sessions() as session:
+        theme = await session.scalar(
+            select(ThemeRevisionRecord).where(
+                ThemeRevisionRecord.packet_version_id == stored_override.version_id,
+            )
+        )
+        assert theme.author_id == namesake_id
+        assert theme.author_id != existing.id
+    await database.close()
+
+
 async def test_packet_editor_can_register_structured_author(database_url: str) -> None:
     database = Database(database_url)
     fixture = await tournament_fixture(database, player_count=1)

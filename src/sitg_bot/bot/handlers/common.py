@@ -79,6 +79,7 @@ async def resume_registration(
             localization=localization,
             locale=locale,
         )
+        await send_message_model(message, help_message(navigation, localization, locale))
         if state is not None:
             await resume_invitation(message, backend, claim, localization, locale, state)
         return
@@ -178,3 +179,30 @@ async def handle_help(
         )
         return
     await send_message_model(message, help_message(navigation, localization, locale))
+
+
+@router.message(Command("command_help"))
+async def handle_command_help(
+    message: Message,
+    backend: BotBackend,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState | None,
+) -> None:
+    if navigation is not None and navigation.context == "game":
+        await backend.game_delivery.track(
+            message.chat.id, navigation.active_game.id, message.message_id
+        )
+        await backend.game_delivery.send(
+            message.chat.id,
+            navigation.active_game.id,
+            f"command:{message.message_id}:command_help",
+            MessageModel(
+                localization.text("help.commands", locale),
+                menu_message(navigation, localization, locale).keyboard,
+            ),
+        )
+        return
+    await send_message_model(
+        message, MessageModel(localization.text("help.commands", locale))
+    )

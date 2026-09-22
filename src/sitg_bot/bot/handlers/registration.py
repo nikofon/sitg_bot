@@ -8,7 +8,11 @@ from aiogram.types import Message
 from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
-from sitg_bot.bot.presenters.common import menu_message, registration_prompt
+from sitg_bot.bot.presenters.common import (
+    help_message,
+    menu_message,
+    registration_prompt,
+)
 from sitg_bot.bot.presenters.models import MessageModel
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import BotBackend, GatewayCallError, NavigationState
@@ -137,6 +141,7 @@ async def _send_completed_menu(
     menu = menu_message(navigation, localization, locale)
     text = f"{localization.text('registration.complete', locale)}\n\n{menu.text}"
     await send_message_model(message, MessageModel(text, menu.keyboard))
+    await send_message_model(message, help_message(navigation, localization, locale))
     if state is not None:
         from sitg_bot.bot.handlers.common import resume_invitation
 

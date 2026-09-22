@@ -64,6 +64,7 @@ def test_hybrid_matchmaking_requires_type_support_and_tournament_opt_in() -> Non
     assert hybrid_matchmaking_supported({"supports_hybrid_matchmaking": True})
     assert not hybrid_matchmaking_supported({"supports_hybrid_matchmaking": False})
     assert normalize_tournament_policies({"supports_hybrid_matchmaking": True}, None) == {
+        "library_viewing_rule_default": "after-play",
         "auto_approve_registrations": False,
         "hybrid_matchmaking_enabled": False,
         "ruleset_rating_weight": 1,

@@ -12,6 +12,7 @@ from sitg_bot.application.contracts import (
     ErrorCode,
     GatewayRequest,
     GatewayResponse,
+    NotificationReadOperation,
     PacketDraftTelegramBindOperation,
 )
 from sitg_bot.application.gateway import ACTION_POLICIES, ApplicationGateway
@@ -297,3 +298,50 @@ async def test_telegram_adapter_derives_update_idempotency_without_storage_acces
         keys.append(gateway.request.metadata.idempotency_key)
     assert keys[0] != keys[1]
     assert keys[0] == keys[2]
+
+
+@pytest.mark.asyncio
+async def test_telegram_adapter_keys_each_notification_read_independently() -> None:
+    class CapturingGateway:
+        request: GatewayRequest | None = None
+
+        async def execute(self, principal: object, request: GatewayRequest) -> GatewayResponse:
+            self.request = request
+            return GatewayResponse(
+                action=ActionCode.NOTIFICATIONS_READ,
+                correlation_id=request.metadata.correlation_id,
+                ok=True,
+                data={},
+            )
+
+    gateway = CapturingGateway()
+    adapter = TelegramGatewayAdapter(  # type: ignore[arg-type]
+        gateway,
+        client_version="2.0.0",
+        bot_id=99,
+        environment="test",
+    )
+    claim = TelegramUpdateClaim(
+        receipt_id=uuid4(),
+        correlation_id=uuid4(),
+        bot_id=99,
+        environment="test",
+        update_id=456,
+        telegram_user_id=123,
+    )
+
+    keys = []
+    for notification_id in (UUID(int=1), UUID(int=2), UUID(int=1)):
+        await adapter.execute_update(
+            claim,
+            NotificationReadOperation(
+                action=ActionCode.NOTIFICATIONS_READ, notification_id=notification_id
+            ),
+        )
+        keys.append(gateway.request.metadata.idempotency_key)
+
+    # One Telegram update marks several displayed notifications as read; each
+    # mutation needs its own idempotency key so retries stay conflict-free.
+    assert keys[0] != keys[1]
+    assert keys[0] == keys[2]
+    assert all(key.startswith("telegram-update:99:test:456:notification:") for key in keys)

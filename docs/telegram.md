@@ -27,7 +27,10 @@ validation, player-context loading, locale selection, and error mapping. Identit
 the update's `from_user`; group-chat identities are not accepted as private sessions.
 Per-user event isolation prevents rapid input from bypassing an active conversation.
 
-`/start`, `/menu`, `/help`, `/cancel`, and `/language` support recovery and registration.
+`/start`, `/menu`, `/help`, `/command_help`, `/cancel`, and `/language` support recovery and
+registration. `/help` shows a short tutorial (registration, joining a tournament, creating a
+lobby, starting a game) and is also sent once when a player completes registration;
+`/command_help` lists every command with a description and the context where it applies.
 Tournament menus expose **Registration link** to managers; active participants find the same
 link in the tournament profile Mini App's general section while registration is open.
 Shared `/start reg_…` links ask for registration confirmation; private links include a sharing warning
@@ -46,8 +49,8 @@ Unknown tournament action descriptors are ignored and logged.
 
 - Player registration, profile settings (`/set` and buttons), mode switching, tournament
   discovery/registration/selection, information, invitation lobbies, readiness, observers,
-  settings, packet selection, hybrid search, native SI gameplay, and player profile links
-  (`/profile player_id` or `/profile @username`, plus the "My profile" button).
+  settings, packet selection, hybrid search, native SI gameplay, and the "My profile" Mini App
+  button for player profiles.
 - `/bug` reports: `/bug <description>` submits a bug report to the administrators; a bare
   `/bug` prompts for the description. Reports store the reporter, commentary, and timestamp,
   and notify every active administrator through the admin notification audience and the

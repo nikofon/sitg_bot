@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import itertools
 import json
 from collections.abc import Iterable
 from dataclasses import asdict, replace
@@ -1293,6 +1294,31 @@ class PacketAdminService:
         return errors, warnings
 
     @staticmethod
+    def _name_match_forms(name: str) -> tuple[str, ...]:
+        """Casefolded single-space word orders for precise namesake matching."""
+        words = name.casefold().split()
+        if not words:
+            return ()
+        if len(words) > 5:
+            return (" ".join(words),)
+        return tuple(sorted(" ".join(form) for form in set(itertools.permutations(words))))
+
+    @staticmethod
+    async def _matching_author(session: AsyncSession, name: str) -> AuthorRecord | None:
+        forms = PacketAdminService._name_match_forms(name)
+        if not forms:
+            return None
+        collapsed = func.regexp_replace(
+            func.lower(AuthorRecord.display_name), r"\s+", " ", "g"
+        )
+        return await session.scalar(
+            select(AuthorRecord)
+            .where(collapsed.in_(forms))
+            .order_by(func.lower(AuthorRecord.display_name), AuthorRecord.id)
+            .limit(1)
+        )
+
+    @staticmethod
     async def _author(
         session: AsyncSession, name: str, operation_authors: dict[str, AuthorRecord]
     ) -> AuthorRecord | None:
@@ -1302,11 +1328,15 @@ class PacketAdminService:
         author = operation_authors.get(normalized)
         if author is not None:
             return author
-        # A name is not an identity. Reuse is deliberately limited to this one
-        # publication so an unrelated existing author is never silently merged.
-        author = AuthorRecord(display_name=normalized)
-        session.add(author)
-        await session.flush()
+        # Namesakes are the same person by default: a name matches an existing
+        # author exactly, ignoring only capitalisation and word order. An
+        # explicit association is still required to keep two same-named people
+        # apart.
+        author = await PacketAdminService._matching_author(session, normalized)
+        if author is None:
+            author = AuthorRecord(display_name=normalized)
+            session.add(author)
+            await session.flush()
         operation_authors[normalized] = author
         return author
 

@@ -106,8 +106,11 @@ author fields. Each name can be associated with a registered author or a newly r
 using the same name, surname, optional second name, and Telegram-link form as tournament settings.
 The lead author can also be selected or registered there. Associations preserve the source spelling
 in the draft while publication uses the chosen author IDs. Saving adds these authors to the
-tournament's author list; names without an explicit association create separate author records,
-never an automatic merge by name. Repeated saves reuse the persisted associations. Publication
+tournament's author list. A name without an explicit association is treated as the same person as
+an existing author whose name matches it exactly except for capitalisation and word order; when
+several registered authors match, the earliest by display name, then identifier, wins. To keep a
+genuine namesake separate, the uploader explicitly registers a new author and associates the name
+with it. Repeated saves reuse the persisted associations. Publication
 also adds authors when the draft is published directly from Telegram without an editor save.
 
 A draft has an explicit lifecycle:
