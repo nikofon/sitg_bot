@@ -1,6 +1,13 @@
 import type { MessageKey } from "./en";
 
 export const ru: Record<MessageKey, string> = {
+  "classic.full_packet": "Количество тем: весь пакет. В классических турнирах играются все темы пакета тура; изменить это нельзя.",
+  "packet_management.add_existing": "Добавить существующий пакет",
+  "packet_management.add": "Добавить",
+  "packet_management.confirm_add": "Подтвердить добавление пакета",
+  "packet_management.cancel": "Отмена",
+  "packet_management.themes": "Темы",
+  "packet_management.questions": "Вопросы",
   "setting.minimum_players.label": "Минимум игроков в игре",
   "setting.maximum_players.label": "Максимум игроков в игре",
   "policy.library_viewing_rule_default.label": "Правило просмотра в библиотеке для новых пакетов",

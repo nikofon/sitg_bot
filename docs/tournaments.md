@@ -219,6 +219,10 @@ Managers choose defaults and per-parameter player mutability. Effective paramete
 tournament type, ruleset, and technical limits. Assignment snapshots preserve them for existing
 games; changes to assembling lobbies clear readiness.
 
+Classic SI games always use every theme in the round packet. Theme count is fixed for
+managers and players, including existing tournaments; unavailable themes block the game
+instead of reducing its length. Ladder theme count remains configurable.
+
 `minimum_players` and `maximum_players` default to four, including existing tournaments.
 Each has its own mutability grant. They must satisfy `1 <= minimum <= maximum <= 12`;
 the maximum controls lobby capacity and both limits govern game starts. Classic uses its

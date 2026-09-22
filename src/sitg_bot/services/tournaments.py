@@ -82,6 +82,19 @@ REGISTRATION_REQUIREMENT_KINDS = frozenset(
 )
 
 
+def tournament_parameters(
+    type_key: str, ruleset_key: str, parameters: dict[str, object] | None,
+    mutable: set[str] | frozenset[str] | list[str],
+) -> tuple[dict[str, object], frozenset[str]]:
+    """Classic SI uses the maximum; each lobby resolves it to its full packet size."""
+    parameters = dict(parameters or {})
+    mutable = frozenset(mutable)
+    if type_key == "classic" and ruleset_key == "si":
+        parameters["theme_count"] = 128
+        mutable -= {"theme_count"}
+    return parameters, mutable
+
+
 def hybrid_matchmaking_supported(type_rules: dict[str, object]) -> bool:
     return type_rules.get("supports_hybrid_matchmaking") is True
 
@@ -594,6 +607,9 @@ class TournamentService:
             if compatible and game_ruleset_key not in compatible:
                 raise ValueError("Tournament type is incompatible with the selected game ruleset")
             ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                type_key, ruleset_version.key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown_mutable = mutable - ruleset.parameter_names
@@ -1040,6 +1056,9 @@ class TournamentService:
             ):
                 raise ValueError("Registration end is required for a finite tournament")
             ruleset = self.rulesets.get(ruleset_version.key, ruleset_version.version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                type_version.key, ruleset_version.key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
@@ -2382,14 +2401,19 @@ class TournamentService:
             ManagerAuthorDescriptor(author.id, author.display_name) for author in author_records
         )
         ruleset = self.rulesets.get(item.ruleset_key, item.ruleset_version)
+        parameters, mutable = tournament_parameters(
+            item.type_key, item.ruleset_key,
+            policy.default_parameters, policy.player_mutable_parameters,
+        )
         setting_descriptors = tuple(
             ManagerSettingDescriptor(
                 definition.name,
                 definition.value_type,
                 definition.description_key,
-                policy.default_parameters.get(definition.name),
+                parameters.get(definition.name),
             )
             for definition in ruleset.parameter_definitions
+            if not (item.type_key == "classic" and definition.name == "theme_count")
         )
         policy_descriptors = self._manager_policy_descriptors(policy.policies)
         counts = []
@@ -2426,8 +2450,8 @@ class TournamentService:
                 for key, value in policy.policies.items()
                 if key != RULESET_RATING_WEIGHT_POLICY
             },
-            default_parameters=dict(policy.default_parameters),
-            player_mutable_parameters=tuple(policy.player_mutable_parameters),
+            default_parameters=parameters,
+            player_mutable_parameters=tuple(sorted(mutable)),
             author_names=tuple(author.display_name for author in author_records),
             authors=authors,
             setting_descriptors=setting_descriptors,
@@ -2671,6 +2695,9 @@ class TournamentService:
                 context.type_rules, effective_policies
             )
             ruleset = self.rulesets.get(context.ruleset_key, context.ruleset_version)
+            default_parameters, player_mutable_parameters = tournament_parameters(
+                context.type_key, context.ruleset_key, default_parameters, player_mutable_parameters
+            )
             settings = ruleset.parameters(default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
@@ -3105,6 +3132,10 @@ class TournamentService:
                 or tournament.participants_finalized_at is not None
             )
         )
+        parameters, mutable = tournament_parameters(
+            type_version.key, ruleset_version.key,
+            policy.default_parameters, policy.player_mutable_parameters,
+        )
         return TournamentContext(
             tournament.id,
             type_version.id,
@@ -3114,8 +3145,8 @@ class TournamentService:
             ruleset_version.version,
             policy.id,
             policy.version,
-            ruleset.parameters(policy.default_parameters),
-            frozenset(policy.player_mutable_parameters),
+            ruleset.parameters(parameters),
+            mutable,
             dict(policy.policies),
             dict(type_version.rules),
             assembly_open,

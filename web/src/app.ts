@@ -1315,6 +1315,10 @@ export class MiniAppShell {
     }
     section("packet_accessibility", packetAccessibility);
     const managedPackets = element("div", { className: "lobby-packets" });
+    if (can("packet_management")) managedPackets.append(element("button", {
+      type: "button", className: "primary-button",
+      onclick: (() => this.showExistingPacketDialog(route)) as EventListener,
+    }, this.i18n.t("packet_management.add_existing")));
     for (const packet of resource.packets) {
       const card = element("article", { className: "resource-card lobby-packet-card", "data-packet-id": packet.packet_id },
         element("h3", {}, packet.name),
@@ -1738,6 +1742,8 @@ export class MiniAppShell {
       group(
         "manager_settings.gameplay",
         element("h3", {}, this.i18n.t("tournament.defaults")),
+        ...(item.type_key === "classic"
+          ? [element("p", { className: "field-help" }, this.i18n.t("classic.full_packet"))] : []),
         this.renderDescriptorGroup(settingDescriptors, "setting"),
         element("h3", {}, this.i18n.t("tournament.mutable")),
         mutable,
@@ -2429,6 +2435,67 @@ export class MiniAppShell {
       return;
     }
     this.router.navigate(route.id === "admin_management" ? "/admin/management?section=players" : "/admin/suspicion");
+  }
+
+  private showExistingPacketDialog(route: RouteMatch): void {
+    const input = element("input", { type: "text", required: true, autocomplete: "off" });
+    const details = element("div", { "aria-live": "polite" });
+    const errorMessage = element("p", { role: "alert" });
+    const submit = element("button", { type: "submit", className: "primary-button" }, this.i18n.t("packet_management.add"));
+    const cancel = element("button", { type: "button", className: "secondary-button" }, this.i18n.t("packet_management.cancel"));
+    const form = element("form", {},
+      element("label", {}, this.i18n.t("packet_management.packet_id"), input), details, errorMessage,
+      element("div", { className: "inline-actions" }, submit, cancel));
+    const dialog = element("dialog", { className: "tournament-dialog", "aria-labelledby": "existing-packet-title" },
+      element("h2", { id: "existing-packet-title" }, this.i18n.t("packet_management.add_existing")), form);
+    type Preview = { packet_id: string; packet_version_id: string; name: string; year: number | null;
+      lead_author: string; authors: string[]; theme_count: number; question_count: number };
+    let preview: Preview | null = null;
+    const close = (): void => { if (typeof dialog.close === "function") dialog.close(); dialog.remove(); };
+    cancel.addEventListener("click", close);
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      submit.disabled = true;
+      errorMessage.textContent = "";
+      const path = `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/existing-packets`;
+      try {
+        if (preview) {
+          const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/add`, {
+            method: "POST", body: { packet_id: preview.packet_id, expected_version_id: preview.packet_version_id },
+          });
+          close();
+          this.platform.notifySuccess();
+          this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
+        } else {
+          preview = await this.api.request<Preview>(`${path}/preview`, {
+            method: "POST", body: { packet_id: input.value.trim() },
+          });
+          input.disabled = true;
+          details.replaceChildren(element("h3", {}, preview.name), element("dl", { className: "detail-list" },
+            ...([
+              ["lobby.packet_year", preview.year?.toString() ?? "—"],
+              ["lobby.packet_lead_author", preview.lead_author || "—"],
+              ["lobby.packet_authors", preview.authors.join(", ") || "—"],
+              ["packet_management.themes", String(preview.theme_count)],
+              ["packet_management.questions", String(preview.question_count)],
+            ] as const).flatMap(([key, value]) => [element("dt", {}, this.i18n.t(key)), element("dd", {}, value)])));
+          submit.textContent = this.i18n.t("packet_management.confirm_add");
+        }
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        errorMessage.textContent = this.i18n.t(`error.${code}`);
+        preview = null;
+        input.disabled = false;
+        details.replaceChildren();
+        submit.textContent = this.i18n.t("packet_management.add");
+      } finally { submit.disabled = false; }
+    });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    input.focus();
   }
 
   private showTextDialog(title: string, lines: string[]): void {

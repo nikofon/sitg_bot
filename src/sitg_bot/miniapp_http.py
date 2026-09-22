@@ -49,6 +49,8 @@ from sitg_bot.application.contracts import (
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
     PacketDraftUpdateOperation,
+    PacketExistingAddOperation,
+    PacketExistingPreviewOperation,
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
@@ -218,6 +220,10 @@ class MiniAppHttpServer:
             self._start_tournament,
         )
         app.router.add_get("/api/miniapp/manager/packets/{launch_ref}", self._packet_draft)
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/existing-packets/{command}",
+            self._existing_packet,
+        )
         app.router.add_get(
             "/api/miniapp/manager/tournaments/{launch_ref}/packets/{assignment_id}",
             self._management_packet,
@@ -1132,6 +1138,25 @@ class MiniAppHttpServer:
                 **body,
             }
         )
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request)
+        )
+        return self._gateway_response(result)
+
+    async def _existing_packet(self, request: web.Request) -> web.Response:
+        command = request.match_info["command"]
+        if command not in {"preview", "add"}:
+            raise LookupError("Packet command not found")
+        action = (ActionCode.PACKET_EXISTING_ADD if command == "add"
+                  else ActionCode.PACKET_EXISTING_PREVIEW)
+        session, tournament_id = await self._resolve_manager_reference(
+            request, request.match_info["launch_ref"], action=action,
+            mutation=True, expected_routes={"manager_management"},
+        )
+        model = PacketExistingAddOperation if command == "add" else PacketExistingPreviewOperation
+        operation = model.model_validate({
+            **await self._json_body(request), "action": action, "tournament_id": tournament_id,
+        })
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )

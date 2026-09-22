@@ -54,6 +54,8 @@ class ActionCode(StrEnum):
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
+    PACKET_EXISTING_PREVIEW = "packets.existing.preview.v1"
+    PACKET_EXISTING_ADD = "packets.existing.add.v1"
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
@@ -533,6 +535,19 @@ class PlayerResolveOperation(ContractModel):
     reference: str = Field(min_length=2, max_length=66)
 
 
+class PacketExistingPreviewOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_EXISTING_PREVIEW]
+    tournament_id: UUID
+    packet_id: UUID
+
+
+class PacketExistingAddOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_EXISTING_ADD]
+    tournament_id: UUID
+    packet_id: UUID
+    expected_version_id: UUID
+
+
 class PacketManagementGetOperation(ContractModel):
     action: Literal[ActionCode.PACKET_MANAGEMENT_GET]
     tournament_id: UUID
@@ -903,6 +918,8 @@ GatewayOperation = Annotated[
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation
+    | PacketExistingPreviewOperation
+    | PacketExistingAddOperation
     | LibraryListOperation
     | LibraryAccessOperation
     | PlayerListOperation

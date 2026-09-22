@@ -1381,6 +1381,8 @@ class InvitationMatchmakingService:
                     )
                     total = await self._packet_play_unit_count(session, version.id, context)
                     settings = ruleset.parameters(lobby.settings)
+                    if context.type_key == "classic" and context.ruleset_key == "si":
+                        settings = settings.updated({"theme_count": max(1, total)})
                     violations = tuple(
                         {
                             "code": violation.code,
@@ -1707,6 +1709,14 @@ class InvitationMatchmakingService:
         members = await self._active_members(session, lobby.id)
         context = await self.tournaments.context(session, lobby.tournament_id)
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
+        if context.type_key == "classic" and context.ruleset_key == "si":
+            # Count the full packet, not only fresh themes: exposure must block
+            # the game rather than silently shorten a prescribed Classic round.
+            theme_count = sum([
+                await self._packet_play_unit_count(session, item.packet_version_id, context)
+                for item in selected
+            ])
+            lobby.settings = {**lobby.settings, "theme_count": max(1, theme_count)}
         available = await self._available_play_units(session, selected, members, context)
         violations = list(
             ruleset.validate_lobby(

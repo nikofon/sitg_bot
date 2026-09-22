@@ -763,6 +763,40 @@ describe("MiniAppShell", () => {
     expect(root.querySelector(".lobby-packet-card h3")?.textContent).toBe("Final packet");
     expect(Array.from(root.querySelectorAll(".lobby-packet-card button")).map((button) => button.textContent))
       .toEqual(["Modify", "Release", "Delete"]);
+    expect(root.querySelector(".lobby-packet-card")?.textContent).toContain("packet-1");
+    const addExisting = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Add existing packet")!;
+    addExisting.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    const packetInput = dialog.querySelector("input")!;
+    packetInput.value = "existing-packet";
+    fetcher.mockResolvedValueOnce(response({ packet_id: "existing-packet", packet_version_id: "version-1",
+      name: "Shared packet", year: 2026, lead_author: "Author", authors: ["Author"], theme_count: 8, question_count: 40 }));
+    dialog.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
+    await vi.waitFor(() => expect(dialog.textContent).toContain("Shared packet"));
+    expect(fetcher.mock.calls.at(-1)?.[0]).toContain("/existing-packets/preview");
+    expect(dialog.textContent).toContain("Confirm adding packet");
+    expect(packetInput.disabled).toBe(true);
+    const callsBeforeCancel = fetcher.mock.calls.length;
+    dialog.querySelector<HTMLButtonElement>("button[type=button]")!.click();
+    expect(document.querySelector("dialog")).toBeNull();
+    expect(fetcher.mock.calls.length).toBe(callsBeforeCancel);
+
+    addExisting.click();
+    const confirmDialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    confirmDialog.querySelector("input")!.value = "existing-packet";
+    fetcher.mockResolvedValueOnce(response({ packet_id: "existing-packet", packet_version_id: "version-1",
+      name: "Shared packet", year: null, lead_author: "", authors: [], theme_count: 8, question_count: 40 }));
+    confirmDialog.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
+    await vi.waitFor(() => expect(confirmDialog.textContent).toContain("Shared packet"));
+    fetcher.mockResolvedValueOnce(response({ error: { code: "stale_write" } }, 409));
+    confirmDialog.querySelector<HTMLButtonElement>("button[type=submit]")!.click();
+    await vi.waitFor(() => expect(confirmDialog.querySelector("input")!.disabled).toBe(false));
+    expect(fetcher.mock.calls.at(-1)?.[0]).toContain("/existing-packets/add");
+    expect(JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body))).toEqual({
+      packet_id: "existing-packet", expected_version_id: "version-1",
+    });
+    confirmDialog.querySelector<HTMLButtonElement>("button[type=button]")!.click();
     const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
       commentary: "", source: "", form: "", author: "Ada" };
     fetcher.mockResolvedValueOnce(response({
@@ -797,9 +831,9 @@ describe("MiniAppShell", () => {
     expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=text]")!.disabled).toBe(true);
     fetcher.mockResolvedValueOnce(response({ error: { code: "validation_failed" } }, 422));
     root.querySelector<HTMLFormElement>("form.packet-editor")!.requestSubmit();
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
-    expect(fetcher.mock.calls[3]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
-    const saved = JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(7));
+    expect(fetcher.mock.calls[6]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
+    const saved = JSON.parse(String(fetcher.mock.calls[6]?.[1]?.body));
     expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution" });
     expect(saved.content.themes[0].questions[0].answer).toBe("Replacement answer");
     expect(saved.field_author_ids["themes.0.questions.0.author"]).toBe("ada");

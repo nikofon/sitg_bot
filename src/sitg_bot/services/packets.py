@@ -83,6 +83,93 @@ class PacketAdminService:
             raise LookupError("Published packet version not found")
         return assignment, version
 
+    async def existing_packet(
+        self, tournament_id: UUID, packet_id: UUID, actor_id: UUID,
+        *, expected_version_id: UUID | None = None,
+    ) -> dict:
+        """Preview an accessible version, or attach that exact version after confirmation."""
+        async with self.database.transaction() as session:
+            await self.tournaments._require_manager(session, tournament_id, actor_id)
+            await self.tournaments.require_modifiable(session, tournament_id)
+            await session.get(LogicalPacketRecord, packet_id, with_for_update=True)
+            sources = (await session.scalars(
+                select(TournamentPacketAssignmentRecord)
+                .join(TournamentManagerRecord, TournamentManagerRecord.tournament_id
+                      == TournamentPacketAssignmentRecord.tournament_id)
+                .where(
+                    TournamentPacketAssignmentRecord.packet_id == packet_id,
+                    TournamentPacketAssignmentRecord.status == "active",
+                    TournamentPacketAssignmentRecord.tournament_id != tournament_id,
+                    TournamentManagerRecord.player_id == actor_id,
+                    TournamentManagerRecord.revoked_at.is_(None),
+                )
+            )).all()
+            versions = []
+            for source in sources:
+                version = await session.scalar(
+                    select(PacketVersionRecord).where(
+                        PacketVersionRecord.packet_id == packet_id,
+                        PacketVersionRecord.state == "published",
+                        *([PacketVersionRecord.id == source.adopted_version_id]
+                          if source.adopted_version_id else []),
+                    ).order_by(PacketVersionRecord.version_number.desc()).limit(1)
+                )
+                if version is not None:
+                    versions.append(version)
+            if not versions:
+                raise LookupError("Packet not found in another managed tournament")
+            version = max(versions, key=lambda item: item.version_number)
+            if expected_version_id is not None and version.id != expected_version_id:
+                raise StaleWriteError("Packet changed; look it up again")
+            existing = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.tournament_id == tournament_id,
+                TournamentPacketAssignmentRecord.packet_id == packet_id,
+            ))
+            if existing is not None and existing.status == "active":
+                raise ValueError("Packet is already assigned to this tournament")
+            stored = await PostgresPacketRepository().get(session, version.id)
+            assert stored is not None
+            context = await self.tournaments.context(session, tournament_id)
+            ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
+            errors = ruleset.validate_content(stored.packet, context.settings)
+            if errors:
+                raise ValueError("; ".join(errors))
+            if expected_version_id is not None:
+                assignment = existing or TournamentPacketAssignmentRecord(
+                    tournament_id=tournament_id, packet_id=packet_id,
+                )
+                assignment.status = "active"
+                assignment.adopted_version_id = version.id
+                assignment.assigned_by_id = actor_id
+                # A retired assignment retains its explicit per-player rights.
+                if existing is None:
+                    defaults = {name: context.policies.get(name, default)
+                                for name, default in PACKET_ACCESS_DEFAULT_POLICIES.items()}
+                    assignment.discoverable_by_members = defaults["packets_discoverable_by_default"]
+                    assignment.playable_by_members = defaults["packets_playable_by_default"]
+                    assignment.content_visible_by_members = defaults["packets_readable_by_default"]
+                    assignment.library_viewing_rule = context.policies.get(
+                        "library_viewing_rule_default", "after-play"
+                    )
+                    if defaults["packets_released_by_default"]:
+                        version.library_released_at = (
+                            version.library_released_at or datetime.now(UTC)
+                        )
+                session.add(assignment)
+                await burn_author_content(
+                    session, version_id=version.id,
+                    player_ids=await tournament_manager_ids(session, [tournament_id]),
+                )
+                await self.tournaments._invalidate_assembling_lobbies(session, tournament_id)
+            return {
+                "packet_id": str(packet_id), "packet_version_id": str(version.id),
+                "name": version.name, "year": version.year,
+                "lead_author": stored.packet.lead_author,
+                "authors": self._detected_authors(stored.packet),
+                "theme_count": len(stored.packet.themes),
+                "question_count": sum(len(theme.questions) for theme in stored.packet.themes),
+            }
+
     @staticmethod
     async def _version_fields(session, version):
         themes = (

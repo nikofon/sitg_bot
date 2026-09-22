@@ -122,7 +122,9 @@ participant rows, green/red/neutral marks) with theme pagination and a back butt
 exposes theme names, question text, or answers.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
-retirement, version release, and correction/substitution editing. Published fields stay locked
+retirement, version release, and correction/substitution editing. Packet management cards expose
+packet IDs. **Add existing packet** looks up an ID from another managed tournament and shows
+metadata before confirmation or cancellation. Published fields stay locked
 until an edit classification is selected; save validates actual changes atomically.
 See [packet administration](packet-administration.md) for identity and propagation rules.
 
@@ -190,6 +192,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |
 | `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
 | `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
+| POST `/manager/tournaments/{ref}/existing-packets/{preview,add}` | Preview and confirm an existing packet assignment |
 | `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
 
 Use the route registrations in `MiniAppHttpServer.application` as the complete HTTP inventory;
