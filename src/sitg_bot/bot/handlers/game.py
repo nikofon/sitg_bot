@@ -263,24 +263,66 @@ async def request_appeal(message, backend, claim, view, localization, locale):
             target_id=targets[0]["id"],
             round_id=view["question"]["round_id"],
         )
-    lines = [localization.text("flow.appeal_pick", locale)]
+    lines = [localization.text("flow.appeal_choose", locale)]
+    buttons = []
     for index, attempt in enumerate(targets, 1):
         player = next(p for p in view["participants"] if p["id"] == attempt["player_id"])
         answer = attempt["submitted_answer"] or "—"
         preview = answer if len(answer) <= 120 else answer[:117] + "…"
         lines.append(html.escape(f"{index}) {player['name']}: {preview}"))
-    await game_reply(
-        message,
-        backend,
-        view,
-        "\n".join(lines),
-        suffix="appeal",
-        markup=ForceReply(selective=True),
+        kind = "reject_correct" if attempt["original_correct"] else "accept_incorrect"
+        buttons.append((InlineButtonModel(
+            f"{index}) " + localization.text("game.appeal_kind." + kind, locale),
+            callback_data=f"appealpick:{UUID(str(attempt['id'])).hex}",
+        ),))
+    await backend.game_delivery.send(
+        message.chat.id,
+        view["id"],
+        f"command:{message.message_id}:appeal",
+        MessageModel("\n".join(lines), InlineKeyboardModel(rows=tuple(buttons))),
         kind="appeal",
         round_id=str(view["question"]["round_id"]),
         targets=[str(a["id"]) for a in targets],
     )
     return False
+
+
+@router.callback_query(F.data.startswith("appealpick:"))
+async def handle_game_appeal_pick(
+    callback: CallbackQuery, backend, telegram_update_claim, localization, locale, navigation
+):
+    if (
+        not isinstance(callback.message, Message)
+        or navigation is None or navigation.context != "game" or navigation.active_game is None
+    ):
+        await callback.answer(localization.text("game.expired", locale), show_alert=True)
+        return
+    try:
+        target_id = UUID(callback.data.removeprefix("appealpick:"))
+    except ValueError:
+        await callback.answer(localization.text("game.expired", locale), show_alert=True)
+        return
+    view = await backend.game_view(telegram_update_claim, navigation.active_game.id)
+    entry = next((
+        entry for entry in view["messages"].values()
+        if entry.get("kind") == "appeal"
+        and callback.message.message_id in entry.get("ids", [])
+        and str(target_id) in entry.get("targets", [])
+    ), None)
+    if (
+        view.get("dismissed") or "appeal" not in view["actions"] or entry is None
+        or entry.get("round_id") != str((view.get("question") or {}).get("round_id"))
+        or not any(str(a["id"]) == str(target_id) for a in view["appeal_targets"])
+    ):
+        await callback.answer(localization.text("game.expired", locale), show_alert=True)
+        return
+    await callback.answer()
+    if await perform(
+        callback.message, backend, telegram_update_claim, view, localization, locale,
+        "appeal", target_id=str(target_id), round_id=entry["round_id"],
+    ):
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await sync_game(backend, callback.message.chat.id, view["id"])
 
 
 @router.message(StateFilter(None), F.text, ~F.text.startswith("/"), ~F.text.in_({"+", "||", "!"}))

@@ -4,14 +4,14 @@ import asyncio
 import copy
 import html
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.methods import EditMessageText, SendMessage
-from aiogram.types import ForceReply, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import ForceReply, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from sitg_bot.application.contracts import ActionCode, GameActOperation
 from sitg_bot.application.gateway import ACTION_POLICIES
@@ -19,11 +19,13 @@ from sitg_bot.application.protocol import RetryableDeliveryError
 from sitg_bot.bot.app import configure_bot_commands
 from sitg_bot.bot.game_delivery import GameDelivery
 from sitg_bot.bot.handlers.game import (
+    handle_game_appeal_pick,
     handle_game_command,
     handle_game_input,
     handle_game_keyboard,
     perform,
     report_command,
+    request_appeal,
 )
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.presenters.game import (
@@ -545,6 +547,72 @@ def handler_fixture(snapshot=None):
     )
     navigation = SimpleNamespace(context="game", active_game=SimpleNamespace(id=UUID(GAME)))
     return backend, message, navigation
+
+
+def appeal_choice_view():
+    return view(appeal_targets=[
+        {"id": str(UUID(int=10)), "player_id": str(UUID(int=2)),
+         "submitted_answer": "My wrong answer", "original_correct": False},
+        {"id": str(UUID(int=11)), "player_id": str(UUID(int=3)),
+         "submitted_answer": "Credited answer", "original_correct": True},
+    ])
+
+
+async def test_appeal_offers_explicit_choices_for_own_wrong_and_other_correct_answer():
+    snapshot = appeal_choice_view()
+    backend, message, _ = handler_fixture(snapshot)
+    assert not await request_appeal(
+        message, backend, object(), snapshot, LocalizationService(), "ru"
+    )
+    backend.game_action.assert_not_awaited()
+    call = backend.game_delivery.send.await_args
+    model = call.args[3]
+    assert "My wrong answer" in model.text and "Credited answer" in model.text
+    buttons = [row[0] for row in model.keyboard.rows]
+    assert [b.text for b in buttons] == ["1) зачесть отклонённый ответ", "2) снять зачтённый ответ"]
+    assert [b.callback_data for b in buttons] == [
+        f"appealpick:{UUID(a['id']).hex}" for a in snapshot["appeal_targets"]
+    ]
+    assert call.kwargs["round_id"] == ROUND
+
+
+@pytest.mark.parametrize("target_index", [0, 1])
+async def test_single_appeal_target_is_submitted_without_prompt(target_index):
+    snapshot = appeal_choice_view()
+    snapshot["appeal_targets"] = [snapshot["appeal_targets"][target_index]]
+    backend, message, _ = handler_fixture(snapshot)
+    assert await request_appeal(message, backend, object(), snapshot, LocalizationService(), "en")
+    backend.game_delivery.send.assert_not_awaited()
+    assert backend.game_action.await_args.kwargs["target_id"] == snapshot["appeal_targets"][0]["id"]
+
+
+@pytest.mark.parametrize("target_index,stale", [(0, False), (1, False), (1, True)])
+async def test_appeal_choice_submits_selected_target_and_rejects_old_round(target_index, stale):
+    snapshot = appeal_choice_view()
+    snapshot["messages"] = {"choice": {
+        "ids": [123], "kind": "appeal", "round_id": ROUND,
+        "targets": [a["id"] for a in snapshot["appeal_targets"]],
+    }}
+    if stale:
+        snapshot["question"]["round_id"] = str(UUID(int=99))
+    backend, _, navigation = handler_fixture(snapshot)
+    message = MagicMock(spec=Message)
+    message.message_id, message.chat = 123, SimpleNamespace(id=42)
+    message.edit_reply_markup = AsyncMock()
+    target = snapshot["appeal_targets"][target_index]
+    callback = SimpleNamespace(
+        message=message, data=f"appealpick:{UUID(target['id']).hex}", answer=AsyncMock()
+    )
+    await handle_game_appeal_pick(
+        callback, backend, object(), LocalizationService(), "en", navigation
+    )
+    if stale:
+        backend.game_action.assert_not_awaited()
+        assert callback.answer.await_args.kwargs["show_alert"]
+    else:
+        assert backend.game_action.await_args.kwargs["target_id"] == target["id"]
+        assert backend.game_action.await_args.kwargs["round_id"] == ROUND
+        message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
 
 
 async def test_reply_to_unrelated_message_is_not_an_answer():

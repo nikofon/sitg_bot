@@ -59,6 +59,7 @@
   "flow.no_game": "You are not in a game.",
   "flow.abandon_confirm": "Leave the game? Recorded scores and disclosed content stay in your history. Leaving before themes are announced cancels the game for everyone.\nUse /reconnect to return while the game is running, provided you have not entered a new game.",
   "flow.appeal_pick": "Reply to this message with the number of the answer to appeal:",
+  "flow.appeal_choose": "Choose the answer and reason for your appeal:",
   "flow.number_required": "Reply with a number from the list.",
   "flow.decision": "Use /{command} yes or /{command} no.",
   "flow.report_usage": "Use /players to find the player's number, then /report number cheating or /report number toxicity. Add optional details after the type (up to 2000 characters).",

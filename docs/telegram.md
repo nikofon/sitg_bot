@@ -105,7 +105,10 @@ Scores are displayed from highest to lowest. `/themes` lists the game's themes d
 play, only after the initial theme reveal and only for rulesets that announce themes.
 `/score`, `/players`, and `/results` provide private projections. `/answer` reopens an answer
 prompt. `/pause`, `/resume`, `/appeal`, `/escalate yes|no`, and `/commentary` supplement
-buttons. Appeal target selection uses a numbered prompt when necessary. Inline vote messages
+buttons. With multiple eligible answers, appeal selection lists each answer and offers
+buttons to credit the player's rejected answer or reject another credited answer. A single
+eligible target is submitted automatically. Choice buttons retain their original question
+and answer identities across restarts; stale choices are refused. Inline vote messages
 update totals against a fixed electorate. Manager Appeals and `/appeals` show anonymous tickets.
 
 The service rechecks membership, pinned SI capabilities, and question/appeal identity under

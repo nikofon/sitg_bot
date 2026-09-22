@@ -156,6 +156,56 @@ async def test_ladder_default_rating_settlement(database_url, rating_enabled):
         await database.close()
 
 
+@pytest.mark.parametrize("target_index", [0, 3])
+async def test_appeal_choice_after_several_wrong_answers_then_correct_answer(
+    database_url, target_index
+):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 4)
+        service = TelegramGameService(database)
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        view = await progress_until(
+            database, game_id, fixture.inputs[0], lambda v: "buzz" in v["actions"]
+        )
+        round_id = view["question"]["round_id"]
+        for index, player in enumerate(fixture.inputs):
+            await act(service, player, game_id, "buzz", round_id=round_id)
+            await act(
+                service, player, game_id, "answer", round_id=round_id,
+                text="answer 10" if index == 3 else "wrong",
+            )
+        for index, player in enumerate(fixture.inputs):
+            view = await service.view(player.telegram_user_id, game_id)
+            assert not view["paused"]
+            assert [a["player_id"] for a in view["appeal_targets"]] == [
+                str(fixture.players[i].id) for i in ([index, 3] if index < 3 else [3])
+            ]
+        view = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+        target = next(a for a in view["appeal_targets"]
+                      if a["player_id"] == str(fixture.players[target_index].id))
+        await act(
+            service, fixture.inputs[0], game_id, "appeal",
+            round_id=round_id, target_id=target["id"],
+        )
+        view = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+        assert view["appeal"]["kind"] == (
+            "accept_incorrect" if target_index == 0 else "reject_correct"
+        )
+        for player in fixture.inputs[:3]:
+            await act(
+                service, player, game_id, "vote", appeal_id=view["appeal"]["id"], approve=True
+            )
+        result = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+        scores = {p["id"]: p["score"] for p in result["participants"]}
+        assert [scores[str(p.id)] for p in fixture.players] == (
+            [10, 0, 0, 0] if target_index == 0 else [-10, -10, -10, -10]
+        )
+    finally:
+        await database.close()
+
+
 @pytest.mark.parametrize("approve_second", [True, False])
 async def test_second_wrong_answer_can_be_appealed_after_rejection_during_pause(
     database_url, approve_second
