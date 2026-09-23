@@ -271,7 +271,9 @@ def packet_draft_message(
     launch_links: str | None,
 ) -> MessageModel:
     def diagnostics(items: tuple[str, ...]) -> str:
-        displayed = [f"• {item[:180]}" for item in items[:5]]
+        # 500 characters keep similarity warnings readable, including the existing
+        # packet ID and the tournaments that already use that packet.
+        displayed = [f"• {item[:500]}" for item in items[:5]]
         if len(items) > len(displayed):
             displayed.append(
                 localization.text("packet_upload.more", locale, count=len(items) - len(displayed))

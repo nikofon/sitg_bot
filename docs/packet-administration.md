@@ -262,8 +262,12 @@ require:
 The non-blocking warnings cover a
 missing lead author, missing theme or resolved question author, theme counts outside
 the recommended 8–12 range, duplicate normalized question text, and missing question
-form or source. All author fields are optional and a draft with warnings may be
-published.
+form or source. Draft creation also compares question texts and answers — never
+metadata — against published packets: when at least 90% of a draft's distinct
+questions match one packet, a warning names that packet's name, packet ID, and the
+tournaments actively using it, and suggests rejecting the draft and assigning the
+existing packet by packet ID instead. All author fields are optional and a draft
+with warnings may be published; nothing is rejected automatically.
 
 SI values are stored on packet question placements. Import validates those values against
 the creation tournament's current SI parameters; selection and assignment validate the

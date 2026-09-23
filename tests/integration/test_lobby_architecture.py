@@ -1884,7 +1884,7 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         info = await gateway.execute(owner, request("lobbies.info.v1", lobby_id=lobby_id))
         assert info.ok, info.error
         assert info.data["tournament_name"] == "Architecture tournament"
-        assert info.data["mutable_parameters"] == ["theme_count"]
+        assert info.data["mutable_parameters"] == ["maximum_players", "theme_count"]
         assert info.data["settings"]["theme_count"] == 1
         assert info.data["setting_descriptors"]
         assert len(info.data["members"]) == 2

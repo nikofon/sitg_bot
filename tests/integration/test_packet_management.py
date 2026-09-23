@@ -1,6 +1,7 @@
 import base64
 import json
-from dataclasses import asdict
+import secrets
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import packet, tournament_fixture
 
+from sitg_bot.domain.packet import Packet, Question, Theme
 from sitg_bot.server import ConsoleApplicationServer
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
@@ -169,6 +171,83 @@ async def test_upload_creates_independent_drafts_with_shared_provenance(database
         assert ".pdf" in (await service.upload_eligibility(
             fixture.tournament_id, fixture.manager.id
         ))["accepted_extensions"]
+    finally:
+        await database.close()
+
+
+async def test_uploading_similar_packet_warns_but_does_not_reject(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        unique = secrets.token_hex(8)
+        source_packet = Packet(
+            f"Similarity source {unique}",
+            (Theme("Theme", tuple(
+                Question(
+                    text=f"Similarity question {unique} {value}",
+                    answer=f"Similarity answer {unique} {value}",
+                    commentary="Explanation",
+                    value=value,
+                    form="ANSWER",
+                    source="https://example.test",
+                )
+                for value in (10, 20, 30, 40, 50)
+            )),),
+            lead_author="Source Author",
+            language="ru",
+        )
+        source_draft = await service.create_draft(
+            source_packet,
+            source_filename="source.json",
+            uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        stored = await service.publish(source_draft, administrator_id=fixture.manager.id)
+        duplicate = replace(
+            source_packet,
+            name=f"Similarity copy {unique}",
+            year=2001,
+            lead_author="Copy Author",
+        )
+        draft_id = await service.create_draft(
+            duplicate,
+            source_filename="copy.json",
+            uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        summary = await service.draft_summary(draft_id, fixture.manager.id)
+        assert summary["status"] == "awaiting_confirmation"
+        assert summary["can_publish"] is True
+        (warning,) = [item for item in summary["warnings"] if "similar packet" in item]
+        assert str(stored.logical_id) in warning
+        assert f"Similarity source {unique}" in warning
+        assert "Architecture tournament" in warning
+        assert "rejecting this draft" in warning
+        distinct = Packet(
+            f"Distinct {unique}",
+            (Theme("Theme", tuple(
+                Question(
+                    text=f"Distinct question {unique} {value}",
+                    answer=f"Distinct answer {unique} {value}",
+                    commentary="Explanation",
+                    value=value,
+                    form="ANSWER",
+                    source="https://example.test",
+                )
+                for value in (10, 20, 30, 40, 50)
+            )),),
+            lead_author="Distinct Author",
+            language="ru",
+        )
+        distinct_id = await service.create_draft(
+            distinct,
+            source_filename="distinct.json",
+            uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        distinct_summary = await service.draft_summary(distinct_id, fixture.manager.id)
+        assert not any("similar packet" in item for item in distinct_summary["warnings"])
     finally:
         await database.close()
 

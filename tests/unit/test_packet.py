@@ -8,7 +8,14 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from pypdf import PdfWriter
 
-from sitg_bot.domain.packet import Packet, Question, Theme
+from sitg_bot.domain.packet import (
+    SIMILAR_PACKET_QUESTION_FRACTION,
+    Packet,
+    Question,
+    Theme,
+    packet_question_fingerprints,
+    similar_question_share,
+)
 from sitg_bot.packet_import import (
     packet_from_data,
     packet_from_docx,
@@ -291,3 +298,56 @@ def test_multi_packet_json_round_trip() -> None:
     assert packets_from_document_bytes(f"[{single},{single}]".encode(), "test.json") == (
         packet, packet,
     )
+
+
+def test_packet_similarity_ignores_metadata_but_not_content() -> None:
+    original = Packet(
+        "Original packet",
+        (Theme("Theme", (Question("What is the answer?", "42", "", 10, author="Alice"),)),),
+        year=2000,
+        lead_author="Lead Author",
+    )
+    renamed = Packet(
+        "Renamed packet",
+        (Theme("Renamed theme", (Question(
+            "  what   IS\tthe answer? ", " 42 ", "", 10, author="Bob",
+        ),)),),
+        year=2020,
+        lead_author="Different Author",
+        language="en",
+    )
+    different = Packet(
+        "Different packet",
+        (Theme("Theme", (Question("What is the answer?", "43", "", 10),)),),
+    )
+
+    fingerprints = packet_question_fingerprints(original)
+    assert fingerprints == packet_question_fingerprints(renamed)
+    assert similar_question_share(fingerprints, packet_question_fingerprints(renamed)) == 1.0
+    assert similar_question_share(
+        fingerprints, packet_question_fingerprints(different)
+    ) == 0.0
+    assert similar_question_share(frozenset(), fingerprints) == 0.0
+
+
+def test_similar_question_share_threshold_and_partial_overlap() -> None:
+    questions = tuple(
+        Question(f"Question {value}", f"answer {value}", "", value)
+        for value in (10, 20, 30, 40, 50)
+    )
+    fingerprints = packet_question_fingerprints(
+        Packet("Draft", (Theme("Theme", questions),))
+    )
+    existing_questions = questions[:4] + (
+        Question("Different question", "different answer", "", 50),
+    )
+    existing = packet_question_fingerprints(
+        Packet("Existing", (Theme("Theme", existing_questions),))
+    )
+
+    share = similar_question_share(fingerprints, existing)
+    assert share == 0.8
+    assert share < SIMILAR_PACKET_QUESTION_FRACTION
+    assert similar_question_share(
+        fingerprints, packet_question_fingerprints(Packet("Same", (Theme("T", questions),)))
+    ) == 1.0

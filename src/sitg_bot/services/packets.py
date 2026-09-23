@@ -11,7 +11,13 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sitg_bot.domain.packet import Packet
+from sitg_bot.domain.packet import (
+    SIMILAR_PACKET_QUESTION_FRACTION,
+    Packet,
+    packet_question_fingerprints,
+    question_content_fingerprint,
+    similar_question_share,
+)
 from sitg_bot.packet_import import packet_from_data, packets_from_document_bytes
 from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.concurrency import StaleWriteError
@@ -712,6 +718,7 @@ class PacketAdminService:
                 encoded = json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
                 errors, warnings = self.validate(packet)
                 errors.extend(ruleset.validate_content(packet, context.settings))
+                warnings.extend(await self._similar_packet_warnings(session, packet))
                 draft = PacketDraftRecord(
                     status="validation_failed" if errors else "awaiting_confirmation",
                     source_filename=source_filename,
@@ -730,6 +737,103 @@ class PacketAdminService:
                         PacketDraftTournamentRecord(draft_id=draft.id, tournament_id=intended_id)
                     )
         return tuple(draft_ids)
+
+    async def _similar_packet_warnings(
+        self, session: AsyncSession, packet: Packet
+    ) -> list[str]:
+        """Warn, without blocking, when a draft duplicates a published packet's content.
+
+        Only question text and answers are compared; packet, theme and author metadata are
+        deliberately ignored. The warning names the most similar existing packet, its packet
+        ID and the tournaments using it, and suggests assigning that packet by ID instead.
+        """
+        fingerprints = packet_question_fingerprints(packet)
+        if not fingerprints:
+            return []
+        text_forms = {
+            " ".join(question.text.lower().split())
+            for theme in packet.themes
+            for question in theme.questions
+        }
+        collapsed = func.regexp_replace(
+            func.lower(QuestionRevisionRecord.text), r"\s+", " ", "g"
+        )
+        rows = (
+            await session.execute(
+                select(
+                    PacketVersionRecord.packet_id,
+                    LogicalPacketRecord.created_at,
+                    QuestionRevisionRecord.text,
+                    QuestionRevisionRecord.answer,
+                )
+                .select_from(QuestionRevisionRecord)
+                .join(
+                    PacketQuestionRecord,
+                    PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
+                )
+                .join(
+                    PacketVersionRecord,
+                    PacketVersionRecord.id == PacketQuestionRecord.packet_version_id,
+                )
+                .join(
+                    LogicalPacketRecord,
+                    LogicalPacketRecord.id == PacketVersionRecord.packet_id,
+                )
+                .where(
+                    LogicalPacketRecord.retired_at.is_(None),
+                    PacketVersionRecord.state == "published",
+                    collapsed.in_(text_forms),
+                )
+            )
+        ).all()
+        candidates: dict[UUID, tuple[datetime, set[str]]] = {}
+        for packet_id, created_at, text, answer in rows:
+            _, found = candidates.setdefault(packet_id, (created_at, set()))
+            found.add(question_content_fingerprint(text, answer))
+        matches = [
+            (len(fingerprints & found), created_at, packet_id)
+            for packet_id, (created_at, found) in candidates.items()
+            if similar_question_share(fingerprints, found) >= SIMILAR_PACKET_QUESTION_FRACTION
+        ]
+        if not matches:
+            return []
+        # Most matching questions wins; ties resolve to the oldest logical packet.
+        matched, _, packet_id = min(matches, key=lambda item: (-item[0], item[1], item[2]))
+        packet_name = await session.scalar(
+            select(PacketVersionRecord.name)
+            .where(
+                PacketVersionRecord.packet_id == packet_id,
+                PacketVersionRecord.state == "published",
+            )
+            .order_by(PacketVersionRecord.version_number.desc())
+            .limit(1)
+        )
+        tournament_names = (
+            await session.scalars(
+                select(TournamentRecord.name)
+                .join(
+                    TournamentPacketAssignmentRecord,
+                    TournamentPacketAssignmentRecord.tournament_id == TournamentRecord.id,
+                )
+                .where(
+                    TournamentPacketAssignmentRecord.packet_id == packet_id,
+                    TournamentPacketAssignmentRecord.status == "active",
+                )
+                .order_by(TournamentRecord.name, TournamentRecord.id)
+            )
+        ).all()
+        used_by = ", ".join(tournament_name[:60] for tournament_name in tournament_names[:5])
+        if len(tournament_names) > 5:
+            used_by += f" and {len(tournament_names) - 5} more"
+        used_by = used_by or "none"
+        return [
+            "A very similar packet already exists: "
+            f"“{(packet_name or '')[:120]}” (packet ID {packet_id}); "
+            f"{matched} of {len(fingerprints)} questions match by text and answer; "
+            f"used by tournaments: {used_by}. "
+            "Consider rejecting this draft and adding the existing packet to the "
+            "tournament by its packet ID instead."
+        ]
 
     async def preview(self, draft_id: UUID) -> dict[str, object]:
         async with self.database.sessions() as session:
