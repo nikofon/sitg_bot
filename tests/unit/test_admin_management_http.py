@@ -10,6 +10,7 @@ from sitg_bot.application.contracts import (
     ActionCode,
     AdminPacketAccessOperation,
     AdminTournamentModerateOperation,
+    AdminTournamentRatingWeightOperation,
     GatewayResponse,
 )
 from sitg_bot.application.gateway import ACTION_POLICIES
@@ -61,6 +62,12 @@ async def test_management_route_resolves_requested_section(section):
             "abolish",
             {"expected_version": 2, "confirm": True},
             ActionCode.ADMIN_TOURNAMENT_MODERATE,
+        ),
+        (
+            "tournaments",
+            "rating_weight",
+            {"weight": 0.5, "expected_version": 2},
+            ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT,
         ),
         ("authors", "link", {"target": "@nickname"}, ActionCode.ADMIN_AUTHOR_LINK),
         (
@@ -137,3 +144,19 @@ def test_confirmation_is_explicit_and_caller_cannot_supply_authority(contract, v
     for extra in ({"confirm": "true"}, {"administrator_id": UUID(int=2)}, {"role": "admin"}):
         with pytest.raises(ValidationError):
             contract.model_validate({**values, **extra})
+
+
+def test_rating_weight_operation_bounds_and_caller_cannot_supply_authority():
+    values = {
+        "action": ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT,
+        "tournament_id": UUID(int=1),
+        "weight": 0.5,
+        "expected_version": 1,
+    }
+    assert AdminTournamentRatingWeightOperation.model_validate(values).weight == 0.5
+    for weight in (0.05, 1.05, 0, -1):
+        with pytest.raises(ValidationError):
+            AdminTournamentRatingWeightOperation.model_validate({**values, "weight": weight})
+    for extra in ({"administrator_id": UUID(int=2)}, {"role": "admin"}):
+        with pytest.raises(ValidationError):
+            AdminTournamentRatingWeightOperation.model_validate({**values, **extra})

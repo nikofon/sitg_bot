@@ -1307,6 +1307,48 @@ p {
   background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 12%, var(--tg-theme-section-bg-color));
 }
 
+.admin-weight {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-block-end: 1rem;
+}
+
+.admin-weight label {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.admin-weight input[type="range"] {
+  accent-color: var(--tg-theme-button-color);
+  width: 100%;
+}
+
+.admin-weight output {
+  font-weight: 600;
+  min-width: 2.5rem;
+  text-align: center;
+}
+
+.admin-card .weight-save-button {
+  min-height: 2.75rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid #18733b;
+  border-radius: 0.75rem;
+  background: #18733b;
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.admin-card .weight-save-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .tournament-profile {
   display: grid;
   gap: 1rem;

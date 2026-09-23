@@ -138,6 +138,55 @@ async def test_only_ongoing_tournaments_can_halt_and_only_admins_can_manage(data
         await database.close()
 
 
+async def test_rating_weight_change_appends_policy_version_and_guards(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = AdminManagementService(database)
+        with pytest.raises(PermissionError):
+            await service.set_tournament_rating_weight(
+                fixture.manager.id, fixture.tournament_id, weight=0.5, expected_version=1
+            )
+        await administrator(database, fixture.manager.id)
+        async with database.sessions() as session:
+            version = (await session.get(TournamentRecord, fixture.tournament_id)).settings_version
+            previous = (await session.scalars(
+                select(TournamentPolicyVersionRecord)
+                .where(TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id)
+                .order_by(TournamentPolicyVersionRecord.version.desc())
+                .limit(1)
+            )).first()
+            assert previous is not None
+            previous_policies = dict(previous.policies)
+        with pytest.raises(StaleWriteError):
+            await service.set_tournament_rating_weight(
+                fixture.manager.id, fixture.tournament_id,
+                weight=0.5, expected_version=version + 1,
+            )
+        with pytest.raises(ValueError, match="between 0.1 and 1"):
+            await service.set_tournament_rating_weight(
+                fixture.manager.id, fixture.tournament_id,
+                weight=0.05, expected_version=version,
+            )
+        await service.set_tournament_rating_weight(
+            fixture.manager.id, fixture.tournament_id, weight=0.5, expected_version=version
+        )
+        async with database.sessions() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            assert tournament.settings_version == version + 1
+            policy = (await session.scalars(
+                select(TournamentPolicyVersionRecord)
+                .where(TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id)
+                .order_by(TournamentPolicyVersionRecord.version.desc())
+                .limit(1)
+            )).first()
+            assert policy is not None
+            assert policy.version == previous.version + 1
+            assert policy.policies == {**previous_policies, "ruleset_rating_weight": 0.5}
+    finally:
+        await database.close()
+
+
 async def test_abolition_revokes_only_its_assignment_and_is_permanent(database_url):
     database = Database(database_url)
     try:

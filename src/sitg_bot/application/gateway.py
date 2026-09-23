@@ -23,6 +23,7 @@ from sitg_bot.application.contracts import (
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
+    AdminTournamentRatingWeightOperation,
     ApplicationPrincipal,
     AuthorLinkAdminDecideOperation,
     AuthorLinkAdminPendingOperation,
@@ -351,6 +352,9 @@ ACTION_POLICIES.update(
         ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
         ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
@@ -1306,6 +1310,11 @@ class ApplicationGateway:
             return await AdminManagementService(self.database).moderate_tournament(
                 player_id, operation.tournament_id, command=operation.command,
                 expected_version=operation.expected_version, confirm=operation.confirm,
+            )
+        if isinstance(operation, AdminTournamentRatingWeightOperation):
+            return await AdminManagementService(self.database).set_tournament_rating_weight(
+                player_id, operation.tournament_id,
+                weight=operation.weight, expected_version=operation.expected_version,
             )
         if isinstance(operation, AdminAuthorLinkOperation):
             return await AdminManagementService(self.database).link_author(

@@ -25,6 +25,10 @@ class MiniAppAuthenticationError(PermissionError):
     """Raised when Telegram initData or an application session is not trustworthy."""
 
 
+class MiniAppOriginError(MiniAppAuthenticationError):
+    """Raised when the browser origin is missing, invalid, or not configured."""
+
+
 class MiniAppCsrfError(PermissionError):
     """Raised when a browser mutation does not satisfy CSRF protections."""
 
@@ -89,7 +93,7 @@ class MiniAppSecurityPolicy:
     def response_headers(self, origin: str) -> dict[str, str]:
         normalized = MiniAppAuthService.normalize_origin(origin)
         if normalized not in self.allowed_origins:
-            raise MiniAppAuthenticationError("Origin is not allowed")
+            raise MiniAppOriginError("Origin is not allowed")
         return {
             "Access-Control-Allow-Origin": normalized,
             "Access-Control-Allow-Credentials": "true",
@@ -159,7 +163,7 @@ class MiniAppAuthService:
         current_time = now or datetime.now(UTC)
         normalized_origin = self.normalize_origin(origin)
         if normalized_origin not in self.security_policy.allowed_origins:
-            raise MiniAppAuthenticationError("Origin is not allowed")
+            raise MiniAppOriginError("Origin is not allowed")
         values = self.verify_init_data(init_data, now=current_time)
         user = self._telegram_user(values)
         telegram_user_id = self._positive_int(user.get("id"), label="Telegram user ID")
@@ -184,7 +188,7 @@ class MiniAppAuthService:
         current_time = now or datetime.now(UTC)
         normalized_origin = self.normalize_origin(origin)
         if normalized_origin not in self.security_policy.allowed_origins:
-            raise MiniAppAuthenticationError("Origin is not allowed")
+            raise MiniAppOriginError("Origin is not allowed")
         self.verify_website_login(values, now=current_time)
         draft = await self.player_accounts.create_or_resume_registration(
             int(values["id"]), telegram_username=values.get("username")
@@ -300,7 +304,7 @@ class MiniAppAuthService:
         current_time = now or datetime.now(UTC)
         normalized_origin = self.normalize_origin(origin)
         if normalized_origin not in self.security_policy.allowed_origins:
-            raise MiniAppAuthenticationError("Origin is not allowed")
+            raise MiniAppOriginError("Origin is not allowed")
         token_digest = self._secret_digest("session", session_token)
         async with self.database.transaction() as session:
             record = await session.scalar(
@@ -403,7 +407,7 @@ class MiniAppAuthService:
         current_time = now or datetime.now(UTC)
         normalized_origin = self.normalize_origin(origin)
         if normalized_origin not in self.security_policy.allowed_origins:
-            raise MiniAppAuthenticationError("Origin is not allowed")
+            raise MiniAppOriginError("Origin is not allowed")
         token_digest = self._secret_digest("session", session_token)
         async with self.database.transaction() as session:
             record = await session.scalar(
@@ -542,7 +546,7 @@ class MiniAppAuthService:
             parsed = urlsplit(origin)
             port = parsed.port
         except (TypeError, ValueError) as error:
-            raise MiniAppAuthenticationError("Origin is invalid") from error
+            raise MiniAppOriginError("Origin is invalid") from error
         if (
             parsed.scheme not in {"https", "http"}
             or not parsed.hostname
@@ -552,9 +556,9 @@ class MiniAppAuthService:
             or parsed.query
             or parsed.fragment
         ):
-            raise MiniAppAuthenticationError("Origin is invalid")
+            raise MiniAppOriginError("Origin is invalid")
         if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"}:
-            raise MiniAppAuthenticationError("Non-local Mini App origins require HTTPS")
+            raise MiniAppOriginError("Non-local Mini App origins require HTTPS")
         hostname = parsed.hostname.encode("idna").decode().lower()
         if ":" in hostname:
             hostname = f"[{hostname}]"

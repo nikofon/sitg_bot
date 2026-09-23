@@ -18,12 +18,37 @@ describe("admin management", () => {
     ] };
     const view = renderAdminManagement(resource, new I18n("en"), {}, vi.fn(), vi.fn(), action);
     const buttons = (id: string) => [...view.querySelectorAll(`[data-resource-id="${id}"] button`)].map(b => b.textContent);
-    expect(buttons("t1")).toEqual(["Halt", "Abolish"]);
+    expect(buttons("t1")).toEqual(["V", "Halt", "Abolish"]);
     expect(buttons("t2")).toEqual(["Resume", "Abolish"]);
     expect(buttons("t3")).toEqual([]);
-    expect(buttons("t4")).toEqual(["Abolish"]);
+    expect(buttons("t4")).toEqual(["V", "Abolish"]);
     expect(view.querySelectorAll("details[open]")).toHaveLength(0);
     expect(view.querySelector("a")?.getAttribute("href")).toContain("role=admin");
+  });
+
+  it("offers a bounded rating weight slider with an explicit save on tournament cards", () => {
+    const saveWeight = vi.fn();
+    const resource: AdminManagementResource = { kind: "admin_management", state: "ready", section: "tournaments", items: [
+      { ...tournament, settings: { policies: { ruleset_rating_weight: 0.5 } }, settings_version: 3 },
+      { ...tournament, id: "t3", moderation_status: "abolished" },
+    ] };
+    const view = renderAdminManagement(resource, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn(), saveWeight);
+    const cards = [...view.querySelectorAll("article")];
+    const slider = cards[0]!.querySelector<HTMLInputElement>("input[type=range]")!;
+    expect(cards[1]!.querySelector("input[type=range]")).toBeNull();
+    expect(Number(slider.min)).toBe(0.1);
+    expect(Number(slider.max)).toBe(1);
+    expect(Number(slider.step)).toBe(0.05);
+    expect(Number(slider.value)).toBe(0.5);
+    const save = [...cards[0]!.querySelectorAll("button")].find(b => b.textContent === "V")!;
+    expect(save.className).toContain("weight-save-button");
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    slider.value = "0.75";
+    slider.dispatchEvent(new Event("input"));
+    expect(save.textContent).toBe("V");
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    (save as HTMLButtonElement).click();
+    expect(saveWeight).toHaveBeenCalledWith(resource.items[0], 0.75, save);
   });
 
   it("searches nested metadata, sorts numeric counts, and retains filters", () => {

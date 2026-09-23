@@ -49,6 +49,79 @@ async def test_directory_forwards_ruleset_selection() -> None:
     assert operation.offset == 20
 
 
+@pytest.mark.parametrize("path,action", [
+    ("%2Fplayers", ActionCode.PLAYER_LIST),
+    ("%2Ftournaments%3Finclude_managed_public%3Dtrue", ActionCode.TOURNAMENT_LIST),
+])
+@pytest.mark.parametrize("headers", [
+    {"Origin": "http://127.0.0.1:5174", "Host": "127.0.0.1:8080"},
+    {"Referer": "http://127.0.0.1:5174/players", "Host": "127.0.0.1:8080"},
+    {"Host": "127.0.0.1:5174"},
+])
+async def test_guest_route_resolution_from_separate_website(path, action, headers) -> None:
+    auth = FakeAuth()
+    origin = "http://127.0.0.1:5174"
+    auth.security_policy = MiniAppSecurityPolicy(frozenset({"https://mini.example.test", origin}))
+    gateway = FakeGateway()
+    gateway.execute = AsyncMock(wraps=gateway.execute)
+    http = MiniAppHttpServer(auth, gateway, website_origins={origin})
+    response = await http._headers(
+        make_mocked_request("GET", f"/api/miniapp/routes/resolve?path={path}", headers=headers),
+        http._resolve_route,
+    )
+    assert response.status == 200
+    assert json.loads(response.text)["authorization"] == {"allowed": True}
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Cache-Control"] == "no-store"
+    assert gateway.execute.call_args.args[0] == ApplicationPrincipal()
+    assert gateway.requests[0].operation.action == action
+
+
+@pytest.mark.parametrize("headers", [
+    {"Host": "127.0.0.1:8080"},
+    {"Host": "mini.example.test", "Origin": "https://attacker.example"},
+    {"Host": "mini.example.test", "Origin": "null"},
+    {"Host": "mini.example.test", "Referer": "https://attacker.example/players"},
+    {"Host": "127.0.0.1:8080", "X-Forwarded-Host": "mini.example.test"},
+])
+@pytest.mark.parametrize("path", ["/players", "/tournaments", "/library"])
+async def test_origin_rejection_is_not_a_login_error(headers, path) -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    handler = AsyncMock(wraps=http._resolve_route)
+    response = await http._headers(
+        make_mocked_request("GET", f"/api/miniapp/routes/resolve?path={path}", headers=headers),
+        handler,
+    )
+    assert response.status == 403
+    assert json.loads(response.text)["error"]["code"] == "origin_not_allowed"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "Access-Control-Allow-Origin" not in response.headers
+    handler.assert_not_awaited()
+    assert gateway.requests == []
+
+
+async def test_guest_session_bootstrap_and_mutation_still_require_login() -> None:
+    auth = FakeAuth()
+    auth.logout_website_session = AsyncMock()
+    http = MiniAppHttpServer(
+        auth, FakeGateway(), website_origins={"https://mini.example.test"}
+    )
+    bootstrap = make_mocked_request("POST", "/api/website/session", headers={
+        "Origin": "https://mini.example.test", "Content-Type": "application/json",
+    })
+    http._json_body = AsyncMock(return_value={})
+    response = await http._headers(bootstrap, http._resume_website_session)
+    assert response.status == 401
+    assert json.loads(response.text)["error"]["code"] == "authentication_required"
+    response = await http._headers(
+        request("/api/website/logout", method="POST"), http._website_logout
+    )
+    assert response.status == 401
+    assert json.loads(response.text)["error"]["code"] == "authentication_required"
+    auth.logout_website_session.assert_not_awaited()
+
+
 @pytest.mark.parametrize("path", ["/library", "/ongoing", "/admin/management"])
 async def test_private_routes_require_login(path: str) -> None:
     gateway = FakeGateway()
@@ -131,7 +204,9 @@ async def test_domains_cannot_use_each_others_login_endpoints() -> None:
         req = make_mocked_request(method, path, headers={
             "Origin": origin, "Host": origin.removeprefix("https://"),
         })
-        assert (await http._headers(req, handler)).status == 401
+        response = await http._headers(req, handler)
+        assert response.status == 403
+        assert json.loads(response.text)["error"]["code"] == "origin_not_allowed"
 
 
 async def test_website_host_never_serves_miniapp_assets(tmp_path) -> None:

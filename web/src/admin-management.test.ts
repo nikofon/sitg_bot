@@ -45,6 +45,23 @@ describe("management shell", () => {
     expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({ confirm: true, expected_version: 7 });
   });
 
+  it("saves the tournament rating weight through the explicit slider save button", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({}));
+    const root = start("tournaments", [{ id: "t1", name: "Cup", status: "active",
+      moderation_status: "normal", actual_starts_at: "2026-01-01", settings_version: 7,
+      settings: { policies: { ruleset_rating_weight: 1 } } }], fetcher);
+    await vi.waitFor(() => expect(root.querySelector("input[type=range]")).toBeTruthy());
+    const slider = root.querySelector<HTMLInputElement>("input[type=range]")!;
+    const save = [...root.querySelectorAll("button")].find(b => b.textContent === "V")!;
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    slider.value = "0.5";
+    slider.dispatchEvent(new Event("input"));
+    (save as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(String(fetcher.mock.calls[0]![0])).toContain("/admin/management/tournaments/t1/rating_weight");
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({ weight: 0.5, expected_version: 7 });
+  });
+
   it("uses administrative packet access with confirmation and the existing reader", async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(response({ confirmation_required: true, fresh_unit_count: 1 }))

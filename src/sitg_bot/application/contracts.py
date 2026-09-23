@@ -124,6 +124,7 @@ class ActionCode(StrEnum):
     ADMIN_SUSPICION_CLEAR = "platform.admin.suspicion.clear.v1"
     ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
     ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
+    ADMIN_TOURNAMENT_RATING_WEIGHT = "platform.admin.tournaments.rating_weight.v1"
     ADMIN_AUTHOR_LINK = "platform.admin.authors.link.v1"
     ADMIN_AUTHOR_MERGE = "platform.admin.authors.merge.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
@@ -881,6 +882,13 @@ class AdminTournamentModerateOperation(ContractModel):
     confirm: bool = Field(default=False, strict=True)
 
 
+class AdminTournamentRatingWeightOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT]
+    tournament_id: UUID
+    weight: float = Field(ge=0.1, le=1)
+    expected_version: int = Field(ge=1)
+
+
 class AdminAuthorLinkOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_AUTHOR_LINK]
     author_id: UUID
@@ -1020,6 +1028,7 @@ GatewayOperation = Annotated[
     | AdminSuspicionClearOperation
     | AdminManagementListOperation
     | AdminTournamentModerateOperation
+    | AdminTournamentRatingWeightOperation
     | AdminAuthorLinkOperation
     | AdminAuthorMergeOperation
     | AdminPacketAccessOperation,

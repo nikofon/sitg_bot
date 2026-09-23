@@ -1,8 +1,10 @@
 import hashlib
 import hmac
+import json
 import secrets
 from datetime import UTC, datetime
 from decimal import Decimal
+from urllib.parse import quote
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
@@ -205,5 +207,57 @@ async def test_website_public_tournaments_and_manager_authorization(database_url
             )
             response = await http._headers(request, http._resolve_route)
             assert response.status == expected_status
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("with_origin", [True, False])
+async def test_guest_routes_use_public_projections(database_url: str, with_origin: bool) -> None:
+    database = Database(database_url)
+    try:
+        fixture = await build_fixture(database)
+        origin = "http://127.0.0.1:5174"
+        auth = MiniAppAuthService(
+            database, bot_token=BOT_TOKEN, session_signing_key="w" * 32,
+            allowed_origins={origin, "https://mini.example.test"},
+        )
+        http = MiniAppHttpServer(auth, ApplicationGateway(database), website_origins={origin})
+        headers = {"Host": "127.0.0.1:5174"}
+        if with_origin:
+            headers["Origin"] = origin
+
+        async def resolve(path: str):
+            request = make_mocked_request(
+                "GET", f"/api/miniapp/routes/resolve?path={quote(path, safe='')}", headers=headers
+            )
+            return await http._headers(request, http._resolve_route)
+
+        players = await resolve("/players")
+        assert players.status == 200
+        assert json.loads(players.text)["resource"]["kind"] == "players"
+        for item in json.loads(players.text)["resource"]["items"]:
+            assert set(item) == {"id", "label", "rating", "games"}
+        path = f"/tournaments?include_managed_public=true&search={fixture.tournament.slug}"
+        private_list = await resolve(path)
+        assert private_list.status == 200
+        assert json.loads(private_list.text)["resource"]["items"] == []
+        assert (await resolve(f"/tournaments/{fixture.tournament.id}")).status == 404
+
+        async with database.transaction() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament.id)
+            tournament.visibility = "public"
+            tournament.status = "active"
+        public = await resolve(path)
+        assert public.status == 200
+        resource = json.loads(public.text)["resource"]
+        assert resource["kind"] == "tournaments"
+        assert resource["total"] == 1
+        assert resource["items"][0]["id"] == str(fixture.tournament.id)
+        assert resource["items"][0]["available_actions"] == ["info"]
+        assert (await resolve(f"/tournaments/{fixture.tournament.id}")).status == 200
+        for path in ("/library", f"/manager/tournaments/{fixture.tournament.id}/management"):
+            response = await resolve(path)
+            assert response.status == 401
+            assert json.loads(response.text)["error"]["code"] == "authentication_required"
     finally:
         await database.close()

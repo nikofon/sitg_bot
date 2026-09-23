@@ -8,6 +8,7 @@ export function renderAdminManagement(
   save: (filters: Record<string, string>) => void,
   navigate: (path: string) => void,
   action: (card: AdminCard, command: string, button: HTMLButtonElement) => void,
+  saveWeight: (card: AdminCard, weight: number, button: HTMLButtonElement) => void = () => undefined,
 ): HTMLElement {
   const label = (key: string): string => {
     const translated = `admin_management.${key}` as MessageKey;
@@ -76,6 +77,28 @@ export function renderAdminManagement(
       if (!item.administrator) add(item.ban ? "unban" : "ban");
       add("clear_suspicion"); add("review_suspicion");
     } else { add("view"); add("download"); }
+    let weightControl: HTMLElement | null = null;
+    if (resource.section === "tournaments" && item.moderation_status === "normal") {
+      const settings = typeof item.settings === "object" && item.settings !== null
+        && !Array.isArray(item.settings)
+        ? item.settings as { policies?: Record<string, AdminValue> } : null;
+      const current = Number(settings?.policies?.ruleset_rating_weight ?? 1);
+      const initial = Math.min(Math.max(Number.isFinite(current) ? current : 1, 0.1), 1);
+      const slider = element("input", {
+        type: "range", min: "0.1", max: "1", step: "0.05", value: String(initial),
+        "aria-label": label("rating_weight"),
+      });
+      const readout = element("output", {}, String(initial));
+      const confirm = element("button", { type: "button", className: "weight-save-button" }, "V");
+      confirm.disabled = Number(slider.value) === current;
+      slider.addEventListener("input", () => {
+        readout.textContent = slider.value;
+        confirm.disabled = Number(slider.value) === current;
+      });
+      confirm.addEventListener("click", () => saveWeight(item, Number(slider.value), confirm));
+      weightControl = element("div", { className: "admin-weight" },
+        element("label", {}, label("rating_weight"), slider), readout, confirm);
+    }
     const essentialKeys = {
       tournaments: ["id", "status", "moderation_status", "type", "ruleset", "language", "starts_at", "actual_starts_at", "actual_ends_at", "participants", "managers", "packets"],
       authors: ["id", "questions", "themes", "packet_count", "players", "tournaments", "packets"],
@@ -86,7 +109,7 @@ export function renderAdminManagement(
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)));
     return element("article", { className: "resource-card admin-card", "data-resource-id": item.id },
-      element("h2", {}, name(item)), profile, metadata(essential),
+      element("h2", {}, name(item)), profile, metadata(essential), weightControl,
       element("details", {}, element("summary", {}, label("details")), metadata(remaining)), buttons);
   };
   const render = (): void => {

@@ -2665,7 +2665,24 @@ export class MiniAppShell {
     this.renderFrame(route, renderAdminManagement(resource, this.i18n, this.filters.read(filterKey),
       (filters) => this.filters.write(filterKey, filters),
       (path) => this.router.navigate(path),
-      (card, command, button) => void this.adminManagementAction(route, resource, card, command, button)));
+      (card, command, button) => void this.adminManagementAction(route, resource, card, command, button),
+      (card, weight, button) => void this.adminTournamentWeight(route, card, weight, button)));
+  }
+
+  private async adminTournamentWeight(route: RouteMatch, card: AdminCard,
+    weight: number, button: HTMLButtonElement): Promise<void> {
+    button.disabled = true;
+    try {
+      await this.api.request(
+        `/api/miniapp/admin/management/tournaments/${encodeURIComponent(card.id)}/rating_weight`,
+        { method: "POST", body: { weight, expected_version: card.settings_version }, signal: this.request?.signal },
+      );
+      await this.load(route);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
+      if (code === "stale_write") await this.load(route);
+    } finally { button.disabled = false; }
   }
 
   private async adminManagementAction(route: RouteMatch, resource: AdminManagementResource,

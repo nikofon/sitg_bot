@@ -26,6 +26,7 @@ from sitg_bot.application.contracts import (
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
+    AdminTournamentRatingWeightOperation,
     AuthorLinkAdminDecideOperation,
     AuthorLinkCreateOperation,
     AuthorLinkMineOperation,
@@ -83,6 +84,7 @@ from sitg_bot.services.miniapp_auth import (
     MiniAppAuthenticationError,
     MiniAppAuthService,
     MiniAppCsrfError,
+    MiniAppOriginError,
     MiniAppSessionContext,
     MiniAppSessionCredentials,
     PublicBrowserContext,
@@ -289,14 +291,19 @@ class MiniAppHttpServer:
     async def _headers(
         self, request: web.Request, handler: web.RequestHandler
     ) -> web.StreamResponse:
+        security_headers: dict[str, str] = {}
         try:
+            if request.path.startswith("/api/"):
+                security_headers = self.auth.security_policy.response_headers(self._origin(request))
             if request.path.startswith("/auth/"):
                 self._website_origin(request)
             if request.path.startswith("/api/website/"):
                 origin = MiniAppAuthService.normalize_origin(self._origin(request))
                 if origin not in self.website_origins:
-                    raise MiniAppAuthenticationError("Website origin is not allowed")
+                    raise MiniAppOriginError("Website origin is not allowed")
             response = await handler(request)
+        except MiniAppOriginError:
+            response = self._error_response("origin_not_allowed", 403)
         except (MiniAppAuthenticationError, MiniAppCsrfError) as error:
             response = self._error_response(
                 "authentication_required"
@@ -317,13 +324,7 @@ class MiniAppHttpServer:
             response = self._error_response("internal_error", 500)
         if request.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
-            try:
-                response.headers.update(
-                    self.auth.security_policy.response_headers(self._origin(request))
-                )
-            except MiniAppAuthenticationError:
-                if response.status < 400:
-                    return self._error_response("authentication_required", 401)
+            response.headers.update(security_headers)
         else:
             response.headers["Content-Security-Policy"] = (
                 self.auth.security_policy.content_security_policy
@@ -370,7 +371,7 @@ class MiniAppHttpServer:
         for allowed in self.website_origins:
             if urlsplit(allowed).netloc.casefold() == request.host.casefold():
                 return allowed
-        raise MiniAppAuthenticationError("Unknown website host")
+        raise MiniAppOriginError("Unknown website host")
 
     async def _website_bot(self, request: web.Request) -> web.Response:
         if self.selection_notifier is None:
@@ -430,7 +431,7 @@ class MiniAppHttpServer:
 
     async def _create_session(self, request: web.Request) -> web.Response:
         if MiniAppAuthService.normalize_origin(self._origin(request)) in self.website_origins:
-            raise MiniAppAuthenticationError("Mini App authentication requires a Mini App origin")
+            raise MiniAppOriginError("Mini App authentication requires a Mini App origin")
         body = await self._json_body(request)
         init_data = body.get("init_data")
         if not isinstance(init_data, str):
@@ -1499,7 +1500,12 @@ class MiniAppHttpServer:
         section = request.match_info["section"]
         command = request.match_info["command"]
         resource_id = request.match_info["resource_id"]
-        if section == "tournaments":
+        if section == "tournaments" and command == "rating_weight":
+            operation = AdminTournamentRatingWeightOperation.model_validate({
+                **body, "action": ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT,
+                "tournament_id": resource_id,
+            })
+        elif section == "tournaments":
             operation = AdminTournamentModerateOperation.model_validate({
                 **body, "action": ActionCode.ADMIN_TOURNAMENT_MODERATE,
                 "tournament_id": resource_id, "command": command,
@@ -1653,7 +1659,7 @@ class MiniAppHttpServer:
         for allowed in self.auth.security_policy.allowed_origins:
             if urlsplit(allowed).netloc.casefold() == request.host.casefold():
                 return allowed
-        raise MiniAppAuthenticationError("Request origin is missing")
+        raise MiniAppOriginError("Request origin is missing")
 
     @staticmethod
     def _session_token(request: web.Request) -> str:

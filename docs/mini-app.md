@@ -59,6 +59,12 @@ Website login endpoints are disabled unless website origins are explicitly confi
 The Mini App session endpoint rejects website origins, and the listener will not serve
 Mini App assets for a website Host. See [deployment configuration](database-operations.md).
 
+Proxies must preserve the website Host (including its port): same-origin GET requests may
+omit both Origin and Referer. In Vite, use `{ target, changeOrigin: false }` for `/api` and
+`/auth`; the string target shorthand rewrites Host. API origin checks run before handlers;
+missing, invalid, or unlisted origins return `403 origin_not_allowed`. Missing or expired
+sessions still return `401 authentication_required`. Signing in cannot fix an origin rejection.
+
 ## Asset delivery
 
 HTML and unversioned static files use `Cache-Control: no-cache`: browsers may store them
@@ -178,8 +184,10 @@ with fresh-content exposure claims still applying.
 **Admin management:** `/admin/management`, opened by **Management** in the admin keyboard.
 Every query and action requires an active platform administrator. Tournaments, Authors,
 Players, and Packets have searchable, sortable cards; filters persist per section. Detailed
-metadata, settings, and related records are collapsed initially. Tournament cards link profiles
-and offer confirmed Halt, Resume, and permanent Abolish actions (see [tournaments](tournaments.md)).
+metadata, settings, and related records are collapsed initially. Tournament cards link profiles,
+offer confirmed Halt, Resume, and permanent Abolish actions (see [tournaments](tournaments.md)),
+and carry a global rating weight slider (0.1–1 in 0.05 steps) whose green **V** button must be
+pressed to save the `ruleset_rating_weight` policy.
 Authors show contributions and linked player data; Link accepts a player UUID or `@username`
 and records an approved author link with permanent authorship exposure.
 
@@ -210,7 +218,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
-| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
+| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |

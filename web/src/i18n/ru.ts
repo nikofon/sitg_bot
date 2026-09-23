@@ -41,6 +41,7 @@ export const ru: Record<MessageKey, string> = {
   "admin_management.published_at": "Опубликовано",
   "admin_management.profile": "Открыть профиль",
   "admin_management.details": "Подробности и настройки",
+  "admin_management.rating_weight": "Вес в глобальном рейтинге",
   "admin_management.settings": "Настройки",
   "admin_management.halt": "Приостановить",
   "admin_management.resume": "Возобновить",

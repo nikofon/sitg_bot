@@ -32,6 +32,7 @@ export const en = {
   "admin_management.published_at": "Published",
   "admin_management.profile": "Open profile",
   "admin_management.details": "Details and settings",
+  "admin_management.rating_weight": "Global rating weight",
   "admin_management.settings": "Settings",
   "admin_management.halt": "Halt",
   "admin_management.resume": "Resume",

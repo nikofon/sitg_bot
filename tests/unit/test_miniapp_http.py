@@ -709,7 +709,8 @@ async def test_mini_app_http_rejects_missing_origin_before_exposing_data() -> No
     )
     response = await http._headers(request, http._resolve_route)
 
-    assert response.status == 401
+    assert response.status == 403
+    assert json.loads(response.text)["error"]["code"] == "origin_not_allowed"
     assert gateway.requests == []
 
 

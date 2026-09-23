@@ -452,6 +452,51 @@ class AdminManagementService:
                     )
             return fields(tournament)
 
+    async def set_tournament_rating_weight(
+        self,
+        administrator_id: UUID,
+        tournament_id: UUID,
+        *,
+        weight: float,
+        expected_version: int,
+    ) -> dict:
+        decimal_weight = Decimal(str(weight))
+        if not 0.1 <= decimal_weight <= 1:
+            raise ValueError("Rating weight must be between 0.1 and 1")
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            tournament = await session.get(TournamentRecord, tournament_id, with_for_update=True)
+            if tournament is None:
+                raise LookupError("Tournament not found")
+            if tournament.settings_version != expected_version:
+                raise StaleWriteError("Tournament changed")
+            if tournament.moderation_status != "normal":
+                raise PermissionError("Tournament is halted or abolished")
+            policy = await session.scalar(
+                select(TournamentPolicyVersionRecord)
+                .where(TournamentPolicyVersionRecord.tournament_id == tournament_id)
+                .order_by(TournamentPolicyVersionRecord.version.desc())
+                .limit(1)
+            )
+            if policy is None:
+                raise LookupError("Tournament settings not found")
+            session.add(
+                TournamentPolicyVersionRecord(
+                    tournament_id=tournament_id,
+                    version=policy.version + 1,
+                    default_parameters=policy.default_parameters,
+                    player_mutable_parameters=policy.player_mutable_parameters,
+                    policies={
+                        **policy.policies,
+                        "ruleset_rating_weight": weight,
+                    },
+                    created_by_id=administrator_id,
+                )
+            )
+            tournament.settings_version += 1
+            await session.flush()
+            return fields(tournament)
+
     async def link_author(self, administrator_id: UUID, author_id: UUID, target: str) -> dict:
         # Use the same pair lock and approval records as player-requested links.
         async with self.database.transaction() as session:
