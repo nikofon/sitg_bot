@@ -1,6 +1,6 @@
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -22,8 +22,11 @@ from sitg_bot.storage.models import (
     GameRulesetVersionRecord,
     GameThemeRecord,
     PacketQuestionRecord,
+    PacketVersionRecord,
+    PlayerQuestionStateRecord,
     PlayerRecord,
     QuestionRoundRecord,
+    RatingLedgerRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
     TournamentManagerRecord,
@@ -464,6 +467,162 @@ async def test_game_results_hide_private_content_and_tournament_name(database_ur
         await service.game_results(
             fixture.outsider.id, fixture.outsider.id, game_id
         )
+
+    await database.close()
+
+
+async def test_profile_si_statistics_normalize_scores_and_buzz_times(
+    database_url: str,
+) -> None:
+    database = Database(database_url)
+    fixture = await build_fixture(database)
+    first, second = fixture.members
+    game_id = await record_game(
+        database,
+        fixture,
+        results=[(first, Decimal(1), Decimal(20)), (second, Decimal(2), Decimal(0))],
+        attempts={first.id: {10: True, 20: False}},
+    )
+    async with database.transaction() as session:
+        rounds = list(
+            await session.scalars(
+                select(QuestionRoundRecord)
+                .where(QuestionRoundRecord.game_id == game_id)
+                .order_by(QuestionRoundRecord.sequence)
+            )
+        )
+        participants = {
+            participant.player_id: participant
+            for participant in (await session.scalars(
+                select(GameParticipantRecord).where(
+                    GameParticipantRecord.game_id == game_id
+                )
+            ))
+        }
+        base = rounds[0].started_at
+        assert base is not None
+        session.add_all(
+            [
+                PlayerQuestionStateRecord(
+                    round_id=rounds[0].id,
+                    participant_id=participants[first.id].id,
+                    eligible=True,
+                    attempted=True,
+                    buzzed_at=base + timedelta(seconds=3),
+                    accepted_buzz_order=1,
+                ),
+                PlayerQuestionStateRecord(
+                    round_id=rounds[1].id,
+                    participant_id=participants[first.id].id,
+                    eligible=True,
+                    attempted=True,
+                    buzzed_at=base + timedelta(seconds=7, milliseconds=500),
+                    accepted_buzz_order=1,
+                ),
+                # An accepted buzz without a recorded timestamp must not
+                # contribute a sample but keeps its value bucket.
+                PlayerQuestionStateRecord(
+                    round_id=rounds[2].id,
+                    participant_id=participants[first.id].id,
+                    eligible=True,
+                    attempted=True,
+                    accepted_buzz_order=1,
+                ),
+            ]
+        )
+    service = PlayerProfileService(database)
+
+    profile = await service.profile(fixture.outsider.id, first.id, ruleset_key="si")
+    assert profile["si_statistics"] == {
+        "average_normalized_score": -10.0,
+        "buzz_times": [
+            {"value": 10, "average_seconds": 3.0, "samples": 1},
+            {"value": 20, "average_seconds": 7.5, "samples": 1},
+            {"value": 30, "average_seconds": None, "samples": 0},
+        ],
+    }
+
+    await database.close()
+
+
+async def test_profile_game_cards_show_packets_and_rating_snapshots(
+    database_url: str,
+) -> None:
+    database = Database(database_url)
+    fixture = await build_fixture(database)
+    first, second = fixture.members
+    game_id = await record_game(
+        database,
+        fixture,
+        results=[(first, Decimal(1), Decimal(60)), (second, Decimal(2), Decimal(10))],
+        attempts={first.id: {10: True}},
+    )
+    played_at = datetime.now(UTC)
+
+    def tournament_ledger(player_id: UUID, rating_after: Decimal) -> RatingLedgerRecord:
+        return RatingLedgerRecord(
+            tournament_id=fixture.tournament.id,
+            game_id=game_id,
+            player_id=player_id,
+            rating_before=Decimal(1000),
+            delta=rating_after - Decimal(1000),
+            rating_after=rating_after,
+            confidence_before=Decimal("0.5"),
+            confidence_after=Decimal("0.55"),
+            k_factor=Decimal(25),
+            rating_model="time_weighted",
+            reason="pairwise_elo",
+            played_at=played_at,
+        )
+
+    async with database.transaction() as session:
+        session.add_all(
+            [
+                tournament_ledger(first.id, Decimal(1025)),
+                tournament_ledger(second.id, Decimal(975)),
+            ]
+        )
+        packet_name = await session.scalar(
+            select(PacketVersionRecord.name).where(
+                PacketVersionRecord.id == fixture.packet_version_id
+            )
+        )
+        assert packet_name is not None
+    service = PlayerProfileService(database)
+
+    own = await service.profile(first.id, first.id, ruleset_key="si")
+    card = own["games"][0]
+    assert card["packets"] == [{"name": packet_name}]
+    own_participants = {item["player_id"]: item for item in card["participants"]}
+    assert own_participants[first.id]["global_rating_after"] == 1050.0
+    assert own_participants[second.id]["global_rating_after"] is None
+    assert own_participants[first.id]["tournament_rating_after"] == 1025.0
+    assert own_participants[second.id]["tournament_rating_after"] == 975.0
+
+    # A manager of the game's tournament may see packet names without playing.
+    manager_view = await service.profile(fixture.manager.id, first.id, ruleset_key="si")
+    assert manager_view["games"][0]["packets"] == [{"name": packet_name}]
+
+    outsider = await service.profile(fixture.outsider.id, first.id, ruleset_key="si")
+    outsider_card = outsider["games"][0]
+    assert outsider_card["packets"] == [{"name": None}]
+    outsider_participants = {
+        item["player_id"]: item for item in outsider_card["participants"]
+    }
+    assert outsider_participants[first.id]["global_rating_after"] == 1050.0
+    assert "tournament_rating_after" not in outsider_participants[first.id]
+
+    member_direct = await service.game_results(second.id, first.id, game_id)
+    assert member_direct["packets"] == [{"name": packet_name}]
+    direct_participants = {
+        item["player_id"]: item for item in member_direct["participants"]
+    }
+    assert direct_participants[first.id]["tournament_rating_after"] == 1025.0
+    outsider_direct = await service.game_results(fixture.outsider.id, first.id, game_id)
+    assert outsider_direct["packets"] == [{"name": None}]
+    assert "tournament_rating_after" not in {
+        item["player_id"]: item for item in outsider_direct["participants"]
+    }[first.id]
 
     await database.close()
 

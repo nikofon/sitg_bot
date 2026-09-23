@@ -526,7 +526,9 @@ class PlayerListOperation(ContractModel):
     action: Literal[ActionCode.PLAYER_LIST]
     ruleset_key: str | None = Field(default=None, min_length=1, max_length=64)
     search: str = Field(default="", max_length=200)
-    order: Literal["name_asc", "name_desc"] = "name_asc"
+    order: Literal[
+        "name_asc", "name_desc", "rating_asc", "rating_desc", "games_asc", "games_desc"
+    ] = "name_asc"
     offset: int = Field(default=0, ge=0, le=1_000_000)
     limit: int = Field(default=20, ge=1, le=100)
 

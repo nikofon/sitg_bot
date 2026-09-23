@@ -144,6 +144,12 @@ async def test_player_directory_search_sort_pagination_and_privacy(database_url:
         assert second["next_offset"] is None
         descending = await profiles.list_players(search=prefix, order="name_desc")
         assert descending["items"][0]["id"] == str(bob.id)
+        assert descending["supported_orders"] == [
+            "name_asc", "name_desc", "rating_asc", "rating_desc",
+            "games_asc", "games_desc",
+        ]
+        with pytest.raises(ValueError):
+            await profiles.list_players(search=prefix, order="rating_descending")
         assert (await profiles.list_players(search=prefix + "%"))["total"] == 0
         assert (await profiles.list_players(search=prefix, ruleset_key=prefix))["total"] == 0
         async with database.transaction() as session:
@@ -259,5 +265,62 @@ async def test_guest_routes_use_public_projections(database_url: str, with_origi
             response = await resolve(path)
             assert response.status == 401
             assert json.loads(response.text)["error"]["code"] == "authentication_required"
+    finally:
+        await database.close()
+
+
+async def test_player_directory_orders_by_rating_and_games(database_url: str) -> None:
+    database = Database(database_url)
+    try:
+        prefix = "Website_" + secrets.token_hex(6)
+        suffix = int(secrets.token_hex(6), 16)
+        alice = active_player(prefix + " Alice", suffix, 0)
+        bob = active_player(prefix + " Bob", suffix, 1)
+        carol = active_player("Unlisted Carol", suffix, 2)
+        dave = active_player("Unlisted Dave", suffix, 3)
+        erin = active_player("Unlisted Erin", suffix, 4)
+        async with database.transaction() as session:
+            session.add_all([alice, bob, carol, dave, erin])
+        fixture = await build_fixture(database)
+        # Each game's first player receives the rating row in record_game, so
+        # every game needs a distinct leader; seats double as the per-player
+        # game sequence, so repeat players need distinct seats. Alice ends with
+        # two settled SI games and a 1250.5 rating; Bob ends with three at 1050.
+        await record_game(database, fixture, results=[
+            (alice, Decimal(1), Decimal(30)), (bob, Decimal(2), Decimal(20)),
+        ], attempts={})
+        await record_game(database, fixture, results=[
+            (bob, Decimal(1), Decimal(30)), (carol, Decimal(2), Decimal(20)),
+        ], attempts={})
+        await record_game(database, fixture, results=[
+            (dave, Decimal(1), Decimal(30)), (erin, Decimal(2), Decimal(20)),
+            (bob, Decimal(3), Decimal(10)),
+        ], attempts={})
+        await record_game(database, fixture, results=[
+            (carol, Decimal(1), Decimal(30)), (alice, Decimal(2), Decimal(20)),
+        ], attempts={})
+        async with database.transaction() as session:
+            rating = await session.get(RulesetRatingRecord, ("si", alice.id))
+            assert rating is not None
+            rating.rating = Decimal("1250.5")
+        profiles = PlayerProfileService(database)
+
+        by_rating_desc = await profiles.list_players(search=prefix, order="rating_desc")
+        assert [item["id"] for item in by_rating_desc["items"]] == [
+            str(alice.id), str(bob.id),
+        ]
+        by_rating_asc = await profiles.list_players(search=prefix, order="rating_asc")
+        assert [item["id"] for item in by_rating_asc["items"]] == [
+            str(bob.id), str(alice.id),
+        ]
+        by_games_desc = await profiles.list_players(search=prefix, order="games_desc")
+        assert [item["id"] for item in by_games_desc["items"]] == [
+            str(bob.id), str(alice.id),
+        ]
+        by_games_asc = await profiles.list_players(search=prefix, order="games_asc")
+        assert [item["id"] for item in by_games_asc["items"]] == [
+            str(alice.id), str(bob.id),
+        ]
+        assert by_games_desc["total"] == 2
     finally:
         await database.close()

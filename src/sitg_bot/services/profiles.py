@@ -10,15 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AnswerAttemptRecord,
+    GamePacketVersionRecord,
     GameParticipantRecord,
     GameRecord,
     GameResultRecord,
     GameRulesetVersionRecord,
     GameThemeRecord,
     PacketQuestionRecord,
+    PacketVersionRecord,
     PlatformAdministratorRecord,
+    PlayerQuestionStateRecord,
     PlayerRecord,
     QuestionRoundRecord,
+    RatingLedgerRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
     TournamentManagerRecord,
@@ -35,6 +39,10 @@ RATING_HISTORY_LIMIT = 20
 PRIVATE_PLACES = 4
 MEMBERSHIP_VISIBLE_STATUSES = frozenset({"invited", "registered", "approved", "active"})
 TELEGRAM_USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,64}")
+SETTLEMENT_REASON = "pairwise_elo"
+SUPPORTED_PLAYER_ORDERS = (
+    "name_asc", "name_desc", "rating_asc", "rating_desc", "games_asc", "games_desc",
+)
 
 PLACEMENT_KINDS = (
     "place_1", "place_1_5", "place_2", "place_2_5",
@@ -98,7 +106,7 @@ class PlayerProfileService:
         self, *, ruleset_key: str | None = None, search: str = "",
         order: str = "name_asc", offset: int = 0, limit: int = 20
     ) -> dict[str, object]:
-        if len(search) > 200 or order not in {"name_asc", "name_desc"}:
+        if len(search) > 200 or order not in SUPPORTED_PLAYER_ORDERS:
             raise ValueError("Invalid player search")
         if not 0 <= offset <= 1_000_000 or not 1 <= limit <= 100:
             raise ValueError("Invalid player page")
@@ -125,9 +133,10 @@ class PlayerProfileService:
             .having(func.count() > 1)
             .subquery()
         )
+        rating = func.coalesce(RulesetRatingRecord.rating, DEFAULT_RULESET_RATING)
         query = select(
             PlayerRecord.id, PlayerRecord.public_nickname, game_counts.c.games,
-            func.coalesce(RulesetRatingRecord.rating, DEFAULT_RULESET_RATING).label("rating"),
+            rating.label("rating"),
         ).join(game_counts, game_counts.c.player_id == PlayerRecord.id).outerjoin(
             RulesetRatingRecord, and_(
                 RulesetRatingRecord.player_id == PlayerRecord.id,
@@ -142,10 +151,19 @@ class PlayerProfileService:
                     search.strip().lower(), autoescape=True
                 )
             )
+        # The complete filtered result is ordered before pagination; rating and
+        # games use the selected ruleset's displayed values, with stable
+        # ascending name and ID tie-breakers.
         name = func.lower(PlayerRecord.public_nickname)
-        ordering = (name, PlayerRecord.id) if order == "name_asc" else (
-            name.desc(), PlayerRecord.id.desc()
-        )
+        if order == "name_asc":
+            ordering = (name, PlayerRecord.id)
+        elif order == "name_desc":
+            ordering = (name.desc(), PlayerRecord.id.desc())
+        else:
+            primary = rating if order.startswith("rating_") else game_counts.c.games
+            ordering = (
+                primary.desc() if order.endswith("_desc") else primary, name, PlayerRecord.id
+            )
         async with self.database.sessions() as session:
             total = await session.scalar(select(func.count()).select_from(query.subquery()))
             rows = (
@@ -154,6 +172,7 @@ class PlayerProfileService:
         return {
             "rulesets": rulesets,
             "ruleset_key": selected,
+            "supported_orders": list(SUPPORTED_PLAYER_ORDERS),
             "items": [{
                 "id": str(row.id), "label": row.public_nickname,
                 "rating": float(row.rating), "games": row.games,
@@ -194,6 +213,7 @@ class PlayerProfileService:
                     "placements": placement_summary(()),
                 },
                 "si_question_stats": None,
+                "si_statistics": None,
                 "games": [],
             }
             if selected is None:
@@ -212,6 +232,9 @@ class PlayerProfileService:
                 payload["si_question_stats"] = await self._si_question_stats(
                     session, player_id, selected
                 )
+                payload["si_statistics"] = await self._si_statistics(
+                    session, player_id, selected, [game.id for _, game in results]
+                )
             payload["games"] = await self._game_summaries(
                 session, viewer_player_id, results[: max(1, game_limit)]
             )
@@ -229,7 +252,10 @@ class PlayerProfileService:
             tournament = await session.get(TournamentRecord, game.tournament_id)
             assert tournament is not None
             visible = await self._tournament_visible(session, tournament, viewer_player_id)
-            participants = (await self._participant_summaries(session, (game_id,)))[game_id]
+            participants = (await self._participant_summaries(
+                session, (game_id,),
+                tournament_rating_game_ids={game_id} if visible else frozenset(),
+            ))[game_id]
             return {
                 "game_id": game.id,
                 "player_id": player_id,
@@ -238,6 +264,9 @@ class PlayerProfileService:
                 "stage": None,
                 "played_at": game.completed_at,
                 "participants": participants,
+                "packets": (await self._packet_labels(
+                    session, viewer_player_id, (game_id,)
+                ))[game_id],
                 "themes": await self._theme_grids(session, game_id),
             }
 
@@ -352,6 +381,149 @@ class PlayerProfileService:
     async def _si_question_stats(
         self, session: AsyncSession, player_id: UUID, ruleset_key: str
     ) -> list[dict[str, object]]:
+        mappings = await self._si_game_scales(session, player_id, ruleset_key)
+        rows = await self._si_attempt_rows(session, player_id, ruleset_key)
+        counts: dict[int, dict[str, object]] = {}
+        for game_id, value, correct in rows:
+            canonical = mappings.get(game_id, {}).get(value)
+            if canonical is None:
+                LOGGER.warning(
+                    "Question value %s is outside the game scale game=%s", value, game_id
+                )
+                continue
+            bucket = counts.setdefault(
+                canonical, {"value": canonical, "correct": 0, "incorrect": 0}
+            )
+            key = "correct" if correct else "incorrect"
+            bucket[key] = int(bucket[key]) + 1
+        return [counts[value] for value in sorted(counts)]
+
+    async def _si_statistics(
+        self, session: AsyncSession, player_id: UUID, ruleset_key: str,
+        game_ids: list[UUID],
+    ) -> dict[str, object] | None:
+        """Aggregate normalized SI scoring and accepted buzz delays per canonical value.
+
+        The aggregates cover exactly the settled games behind ``stats.games``. Each
+        question contribution is scaled by its actual ruleset value onto the canonical
+        10-50 scale, summed per game, and averaged over games; games without recorded
+        attempts contribute zero instead of being dropped. Buzz delays measure the time
+        from question opening to the accepted buzz; missing or invalid timings are
+        excluded and the sample count reflects only usable observations.
+        """
+        if not game_ids:
+            return None
+        mappings = await self._si_game_scales(session, player_id, ruleset_key)
+        game_sums = dict.fromkeys(game_ids, Decimal(0))
+        for game_id, value, correct in await self._si_attempt_rows(
+            session, player_id, ruleset_key
+        ):
+            canonical = mappings.get(game_id, {}).get(value)
+            if canonical is None:
+                LOGGER.warning(
+                    "Question value %s is outside the game scale game=%s", value, game_id
+                )
+                continue
+            game_sums[game_id] += Decimal(canonical if correct else -canonical)
+        average = float(round(sum(game_sums.values()) / len(game_sums), 2))
+        return {
+            "average_normalized_score": average,
+            "buzz_times": await self._si_buzz_times(
+                session, player_id, ruleset_key, mappings
+            ),
+        }
+
+    async def _si_buzz_times(
+        self, session: AsyncSession, player_id: UUID, ruleset_key: str,
+        mappings: dict[UUID, dict[int, int]],
+    ) -> list[dict[str, object]]:
+        buzz_rows = (
+            await session.execute(
+                select(
+                    GameRecord.id,
+                    PacketQuestionRecord.value,
+                    QuestionRoundRecord.started_at,
+                    PlayerQuestionStateRecord.buzzed_at,
+                )
+                .join(
+                    GameResultRecord,
+                    and_(
+                        GameResultRecord.game_id == GameRecord.id,
+                        GameResultRecord.player_id == player_id,
+                    ),
+                )
+                .join(
+                    GameRulesetVersionRecord,
+                    GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
+                )
+                .join(
+                    GameParticipantRecord,
+                    and_(
+                        GameParticipantRecord.game_id == GameRecord.id,
+                        GameParticipantRecord.player_id == player_id,
+                    ),
+                )
+                .join(QuestionRoundRecord, QuestionRoundRecord.game_id == GameRecord.id)
+                .join(
+                    PlayerQuestionStateRecord,
+                    and_(
+                        PlayerQuestionStateRecord.round_id == QuestionRoundRecord.id,
+                        PlayerQuestionStateRecord.participant_id
+                        == GameParticipantRecord.id,
+                    ),
+                )
+                .join(
+                    PacketQuestionRecord,
+                    PacketQuestionRecord.question_revision_id
+                    == QuestionRoundRecord.question_revision_id,
+                )
+                .join(
+                    GameThemeRecord,
+                    and_(
+                        GameThemeRecord.game_id == GameRecord.id,
+                        GameThemeRecord.theme_revision_id
+                        == PacketQuestionRecord.theme_revision_id,
+                        GameThemeRecord.source_packet_version_id
+                        == PacketQuestionRecord.packet_version_id,
+                    ),
+                )
+                .where(
+                    GameRulesetVersionRecord.key == ruleset_key,
+                    QuestionRoundRecord.status != "invalidated",
+                    PlayerQuestionStateRecord.accepted_buzz_order.is_not(None),
+                )
+            )
+        ).all()
+        delays: dict[int, list[float]] = {}
+        accepted: set[int] = set()
+        for game_id, value, started_at, buzzed_at in buzz_rows:
+            canonical = mappings.get(game_id, {}).get(value)
+            if canonical is None:
+                LOGGER.warning(
+                    "Question value %s is outside the game scale game=%s", value, game_id
+                )
+                continue
+            accepted.add(canonical)
+            if started_at is None or buzzed_at is None:
+                continue
+            delay = (buzzed_at - started_at).total_seconds()
+            if delay >= 0:
+                delays.setdefault(canonical, []).append(delay)
+        return [
+            {
+                "value": canonical,
+                "average_seconds": (
+                    round(sum(samples) / len(samples), 2) if samples else None
+                ),
+                "samples": len(samples),
+            }
+            for canonical in sorted(accepted)
+            for samples in (delays.get(canonical, []),)
+        ]
+
+    async def _si_game_scales(
+        self, session: AsyncSession, player_id: UUID, ruleset_key: str
+    ) -> dict[UUID, dict[int, int]]:
         # The scale of a game is every value it could ask, not only the values this
         # player attempted; otherwise unattempted values would shift the mapping.
         scale_rows = (
@@ -390,77 +562,69 @@ class PlayerProfileService:
         scales: dict[UUID, set[int]] = {}
         for game_id, value in scale_rows:
             scales.setdefault(game_id, set()).add(value)
-        mappings = {
+        return {
             game_id: canonical_question_values(values) for game_id, values in scales.items()
         }
-        rows = (
-            await session.execute(
-                select(
-                    GameRecord.id,
-                    PacketQuestionRecord.value,
-                    AnswerAttemptRecord.final_correct,
+
+    async def _si_attempt_rows(
+        self, session: AsyncSession, player_id: UUID, ruleset_key: str
+    ) -> list[tuple[UUID, int, bool]]:
+        return list(
+            (
+                await session.execute(
+                    select(
+                        GameRecord.id,
+                        PacketQuestionRecord.value,
+                        AnswerAttemptRecord.final_correct,
+                    )
+                    .join(
+                        GameResultRecord,
+                        and_(
+                            GameResultRecord.game_id == GameRecord.id,
+                            GameResultRecord.player_id == player_id,
+                        ),
+                    )
+                    .join(
+                        GameRulesetVersionRecord,
+                        GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
+                    )
+                    .join(
+                        GameParticipantRecord,
+                        and_(
+                            GameParticipantRecord.game_id == GameRecord.id,
+                            GameParticipantRecord.player_id == player_id,
+                        ),
+                    )
+                    .join(QuestionRoundRecord, QuestionRoundRecord.game_id == GameRecord.id)
+                    .join(
+                        PacketQuestionRecord,
+                        PacketQuestionRecord.question_revision_id
+                        == QuestionRoundRecord.question_revision_id,
+                    )
+                    .join(
+                        GameThemeRecord,
+                        and_(
+                            GameThemeRecord.game_id == GameRecord.id,
+                            GameThemeRecord.theme_revision_id
+                            == PacketQuestionRecord.theme_revision_id,
+                            GameThemeRecord.source_packet_version_id
+                            == PacketQuestionRecord.packet_version_id,
+                        ),
+                    )
+                    .join(
+                        AnswerAttemptRecord,
+                        and_(
+                            AnswerAttemptRecord.round_id == QuestionRoundRecord.id,
+                            AnswerAttemptRecord.participant_id == GameParticipantRecord.id,
+                        ),
+                    )
+                    .where(
+                        GameRulesetVersionRecord.key == ruleset_key,
+                        QuestionRoundRecord.status != "invalidated",
+                    )
                 )
-                .join(
-                    GameResultRecord,
-                    and_(
-                        GameResultRecord.game_id == GameRecord.id,
-                        GameResultRecord.player_id == player_id,
-                    ),
-                )
-                .join(
-                    GameRulesetVersionRecord,
-                    GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
-                )
-                .join(
-                    GameParticipantRecord,
-                    and_(
-                        GameParticipantRecord.game_id == GameRecord.id,
-                        GameParticipantRecord.player_id == player_id,
-                    ),
-                )
-                .join(QuestionRoundRecord, QuestionRoundRecord.game_id == GameRecord.id)
-                .join(
-                    PacketQuestionRecord,
-                    PacketQuestionRecord.question_revision_id
-                    == QuestionRoundRecord.question_revision_id,
-                )
-                .join(
-                    GameThemeRecord,
-                    and_(
-                        GameThemeRecord.game_id == GameRecord.id,
-                        GameThemeRecord.theme_revision_id
-                        == PacketQuestionRecord.theme_revision_id,
-                        GameThemeRecord.source_packet_version_id
-                        == PacketQuestionRecord.packet_version_id,
-                    ),
-                )
-                .join(
-                    AnswerAttemptRecord,
-                    and_(
-                        AnswerAttemptRecord.round_id == QuestionRoundRecord.id,
-                        AnswerAttemptRecord.participant_id == GameParticipantRecord.id,
-                    ),
-                )
-                .where(
-                    GameRulesetVersionRecord.key == ruleset_key,
-                    QuestionRoundRecord.status != "invalidated",
-                )
-            )
-        ).all()
-        counts: dict[int, dict[str, object]] = {}
-        for game_id, value, correct in rows:
-            canonical = mappings[game_id].get(value)
-            if canonical is None:
-                LOGGER.warning(
-                    "Question value %s is outside the game scale game=%s", value, game_id
-                )
-                continue
-            bucket = counts.setdefault(
-                canonical, {"value": canonical, "correct": 0, "incorrect": 0}
-            )
-            key = "correct" if correct else "incorrect"
-            bucket[key] = int(bucket[key]) + 1
-        return [counts[value] for value in sorted(counts)]
+            ).all()
+        )
 
     async def _game_summaries(
         self,
@@ -481,24 +645,36 @@ class PlayerProfileService:
                 )
             ).scalars()
         }
-        participants = await self._participant_summaries(
-            session, tuple(game.id for game in games)
-        )
         viewer_admin = await self._is_administrator(session, viewer_player_id)
         accessible = await self._accessible_tournaments(
             session, {game.tournament_id for game in games}, viewer_player_id
         )
-        summaries = []
+        visible_by_game: dict[UUID, bool] = {}
         for game in games:
             tournament = tournaments.get(game.tournament_id)
             if tournament is None:
                 LOGGER.warning("Game references a missing tournament game=%s", game.id)
                 continue
-            visible = (
+            visible_by_game[game.id] = (
                 tournament.visibility == "public"
                 or viewer_admin
                 or tournament.id in accessible
             )
+        participants = await self._participant_summaries(
+            session, tuple(game.id for game in games),
+            tournament_rating_game_ids={
+                game_id for game_id, visible in visible_by_game.items() if visible
+            },
+        )
+        packets = await self._packet_labels(
+            session, viewer_player_id, tuple(game.id for game in games)
+        )
+        summaries = []
+        for game in games:
+            tournament = tournaments.get(game.tournament_id)
+            if tournament is None:
+                continue
+            visible = visible_by_game[game.id]
             summaries.append(
                 {
                     "game_id": game.id,
@@ -508,36 +684,190 @@ class PlayerProfileService:
                     "stage": None,
                     "played_at": game.completed_at,
                     "participants": participants[game.id],
+                    "packets": packets[game.id],
                 }
             )
         return summaries
 
     async def _participant_summaries(
-        self, session: AsyncSession, game_ids: tuple[UUID, ...]
+        self,
+        session: AsyncSession,
+        game_ids: tuple[UUID, ...],
+        *,
+        tournament_rating_game_ids: frozenset[UUID] | set[UUID] = frozenset(),
     ) -> dict[UUID, list[dict[str, object]]]:
+        # Rating snapshots come from the settlement ledger rows written when the
+        # game was finalized; current ratings are never substituted. The ruleset
+        # ledger carries the global rating and the tournament ledger the scoped
+        # one, so the join keys are already that game's ruleset and tournament.
         rows = (
             await session.execute(
-                select(GameParticipantRecord, PlayerRecord)
+                select(
+                    GameParticipantRecord,
+                    PlayerRecord,
+                    RulesetRatingLedgerRecord.rating_after,
+                    RatingLedgerRecord.rating_after,
+                )
                 .join(PlayerRecord, PlayerRecord.id == GameParticipantRecord.player_id)
+                .outerjoin(
+                    RulesetRatingLedgerRecord,
+                    and_(
+                        RulesetRatingLedgerRecord.game_id == GameParticipantRecord.game_id,
+                        RulesetRatingLedgerRecord.player_id
+                        == GameParticipantRecord.player_id,
+                        RulesetRatingLedgerRecord.reason == SETTLEMENT_REASON,
+                    ),
+                )
+                .outerjoin(
+                    RatingLedgerRecord,
+                    and_(
+                        RatingLedgerRecord.game_id == GameParticipantRecord.game_id,
+                        RatingLedgerRecord.player_id == GameParticipantRecord.player_id,
+                        RatingLedgerRecord.reason == SETTLEMENT_REASON,
+                    ),
+                )
                 .where(GameParticipantRecord.game_id.in_(set(game_ids)))
             )
         ).all()
         grouped: dict[UUID, list[dict[str, object]]] = {game_id: [] for game_id in game_ids}
-        for participant, player in rows:
-            grouped.setdefault(participant.game_id, []).append(
-                {
-                    "participant_id": participant.id,
-                    "player_id": player.id,
-                    "nickname": player.public_nickname,
-                    "score": participant.score,
-                    "place": participant.final_place,
-                }
-            )
+        for participant, player, ruleset_after, tournament_after in rows:
+            summary: dict[str, object] = {
+                "participant_id": participant.id,
+                "player_id": player.id,
+                "nickname": player.public_nickname,
+                "score": participant.score,
+                "place": participant.final_place,
+                "global_rating_after": (
+                    float(ruleset_after) if ruleset_after is not None else None
+                ),
+            }
+            if participant.game_id in tournament_rating_game_ids:
+                summary["tournament_rating_after"] = (
+                    float(tournament_after) if tournament_after is not None else None
+                )
+            grouped.setdefault(participant.game_id, []).append(summary)
         for summaries in grouped.values():
             summaries.sort(
                 key=lambda item: (item["place"] or Decimal(99), item["participant_id"])
             )
         return grouped
+
+    async def _packet_labels(
+        self, session: AsyncSession, viewer_player_id: UUID | None,
+        game_ids: tuple[UUID, ...],
+    ) -> dict[UUID, list[dict[str, object]] | None]:
+        """List the packets each game used, with viewer-authorized names only.
+
+        A name is visible to administrators, managers of the game's tournament,
+        players who participated in the game, and anyone the packet version has
+        been released to in the library. Withheld names stay as ``null`` entries;
+        ``None`` marks games whose packet list is not available. Labels never
+        grant access to packet content.
+        """
+        if not game_ids:
+            return {}
+        selection_rows = (
+            await session.execute(
+                select(
+                    GamePacketVersionRecord.game_id,
+                    GamePacketVersionRecord.selection_order,
+                    PacketVersionRecord,
+                )
+                .join(
+                    PacketVersionRecord,
+                    PacketVersionRecord.id == GamePacketVersionRecord.packet_version_id,
+                )
+                .where(GamePacketVersionRecord.game_id.in_(set(game_ids)))
+                .order_by(
+                    GamePacketVersionRecord.game_id, GamePacketVersionRecord.selection_order
+                )
+            )
+        ).all()
+        theme_rows = (
+            await session.execute(
+                select(
+                    GameThemeRecord.game_id,
+                    GameThemeRecord.position,
+                    PacketVersionRecord,
+                )
+                .join(
+                    PacketVersionRecord,
+                    PacketVersionRecord.id == GameThemeRecord.source_packet_version_id,
+                )
+                .where(GameThemeRecord.game_id.in_(set(game_ids)))
+                .order_by(GameThemeRecord.game_id, GameThemeRecord.position)
+            )
+        ).all()
+        # Game packet selections are authoritative; themes are the fallback for
+        # rows written without the selection ledger.
+        ordered: dict[UUID, list[tuple[int, PacketVersionRecord]]] = {}
+        seen: set[tuple[UUID, UUID]] = set()
+        for source in (selection_rows, theme_rows):
+            for game_id, order_key, version in source:
+                if (game_id, version.id) in seen:
+                    continue
+                seen.add((game_id, version.id))
+                ordered.setdefault(game_id, []).append((order_key, version))
+        for versions in ordered.values():
+            versions.sort(key=lambda item: item[0])
+        tournaments = {
+            game_id: tournament_id
+            for game_id, tournament_id in (
+                await session.execute(
+                    select(GameRecord.id, GameRecord.tournament_id).where(
+                        GameRecord.id.in_(set(game_ids))
+                    )
+                )
+            ).all()
+        }
+        viewer_admin = await self._is_administrator(session, viewer_player_id)
+        participated: set[UUID] = set()
+        managed: set[UUID] = set()
+        if viewer_player_id is not None:
+            participated = set(
+                (
+                    await session.execute(
+                        select(GameParticipantRecord.game_id).where(
+                            GameParticipantRecord.game_id.in_(set(game_ids)),
+                            GameParticipantRecord.player_id == viewer_player_id,
+                        )
+                    )
+                ).scalars()
+            )
+            managed = set(
+                (
+                    await session.execute(
+                        select(TournamentManagerRecord.tournament_id).where(
+                            TournamentManagerRecord.tournament_id.in_(
+                                set(tournaments.values())
+                            ),
+                            TournamentManagerRecord.player_id == viewer_player_id,
+                            TournamentManagerRecord.revoked_at.is_(None),
+                        )
+                    )
+                ).scalars()
+            )
+        labels: dict[UUID, list[dict[str, object]] | None] = {}
+        for game_id in game_ids:
+            versions = ordered.get(game_id)
+            if not versions:
+                labels[game_id] = None
+                continue
+            entries = []
+            for _, version in versions:
+                authorized = (
+                    viewer_admin
+                    or game_id in participated
+                    or tournaments.get(game_id) in managed
+                    or (
+                        version.state == "published"
+                        and version.deleted_at is None
+                        and version.library_released_at is not None
+                    )
+                )
+                entries.append({"name": version.name if authorized else None})
+            labels[game_id] = entries
+        return labels
 
     async def _theme_grids(
         self, session: AsyncSession, game_id: UUID

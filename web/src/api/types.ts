@@ -644,6 +644,12 @@ export interface PlayerProfileGameParticipant {
   nickname: string | null;
   score: number;
   place: number | null;
+  global_rating_after?: number | null;
+  tournament_rating_after?: number | null;
+}
+
+export interface PlayerProfileGamePacket {
+  name: string | null;
 }
 
 export interface PlayerProfileGame {
@@ -653,12 +659,24 @@ export interface PlayerProfileGame {
   stage: string | null;
   played_at: string | null;
   participants: PlayerProfileGameParticipant[];
+  packets?: PlayerProfileGamePacket[] | null;
 }
 
 export interface PlayerQuestionStat {
   value: number;
   correct: number;
   incorrect: number;
+}
+
+export interface PlayerSiBuzzTime {
+  value: number;
+  average_seconds: number | null;
+  samples: number;
+}
+
+export interface PlayerSiStatistics {
+  average_normalized_score: number | null;
+  buzz_times: PlayerSiBuzzTime[];
 }
 
 export interface PlayerProfileResource {
@@ -675,6 +693,7 @@ export interface PlayerProfileResource {
     placements: PlayerPlacement[];
   };
   si_question_stats: PlayerQuestionStat[] | null;
+  si_statistics?: PlayerSiStatistics | null;
   games: PlayerProfileGame[];
 }
 
@@ -696,6 +715,7 @@ export interface PlayerGameResource {
   stage: string | null;
   played_at: string | null;
   participants: PlayerProfileGameParticipant[];
+  packets?: PlayerProfileGamePacket[] | null;
   themes: PlayerGameTheme[];
 }
 

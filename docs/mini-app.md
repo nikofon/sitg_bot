@@ -143,13 +143,28 @@ game cards. A ruleset dropdown
 lists only rulesets with at least one settled result. Each view shows the global ruleset rating
 with a recent-history graph, win rate with place distribution (1, 1.5, 2, 2.5, 3, 3.5, 4,
 worse), SI per-question-value correct/incorrect counts (custom tournament scales are mapped
-onto canonical 10–50 values), and recent game cards with tournament name, stage placeholder,
-participants, scores, and places. Private tournament names are replaced with a neutral label
+onto canonical 10–50 values), optional SI aggregates (`si_statistics`: the average
+per-game normalized score, where each question's signed contribution is scaled by its actual
+ruleset value onto the canonical scale, and accepted-buzz average delays from question opening
+per canonical value, with missing timings excluded and real sample counts), and recent game
+cards with tournament name, stage placeholder, participants, scores, places, the packets used
+in the game (`packets`; names visible only to administrators, managers of that tournament,
+game participants, and viewers of library-released versions — withheld names stay `null`,
+`null` lists mean unavailable), and settlement rating snapshots per participant
+(`global_rating_after` from the ruleset ledger; `tournament_rating_after` from the tournament
+ledger, included only for viewers allowed to see that tournament). Private tournament names
+are replaced with a neutral label
 for viewers without membership, manager, or admin access. Real names and non-public Telegram
 usernames are visible only to the player themself or platform administrators. The
 `/players/{player_id}/games/{game_id}` sub-view shows per-theme answer grids (value columns ×
 participant rows, green/red/neutral marks) with theme pagination and a back button; it never
-exposes theme names, question text, or answers.
+exposes theme names, question text, or answers, and carries the same `packets` label list.
+
+The `/players` directory query supports `order` values `name_asc`, `name_desc`, `rating_asc`,
+`rating_desc`, `games_asc`, and `games_desc`; rating and game counts are the selected
+ruleset's displayed values, ordering is applied to the complete filtered result before
+pagination with stable name/ID tie-breakers, and the response advertises the supported names
+in `supported_orders`.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
 retirement, version release, and correction/substitution editing. Packet management cards expose
