@@ -25,11 +25,13 @@ from sitg_bot.application.contracts import (
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
     ApplicationPrincipal,
+    AuthorCatalogueOperation,
     AuthorLinkAdminDecideOperation,
     AuthorLinkAdminPendingOperation,
     AuthorLinkCancelOperation,
     AuthorLinkCreateOperation,
     AuthorLinkMineOperation,
+    AuthorProfileOperation,
     AuthorsSearchOperation,
     BugReportCreateOperation,
     CapabilityAction,
@@ -126,6 +128,7 @@ from sitg_bot.application.contracts import (
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.admin_management import AdminManagementService
 from sitg_bot.services.author_links import AuthorLinkService
+from sitg_bot.services.author_profiles import AuthorProfileService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.launch_references import LaunchReferenceService
 from sitg_bot.services.library import PacketLibraryService
@@ -235,6 +238,8 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.AUTHORS_SEARCH: ActionPolicy(cursor_paginated=True),
+        ActionCode.AUTHOR_CATALOGUE: ActionPolicy(),
+        ActionCode.AUTHOR_PROFILE: ActionPolicy(),
         ActionCode.AUTHOR_LINK_MINE: ActionPolicy(cursor_paginated=True),
         ActionCode.AUTHOR_LINK_ADMIN_PENDING: ActionPolicy(cursor_paginated=True),
         ActionCode.TOKEN_REQUEST_ADMIN_PENDING: ActionPolicy(cursor_paginated=True),
@@ -677,6 +682,10 @@ class ApplicationGateway:
             return await self.author_links.search_authors(
                 operation.query, cursor=operation.cursor, limit=operation.limit
             )
+        if isinstance(operation, AuthorCatalogueOperation):
+            return await AuthorProfileService(self.database).catalogue()
+        if isinstance(operation, AuthorProfileOperation):
+            return await AuthorProfileService(self.database).profile(operation.author_id)
         if isinstance(operation, AuthorLinkCreateOperation):
             return await self.author_links.create_request(
                 player_id, operation.author_id, note=operation.note

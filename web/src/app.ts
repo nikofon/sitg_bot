@@ -49,6 +49,7 @@ import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderTournamentProfile } from "./ui/tournament";
 import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
+import { renderAuthorProfile, renderAuthors } from "./ui/authors";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -239,6 +240,20 @@ export class MiniAppShell {
     }
     if (route.id === "authors_link" && isAuthorLinksResource(payload.resource)) {
       this.renderAuthorsLinkRoute(route, payload.resource);
+      return;
+    }
+    if (route.id === "authors" && "kind" in payload.resource && payload.resource.kind === "authors") {
+      this.renderFrame(route, renderAuthors(
+        payload.resource, this.i18n, this.filters.read("authors"),
+        (filters) => this.filters.write("authors", filters),
+        (path) => this.router.navigate(path),
+      ));
+      return;
+    }
+    if (route.id === "author_profile" && "kind" in payload.resource && payload.resource.kind === "author_profile") {
+      this.renderFrame(route, renderAuthorProfile(
+        payload.resource, this.i18n, (path) => this.router.navigate(path),
+      ));
       return;
     }
     if (route.id === "lobby" && isLobbyResource(payload.resource)) {

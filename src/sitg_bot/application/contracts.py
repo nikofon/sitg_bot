@@ -27,6 +27,8 @@ class ActionCode(StrEnum):
     NAVIGATION_MODE_SET = "telegram.navigation.mode.set.v1"
     NAVIGATION_TOURNAMENT_SET = "telegram.navigation.tournament.set.v1"
     AUTHORS_SEARCH = "authors.search.v1"
+    AUTHOR_CATALOGUE = "authors.catalogue.v1"
+    AUTHOR_PROFILE = "authors.profile.v1"
     AUTHOR_LINK_CREATE = "author_links.create.v1"
     AUTHOR_LINK_CANCEL = "author_links.cancel.v1"
     AUTHOR_LINK_MINE = "author_links.mine.v1"
@@ -218,6 +220,15 @@ class NavigationTournamentSetOperation(ContractModel):
     mode: Literal["player", "manager"]
     tournament_id: UUID | None
     expected_version: int = Field(ge=0)
+
+
+class AuthorCatalogueOperation(ContractModel):
+    action: Literal[ActionCode.AUTHOR_CATALOGUE]
+
+
+class AuthorProfileOperation(ContractModel):
+    action: Literal[ActionCode.AUTHOR_PROFILE]
+    author_id: UUID
 
 
 class AuthorsSearchOperation(ContractModel):
@@ -942,6 +953,8 @@ GatewayOperation = Annotated[
     | NavigationModeSetOperation
     | NavigationTournamentSetOperation
     | AuthorsSearchOperation
+    | AuthorCatalogueOperation
+    | AuthorProfileOperation
     | AuthorLinkCreateOperation
     | AuthorLinkCancelOperation
     | AuthorLinkMineOperation

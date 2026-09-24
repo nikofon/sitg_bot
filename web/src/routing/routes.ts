@@ -9,6 +9,8 @@ export type RouteId =
   | "library"
   | "library_reader"
   | "authors_link"
+  | "authors"
+  | "author_profile"
   | "lobby"
   | "player_profile"
   | "player_game"
@@ -41,6 +43,20 @@ interface RouteDefinition {
 }
 
 const routes: RouteDefinition[] = [
+  {
+    id: "authors",
+    pattern: /^\/authors\/?$/,
+    titleKey: "authors.title",
+    emptyKey: "authors.empty",
+    isRoot: true,
+  },
+  {
+    id: "author_profile",
+    pattern: /^\/authors\/([0-9a-fA-F-]{36})\/?$/,
+    parameterNames: ["author_id"],
+    titleKey: "authors.profile",
+    emptyKey: "authors.empty",
+  },
   {
     id: "admin_management",
     pattern: /^\/admin\/management\/?$/,

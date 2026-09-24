@@ -159,6 +159,11 @@ class FakeGateway:
                 "available_actions": ["ready", "leave"],
                 "members": [],
             }
+        elif operation.action == ActionCode.AUTHOR_CATALOGUE:
+            data = {"kind": "authors", "state": "ready", "items": []}
+        elif operation.action == ActionCode.AUTHOR_PROFILE:
+            data = {"kind": "author_profile", "state": "ready",
+                    "author": {"id": str(operation.author_id)}}
         elif operation.action == ActionCode.AUTHORS_SEARCH:
             data = {
                 "items": [
@@ -982,6 +987,26 @@ async def test_author_link_window_resolves_own_requests_and_searches_authors() -
     assert operation.action == ActionCode.AUTHORS_SEARCH
     assert operation.query == "Ada"
     assert operation.limit == 5
+
+
+@pytest.mark.parametrize(("path", "action", "kind"), [
+    ("/authors", ActionCode.AUTHOR_CATALOGUE, "authors"),
+    (f"/authors/{UUID(int=30)}", ActionCode.AUTHOR_PROFILE, "author_profile"),
+])
+async def test_public_author_routes_use_dedicated_projections(path, action, kind) -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    response = await http._resolve_route(make_mocked_request(
+        "GET", f"/api/miniapp/routes/resolve?path={path}", headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    ))
+    assert response.status == 200
+    assert json.loads(response.text)["resource"]["kind"] == kind
+    assert gateway.requests[-1].operation.action == action
+    if action == ActionCode.AUTHOR_PROFILE:
+        assert gateway.requests[-1].operation.author_id == UUID(int=30)
 
 
 async def test_author_link_request_submission_maps_write_operation() -> None:

@@ -153,6 +153,17 @@ Author reputation is not currently stored. Its inputs, permissions, and scale re
 to be defined; if introduced, changes should use a reasoned adjustment ledger rather
 than only an overwritten total.
 
+The player author catalogue and profiles are implemented in `services/author_profiles.py`.
+Tournament counts use distinct author registrations; question counts use logical identities,
+including retained history. Profiles include completed, presented questions from finalized SI
+games with no unresolved appeals. They show presentations, player-question opportunities,
+accepted buzzes and their rate, attempts, final accuracy, timeouts, and solved rate (presentations
+with at least one final correct answer divided by all presentations). Repeated plays count
+separately. Participation rows preserve opportunities even after answering or leaving clears
+current eligibility. Per-value groups use actual played values from the assigned packet/theme
+revision, not normalized values. Empty denominators display no percentage. Only aggregates
+and public author names/counts are exposed.
+
 ## Ruleset-independent player records and statistics
 
 Each player retains:

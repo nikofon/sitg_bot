@@ -611,7 +611,9 @@ async def handle_player_menu_action(
             ),
         )
         return
-    if player_action in {"player.tournaments", "player.library", "player.ongoing"}:
+    if player_action in {
+        "player.tournaments", "player.library", "player.ongoing", "player.authors"
+    }:
         if launch_links is None:
             await send_message_model(
                 message,
@@ -627,6 +629,7 @@ async def handle_player_menu_action(
         route = {
             "player.library": "library",
             "player.ongoing": "ongoing",
+            "player.authors": "authors",
         }.get(player_action, "tournaments")
         query = {"role": "player"} if route == "tournaments" else None
         url = mini_app_route_url(launch_links, route, query=query)

@@ -27,9 +27,11 @@ from sitg_bot.application.contracts import (
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
+    AuthorCatalogueOperation,
     AuthorLinkAdminDecideOperation,
     AuthorLinkCreateOperation,
     AuthorLinkMineOperation,
+    AuthorProfileOperation,
     AuthorsSearchOperation,
     GameObserveOperation,
     GatewayOperation,
@@ -524,6 +526,20 @@ class MiniAppHttpServer:
         manager_match = re.fullmatch(
             r"/manager/tournaments/([A-Za-z0-9_-]+)/settings", normalized_path
         )
+        author_match = re.fullmatch(r"/authors/([0-9a-fA-F-]{36})", normalized_path)
+        if normalized_path == "/authors" or author_match:
+            author_operation = (
+                AuthorProfileOperation(
+                    action=ActionCode.AUTHOR_PROFILE, author_id=UUID(author_match[1])
+                ) if author_match else AuthorCatalogueOperation(action=ActionCode.AUTHOR_CATALOGUE)
+            )
+            session, result = await self._query(request, author_operation)
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": result.data,
+            })
         if normalized_path == "/authors/link":
             session, result = await self._query(
                 request,

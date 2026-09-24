@@ -1493,3 +1493,8 @@ p {
 .leader-table th[scope="row"] {
   font-variant-numeric: tabular-nums;
 }
+/* Author statistics remain readable on narrow Telegram viewports. */
+.author-statistics-table { overflow-x: auto; }
+.author-statistics-table table { width: 100%; border-collapse: collapse; }
+.author-statistics-table th, .author-statistics-table td { padding: 0.5rem; text-align: right; }
+.author-statistics-table caption { text-align: left; margin-block: 0.75rem; }

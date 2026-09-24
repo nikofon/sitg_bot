@@ -379,6 +379,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
             "player.menu",
             "player.settings",
             "player.setting.set",
+            "player.authors",
             "player.author_link",
             "player.rating",
             "player.history",
@@ -392,6 +393,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
     assert tuple(label for row in model.keyboard.rows for label in row) == (
         "Settings",
         "Set setting",
+        "Authors",
         "Link to author",
         "Back",
     )
@@ -610,6 +612,24 @@ async def test_player_profile_action_without_launch_links_keeps_placeholder() ->
 
     assert "My profile" in message.answer.await_args.args[0]
     assert message.answer.await_args.kwargs["reply_markup"] is None
+
+
+async def test_player_authors_action_opens_public_author_list() -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+    await handle_player_menu_action(
+        message,
+        player_action="player.authors",
+        backend=SimpleNamespace(),
+        telegram_update_claim=SimpleNamespace(),
+        localization=LocalizationService(),
+        locale="en",
+        navigation=navigation(allowed_actions=["player.authors"]),
+        state=SimpleNamespace(),
+        launch_links="https://mini.example.test/app",
+    )
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Authors"
+    assert button.web_app.url == "https://mini.example.test/app/authors?_launch=1"
 
 
 async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:

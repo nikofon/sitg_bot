@@ -55,6 +55,8 @@ Unknown tournament action descriptors are ignored and logged.
   discovery/registration/selection, information, invitation lobbies, readiness, observers,
   settings, packet selection, hybrid search, native SI gameplay, and the "My profile" Mini App
   button for player profiles.
+- **Other... → Authors** opens the player author catalogue and question-performance profiles
+  in the Mini App; list cards show only name, tournament count, and question count.
 - `/bug` reports: `/bug <description>` submits a bug report to the administrators; a bare
   `/bug` prompts for the description. Reports store the reporter, commentary, and timestamp,
   and notify every active administrator through the admin notification audience and the

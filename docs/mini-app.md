@@ -25,6 +25,14 @@ the lobby settings section lists changeable options before fixed ones. The autho
 window (`/authors/link`) lets a registered player search authors, submit a link request
 with an optional note, and follow their own request statuses; the bot's player menu opens it.
 
+Registered players open `/authors` through **Other... → Authors**. Like the administrator
+catalogue, it supports name search and sorting, with filters retained when returning from
+`/authors/{author_id}`. Cards expose only name, tournament count, and logical question count.
+Profiles add aggregate SI performance and per-value statistics, without contact details,
+linked players, tournament names, or question content. The read-only gateway operations are
+`authors.catalogue.v1` and `authors.profile.v1`; the existing author-link picker is unchanged.
+Metric definitions are in [statistics](data-and-statistics.md).
+
 The tournament profile window (`/tournaments/{tournament_id}`, opened by the catalogue's
 info action, the bot's player **Info** and manager **Tournament profile** buttons, and the
 **Leaders** button that adds `?section=leaders`) shows five permission-aware sections:

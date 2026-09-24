@@ -568,6 +568,40 @@ export interface AuthorLinksResource {
   next_cursor?: string | null;
 }
 
+export interface PublicAuthor {
+  id: string;
+  display_name: string;
+  tournament_count: number;
+  question_count: number;
+}
+
+export interface AuthorsResource {
+  kind: "authors";
+  state: "ready";
+  items: PublicAuthor[];
+}
+
+export interface AuthorStatistics {
+  presentations: number;
+  solved: number;
+  exposures: number;
+  buzzes: number;
+  attempts: number;
+  correct: number;
+  timeouts: number;
+  buzz_rate: number | null;
+  accuracy: number | null;
+  solved_rate: number | null;
+}
+
+export interface AuthorProfileResource {
+  kind: "author_profile";
+  state: "ready";
+  author: PublicAuthor;
+  statistics: AuthorStatistics;
+  by_value: Array<AuthorStatistics & { value: number }>;
+}
+
 export interface PageCursor {
   previous?: string;
   next?: string;
@@ -800,7 +834,9 @@ export interface RoutePayload {
     | PlayerGameResource
     | AdminSuspicionLedgerResource
     | AdminManagementResource
-    | AuthorLinksResource;
+    | AuthorLinksResource
+    | AuthorsResource
+    | AuthorProfileResource;
   pagination?: PageCursor;
 }
 
