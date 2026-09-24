@@ -178,8 +178,16 @@ uses ruleset ratings (unrated: 1000), snake distribution and swaps to balance gr
 Before starting, managers may randomize/edit seeds, change schemes or revoke registrations.
 Vacancies become **Chairs**.
 
-Swiss uses configurable rounds/game size, automatic rating seeds and adaptive pairings;
-see [Swiss rules](classic-swiss.md) for pairing and opponent-place tiebreak details.
+Swiss managers choose a positive round count and 2–12 players per game; at least two approved
+players are required. Seeds automatically follow descending global rating in the tournament's
+ruleset (unrated: 1000; player ID breaks rating ties), refreshed at stage start. Manual/random
+seeding is unavailable; Chairs fill vacancies. The opening round draws one seed from each
+rating band per game. Later rounds order players by accumulated points, then initial seed.
+Deterministic greedy pairing prefers fewer previous encounters, then smaller point differences;
+up to eight pair-swap passes improve that objective. Repeats are allowed when this search cannot
+avoid them. Only round one is paired at start; subsequent pairings are persisted after all
+previous games finalize, including appeals/deadline results. Tournament locking and match
+uniqueness prevent duplicate pairings. Completion requires every configured round.
 
 Chairs automatically join, stay at zero, occupy places and can advance, but cannot act and
 do not affect ratings, suspicion or qualification standings. They beat negative-scoring humans.
@@ -189,6 +197,12 @@ Group/Swiss games award configurable place points (default 4, 3, 2, 1) plus scor
 (default 0.02); shared places average occupied awards. Standings sum these across games/groups.
 Quiz entrants play once solo and rank by score. Group/quiz ties compare summed unpenalized score,
 then correct-answer counts at descending values. Remaining ties use a persisted random seed.
+
+Swiss ties compare the sum of encountered opponents' final positions by stage points, lower
+being better. Equal points share the mean occupied position before applying this tiebreak,
+avoiding circular ranking. Every encounter counts, including repeats; Chairs are excluded.
+Remaining ties use the persisted random seed. The displayed sum is provisional until all
+results finalize; final standings and play-off qualification use the same calculation.
 
 Play-offs take top first-stage finishers up to capacity, padding with Chairs. Without a first
 stage, managers seed randomly/manually and must revoke excess registrations or enlarge the

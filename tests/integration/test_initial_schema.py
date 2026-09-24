@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0012_appeals_per_answer"
+                "0013_classic_swiss"
             )
             types = (
                 await connection.execute(
@@ -148,7 +148,7 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
                     "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0012_appeals_per_answer"]
+                ))).scalars().all() == ["0013_classic_swiss"]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(
@@ -185,6 +185,100 @@ def test_appeals_per_answer_migration_round_trip(baseline_database):
     assert asyncio.run(unique_columns()) == [["game_id", "round_id"]]
     command.upgrade(config, "head")
     assert asyncio.run(unique_columns()) == [["game_id", "target_attempt_id"]]
+
+
+def test_swiss_migration_preserves_existing_stages_and_round_trips(baseline_database):
+    from test_classic import first_round, mutate, setup
+
+    from sitg_bot.services.classic import ClassicService
+
+    url, config = baseline_database
+    command.upgrade(config, "head")
+
+    async def seed():
+        database = Database(url)
+        try:
+            fixture = await setup(database, 3)
+            await mutate(database, fixture, "seed", mode="automatic")
+            first, assignment_id = await first_round(database, fixture)
+            await mutate(database, fixture, "round", round_id=first["id"],
+                         assignment_id=str(assignment_id))
+            async with database.sessions() as session:
+                return fixture.tournament_id, await ClassicService(database).snapshot(
+                    session, fixture.tournament_id,
+                )
+        finally:
+            await database.close()
+
+    tournament_id, before = asyncio.run(seed())
+
+    async def columns():
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                return await connection.run_sync(lambda sync: {
+                    c["name"] for c in inspect(sync).get_columns("classic_stages")
+                })
+        finally:
+            await engine.dispose()
+
+    async def check_preserved():
+        database = Database(url)
+        try:
+            async with database.sessions() as session:
+                after = await ClassicService(database).snapshot(session, tournament_id)
+                assert after == before
+                assert after["stages"][0]["round_count"] is None
+                assert after["stages"][0]["players_per_game"] is None
+        finally:
+            await database.close()
+
+    for _ in range(2):
+        command.downgrade(config, "0012_appeals_per_answer")
+        assert {"round_count", "players_per_game"}.isdisjoint(asyncio.run(columns()))
+        command.upgrade(config, "head")
+        assert {"round_count", "players_per_game"} <= asyncio.run(columns())
+        asyncio.run(check_preserved())
+        asyncio.run(assert_schema(url))
+
+
+def test_swiss_migration_refuses_to_discard_existing_swiss_stages(baseline_database):
+    from sqlalchemy.exc import IntegrityError
+    from test_classic_swiss import swiss_setup
+
+    from sitg_bot.services.classic import ClassicService
+
+    url, config = baseline_database
+    command.upgrade(config, "head")
+
+    async def seed():
+        database = Database(url)
+        try:
+            fixture = await swiss_setup(database)
+            return fixture.tournament_id
+        finally:
+            await database.close()
+
+    tournament_id = asyncio.run(seed())
+    with pytest.raises(IntegrityError):
+        command.downgrade(config, "0012_appeals_per_answer")
+
+    async def check_retained():
+        database = Database(url)
+        try:
+            async with database.sessions() as session:
+                view = await ClassicService(database).snapshot(session, tournament_id)
+                assert view["stages"][0]["stage_type"] == "swiss"
+                assert view["stages"][0]["round_count"] == 3
+                assert view["stages"][0]["players_per_game"] == 4
+                assert len(view["stages"][0]["rounds"]) == 3
+                assert await session.scalar(text("SELECT version_num FROM alembic_version")) == (
+                    "0013_classic_swiss"
+                )
+        finally:
+            await database.close()
+
+    asyncio.run(check_retained())
 
 
 def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):
