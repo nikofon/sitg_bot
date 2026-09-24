@@ -253,6 +253,28 @@ describe("tournament profile", () => {
     expect(root.querySelectorAll(".tournament-registration")).toHaveLength(2);
   });
 
+  it("shows Swiss round navigation and the opponent-place tiebreak", () => {
+    const resource = classicProfile();
+    if (resource.games.kind !== "classic" || resource.leaders.kind !== "classic") throw new Error();
+    resource.games.stages[0]!.stage_type = "swiss";
+    resource.leaders.stages[0]!.stage_type = "swiss";
+    resource.leaders.stages[0]!.standings![0]!.opponent_place_sum = "42.5";
+    const root = renderTournamentProfile(resource, new I18n("en"), () => "—", {
+      openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    const button = (label: string) => Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((item) => item.textContent === label)!;
+    button("Games").click();
+    expect(root.querySelector('[aria-label="Group"]')).toBeNull();
+    expect(root.querySelector(".pagination-status")!.textContent).toContain("Round 1 / 2");
+    expect(root.querySelectorAll(".tournament-game-card")).toHaveLength(2);
+    button("Next").click();
+    expect(root.querySelector(".pagination-status")!.textContent).toContain("Round 2 / 2");
+    button("Leaders").click();
+    expect(root.querySelector(".leader-table")!.textContent).toContain("Sum of opponents’ places");
+    expect(root.querySelector(".leader-table")!.textContent).toContain("42.5");
+  });
+
   it("browses classic group games by group and round", () => {
     const root = renderTournamentProfile(classicProfile(), new I18n("en"), () => "—", {
       openPlayer: vi.fn(),

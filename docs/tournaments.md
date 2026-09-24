@@ -159,80 +159,61 @@ The database registers two type descriptors:
   capable of hybrid matchmaking. Hybrid matchmaking remains disabled until that
   tournament's managers enable it in policy.
 - **Classic**: scheduled, finite-packet, SI-compatible, limited to 1–12 players per game,
-  and unable to use hybrid matchmaking. Its prescribed games follow a group, solo quiz,
+  and unable to use hybrid matchmaking. Its prescribed games follow a group, Swiss, solo quiz,
   play-off, or double-elimination scheme. Invitation lobbies must match the prescribed roster.
 
 ### Classic competition
 
-Managers configure an optional first stage (groups or solo quiz) and optional play-off in
-Settings. Each stage must be explicitly configured and started. Starting activates the approved
-participants, closes registration, and permanently locks that stage's type, scheme, scoring,
-and seeding. Managers can change the unstarted play-off while the first stage runs. Swiss is
-not implemented. Overall tournament completion remains a manager action.
-The first explicit Classic stage start records the tournament's actual start and opens
-lobby assembly. Round packet permissions, prescribed rosters, and deadlines
-continue to govern game starts.
+Settings provides optional first (groups, Swiss, solo quiz) and play-off stages. Explicitly
+starting a configured stage activates approved players, closes registration, locks its type,
+scheme, scoring and seeds, and opens lobby assembly. Unstarted play-offs remain editable.
+Managers complete tournaments manually. Round permissions, rosters and deadlines govern play.
 
-The bundled scheme library contains nine group schedules, Top-8/16/32/64 play-offs, and
-Top-8/16/32 double elimination. It transcribes the supplied CSVs. In Top-32 DE round 4,
-references to round 3 games 5–6 places 1–2 are corrected to games 1–2 places 3–4.
-Advancement references are validated and copied into persistent match records at stage start.
+The CSV-derived library contains nine group schedules, Top-8/16/32/64 play-offs and Top-8/16/32
+double elimination. Top-32 DE round 4 references to round 3 games 5–6 places 1–2 are corrected
+to games 1–2 places 3–4. Validated advancement references are persisted at stage start.
 
-A group scheme fixes group size and games per player. There is no built-in limit on group
-count. Automatic seeding uses ruleset ratings (1000 for unrated players), snake distribution,
-then swaps players to reduce differences between group medians. Managers can randomize or
-edit every slot before starting. They can change the scheme or revoke approved registrations
-before any stage starts. Any unfilled slots become **Chairs**.
+Group schemes fix group size and games per player; group count is unlimited. Automatic seeding
+uses ruleset ratings (unrated: 1000), snake distribution and swaps to balance group medians.
+Before starting, managers may randomize/edit seeds, change schemes or revoke registrations.
+Vacancies become **Chairs**.
 
-Chairs are passive game participants: automatically joined, always at zero, excluded from
-actions, ratings, and suspicion calculations. They occupy places, including finishing above
-negative-scoring humans. They can advance through brackets. Games containing only Chairs
-resolve automatically. Chairs are excluded from first-stage qualification standings.
+Swiss uses configurable rounds/game size, automatic rating seeds and adaptive pairings;
+see [Swiss rules](classic-swiss.md) for pairing and opponent-place tiebreak details.
 
-Each group game awards configurable place points (default 4, 3, 2, 1), plus the player's
-score multiplied by the configurable coefficient (default 0.02). Shared places receive the
-mean of the occupied place awards. First-stage standings sum these points across all games
-and groups. Quiz entrants play one solo game and rank by score. SI stage ties compare summed
-score without penalties, then correct-answer counts at descending question values. Remaining
-equality is resolved by a persisted random seed for reproducible qualification and bracket slots.
+Chairs automatically join, stay at zero, occupy places and can advance, but cannot act and
+do not affect ratings, suspicion or qualification standings. They beat negative-scoring humans.
+All-Chair games resolve automatically.
 
-Play-off takes the highest first-stage finishers in order, up to the scheme's capacity, with
-Chairs filling vacancies. Without a first stage, managers seed approved players randomly or
-manually; excess registrations must be revoked or accommodated by another scheme.
-Play-off advancement uses game ranking only; place points and score multipliers apply only
-to the first stage and are omitted from play-off settings.
+Group/Swiss games award configurable place points (default 4, 3, 2, 1) plus score × coefficient
+(default 0.02); shared places average occupied awards. Standings sum these across games/groups.
+Quiz entrants play once solo and rank by score. Group/quiz ties compare summed unpenalized score,
+then correct-answer counts at descending values. Remaining ties use a persisted random seed.
 
-Each round selects one published tournament packet and independent discoverability/playability
-switches for its prescribed participants. A packet cannot serve two rounds in the same
-tournament. Round discovery/play switches inherit the assigned packet's member defaults
-(or tournament defaults before packet selection), unless explicitly overridden. Unstarted
-rounds from older setups inherit defaults after migration; existing started-round choices
-are preserved. Unstarted
-stages show these configured values with a warning and disabled switches; actual access
-still requires a started stage. Packets and deadlines can be prepared
-before starting. After a human game starts or resolves, the round's packet is locked. General packet
-accessibility controls only reading. Reading still requires the existing release/access rules.
-Selecting a round packet sends lobby members its roster or solo restriction. Readiness and
-game assignment recheck exact human membership, round access, and the deadline. A prescribed
-game can be assigned only once; failed or cancelled attempts can retry subject to exposure rules.
-Round cards show game details in a separate **Game statuses** window.
+Play-offs take top first-stage finishers up to capacity, padding with Chairs. Without a first
+stage, managers seed randomly/manually and must revoke excess registrations or enlarge the
+scheme. Advancement uses game ranking; play-off settings omit first-stage scoring parameters.
 
-Round deadlines are **game start** cutoffs: successful lobby assignment counts as starting.
-Assigned games retain normal join deadlines and finish normally. Unstarted games receive
-random places, zero scores, and the corresponding place awards. A durable reconciliation job
-records results once, resolves bracket dependencies, and completes stages after all results
-are final, including appeals. Restarting or retrying a job does not reroll results.
+Each round uses one published packet, never reused within the tournament. Discovery/play switches
+inherit packet member defaults (tournament defaults before selection) unless overridden. Migration
+preserves started-round choices; unstarted rounds inherit defaults. Unstarted stages show disabled
+switches and a warning; access requires stage start. Packets/deadlines can be prepared beforehand;
+packets lock after a human game starts or resolves. General packet access governs reading only,
+subject to release rules. Packet selection announces the roster/solo restriction. Readiness and
+assignment recheck exact human membership, access and deadline. Each match permits one assignment;
+failed/cancelled attempts may retry subject to exposure rules. **Game statuses** shows game details.
+
+Deadlines cut off **game starts** (successful lobby assignment). Assigned games retain normal
+join deadlines and finish normally. Unstarted games receive random places, zero scores and place
+awards. Durable reconciliation records results once, resolves dependencies and completes stages
+after appeals/results finalize. Retries/restarts never reroll results.
 
 #### Classic match chats
 
-Every prescribed match that has not been played, whose roster is known, and whose round has
-an assigned packet with playable access owns a persistent chat shared by its human seats
-(Chairs are not members). Messages are stored transactionally and relayed through the
-outbox like lobby/game chat; a chat closes permanently once its match is assigned, has
-results, or the stage completes. Participants may set one shared, advisory
-`planned_at` per chat (overwriting or removing it), which posts a system message to the
-chat and creates player-role reminders 24 hours and one hour before that time. See
-[Telegram](telegram.md) for the chat interaction flows.
+Unplayed matches with known rosters and playable assigned packets own persistent chats for human
+seats. Transactional messages use the outbox. Chats close permanently on assignment, results or
+stage completion. Players may set/replace/remove a shared advisory `planned_at`, posting a system
+message and scheduling player reminders 24 hours and one hour beforehand. See [Telegram](telegram.md).
 
 ## Tournament settings
 

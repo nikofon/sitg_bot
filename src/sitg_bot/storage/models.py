@@ -1187,6 +1187,8 @@ class ClassicStageRecord(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     stage_type: Mapped[str] = mapped_column(String(16), nullable=False)
     scheme_key: Mapped[str | None] = mapped_column(String(40))
+    round_count: Mapped[int | None] = mapped_column(Integer)
+    players_per_game: Mapped[int | None] = mapped_column(Integer)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seeds: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -1199,7 +1201,13 @@ class ClassicStageRecord(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("tournament_id", "kind"),
         CheckConstraint("kind IN ('first', 'playoff')"),
-        CheckConstraint("stage_type IN ('none', 'groups', 'quiz', 'playoff')"),
+        CheckConstraint("stage_type IN ('none', 'groups', 'quiz', 'swiss', 'playoff')"),
+        CheckConstraint(
+            "stage_type != 'swiss' OR (kind = 'first' AND round_count IS NOT NULL "
+            "AND round_count >= 1 AND players_per_game IS NOT NULL "
+            "AND players_per_game BETWEEN 2 AND 12)",
+            name="swiss_configuration",
+        ),
     )
 
 

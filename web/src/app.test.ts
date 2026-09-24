@@ -873,6 +873,49 @@ describe("MiniAppShell", () => {
     expect(saved.field_author_ids["themes.0.questions.0.author"]).toBe("ada");
   });
 
+  it("saves manager-selected Swiss round count, game size, and scoring", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/ref/settings");
+    const resource = {
+      kind: "manager_settings", state: "ready", settings_version: 4, finalized_at: "2026-09-01",
+      available_actions: ["update_metadata"], policies: {}, default_parameters: {},
+      player_mutable_parameters: [], author_names: [], authors: [], registration_requirements: [],
+      type_options: ["classic"], ruleset_options: ["si"], registration_enabled: false,
+      ignore_late_registrations: true, packet_assignment_count: 0, membership_count: 64,
+      manager_count: 1, classic: { stages: [], schemes: [], players: [] },
+      tournament: { id: "cup", name: "Cup", slug: "cup", description: "", status: "active",
+        type_key: "classic", ruleset_key: "si", visibility: "public", language: "en",
+        payment_type: "free", pricing_plans: [], authors: [] },
+    };
+    const mutations: Array<Record<string, any>> = [];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      if (String(url).endsWith("/classic")) {
+        mutations.push(JSON.parse(String(options?.body)));
+        return response(resource);
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector(".classic-settings")).not.toBeNull());
+    const first = root.querySelector<HTMLFieldSetElement>(".classic-settings fieldset")!;
+    const type = first.querySelector<HTMLSelectElement>("select")!;
+    type.value = "swiss";
+    type.dispatchEvent(new Event("change"));
+    const input = (label: string) => Array.from(first.querySelectorAll("label"))
+      .find((item) => item.textContent === label)!.querySelector<HTMLInputElement>("input")!;
+    expect(input("Rounds").closest("div")!.hidden).toBe(false);
+    input("Rounds").value = "8";
+    input("Players per game").value = "3";
+    first.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() => expect(mutations).toHaveLength(1));
+    expect(mutations[0]).toMatchObject({ expected_version: 4, command: "configure", kind: "first",
+      values: { stage_type: "swiss", round_count: 8, players_per_game: 3,
+        place_points: ["4", "3", "2", "1"], score_multiplier: "0.02" } });
+  });
+
   it("saves Classic round access, manual seeding, and stage starts with current versions", async () => {
     window.history.replaceState({}, "", "/manager/tournaments/ref/management");
     const stage = { kind: "first", stage_type: "groups", scheme_key: "groups-9-4", started_at: null as string | null,

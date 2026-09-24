@@ -7,7 +7,6 @@ Existing behavior belongs in the linked subsystem guides.
 
 | Area | Remaining work and implementation direction |
 | --- | --- |
-| Classic tournaments | Add a Swiss first-stage algorithm. Groups, quiz, play-offs, double elimination, Chairs, and round deadlines are implemented. See [tournaments](tournaments.md). |
 | Historical packet access | Define post-game/post-tournament visibility beyond current library entitlements. See [packets](packet-administration.md). |
 | Member uploads and moderation | Extend the existing manager upload and correction/substitution workflow. Decide upload/publication permissions, review requirements, cross-tournament assignment consent, quotas, copyright handling, and source/draft retention. |
 | Additional rulesets | Generalize SI-specific execution persistence before registering another ruleset. Define content-schema compatibility and meaningful cross-ruleset statistics; preserve the existing assignment/claim contract. See [game rulesets](game-rulesets.md). |

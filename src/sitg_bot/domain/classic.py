@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from importlib.resources import files
+from itertools import combinations
 from statistics import median
 
 
@@ -102,6 +103,84 @@ def competition_points(place: Decimal, occupied: int, points: list[str]) -> Deci
     )
 
 
+def swiss_pairings(seeds: list[str], size: int, matches: list) -> list[list[str]]:
+    """Pair rating-ordered seeds, then prefer fresh opponents with nearby stage points.
+
+    The first round draws one seed from each rating band. Later rounds greedily
+    minimize previous encounters, then score distance; pair swaps improve that
+    same objective. Repeats remain possible when the search cannot avoid them.
+    Chairs fill the configured game size but do not count as opponents.
+    """
+    if not 2 <= size <= 12 or not seeds or len(seeds) % size or len(set(seeds)) != len(seeds):
+        raise ValueError("Swiss requires unique seeds filling games of two to twelve players")
+    if any(match.results is None for match in matches):
+        raise ValueError("Finish every game before pairing the next Swiss round")
+    if not matches:
+        count = len(seeds) // size
+        return [seeds[offset::count] for offset in range(count)]
+
+    points = dict.fromkeys(seeds, Decimal(0))
+    encounters: Counter = Counter()
+    for match in matches:
+        players = []
+        for result in match.results:
+            seat = result["seat"]
+            if seat.startswith("chair:"):
+                continue
+            points[seat] += Decimal(result["points"])
+            players.append(seat)
+        encounters.update(frozenset(pair) for pair in combinations(players, 2))
+    seed_order = {seat: index for index, seat in enumerate(seeds)}
+    ordered = sorted(
+        seeds, key=lambda seat: (seat.startswith("chair:"), -points[seat], seed_order[seat])
+    )
+    rank = {seat: index for index, seat in enumerate(ordered)}
+
+    def pair_cost(left: str, right: str) -> tuple[int, Decimal]:
+        if left.startswith("chair:") or right.startswith("chair:"):
+            return 0, Decimal(0)
+        return encounters[frozenset((left, right))], abs(points[left] - points[right])
+
+    def cost(group: list[str]) -> tuple[int, Decimal]:
+        costs = [pair_cost(left, right) for left, right in combinations(group, 2)]
+        return sum(c[0] for c in costs), sum((c[1] for c in costs), Decimal(0))
+
+    groups = []
+    remaining = list(ordered)
+    while remaining:
+        group = [remaining.pop(0)]
+        while len(group) < size:
+            seat = min(
+                remaining, key=lambda candidate: (*cost([*group, candidate]), rank[candidate])
+            )
+            remaining.remove(seat)
+            group.append(seat)
+        groups.append(group)
+    for _ in range(8):
+        improved = False
+        for left, right in combinations(groups, 2):
+            left_cost, right_cost = cost(left), cost(right)
+            best_cost = tuple(a + b for a, b in zip(left_cost, right_cost, strict=True))
+            best_swap = None
+            for i in range(size):
+                for j in range(size):
+                    left[i], right[j] = right[j], left[i]
+                    after = tuple(a + b for a, b in zip(cost(left), cost(right), strict=True))
+                    left[i], right[j] = right[j], left[i]
+                    if after < best_cost:
+                        best_cost, best_swap = after, (i, j)
+            if best_swap is not None:
+                i, j = best_swap
+                left[i], right[j] = right[j], left[i]
+                improved = True
+        if not improved:
+            break
+    return sorted(
+        (sorted(group, key=rank.__getitem__) for group in groups),
+        key=lambda group: rank[group[0]],
+    )
+
+
 def order_results(results: list[dict], *, seed: str) -> list[dict]:
     """Resolve any remaining equality reproducibly for unique bracket positions."""
     ordered = list(results)
@@ -165,7 +244,7 @@ def playoff_places(
     ]
 
 
-def standings(matches: list, *, quiz: bool, seed: str) -> list[dict]:
+def standings(matches: list, *, quiz: bool, seed: str, swiss: bool = False) -> list[dict]:
     totals: dict[str, dict] = {}
     for match in matches:
         for result in match.results or []:
@@ -190,4 +269,28 @@ def standings(matches: list, *, quiz: bool, seed: str) -> list[dict]:
         ]
         item["points"], item["score"] = str(item["points"]), str(item["score"])
         rows.append(item)
+    if swiss:
+        # Opponent places use stage points alone, avoiding a circular tiebreak.
+        ordered = sorted(rows, key=lambda row: Decimal(row["points"]), reverse=True)
+        places = {}
+        index = 0
+        while index < len(ordered):
+            end = index + 1
+            while end < len(ordered) and Decimal(ordered[end]["points"]) == Decimal(
+                ordered[index]["points"]
+            ):
+                end += 1
+            place = Decimal(index + 1 + end) / 2
+            places.update((row["seat"], place) for row in ordered[index:end])
+            index = end
+        opponents: dict[str, list[str]] = {seat: [] for seat in totals}
+        for match in matches:
+            players = [r["seat"] for r in match.results or [] if not r["seat"].startswith("chair:")]
+            for player in players:
+                opponents[player].extend(opponent for opponent in players if opponent != player)
+        for row in rows:
+            # Count every encounter, including an unavoidable repeat; exclude Chairs.
+            total = sum((places[p] for p in opponents[row["seat"]]), Decimal(0))
+            row["opponent_place_sum"] = str(total)
+            row["key"] = [row["points"], str(-total)]
     return order_results(rows, seed=seed)

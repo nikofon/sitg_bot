@@ -16,6 +16,7 @@ from sitg_bot.domain.classic import (
     competition_points,
     order_results,
     standings,
+    swiss_pairings,
 )
 from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
 from sitg_bot.services.concurrency import StaleWriteError
@@ -194,13 +195,23 @@ class ClassicService:
         self, session: AsyncSession, stage: ClassicStageRecord, values: dict
     ) -> None:
         stage_type = values.get("stage_type", "none")
-        allowed = {"none", "groups", "quiz"} if stage.kind == "first" else {"none", "playoff"}
+        allowed = (
+            {"none", "groups", "quiz", "swiss"} if stage.kind == "first" else {"none", "playoff"}
+        )
         if stage_type not in allowed:
-            raise ValueError("Unsupported stage type (Swiss is not implemented)")
+            raise ValueError("Unsupported stage type")
         scheme_key = values.get("scheme_key") if stage_type in {"groups", "playoff"} else None
         scheme = SCHEMES.get(scheme_key)
         if stage_type in {"groups", "playoff"} and (scheme is None or scheme["kind"] != stage_type):
             raise ValueError("Choose a scheme from the stage library")
+        round_count = players_per_game = None
+        if stage_type == "swiss":
+            round_count = values.get("round_count")
+            players_per_game = values.get("players_per_game")
+            if type(round_count) is not int or round_count < 1:
+                raise ValueError("Swiss round count must be a positive integer")
+            if type(players_per_game) is not int or not 2 <= players_per_game <= 12:
+                raise ValueError("Swiss games require between two and twelve players")
         if stage.kind == "first":
             points = values.get("place_points", ["4", "3", "2", "1"])
             if not isinstance(points, list) or not 1 <= len(points) <= 12:
@@ -210,14 +221,20 @@ class ClassicService:
         else:
             stage.place_points = []
             stage.score_multiplier = Decimal(0)
-        changed = stage.stage_type != stage_type or stage.scheme_key != scheme_key
+        changed = (
+            stage.stage_type != stage_type or stage.scheme_key != scheme_key
+            or stage.round_count != round_count or stage.players_per_game != players_per_game
+        )
         stage.stage_type, stage.scheme_key = stage_type, scheme_key
+        stage.round_count, stage.players_per_game = round_count, players_per_game
         if changed:
             stage.seeds = []
             await session.execute(
                 delete(ClassicRoundRecord).where(ClassicRoundRecord.stage_id == stage.id)
             )
-            count = scheme["round_count"] if scheme else (1 if stage_type == "quiz" else 0)
+            count = round_count or (scheme["round_count"] if scheme else (
+                1 if stage_type == "quiz" else 0
+            ))
             session.add_all(
                 ClassicRoundRecord(stage_id=stage.id, number=n) for n in range(1, count + 1)
             )
@@ -229,6 +246,24 @@ class ClassicService:
         ids = {str(p.id) for p in players}
         if not ids:
             raise ValueError("Approve participants before seeding")
+        if stage.stage_type == "swiss":
+            if values.get("mode", "automatic") != "automatic":
+                raise ValueError("Swiss seeding is automatic by global ruleset rating")
+            if len(ids) < 2:
+                raise ValueError("Swiss requires at least two approved participants")
+            ratings = dict(
+                (str(player_id), Decimal(rating))
+                for player_id, rating in (
+                    await session.execute(
+                        select(RulesetRatingRecord.player_id, RulesetRatingRecord.rating).where(
+                            RulesetRatingRecord.ruleset_key == ruleset_key,
+                            RulesetRatingRecord.player_id.in_([p.id for p in players]),
+                        )
+                    )
+                ).all()
+            )
+            ordered = sorted(ids, key=lambda p: (-ratings.get(p, Decimal(1000)), p))
+            return [ordered + [None] * (-len(ordered) % stage.players_per_game)]
         size = SCHEMES[stage.scheme_key]["size"] if stage.scheme_key else 1
         if stage.kind == "playoff" and len(ids) > size:
             raise ValueError("Too many participants: change the scheme or revoke registrations")
@@ -341,10 +376,13 @@ class ClassicService:
                 await self.matches(session, first.id),
                 quiz=first.stage_type == "quiz",
                 seed=first.random_seed,
+                swiss=first.stage_type == "swiss",
             )
             size = SCHEMES[stage.scheme_key]["size"]
             seeds = [r["seat"] for r in ranking[:size]]
             stage.seeds = [seeds + [None] * (size - len(seeds))]
+        elif stage.stage_type == "swiss":
+            stage.seeds = await self._seed(session, stage, ruleset_key, {"mode": "automatic"})
         else:
             if not stage.seeds:
                 stage.seeds = await self._seed(session, stage, ruleset_key, {"mode": "automatic"})
@@ -371,6 +409,11 @@ class ClassicService:
         tournament.registration_open = False
         tournament.participants_finalized_at = now
         rounds = {r.number: r for r in await self.rounds(session, stage.id)}
+        if stage.stage_type == "swiss":
+            self._pair_swiss_round(session, stage, rounds[1], [])
+            await session.flush()
+            await self._reconcile(session, tournament.id)
+            return
         for group_number, group in enumerate(stage.seeds, 1):
             games = (
                 SCHEMES[stage.scheme_key]["games"]
@@ -395,6 +438,17 @@ class ClassicService:
                 )
         await session.flush()
         await self._reconcile(session, tournament.id)
+
+    @staticmethod
+    def _pair_swiss_round(
+        session: AsyncSession, stage: ClassicStageRecord, round_record: ClassicRoundRecord,
+        matches: list,
+    ) -> None:
+        seeds = [seat for group in stage.seeds for seat in group]
+        for number, seats in enumerate(swiss_pairings(seeds, stage.players_per_game, matches), 1):
+            session.add(ClassicMatchRecord(
+                round_id=round_record.id, group_number=1, number=number, sources=[], seats=seats,
+            ))
 
     async def reconcile(self) -> None:
         async with self.database.sessions() as session:
@@ -462,7 +516,13 @@ class ClassicService:
                     ]
                     match.randomized = True
             if matches and all(m.results is not None for m in matches):
-                stage.completed_at = now
+                last_round = max(rounds[m.round_id].number for m in matches)
+                if stage.stage_type == "swiss" and last_round < stage.round_count:
+                    next_round = next(r for r in rounds.values() if r.number == last_round + 1)
+                    self._pair_swiss_round(session, stage, next_round, matches)
+                    await session.flush()
+                else:
+                    stage.completed_at = now
 
     @staticmethod
     async def _collect_results(
@@ -675,8 +735,9 @@ class ClassicService:
         for stage in await self.stages(session, tournament_id):
             matches = await self.matches(session, stage.id)
             ranking = (
-                standings(matches, quiz=stage.stage_type == "quiz", seed=stage.random_seed)
-                if stage.stage_type in {"groups", "quiz"} else []
+                standings(matches, quiz=stage.stage_type == "quiz", seed=stage.random_seed,
+                          swiss=stage.stage_type == "swiss")
+                if stage.stage_type in {"groups", "quiz", "swiss"} else []
             )
             for row in ranking:
                 row["name"] = names.get(row["seat"], row["seat"])
@@ -685,6 +746,8 @@ class ClassicService:
                     "kind": stage.kind,
                     "stage_type": stage.stage_type,
                     "scheme_key": stage.scheme_key,
+                    "round_count": stage.round_count,
+                    "players_per_game": stage.players_per_game,
                     "started_at": stage.started_at,
                     "completed_at": stage.completed_at,
                     "seeds": stage.seeds,

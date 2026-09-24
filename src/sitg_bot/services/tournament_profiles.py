@@ -401,9 +401,10 @@ class TournamentProfileService:
         projected = []
         for stage in await self._stage_rows(session, tournament.id):
             matches = await self._stage_matches(session, stage.id)
-            if stage.kind == "first" and stage.stage_type in {"groups", "quiz"}:
+            if stage.kind == "first" and stage.stage_type in {"groups", "quiz", "swiss"}:
                 ranking = standings(
-                    matches, quiz=stage.stage_type == "quiz", seed=stage.random_seed
+                    matches, quiz=stage.stage_type == "quiz", seed=stage.random_seed,
+                    swiss=stage.stage_type == "swiss",
                 )
                 projected.append(
                     {
@@ -415,6 +416,8 @@ class TournamentProfileService:
                                 "nickname": names.get(row["seat"], row["seat"]),
                                 "points": row["points"],
                                 "score": row["score"],
+                                **({"opponent_place_sum": row["opponent_place_sum"]}
+                                   if stage.stage_type == "swiss" else {}),
                             }
                             for row in ranking
                             if not is_chair(row["seat"])
@@ -518,4 +521,3 @@ class TournamentProfileService:
             )
         ).all()
         return [(str(player_id), nickname, rating) for player_id, nickname, rating in rows]
-

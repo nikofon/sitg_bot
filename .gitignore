@@ -32,3 +32,5 @@ rating-simulation-output/
 /Scheme Library - Groups.csv
 /Scheme Library - Play-off _ DE.csv
 Packets-for-parcer-update/
+/scripts/simulate_swiss.py
+swiss-simulation-output/

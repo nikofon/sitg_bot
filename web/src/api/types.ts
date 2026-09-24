@@ -158,7 +158,7 @@ export interface TournamentProfileMatch {
 
 export interface TournamentProfileStage {
   kind: "first" | "playoff";
-  stage_type: "none" | "groups" | "quiz" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "swiss" | "playoff";
   scheme_key: string | null;
   started_at?: string | null;
   completed_at?: string | null;
@@ -168,12 +168,13 @@ export interface TournamentProfileStage {
 
 export interface TournamentProfileLeadersStage {
   kind: "first" | "playoff";
-  stage_type: "none" | "groups" | "quiz" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "swiss" | "playoff";
   standings?: Array<{
     player_id: string;
     nickname: string;
     points: string;
     score: string;
+    opponent_place_sum?: string;
   }>;
   places?: Array<{ player_id: string; nickname: string; place: string }>;
 }
@@ -306,14 +307,16 @@ export interface TournamentManagerManagementResource {
 
 export interface ClassicStage {
   kind: "first" | "playoff";
-  stage_type: "none" | "groups" | "quiz" | "playoff";
+  stage_type: "none" | "groups" | "quiz" | "swiss" | "playoff";
   scheme_key: string | null;
+  round_count?: number | null;
+  players_per_game?: number | null;
   started_at: string | null;
   completed_at: string | null;
   seeds: Array<Array<string | null>>;
   place_points: string[];
   score_multiplier: string;
-  standings: Array<{ seat: string; name: string; points: string; score: string }>;
+  standings: Array<{ seat: string; name: string; points: string; score: string; opponent_place_sum?: string }>;
   rounds: Array<{
     id: string; number: number; assignment_id: string | null;
     discoverable: boolean; playable: boolean; start_deadline: string | null;

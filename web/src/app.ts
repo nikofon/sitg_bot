@@ -1883,15 +1883,21 @@ export class MiniAppShell {
       const stage = classic.stages.find((s) => s.kind === kind);
       const locked = !!stage?.started_at || (kind === "first" && classic.stages.some((s) => s.kind === "playoff" && s.started_at));
       const type = element("select", {}, ...(
-        kind === "first" ? ["none", "groups", "quiz"] : ["none", "playoff"]
+        kind === "first" ? ["none", "groups", "quiz", "swiss"] : ["none", "playoff"]
       ).map((value) => element("option", { value, selected: value === (stage?.stage_type ?? "none") },
         this.i18n.t(`classic.${value}` as MessageKey))));
       const scheme = element("select", {});
+      const rounds = element("input", { type: "number", min: "1", step: "1", value: String(stage?.round_count ?? 6) });
+      const gameSize = element("input", { type: "number", min: "2", max: "12", step: "1", value: String(stage?.players_per_game ?? 4) });
+      const swissFields = element("div", {},
+        element("label", {}, this.i18n.t("classic.rounds"), rounds),
+        element("label", {}, this.i18n.t("classic.players_per_game"), gameSize));
       const refresh = (): void => {
         replaceChildren(scheme, ...classic.schemes.filter((s) => s.kind === type.value).map((s) =>
           element("option", { value: s.id, selected: s.id === stage?.scheme_key },
             `${s.id} · ${s.size} ${this.i18n.t("classic.players")} · ${s.round_count} ${this.i18n.t("classic.rounds")}`)));
         scheme.disabled = locked || !["groups", "playoff"].includes(type.value);
+        swissFields.hidden = type.value !== "swiss";
       };
       type.addEventListener("change", refresh);
       refresh();
@@ -1901,10 +1907,12 @@ export class MiniAppShell {
         element("legend", {}, this.i18n.t(kind === "first" ? "manager_management.first_stage" : "manager_management.playoff_stage")),
         element("label", {}, this.i18n.t("classic.type"), type),
         element("label", {}, this.i18n.t("classic.scheme"), scheme),
+        kind === "first" ? swissFields : null,
         kind === "first" ? element("label", {}, this.i18n.t("classic.points"), points) : null,
         kind === "first" ? element("label", {}, this.i18n.t("classic.multiplier"), multiplier) : null,
         element("button", { type: "button", className: "primary-button", onclick: (() => void this.mutateClassic(route, version, "configure", kind, {
           stage_type: type.value, scheme_key: scheme.value || null,
+          ...(type.value === "swiss" ? { round_count: Number(rounds.value), players_per_game: Number(gameSize.value) } : {}),
           ...(kind === "first" ? {
             place_points: points.value.split(",").map((p) => p.trim()), score_multiplier: multiplier.value,
           } : {}),
@@ -1956,8 +1964,8 @@ export class MiniAppShell {
       ));
     }
     if (stage.standings.length) container.append(element("table", {},
-      element("thead", {}, element("tr", {}, ...["classic.players", ...(stage.stage_type === "quiz" ? [] : ["classic.total_points"]), "classic.score"].map((k) => element("th", {}, this.i18n.t(k as MessageKey))))),
-      element("tbody", {}, ...stage.standings.map((row) => element("tr", {}, element("td", {}, row.name), stage.stage_type === "quiz" ? null : element("td", {}, row.points), element("td", {}, row.score))))));
+      element("thead", {}, element("tr", {}, ...["classic.players", ...(stage.stage_type === "quiz" ? [] : ["classic.total_points"]), "classic.score", ...(stage.stage_type === "swiss" ? ["classic.opponent_place_sum"] : [])].map((k) => element("th", {}, this.i18n.t(k as MessageKey))))),
+      element("tbody", {}, ...stage.standings.map((row) => element("tr", {}, element("td", {}, row.name), stage.stage_type === "quiz" ? null : element("td", {}, row.points), element("td", {}, row.score), stage.stage_type === "swiss" ? element("td", {}, row.opponent_place_sum ?? "—") : null)))));
     return container;
   }
 
@@ -1968,6 +1976,15 @@ export class MiniAppShell {
     const stage = first ?? classic.stages.find((s) => s.kind === "playoff" && s.stage_type !== "none");
     if (!stage) return element("p", {}, this.i18n.t("classic.configure_first"));
     const locked = !!stage.started_at || resource.tournament.status !== "active";
+    if (stage.stage_type === "swiss") {
+      container.append(element("p", {}, this.i18n.t("classic.swiss_seeding_help")),
+        element("button", { type: "button", className: "secondary-button", disabled: locked,
+          onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, { mode: "automatic" })) as EventListener,
+        }, this.i18n.t("classic.automatic")),
+        element("ol", {}, ...stage.seeds.flat().filter((seat) => seat && !seat.startsWith("chair:")).map((seat) =>
+          element("li", {}, classic.players.find((player) => player.id === seat)?.name ?? seat))));
+      return container;
+    }
     container.append(element("p", {}, this.i18n.t("classic.seeding_help")));
     for (const mode of ["automatic", "random"] as const) container.append(element("button", {
       type: "button", className: "secondary-button", disabled: locked,

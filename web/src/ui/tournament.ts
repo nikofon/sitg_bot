@@ -356,7 +356,7 @@ function gamesPanel(
     groupSelect.value = String(state.groupIndex);
     controls.append(element("label", {}, `${i18n.t("tournament_profile.group")}: `, groupSelect));
   }
-  if (stage.kind === "playoff" || grouped) {
+  if (stage.kind === "playoff" || grouped || stage.stage_type === "swiss") {
     if (state.roundIndex >= stage.rounds.length) state.roundIndex = 0;
     controls.append(
       element(
@@ -505,6 +505,7 @@ function leadersPanel(
             element("th", { scope: "col" }, i18n.t("tournament_profile.participant")),
             element("th", { scope: "col" }, i18n.t("tournament_profile.points")),
             element("th", { scope: "col" }, i18n.t("tournament_profile.score")),
+            stage.stage_type === "swiss" ? element("th", { scope: "col" }, i18n.t("classic.opponent_place_sum")) : null,
           ),
         ),
         element(
@@ -518,6 +519,7 @@ function leadersPanel(
               element("td", {}, playerAnchor(row, handlers.openPlayer)),
               element("td", {}, row.points),
               element("td", {}, row.score),
+              stage.stage_type === "swiss" ? element("td", {}, row.opponent_place_sum ?? "—") : null,
             ),
           ),
         ),
@@ -661,4 +663,3 @@ function playerAnchor(
     participant.nickname,
   );
 }
-

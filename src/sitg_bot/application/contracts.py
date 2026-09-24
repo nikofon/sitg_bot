@@ -428,8 +428,10 @@ class TournamentManagerManagementLinkOperation(ContractModel):
 
 
 class ClassicConfigurationValues(ContractModel):
-    stage_type: Literal["none", "groups", "quiz", "playoff"]
+    stage_type: Literal["none", "groups", "quiz", "swiss", "playoff"]
     scheme_key: str | None = None
+    round_count: int | None = Field(default=None, ge=1, strict=True)
+    players_per_game: int | None = Field(default=None, ge=2, le=12, strict=True)
     place_points: list[str | float] = Field(
         default_factory=lambda: ["4", "3", "2", "1"], min_length=1, max_length=12
     )
