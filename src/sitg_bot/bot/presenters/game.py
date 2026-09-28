@@ -75,8 +75,27 @@ def join_message(view, localization, locale):
                 total=len(view["participants"]),
             )
         )
+    text = localization.text("flow.created", locale)
+    details = []
+    if view.get("tournament_name"):
+        details.append(
+            localization.text(
+                "game.info.tournament", locale, tournament=view["tournament_name"]
+            )
+        )
+    if view.get("packet_names"):
+        details.append(
+            localization.text(
+                "game.info.packets", locale, packets=", ".join(view["packet_names"])
+            )
+        )
+    names = [p["name"] for p in view.get("participants") or ()]
+    if names:
+        details.append(localization.text("game.info.players", locale, players=", ".join(names)))
+    if details:
+        text += "\n" + "\n".join(details)
     return MessageModel(
-        localization.text("flow.created", locale),
+        text,
         InlineKeyboardModel(
             rows=(
                 (

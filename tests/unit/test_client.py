@@ -206,6 +206,13 @@ def console() -> tuple[InteractiveConsole, RecordingClient]:
     return interactive, client
 
 
+def test_theme_count_setting_accepts_the_maximum_sentinel() -> None:
+    assert InteractiveConsole._setting_value("theme_count", "max") == "max"
+    assert InteractiveConsole._setting_value("theme_count", " MAX ") == "max"
+    assert InteractiveConsole._setting_value("theme_count", "8") == 8
+    assert InteractiveConsole._setting_value("question_token_target_chars", "18") == 18
+
+
 async def test_manager_selection_scopes_info_settings_and_finalization(
     console: tuple[InteractiveConsole, RecordingClient],
 ) -> None:

@@ -285,7 +285,21 @@ def test_reply_keyboard_layout_and_stable_join_callback(locale):
     assert len(join.keyboard.rows) == 1
     assert join.keyboard.rows[0][0].callback_data == f"gamejoin:{UUID(GAME).hex}"
     if locale == "ru":
-        assert html.unescape(join.text) == 'Ваша игра создана, нажмите "Присоединиться"'
+        assert html.unescape(join.text).startswith('Ваша игра создана, нажмите "Присоединиться"')
+        assert "Игроки: Me, Other <b>, Third" in html.unescape(join.text)
+
+
+def test_join_message_includes_tournament_packets_and_players():
+    localization = LocalizationService()
+    snapshot = view(status="lobby")
+    snapshot["tournament_name"] = "<Cup>"
+    snapshot["packet_names"] = ["Packet A", "Packet B"]
+    join = join_message(snapshot, localization, "en")
+    text = html.unescape(join.text)
+    assert text.startswith('Your game has been created. Press "Join".')
+    assert "Tournament: <Cup>" in text
+    assert "Packets: Packet A, Packet B" in text
+    assert "Players: Me, Other <b>, Third" in text
 
 
 def test_final_scores_and_ratings_are_separate_and_preserve_shared_places():

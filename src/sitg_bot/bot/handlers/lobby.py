@@ -1,13 +1,12 @@
+import html
 import re
 from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from sitg_bot.application.contracts import ErrorCode
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.keyboards.common import navigation_keyboard
@@ -15,13 +14,79 @@ from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel, MessageModel
 from sitg_bot.bot.presenters.render import send_message_model
-from sitg_bot.bot.state import BotBackend, GatewayCallError, NavigationState
+from sitg_bot.bot.state import BotBackend, NavigationState
 
 router = Router(name=__name__)
 
 
-class LobbyInviteState(StatesGroup):
-    username = State()
+def _format_rating(value: object) -> str:
+    if value is None:
+        return "—"
+    return f"{float(value):g}"
+
+
+def lobby_info_text(lobby: dict, localization: LocalizationService, locale: str) -> str:
+    """Project a lobby snapshot into a readable participant overview."""
+
+    creator_id = lobby.get("creator_telegram_user_id")
+    members = lobby.get("members") or []
+
+    def ratings(member: dict) -> str:
+        return localization.text(
+            "lobby.info.ratings",
+            locale,
+            global_rating=_format_rating(member.get("global_rating")),
+            tournament_rating=_format_rating(member.get("tournament_rating")),
+        )
+
+    def owner(member: dict) -> str:
+        if creator_id is not None and member.get("telegram_user_id") == creator_id:
+            return localization.text("lobby.info.owner", locale)
+        return ""
+
+    lines = [
+        localization.text(
+            "lobby.info.title", locale, tournament=lobby.get("tournament_name") or ""
+        )
+    ]
+    players = [member for member in members if member.get("role") == "player"]
+    observers = [member for member in members if member.get("role") == "observer"]
+    if players:
+        lines.append(localization.text("lobby.info.players", locale))
+        for member in players:
+            lines.append(
+                localization.text(
+                    "lobby.info.player_line",
+                    locale,
+                    icon="✅" if member.get("ready") else "⏳",
+                    name=member.get("display_name", ""),
+                    owner=owner(member),
+                    ratings=ratings(member),
+                    status=localization.text(
+                        "lobby.info.status_ready"
+                        if member.get("ready")
+                        else "lobby.info.status_unready",
+                        locale,
+                    ),
+                )
+            )
+    if observers:
+        lines.append(localization.text("lobby.info.observers", locale))
+        for member in observers:
+            lines.append(
+                localization.text(
+                    "lobby.info.observer_line",
+                    locale,
+                    name=member.get("display_name", ""),
+                    owner=owner(member),
+                    ratings=ratings(member),
+                )
+            )
+    packets = lobby.get("selected_packets") or []
+    if packets:
+        lines.append(localization.text("lobby.info.packets", locale))
+        lines.extend(f"• {html.escape(str(packet.get('name', '')))}" for packet in packets)
+    return "\n".join(lines)
 
 
 def automatic_packet_selection(lobby: dict) -> list[dict]:
@@ -148,65 +213,38 @@ async def handle_lobby_action(
     launch_links: str | None,
 ):
     await state.clear()
-    if lobby_action in {"back", "lobby.other"}:
-        context = (
-            "lobby_other"
-            if lobby_action == "lobby.other"
-            else ("lobby" if navigation.context == "lobby_other" else "tournament")
-        )
+    if lobby_action == "back":
+        context = "lobby" if navigation.context == "lobby_other" else "tournament"
         updated = await backend.lobby_context(
             telegram_update_claim, context=context, expected_version=navigation.navigation_version
         )
         await send_message_model(message, menu_message(updated, localization, locale))
         return
     lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
-    if lobby_action == "lobby.players":
-        lines = [localization.text("lobby.players", locale)]
-        for member in lobby["members"]:
-            lines.append(
-                localization.text(
-                    "lobby.member",
-                    locale,
-                    name=member["display_name"],
-                    role=localization.text(f"lobby.role.{member['role']}", locale),
-                    ready=localization.text(
-                        "button.lobby.ready" if member["ready"] else "button.lobby.unready", locale
-                    ),
-                )
+    if lobby_action == "lobby.info":
+        info = MessageModel(lobby_info_text(lobby, localization, locale))
+        await send_message_model(message, info)
+        if launch_links:
+            reference = await backend.lobby_link(
+                telegram_update_claim, lobby_id=navigation.active_lobby.id
             )
-        await send_message_model(message, MessageModel("\n".join(lines)))
-    elif lobby_action == "lobby.invite":
-        await state.set_state(LobbyInviteState.username)
-        await state.update_data(lobby_id=str(navigation.active_lobby.id))
-        await send_message_model(
-            message, MessageModel(localization.text("lobby.invite_prompt", locale))
-        )
-    elif lobby_action in {"lobby.packets", "lobby.options"}:
-        if not launch_links:
+            url = mini_app_launch_url(launch_links, "lobbies", reference) + "&section=settings"
             await send_message_model(
-                message, MessageModel(localization.text("error.capability_unavailable", locale))
-            )
-            return
-        reference = await backend.lobby_link(
-            telegram_update_claim, lobby_id=navigation.active_lobby.id
-        )
-        section = "packets" if lobby_action == "lobby.packets" else "settings"
-        url = mini_app_launch_url(launch_links, "lobbies", reference) + f"&section={section}"
-        await send_message_model(
-            message,
-            MessageModel(
-                localization.text("link.open_prompt", locale),
-                InlineKeyboardModel(
-                    rows=(
-                        (
-                            InlineButtonModel(
-                                localization.text(f"button.{lobby_action}", locale), web_app_url=url
+                message,
+                MessageModel(
+                    localization.text("lobby.info.settings_prompt", locale),
+                    InlineKeyboardModel(
+                        rows=(
+                            (
+                                InlineButtonModel(
+                                    localization.text("button.lobby.settings", locale),
+                                    web_app_url=url,
+                                ),
                             ),
                         ),
-                    )
+                    ),
                 ),
-            ),
-        )
+            )
     elif lobby_action == "lobby.start" and not lobby["selected_packets"]:
         packets = automatic_packet_selection(lobby)
         if not packets:
@@ -279,45 +317,6 @@ async def handle_lobby_action(
             )
             return
         await send_message_model(message, menu_message(updated, localization, locale))
-
-
-@router.message(LobbyInviteState.username)
-async def handle_invite_username(
-    message: Message,
-    backend: BotBackend,
-    telegram_update_claim: TelegramUpdateClaim,
-    localization: LocalizationService,
-    locale: str,
-    navigation: NavigationState,
-    state: FSMContext,
-):
-    if not re.fullmatch(r"@[A-Za-z0-9_]{5,32}", message.text or ""):
-        await send_message_model(
-            message, MessageModel(localization.text("lobby.invite_prompt", locale))
-        )
-        return
-    data = await state.get_data()
-    if navigation.active_lobby is None or str(navigation.active_lobby.id) != data.get("lobby_id"):
-        await state.clear()
-        await send_message_model(message, menu_message(navigation, localization, locale))
-        return
-    try:
-        await backend.lobby_action(
-            telegram_update_claim,
-            lobby_id=navigation.active_lobby.id,
-            action="invite",
-            expected_version=navigation.active_lobby.version,
-            username=message.text,
-        )
-    except GatewayCallError as error:
-        if error.error.code != ErrorCode.NOT_FOUND:
-            raise
-        await send_message_model(
-            message, MessageModel(localization.text("lobby.invitee_not_found", locale))
-        )
-        return
-    await state.clear()
-    await send_message_model(message, MessageModel(localization.text("lobby.invited", locale)))
 
 
 @router.callback_query(F.data.regexp(r"^lobbyjoin:[poc]:[A-Za-z0-9_-]{32}$"))

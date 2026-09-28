@@ -45,13 +45,7 @@ PLAYER_TOURNAMENT_ACTIONS = (
 LOBBY_ACTIONS = (
     ("lobby.ready", "lobby.unready"),
     ("lobby.start", "lobby.search", "lobby.search_cancel"),
-    ("lobby.players", "lobby.leave"),
-    ("back", "lobby.other"),
-)
-LOBBY_OTHER_ACTIONS = (
-    ("lobby.packets",),
-    ("lobby.invite",),
-    ("lobby.options",),
+    ("lobby.info", "lobby.leave"),
     ("back",),
 )
 
@@ -120,7 +114,7 @@ def navigation_keyboard(
         )
     )
     if navigation.active_mode == "player" and navigation.context in {"lobby", "lobby_other"}:
-        layout = LOBBY_OTHER_ACTIONS if navigation.context == "lobby_other" else LOBBY_ACTIONS
+        layout = LOBBY_ACTIONS
     if navigation.context == "game":
         return ReplyKeyboardModel(rows=(("+",), ("||", "!")), persistent=True)
     allowed = set(navigation.allowed_actions)

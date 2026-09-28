@@ -5,11 +5,27 @@ from uuid import UUID
 
 import pytest
 
+from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
 from sitg_bot.services.tournaments import (
     TournamentListItem,
     TournamentService,
     normalize_tournament_policies,
+    ruleset_default_settings,
+    tournament_parameters,
 )
+
+
+def test_theme_count_maximum_sentinel_is_preserved_in_raw_defaults() -> None:
+    ruleset = DEFAULT_RULESETS.get("si", 1)
+    parameters, mutable = tournament_parameters(
+        "ladder", "si", {"theme_count": "max"}, ["theme_count"]
+    )
+    assert parameters["theme_count"] == "max"
+    assert mutable == frozenset({"theme_count"})
+    settings, stored = ruleset_default_settings(ruleset, parameters)
+    assert stored["theme_count"] == "max"
+    assert settings.theme_count == 8
+    assert ruleset_default_settings(ruleset, {"theme_count": 12})[1]["theme_count"] == 12
 
 
 def test_library_viewing_rule_default_is_validated_and_exposed_as_enum():

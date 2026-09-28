@@ -455,6 +455,16 @@ p {
   font-size: 1rem;
 }
 
+.descriptor-categories {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.descriptor-category {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .setting-demo {
   display: grid;
   gap: 0.5rem;

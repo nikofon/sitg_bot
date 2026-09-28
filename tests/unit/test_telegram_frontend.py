@@ -516,7 +516,7 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
             "version": 1,
             "status": "assembling",
         },
-        allowed_actions=["lobby.ready", "lobby.players", "lobby.leave", "back", "lobby.other"],
+        allowed_actions=["lobby.ready", "lobby.info", "lobby.leave", "back"],
     )
     backend = SimpleNamespace(
         create_lobby=AsyncMock(return_value=created),
@@ -568,7 +568,7 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
         for row in message.answer.await_args.kwargs["reply_markup"].keyboard
         for button in row
     ]
-    assert "Ready" in labels and "Players" in labels and "Back" in labels
+    assert "Ready" in labels and "Lobby info" in labels and "Back" in labels
 
 
 async def test_player_profile_action_opens_own_mini_app_profile() -> None:
@@ -1498,6 +1498,97 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
     assert buttons[1].callback_data == f"lobbystart:no:{UUID(int=9).hex}"
 
 
+async def test_lobby_info_lists_participants_ratings_packets_and_settings_link() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.info", "back"],
+    )
+    lobby = {
+        "version": 3,
+        "tournament_name": "Player <Cup>",
+        "creator_telegram_user_id": 42,
+        "creator_name": "Alice",
+        "members": [
+            {
+                "display_name": "Alice <b>",
+                "role": "player",
+                "ready": True,
+                "telegram_user_id": 42,
+                "global_rating": 1016.5,
+                "tournament_rating": 990,
+            },
+            {
+                "display_name": "Bob",
+                "role": "player",
+                "ready": False,
+                "telegram_user_id": 43,
+                "global_rating": None,
+                "tournament_rating": 1000,
+            },
+            {
+                "display_name": "Carol",
+                "role": "observer",
+                "ready": False,
+                "telegram_user_id": 44,
+                "global_rating": 1024,
+                "tournament_rating": None,
+            },
+        ],
+        "selected_packets": [{"name": "Round <1>"}],
+    }
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value=lobby),
+        lobby_link=AsyncMock(
+            return_value=SimpleNamespace(
+                value="opaque-lobby",
+                expires_at="2099-01-01",
+                telegram_payload="lr_opaque-lobby",
+            )
+        ),
+    )
+    message = SimpleNamespace(answer=AsyncMock())
+    claim = SimpleNamespace()
+    await handle_lobby_action(
+        message,  # type: ignore[arg-type]
+        "lobby.info",
+        backend,  # type: ignore[arg-type]
+        claim,  # type: ignore[arg-type]
+        LocalizationService(),
+        "en",
+        current,
+        SimpleNamespace(clear=AsyncMock()),  # type: ignore[arg-type]
+        "https://mini.example.test/app",
+    )
+
+    backend.lobby_link.assert_awaited_once_with(claim, lobby_id=UUID(int=9))
+    assert message.answer.await_count == 2
+    text = message.answer.await_args_list[0].args[0]
+    assert "Player &lt;Cup&gt;" in text
+    assert "Players:" in text and "Observers:" in text
+    assert "✅ Alice &lt;b&gt; (owner)" in text
+    assert "global 1016.5, tournament 990" in text
+    assert "ready" in text
+    assert "⏳ Bob" in text and "global —" in text and "not ready" in text
+    assert "👁 Carol" in text and "tournament —" in text
+    assert "Selected packets:" in text and "• Round &lt;1&gt;" in text
+    prompt = message.answer.await_args_list[1].args[0]
+    assert "only the owner can change" in prompt
+    markup = message.answer.await_args_list[1].kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].text == "Lobby settings"
+    assert markup.inline_keyboard[0][0].web_app.url == (
+        "https://mini.example.test/app/lobbies/opaque-lobby"
+        "?tgWebAppStartParam=lr_opaque-lobby&section=settings"
+    )
+
+
 async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
     from sitg_bot.bot.handlers.lobby import handle_lobby_action
 
@@ -1654,43 +1745,6 @@ async def test_lobby_start_confirmation_decline_keeps_the_lobby_unchanged() -> N
     backend.lobby_info.assert_not_awaited()
     backend.lobby_action.assert_not_awaited()
     callback.message.answer.assert_not_awaited()
-
-
-async def test_unknown_invitee_keeps_the_username_prompt_active() -> None:
-    from sitg_bot.application.contracts import ErrorCode, GatewayError, GatewayResponse
-    from sitg_bot.bot.handlers.lobby import handle_invite_username
-    from sitg_bot.bot.state import GatewayCallError
-
-    current = navigation(
-        context="lobby_other",
-        active_lobby={
-            "id": str(UUID(int=9)),
-            "tournament_id": str(UUID(int=8)),
-            "version": 1,
-            "status": "assembling",
-        },
-        allowed_actions=["lobby.invite", "back"],
-    )
-    failure = GatewayCallError(
-        GatewayResponse(
-            action=ActionCode.LOBBY_INVITE,
-            correlation_id=UUID(int=4),
-            ok=False,
-            error=GatewayError(
-                code=ErrorCode.NOT_FOUND, message_key="error.not_found", retryable=False
-            ),
-        )
-    )
-    backend = SimpleNamespace(lobby_action=AsyncMock(side_effect=failure))
-    state = SimpleNamespace(
-        get_data=AsyncMock(return_value={"lobby_id": str(UUID(int=9))}), clear=AsyncMock()
-    )
-    message = SimpleNamespace(text="@missing_user", answer=AsyncMock())
-    await handle_invite_username(
-        message, backend, SimpleNamespace(), LocalizationService(), "en", current, state
-    )
-    assert "No registered bot user" in message.answer.await_args.args[0]
-    state.clear.assert_not_awaited()
 
 
 async def test_readiness_error_in_telegram_displays_the_specific_condition() -> None:

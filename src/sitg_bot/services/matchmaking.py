@@ -12,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.domain.game_deadlines import INITIAL_PLAYER_JOIN_TIMEOUT
 from sitg_bot.domain.game_rulesets import (
     DEFAULT_RULESETS,
+    GameRuleset,
     GameRulesetRegistry,
     PlayUnit,
     RulesetParameters,
     ValidationViolation,
 )
+from sitg_bot.domain.game_settings import MAX_THEME_COUNT
 from sitg_bot.domain.rating import DEFAULT_CONFIDENCE_MODEL_KEY, confidence_model
 from sitg_bot.services.classic import ClassicService, is_chair
 from sitg_bot.services.concurrency import StaleWriteError
@@ -27,7 +29,11 @@ from sitg_bot.services.ruleset_content import (
     PacketSelection,
     RulesetContentRegistry,
 )
-from sitg_bot.services.tournaments import TournamentContext, TournamentService
+from sitg_bot.services.tournaments import (
+    PACKETS_PER_LOBBY_POLICY,
+    TournamentContext,
+    TournamentService,
+)
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -188,6 +194,15 @@ class InvitationMatchmakingService:
             type_maximum = int(context.type_rules.get("maximum_players", 12))
             type_minimum = int(context.type_rules.get("minimum_players", 1))
             settings = context.settings
+            stored_settings = settings.to_dict()
+            policy = await session.get(
+                TournamentPolicyVersionRecord, context.policy_version_id
+            )
+            if (
+                policy is not None
+                and policy.default_parameters.get("theme_count") == MAX_THEME_COUNT
+            ):
+                stored_settings["theme_count"] = MAX_THEME_COUNT
             if context.type_key == "classic":
                 max_players = max_players or min(12, type_maximum)
             else:
@@ -218,7 +233,7 @@ class InvitationMatchmakingService:
                 invitation_code=secrets.token_urlsafe(24),
                 max_players=max_players,
                 expires_at=datetime.now(UTC) + self.lobby_lifetime,
-                settings=settings.to_dict(),
+                settings=stored_settings,
             )
             session.add(lobby)
             await session.flush()
@@ -647,15 +662,23 @@ class InvitationMatchmakingService:
                 raise PermissionError(f"Tournament locks parameter: {sorted(locked)[0]}")
             context = await self.tournaments.context(session, lobby.tournament_id)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
-            settings = ruleset.parameters(lobby.settings).updated(changes)
-            if settings.to_dict() == lobby.settings:
+            raw = {**lobby.settings, **changes}
+            maximum_themes = raw.get("theme_count") == MAX_THEME_COUNT
+            validated = dict(raw)
+            if maximum_themes:
+                del validated["theme_count"]
+            settings = ruleset.parameters(validated)
+            stored = settings.to_dict()
+            if maximum_themes:
+                stored["theme_count"] = MAX_THEME_COUNT
+            if stored == lobby.settings:
                 return await self._snapshot(session, lobby)
             changed = {
                 key: value
-                for key, value in settings.to_dict().items()
+                for key, value in stored.items()
                 if lobby.settings.get(key) != value
             }
-            lobby.settings = settings.to_dict()
+            lobby.settings = stored
             if context.type_key != "classic":
                 maximum = int(lobby.settings["maximum_players"])
                 if await self._active_member_count(session, lobby.id) > maximum:
@@ -706,6 +729,14 @@ class InvitationMatchmakingService:
             member.ready = ready
             members = await self._active_members(session, lobby.id)
             player = await session.get(PlayerRecord, member.player_id)
+            member_names = {
+                item.id: item.public_nickname
+                for item in await session.scalars(
+                    select(PlayerRecord).where(
+                        PlayerRecord.id.in_([item.player_id for item in members])
+                    )
+                )
+            }
             await self._event(
                 session,
                 lobby.id,
@@ -716,6 +747,14 @@ class InvitationMatchmakingService:
                     "ready": ready,
                     "ready_count": sum(item.ready for item in members),
                     "player_count": len(members),
+                    "members": [
+                        {
+                            "name": member_names.get(item.player_id, ""),
+                            "ready": bool(item.ready),
+                        }
+                        for item in members
+                        if item.role == "player"
+                    ],
                 },
             )
             self._bump(lobby)
@@ -1160,6 +1199,8 @@ class InvitationMatchmakingService:
             maximum_packets is not None and len(selected) > int(maximum_packets)
         ):
             return None
+        if context.policies.get(PACKETS_PER_LOBBY_POLICY, "one") != "any" and len(selected) > 1:
+            return None
         for item in selected:
             if (
                 await self._packet_selection_violation(session, survivor.tournament_id, item)
@@ -1178,7 +1219,7 @@ class InvitationMatchmakingService:
             player_count=len(members),
             packet_count=len(selected),
             available_play_units=available,
-            parameters=ruleset.parameters(survivor.settings),
+            parameters=await self._lobby_parameters(session, survivor, selected, context, ruleset),
         )
         return None if violations else selected
 
@@ -1408,7 +1449,10 @@ class InvitationMatchmakingService:
                         session, [candidate], members, context
                     )
                     total = await self._packet_play_unit_count(session, version.id, context)
-                    settings = ruleset.parameters(lobby.settings)
+                    raw_settings = dict(lobby.settings)
+                    if raw_settings.get("theme_count") == MAX_THEME_COUNT:
+                        raw_settings["theme_count"] = max(1, total)
+                    settings = ruleset.parameters(raw_settings)
                     if context.type_key == "classic" and context.ruleset_key == "si":
                         settings = settings.updated({"theme_count": max(1, total)})
                     violations = tuple(
@@ -1483,7 +1527,9 @@ class InvitationMatchmakingService:
                 player_count=len(members),
                 packet_version_ids=[item.packet_version_id for item in selected_packets],
                 available_play_units=available_play_units,
-                parameters=ruleset.parameters(lobby.settings),
+                parameters=await self._lobby_parameters(
+                    session, lobby, selected_packets, context, ruleset
+                ),
             )
             observers = await self._active_observers(session, lobby.id)
             if observers and context.observing_policy == "forbidden":
@@ -1745,19 +1791,20 @@ class InvitationMatchmakingService:
                 for item in selected
             ])
             lobby.settings = {**lobby.settings, "theme_count": max(1, theme_count)}
+        parameters = await self._lobby_parameters(session, lobby, selected, context, ruleset)
         available = await self._available_play_units(session, selected, members, context)
         violations = list(
             ruleset.validate_lobby(
                 player_count=len(members),
                 packet_count=len(selected),
                 available_play_units=available,
-                parameters=ruleset.parameters(lobby.settings),
+                parameters=parameters,
             )
         )
         if not context.assembly_open:
             violations.append(ValidationViolation("tournament_stage_closed", {}))
         if context.type_key != "classic":
-            settings = ruleset.parameters(lobby.settings).to_dict()
+            settings = parameters.to_dict()
             minimum = max(
                 int(settings["minimum_players"]), int(context.type_rules.get("minimum_players", 1))
             )
@@ -1804,6 +1851,13 @@ class InvitationMatchmakingService:
                 ValidationViolation(
                     "tournament_packet_limit_exceeded",
                     {"maximum": int(maximum_packets), "actual": len(selected)},
+                )
+            )
+        if context.policies.get(PACKETS_PER_LOBBY_POLICY, "one") != "any" and len(selected) > 1:
+            violations.append(
+                ValidationViolation(
+                    "tournament_packet_limit_exceeded",
+                    {"maximum": 1, "actual": len(selected)},
                 )
             )
         for item in selected:
@@ -1909,7 +1963,7 @@ class InvitationMatchmakingService:
             merged_into_lobby_id=lobby.merged_into_lobby_id,
             other_searching_lobby_count=other_searching_lobby_count,
             other_searching_player_count=other_searching_player_count,
-            settings=ruleset.parameters(lobby.settings),
+            settings=await self._lobby_parameters(session, lobby, selected, context, ruleset),
             selected_packets=tuple(selected_snapshots),
             validation_violations=tuple(lobby.validation),
             available_play_unit_count=len(all_available),
@@ -1993,6 +2047,24 @@ class InvitationMatchmakingService:
             authors=tuple(author.display_name for author in authors),
             playable_for_all=playable_for_all,
         )
+
+    async def _lobby_parameters(
+        self,
+        session: AsyncSession,
+        lobby: PregameLobbyRecord,
+        selected: Sequence[PregameLobbyPacketRecord],
+        context: TournamentContext,
+        ruleset: GameRuleset,
+    ) -> RulesetParameters:
+        """Build ruleset parameters, resolving the maximum-themes sentinel."""
+        raw = dict(lobby.settings)
+        if raw.get("theme_count") == MAX_THEME_COUNT:
+            total = sum(
+                await self._packet_play_unit_count(session, item.packet_version_id, context)
+                for item in selected
+            )
+            raw["theme_count"] = max(1, total)
+        return ruleset.parameters(raw)
 
     async def _packet_play_unit_count(
         self,

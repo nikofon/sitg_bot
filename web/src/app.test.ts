@@ -232,6 +232,47 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(root.querySelector(".setting-demo-status")?.textContent).toContain("shortened for the preview"));
   });
 
+  it("groups settings into categories and submits the maximum-themes sentinel", async () => {
+    const { root, fetcher } = lobbyShell("settings", {
+      settings: { theme_count: 3, ready_delay: 1, minimum_players: 4 },
+      mutable_parameters: ["theme_count", "ready_delay", "minimum_players"],
+      setting_descriptors: [
+        { name: "theme_count", value: 3, value_type: "integer", description_key: "ruleset.si.theme_count.description", options: [] },
+        { name: "ready_delay", value: 1, value_type: "number", description_key: "ruleset.si.ready_delay.description", options: [] },
+        { name: "minimum_players", value: 4, value_type: "integer", description_key: "ruleset.si.minimum_players.description", options: [] },
+      ],
+    });
+    await vi.waitFor(() => expect(root.querySelector('input[name="setting:theme_count"]')).not.toBeNull());
+    const headings = Array.from(root.querySelectorAll(".descriptor-category"), (node) => node.textContent);
+    expect(headings).toEqual(["Number of players", "Theme count", "Message timings"]);
+    const maximum = root.querySelector<HTMLInputElement>('input[name="setting:theme_count:max"]')!;
+    const count = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
+    expect(maximum.checked).toBe(false);
+    expect(root.textContent).toContain("Use all themes from the selected packets");
+    maximum.checked = true;
+    maximum.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(count.disabled).toBe(true);
+    count.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/settings"))).toBe(true));
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/settings"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { theme_count: "max" } });
+  });
+
+  it("shows the maximum-themes sentinel as a fixed value without edit controls", async () => {
+    const { root } = lobbyShell("settings", {
+      settings: { theme_count: "max", ready_delay: 1 },
+      mutable_parameters: [],
+      setting_descriptors: [
+        { name: "theme_count", value: "max", value_type: "integer", description_key: "ruleset.si.theme_count.description", options: [] },
+        { name: "ready_delay", value: 1, value_type: "number", description_key: "ruleset.si.ready_delay.description", options: [] },
+      ],
+    });
+    await vi.waitFor(() => expect(root.textContent).toContain("Fixed settings"));
+    const fixed = root.querySelector(".resource-card")!;
+    expect(fixed.textContent).toContain("All themes from the selected packets");
+    expect(root.querySelector('input[name="setting:theme_count"]')).toBeNull();
+  });
+
   it("saves player-editable minimum and maximum together", async () => {
     const { root, fetcher } = lobbyShell("settings", {
       settings: { minimum_players: 4, maximum_players: 4 },
@@ -573,6 +614,7 @@ describe("MiniAppShell", () => {
             ],
             policy_descriptors: [
               { name: "observing", value_type: "enum", description_key: "policy.observing.description", value: "forbidden", options: ["unlimited", "burnt-only", "forbidden"] },
+              { name: "packets_per_lobby", value_type: "enum", description_key: "policy.packets_per_lobby.description", value: "one", options: ["one", "any"] },
               { name: "packets_discoverable_by_default", value_type: "boolean", description_key: "policy.packets_discoverable_by_default.description", value: true, options: [] },
               { name: "packets_playable_by_default", value_type: "boolean", description_key: "policy.packets_playable_by_default.description", value: false, options: [] },
               { name: "packets_readable_by_default", value_type: "boolean", description_key: "policy.packets_readable_by_default.description", value: false, options: [] },
@@ -667,6 +709,13 @@ describe("MiniAppShell", () => {
     expect(root.textContent).toContain("Packets discoverable by default");
     expect(root.textContent).toContain("Packets playable by default");
     expect(root.textContent).toContain("Packets readable by default");
+    const packetsPerLobby = root.querySelector<HTMLSelectElement>("[name='policy:packets_per_lobby']")!;
+    expect(packetsPerLobby.value).toBe("one");
+    expect(Array.from(packetsPerLobby.options).map((option) => option.textContent)).toEqual([
+      "Only one", "Any amount",
+    ]);
+    packetsPerLobby.value = "any";
+    packetsPerLobby.dispatchEvent(new Event("change", { bubbles: true }));
     fetcher.mockRejectedValueOnce(new Error("Offline"));
     root.querySelector<HTMLFormElement>("form.settings-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
@@ -679,6 +728,7 @@ describe("MiniAppShell", () => {
       packets_discoverable_by_default: false,
       packets_playable_by_default: true,
       packets_readable_by_default: true,
+      packets_per_lobby: "any",
     });
     const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent === "Tournament management")!;

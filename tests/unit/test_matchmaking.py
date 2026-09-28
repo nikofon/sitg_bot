@@ -7,6 +7,7 @@ import pytest
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.tournaments import (
     TournamentContext,
+    TournamentService,
     hybrid_matchmaking_supported,
     normalize_tournament_policies,
 )
@@ -69,6 +70,7 @@ def test_hybrid_matchmaking_requires_type_support_and_tournament_opt_in() -> Non
         "hybrid_matchmaking_enabled": False,
         "ruleset_rating_weight": 1,
         "observing": "forbidden",
+        "packets_per_lobby": "one",
         "packets_discoverable_by_default": True,
         "packets_playable_by_default": False,
         "packets_readable_by_default": False,
@@ -81,6 +83,25 @@ def test_tournament_observing_policy_accepts_supported_modes(value: str) -> None
     policies = normalize_tournament_policies({}, {"observing": value})
 
     assert policies["observing"] == value
+
+
+@pytest.mark.parametrize("value", ("one", "any"))
+def test_tournament_packets_per_lobby_policy_accepts_supported_modes(value: str) -> None:
+    policies = normalize_tournament_policies({}, {"packets_per_lobby": value})
+
+    assert policies["packets_per_lobby"] == value
+    descriptors = {
+        item.name: item for item in TournamentService._manager_policy_descriptors(policies)
+    }
+    assert descriptors["packets_per_lobby"].value == value
+    assert descriptors["packets_per_lobby"].value_type == "enum"
+    assert set(descriptors["packets_per_lobby"].options) == {"one", "any"}
+
+
+@pytest.mark.parametrize("value", (None, "single", "unlimited", 1, [], True))
+def test_tournament_packets_per_lobby_policy_rejects_unknown_mode(value: object) -> None:
+    with pytest.raises(ValueError, match="packets_per_lobby must be one or any"):
+        normalize_tournament_policies({}, {"packets_per_lobby": value})
 
 
 @pytest.mark.parametrize("value", ("friends-only", True, ["unlimited"]))

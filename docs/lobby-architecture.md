@@ -61,7 +61,9 @@ units, canonical exposure claims, a stored random seed, and ruleset-owned initia
 
 Validation returns stable codes with structured details. Current codes include
 `packet_not_playable`, `insufficient_fresh_content`, `ruleset_player_limit_exceeded`,
-`tournament_capacity_restriction`, and `tournament_packet_limit_exceeded`. Presentation
+`tournament_capacity_restriction`, and `tournament_packet_limit_exceeded`. The packet
+limit composes the tournament type's packet range with the tournament policy
+`packets_per_lobby` (`one` by default, `any` to allow the full range). Presentation
 adapters translate these results without reproducing ruleset logic.
 
 ## Canonical exposure claims
@@ -83,7 +85,10 @@ universal and race-safe. Packet-version provenance remains separately stored on 
 
 The ruleset owns parameter names, types, defaults, and validation. A tournament type can
 narrow valid values or combinations. Tournament-policy versions store effective defaults and
-the fields lobby creators may override. Any effective parameter, packet, membership,
+the fields lobby creators may override. The raw `theme_count` value may be the `max`
+sentinel, meaning every theme of the selected packets; the lobby resolves it to a concrete
+count for validation, snapshots, and assignment plans while preserving the sentinel in
+stored settings. Any effective parameter, packet, membership,
 entitlement, or policy change clears readiness. Assigned games retain their captured policy,
 parameters, and plan.
 

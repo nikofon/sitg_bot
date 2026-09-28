@@ -7,6 +7,9 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+MAX_THEME_COUNT = "max"
+"""Sentinel stored in raw settings dicts: use every theme of the selected packets."""
+
 
 @dataclass(frozen=True, slots=True)
 class GameSettings:

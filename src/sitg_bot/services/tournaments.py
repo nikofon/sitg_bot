@@ -17,9 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.domain.appeals import AppealPolicy
 from sitg_bot.domain.game_rulesets import (
     DEFAULT_RULESETS,
+    GameRuleset,
     GameRulesetRegistry,
     RulesetParameters,
 )
+from sitg_bot.domain.game_settings import MAX_THEME_COUNT
 from sitg_bot.domain.packet import normalize_language_tag
 from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.classic import ClassicService
@@ -71,6 +73,8 @@ RULESET_RATING_WEIGHT_POLICY = "ruleset_rating_weight"
 MAXIMUM_PARTICIPANTS_POLICY = "maximum_participants"
 OBSERVING_POLICY = "observing"
 OBSERVING_POLICIES = frozenset({"unlimited", "burnt-only", "forbidden"})
+PACKETS_PER_LOBBY_POLICY = "packets_per_lobby"
+PACKETS_PER_LOBBY_VALUES = frozenset({"one", "any"})
 PACKET_ACCESS_DEFAULT_POLICIES = {
     "packets_discoverable_by_default": True,
     "packets_playable_by_default": False,
@@ -86,7 +90,11 @@ def tournament_parameters(
     type_key: str, ruleset_key: str, parameters: dict[str, object] | None,
     mutable: set[str] | frozenset[str] | list[str],
 ) -> tuple[dict[str, object], frozenset[str]]:
-    """Classic SI uses the maximum; each lobby resolves it to its full packet size."""
+    """Classic SI uses the maximum; each lobby resolves it to its full packet size.
+
+    A ``max`` theme count is kept as the raw sentinel here; every caller that
+    builds ruleset parameters substitutes the ruleset maximum for it.
+    """
     parameters = dict(parameters or {})
     mutable = frozenset(mutable)
     if type_key == "classic" and ruleset_key == "si":
@@ -137,7 +145,28 @@ def normalize_tournament_policies(
     observing = normalized.setdefault(OBSERVING_POLICY, "forbidden")
     if not isinstance(observing, str) or observing not in OBSERVING_POLICIES:
         raise ValueError(f"{OBSERVING_POLICY} must be unlimited, burnt-only, or forbidden")
+    packets_per_lobby = normalized.setdefault(PACKETS_PER_LOBBY_POLICY, "one")
+    if (
+        not isinstance(packets_per_lobby, str)
+        or packets_per_lobby not in PACKETS_PER_LOBBY_VALUES
+    ):
+        raise ValueError(f"{PACKETS_PER_LOBBY_POLICY} must be one or any")
     return normalized
+
+
+def ruleset_default_settings(
+    ruleset: GameRuleset, default_parameters: dict[str, object]
+) -> tuple[RulesetParameters, dict[str, object]]:
+    """Validate raw defaults and keep the maximum-themes sentinel in the raw dict."""
+    raw = dict(default_parameters)
+    maximum_themes = raw.get("theme_count") == MAX_THEME_COUNT
+    if maximum_themes:
+        del raw["theme_count"]
+    settings = ruleset.parameters(raw)
+    stored = settings.to_dict()
+    if maximum_themes:
+        stored["theme_count"] = MAX_THEME_COUNT
+    return settings, stored
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,7 +639,7 @@ class TournamentService:
             default_parameters, player_mutable_parameters = tournament_parameters(
                 type_key, ruleset_version.key, default_parameters, player_mutable_parameters
             )
-            settings = ruleset.parameters(default_parameters)
+            settings, stored_defaults = ruleset_default_settings(ruleset, default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown_mutable = mutable - ruleset.parameter_names
             if unknown_mutable:
@@ -657,7 +686,7 @@ class TournamentService:
             policy = TournamentPolicyVersionRecord(
                 tournament_id=tournament.id,
                 version=1,
-                default_parameters=settings.to_dict(),
+                default_parameters=stored_defaults,
                 player_mutable_parameters=sorted(mutable),
                 policies=normalized_policies,
                 created_by_id=creator_id,
@@ -1059,7 +1088,7 @@ class TournamentService:
             default_parameters, player_mutable_parameters = tournament_parameters(
                 type_version.key, ruleset_version.key, default_parameters, player_mutable_parameters
             )
-            settings = ruleset.parameters(default_parameters)
+            settings, stored_defaults = ruleset_default_settings(ruleset, default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
             if unknown:
@@ -1140,7 +1169,7 @@ class TournamentService:
                 TournamentPolicyVersionRecord(
                     tournament_id=tournament_id,
                     version=current_policy.version + 1,
-                    default_parameters=settings.to_dict(),
+                    default_parameters=stored_defaults,
                     player_mutable_parameters=sorted(mutable),
                     policies=normalized_policies,
                     created_by_id=manager_id,
@@ -2698,7 +2727,7 @@ class TournamentService:
             default_parameters, player_mutable_parameters = tournament_parameters(
                 context.type_key, context.ruleset_key, default_parameters, player_mutable_parameters
             )
-            settings = ruleset.parameters(default_parameters)
+            settings, stored_defaults = ruleset_default_settings(ruleset, default_parameters)
             mutable = frozenset(player_mutable_parameters)
             unknown = mutable - ruleset.parameter_names
             if unknown:
@@ -2707,7 +2736,7 @@ class TournamentService:
             policy = TournamentPolicyVersionRecord(
                 tournament_id=tournament_id,
                 version=version,
-                default_parameters=settings.to_dict(),
+                default_parameters=stored_defaults,
                 player_mutable_parameters=sorted(mutable),
                 policies=normalized_policies,
                 created_by_id=manager_id,
@@ -2734,8 +2763,20 @@ class TournamentService:
                     for key, value in lobby.settings.items()
                     if key in mutable and old_defaults.get(key) != value
                 }
-                effective = settings.updated(retained_overrides)
+                maximum_themes = lobby.settings.get("theme_count") == MAX_THEME_COUNT and (
+                    retained_overrides.get("theme_count") == MAX_THEME_COUNT
+                    or stored_defaults.get("theme_count") == MAX_THEME_COUNT
+                )
+                effective = settings.updated(
+                    {
+                        key: value
+                        for key, value in retained_overrides.items()
+                        if not (key == "theme_count" and value == MAX_THEME_COUNT)
+                    }
+                )
                 lobby.settings = effective.to_dict()
+                if maximum_themes:
+                    lobby.settings = {**lobby.settings, "theme_count": MAX_THEME_COUNT}
                 if context.type_key != "classic":
                     lobby.max_players = int(lobby.settings["maximum_players"])
                 lobby.tournament_policy_version_id = policy.id
@@ -3136,6 +3177,9 @@ class TournamentService:
             type_version.key, ruleset_version.key,
             policy.default_parameters, policy.player_mutable_parameters,
         )
+        resolved = dict(parameters)
+        if resolved.get("theme_count") == MAX_THEME_COUNT:
+            resolved["theme_count"] = 128
         return TournamentContext(
             tournament.id,
             type_version.id,
@@ -3145,7 +3189,7 @@ class TournamentService:
             ruleset_version.version,
             policy.id,
             policy.version,
-            ruleset.parameters(parameters),
+            ruleset.parameters(resolved),
             mutable,
             dict(policy.policies),
             dict(type_version.rules),
@@ -3174,12 +3218,31 @@ class TournamentService:
                 previous = await session.get(
                     TournamentPolicyVersionRecord, lobby.tournament_policy_version_id
                 )
+                current = await session.get(
+                    TournamentPolicyVersionRecord, context.policy_version_id
+                )
                 overrides = {
                     key: value for key, value in lobby.settings.items()
                     if key in context.mutable_parameters
                     and previous.default_parameters.get(key) != value
                 }
-                lobby.settings = context.settings.updated(overrides).to_dict()
+                maximum_themes = lobby.settings.get("theme_count") == MAX_THEME_COUNT and (
+                    overrides.get("theme_count") == MAX_THEME_COUNT
+                    or (
+                        current is not None
+                        and current.default_parameters.get("theme_count") == MAX_THEME_COUNT
+                    )
+                )
+                effective = context.settings.updated(
+                    {
+                        key: value
+                        for key, value in overrides.items()
+                        if not (key == "theme_count" and value == MAX_THEME_COUNT)
+                    }
+                )
+                lobby.settings = effective.to_dict()
+                if maximum_themes:
+                    lobby.settings = {**lobby.settings, "theme_count": MAX_THEME_COUNT}
                 lobby.tournament_policy_version_id = context.policy_version_id
                 if context.type_key != "classic":
                     lobby.max_players = int(lobby.settings["maximum_players"])
@@ -4003,6 +4066,7 @@ class TournamentService:
             ),
             "observing": policies.get("observing", "forbidden"),
             "maximum_participants": policies.get("maximum_participants"),
+            PACKETS_PER_LOBBY_POLICY: policies.get(PACKETS_PER_LOBBY_POLICY, "one"),
             "appeal_voting_rule": policies.get("appeal_voting_rule", appeal.voting_rule),
             "appeal_vote_timeout_seconds": policies.get(
                 "appeal_vote_timeout_seconds", appeal.vote_timeout_seconds
@@ -4030,6 +4094,7 @@ class TournamentService:
             ),
             "observing": ("unlimited", "burnt-only", "forbidden"),
             "appeal_voting_rule": ("majority", "unanimous"),
+            PACKETS_PER_LOBBY_POLICY: ("one", "any"),
         }
         descriptors = []
         for name, value in effective.items():

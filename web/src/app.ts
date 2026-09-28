@@ -915,7 +915,7 @@ export class MiniAppShell {
     settings.addEventListener("input", () => { dirty = true; });
     if (editable.length) {
       settings.append(element("h3", {}, this.i18n.t("lobby.settings_editable")));
-      settings.append(this.renderDescriptorGroup(editable, "setting"));
+      settings.append(this.renderCategorizedSettings(editable, "setting"));
       settings.append(element("button", { type: "submit", className: "primary-button" }, this.i18n.t("lobby.settings_save")));
       settings.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -929,7 +929,9 @@ export class MiniAppShell {
       });
     }
     const settingValue = (item: { name: string; value: unknown }): string =>
-      typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value);
+      item.name === "theme_count" && item.value === "max"
+        ? this.i18n.t("setting.theme_count.max")
+        : typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value);
     const fixedSettings = fixed.length ? element("div", { className: "resource-card" },
       element("h3", {}, this.i18n.t("lobby.settings_fixed")),
       ...fixed.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item)))) : null;
@@ -1830,7 +1832,7 @@ export class MiniAppShell {
         element("h3", {}, this.i18n.t("tournament.defaults")),
         ...(item.type_key === "classic"
           ? [element("p", { className: "field-help" }, this.i18n.t("classic.full_packet"))] : []),
-        this.renderDescriptorGroup(settingDescriptors, "setting"),
+        this.renderCategorizedSettings(settingDescriptors, "setting"),
         element("h3", {}, this.i18n.t("tournament.mutable")),
         mutable,
         element("h3", {}, this.i18n.t("tournament.policies")),
@@ -2021,6 +2023,7 @@ export class MiniAppShell {
     prefix: "setting" | "policy",
   ): HTMLElement {
     const wrapper = element("div", { className: "descriptor-editor" });
+    const multiple = descriptors.length > 1;
     const picker = element("select", { "aria-label": this.i18n.t(prefix === "setting" ? "manager_settings.setting_select" : "manager_settings.policy_select") });
     const panels = element("div", { className: "descriptor-panels" });
     const demos = new Map<string, SettingDemo>();
@@ -2039,8 +2042,9 @@ export class MiniAppShell {
       }
     };
     for (const descriptor of descriptors) {
-      picker.append(element("option", { value: descriptor.name }, this.descriptorLabel(descriptor.name, prefix)));
+      if (multiple) picker.append(element("option", { value: descriptor.name }, this.descriptorLabel(descriptor.name, prefix)));
       const fieldName = `${prefix}:${descriptor.name}`;
+      const maximumThemes = prefix === "setting" && descriptor.name === "theme_count";
       let control: HTMLElement;
       if (descriptor.value_type === "boolean") {
         control = element("label", { className: "checkbox-label" }, element("input", {
@@ -2050,16 +2054,21 @@ export class MiniAppShell {
         control = element("select", { name: fieldName }, ...descriptor.options.map((option) => element("option", {
           value: option, selected: option === descriptor.value,
         }, descriptor.name === "library_viewing_rule_default"
-          ? this.i18n.t(`packet_management.library_viewing_rule.${option}` as MessageKey) : option)));
+          ? this.i18n.t(`packet_management.library_viewing_rule.${option}` as MessageKey)
+          : descriptor.name === "packets_per_lobby"
+            ? this.i18n.t(`policy.packets_per_lobby.${option}` as MessageKey)
+            : option)));
       } else {
+        const maximumSelected = maximumThemes && descriptor.value === "max";
         const serialized = descriptor.value_type === "array"
           ? JSON.stringify(descriptor.value)
           : descriptor.value == null ? "" : String(descriptor.value);
         control = element("input", {
           name: fieldName,
-          value: serialized,
+          value: maximumSelected ? "" : serialized,
           type: descriptor.value_type === "array" || descriptor.value_type === "string" ? "text" : "number",
           step: descriptor.value_type === "integer" ? "1" : "any",
+          disabled: maximumSelected,
           ...(["minimum_players", "maximum_players"].includes(descriptor.name)
             ? { min: "1", max: "12", required: true } : {}),
         });
@@ -2069,6 +2078,20 @@ export class MiniAppShell {
         element("p", { className: "field-help" }, this.descriptorDescription(descriptor.description_key)),
         control,
       ];
+      if (maximumThemes) {
+        const maximumToggle = element("input", {
+          type: "checkbox", name: `${fieldName}:max`, checked: descriptor.value === "max",
+        });
+        maximumToggle.addEventListener("change", () => {
+          if (control instanceof HTMLInputElement) control.disabled = maximumToggle.checked;
+        });
+        panelChildren.push(element(
+          "label",
+          { className: "checkbox-label" },
+          maximumToggle,
+          this.i18n.t("setting.theme_count.use_max"),
+        ));
+      }
       if (prefix === "setting" && MESSAGE_FLOW_SETTINGS.has(descriptor.name)) {
         const demo = createSettingDemo(descriptor.name, readSettings, this.i18n);
         demos.set(descriptor.name, demo);
@@ -2082,10 +2105,48 @@ export class MiniAppShell {
         ...panelChildren,
       ));
     }
-    picker.addEventListener("change", () => show(picker.value));
-    wrapper.append(picker, panels);
+    if (multiple) {
+      picker.addEventListener("change", () => show(picker.value));
+      wrapper.append(picker, panels);
+    } else {
+      wrapper.append(panels);
+    }
     show(descriptors[0]?.name ?? "");
     return wrapper;
+  }
+
+  private renderCategorizedSettings(
+    descriptors: TournamentManagerSettingsResource["setting_descriptors"],
+    prefix: "setting" | "policy",
+  ): HTMLElement {
+    const container = element("div", { className: "descriptor-categories" });
+    const used = new Set<string>();
+    const pick = (names: readonly string[]): ManagerSettingDescriptor[] => {
+      const items = descriptors.filter((item) => names.includes(item.name) && !used.has(item.name));
+      for (const item of items) used.add(item.name);
+      return items;
+    };
+    const remaining = (): ManagerSettingDescriptor[] =>
+      descriptors.filter((item) => !used.has(item.name));
+    const timingPattern = /(_delay|_timeout)$/;
+    const timingItems = remaining().filter((item) => timingPattern.test(item.name));
+    for (const item of timingItems) used.add(item.name);
+    const categories: Array<[MessageKey, ManagerSettingDescriptor[]]> = [
+      ["settings.category.players", pick(["minimum_players", "maximum_players"])],
+      ["settings.category.themes", pick(["theme_count"])],
+      [
+        "settings.category.question_appearance",
+        pick(["question_values", "minus_multiplier", "question_token_target_chars", "question_token_delay"]),
+      ],
+      ["settings.category.timings", timingItems],
+      ["settings.category.other", remaining()],
+    ];
+    for (const [key, items] of categories) {
+      if (!items.length) continue;
+      container.append(element("h3", { className: "descriptor-category" }, this.i18n.t(key)));
+      container.append(this.renderDescriptorGroup(items, prefix));
+    }
+    return container;
   }
 
 
@@ -2107,6 +2168,13 @@ export class MiniAppShell {
     for (const descriptor of descriptors) {
       const control = form.elements.namedItem(`${prefix}:${descriptor.name}`) as HTMLInputElement | HTMLSelectElement | null;
       if (!control) continue;
+      if (descriptor.name === "theme_count" && prefix === "setting") {
+        const maximum = form.elements.namedItem(`${prefix}:theme_count:max`) as HTMLInputElement | null;
+        if (maximum?.checked) {
+          values[descriptor.name] = "max";
+          continue;
+        }
+      }
       if (descriptor.value_type === "boolean") values[descriptor.name] = (control as HTMLInputElement).checked;
       else if (descriptor.value_type === "array") values[descriptor.name] = JSON.parse(control.value);
       else if (descriptor.value_type === "integer") values[descriptor.name] = control.value ? Number.parseInt(control.value, 10) : null;

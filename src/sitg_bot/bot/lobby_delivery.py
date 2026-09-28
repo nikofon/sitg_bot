@@ -182,13 +182,36 @@ def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService):
                 ),
             )
         elif kind == "readiness_changed":
-            text = localization.text(
-                "lobby.player_ready" if payload["ready"] else "lobby.player_not_ready",
-                locale,
-                name=payload["player_name"],
-                ready_count=payload["ready_count"],
-                player_count=payload["player_count"],
-            )
+            statuses = payload.get("members")
+            if statuses is None:
+                text = localization.text(
+                    "lobby.player_ready" if payload["ready"] else "lobby.player_not_ready",
+                    locale,
+                    name=payload["player_name"],
+                    ready_count=payload["ready_count"],
+                    player_count=payload["player_count"],
+                )
+            else:
+                text = localization.text(
+                    "lobby.readiness.status",
+                    locale,
+                    ready_count=payload.get("ready_count", 0),
+                    player_count=payload.get("player_count", len(statuses)),
+                ) + "\n" + "\n".join(
+                    localization.text(
+                        "lobby.readiness.player",
+                        locale,
+                        icon="✅" if member.get("ready") else "⏳",
+                        name=member.get("name", ""),
+                        status=localization.text(
+                            "button.lobby.ready"
+                            if member.get("ready")
+                            else "button.lobby.unready",
+                            locale,
+                        ),
+                    )
+                    for member in statuses
+                )
         elif kind in {"player_joined", "player_left"}:
             text = localization.text(
                 f"lobby.{kind}",

@@ -1417,6 +1417,8 @@ class InteractiveConsole:
         if name == "pausing_allowed":
             return InteractiveConsole._boolean_value(value)
         if name in {"question_token_target_chars", "theme_count"}:
+            if name == "theme_count" and value.strip().casefold() == "max":
+                return "max"
             return int(value)
         if name == "question_values":
             try:

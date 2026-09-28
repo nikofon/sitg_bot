@@ -228,16 +228,18 @@ tournament setting question_token_delay instantaneous
 tournament mutable theme_count on
 tournament policy hybrid_matchmaking_enabled true
 tournament policy observing '"unlimited"'
+tournament policy packets_per_lobby '"any"'
 ```
 
 `tournament setting <name> <value>` changes a default. `tournament mutable <name> <on-or-off>`
 controls whether lobby creators may change it. `tournament policy <name> <json-value>`
 changes a policy. Edits can clear lobby readiness; games already assigned keep their settings.
-Classic does not support hybrid matchmaking.
+Classic does not support hybrid matchmaking. `packets_per_lobby` accepts `"one"` (default)
+or `"any"` and limits how many packets one lobby may select.
 
 | SI setting | Meaning/value |
 | --- | --- |
-| `theme_count` | Number of themes, up to 128 |
+| `theme_count` | Number of themes, up to 128; `max` uses every theme of the selected packets |
 | `question_values` | Increasing positive integer list matching each theme |
 | `minus_multiplier` | Wrong-answer penalty multiplier; default 1 |
 | `pausing_allowed` | `on` or `off` |

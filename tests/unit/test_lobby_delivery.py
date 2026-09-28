@@ -35,6 +35,34 @@ async def test_readiness_notice_includes_escaped_name_and_counts(ready, count, l
         assert ("готов." if ready else "не готов.") in text
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_readiness_notice_lists_every_player_status_with_icons(locale):
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, LocalizationService())
+    await deliver({
+        "recipient_telegram_user_id": 42,
+        "locale": locale,
+        "kind": "readiness_changed",
+        "player_name": "Bob",
+        "ready": True,
+        "ready_count": 1,
+        "player_count": 2,
+        "members": [
+            {"name": "<Alice>", "ready": True},
+            {"name": "Bob", "ready": False},
+        ],
+    })
+    text = bot.send_message.await_args.args[1]
+    assert "1/2" in text
+    assert "✅ &lt;Alice&gt;" in text and "⏳ Bob" in text
+    if locale == "en":
+        assert "Player readiness: 1/2" in text
+        assert "✅ &lt;Alice&gt; — Ready" in text and "⏳ Bob — Not ready" in text
+    else:
+        assert "Готовность игроков: 1/2" in text
+        assert "✅ &lt;Alice&gt; — Готов" in text and "⏳ Bob — Не готов" in text
+
+
 async def test_durable_lobby_delivery_builds_localized_reopenable_button() -> None:
     bot = SimpleNamespace(send_message=AsyncMock())
     handler = lobby_open_delivery_handler(

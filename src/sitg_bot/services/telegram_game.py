@@ -19,8 +19,10 @@ from sitg_bot.storage.models import (
     AuthorRecord,
     GameEventRecord,
     GameObserverRecord,
+    GamePacketVersionRecord,
     GameParticipantRecord,
     GameRecord,
+    PacketVersionRecord,
     PlayerRecord,
     PlayerReportRecord,
     QuestionRevisionRecord,
@@ -29,6 +31,7 @@ from sitg_bot.storage.models import (
     ScoreLedgerRecord,
     TelegramGameViewRecord,
     ThemeRevisionRecord,
+    TournamentRecord,
 )
 
 
@@ -829,6 +832,20 @@ class TelegramGameService:
             )
         cursor = await session.get(TelegramGameViewRecord, (game.id, player.id))
         messages = cursor.messages if cursor else {}
+        tournament_name = await session.scalar(
+            select(TournamentRecord.name).where(TournamentRecord.id == game.tournament_id)
+        )
+        packet_names = list(
+            await session.scalars(
+                select(PacketVersionRecord.name)
+                .join(
+                    GamePacketVersionRecord,
+                    GamePacketVersionRecord.packet_version_id == PacketVersionRecord.id,
+                )
+                .where(GamePacketVersionRecord.game_id == game.id)
+                .order_by(GamePacketVersionRecord.selection_order)
+            )
+        )
         return {
             "messages": messages or {},
             "dismissed": bool(cursor and cursor.dismissed_at),
@@ -841,6 +858,8 @@ class TelegramGameService:
             "ruleset_version": snapshot.game_ruleset_version,
             "locale": player.preferred_locale,
             "viewer_id": str(player.id),
+            "tournament_name": tournament_name,
+            "packet_names": packet_names,
             "participants": participants,
             "question": question,
             "appeal": appeal,

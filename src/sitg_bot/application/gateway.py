@@ -9,7 +9,7 @@ from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from sitg_bot.application.contracts import (
     AccountLookupOperation,
@@ -155,6 +155,8 @@ from sitg_bot.storage.models import (
     PregameLobbyEventRecord,
     PregameLobbyMemberRecord,
     PregameLobbyRecord,
+    RulesetRatingRecord,
+    TournamentMembershipRecord,
     TournamentPolicyVersionRecord,
     TournamentRecord,
 )
@@ -1512,12 +1514,62 @@ class ApplicationGateway:
             tournament = await session.get(TournamentRecord, lobby.tournament_id)
             tournament_name = tournament.name
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
+            raw_settings = (
+                dict(record.settings) if record is not None else lobby.settings.to_dict()
+            )
+            rating_rows = (
+                await session.execute(
+                    select(
+                        PlayerRecord.telegram_user_id,
+                        TournamentMembershipRecord.rating,
+                        RulesetRatingRecord.rating,
+                    )
+                    .join(
+                        PregameLobbyMemberRecord,
+                        PregameLobbyMemberRecord.player_id == PlayerRecord.id,
+                    )
+                    .outerjoin(
+                        TournamentMembershipRecord,
+                        and_(
+                            TournamentMembershipRecord.tournament_id == lobby.tournament_id,
+                            TournamentMembershipRecord.player_id == PlayerRecord.id,
+                        ),
+                    )
+                    .outerjoin(
+                        RulesetRatingRecord,
+                        and_(
+                            RulesetRatingRecord.ruleset_key == context.ruleset_key,
+                            RulesetRatingRecord.player_id == PlayerRecord.id,
+                        ),
+                    )
+                    .where(
+                        PregameLobbyMemberRecord.lobby_id == lobby_id,
+                        PregameLobbyMemberRecord.active.is_(True),
+                    )
+                )
+            ).all()
+            ratings = {
+                telegram_user_id: {
+                    "tournament_rating": tournament_rating,
+                    "global_rating": ruleset_rating,
+                }
+                for telegram_user_id, tournament_rating, ruleset_rating in rating_rows
+            }
+            creator_name = (
+                await session.scalar(
+                    select(PlayerRecord.public_nickname).where(
+                        PlayerRecord.id == record.creator_player_id
+                    )
+                )
+                if record is not None
+                else None
+            )
             descriptors = [
                 {
                     "name": definition.name,
                     "value_type": definition.value_type,
                     "description_key": definition.description_key,
-                    "value": lobby.settings.to_dict().get(definition.name),
+                    "value": raw_settings.get(definition.name),
                     "options": [],
                 }
                 for definition in ruleset.parameter_definitions
@@ -1535,7 +1587,7 @@ class ApplicationGateway:
                 actions.extend(("settings_update", "packet_select", "packet_remove", "start"))
                 if lobby.hybrid_matchmaking_available:
                     actions.append("search_cancel" if lobby.searching else "search_start")
-        return {
+        payload = {
             **asdict(lobby),
             "viewer": asdict(viewer),
             "available_actions": actions,
@@ -1547,6 +1599,13 @@ class ApplicationGateway:
             "last_event_sequence": last_event_sequence,
             "poll_after_seconds": 5,
         }
+        for member in payload["members"]:
+            member_ratings = ratings.get(member["telegram_user_id"], {})
+            member["global_rating"] = member_ratings.get("global_rating")
+            member["tournament_rating"] = member_ratings.get("tournament_rating")
+        payload["creator_name"] = creator_name
+        payload["creator_telegram_user_id"] = creator_telegram_id
+        return payload
 
     def _tokens(self) -> TournamentTokenRequestService:
         if self.token_requests is None:

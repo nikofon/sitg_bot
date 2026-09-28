@@ -344,11 +344,11 @@ class TelegramNavigationService:
                     PregameLobbyMemberRecord.active.is_(True),
                 )
             )
-            actions = ["lobby.players", "lobby.leave", "back", "lobby.other", "lobby.invite"]
+            actions = ["lobby.info", "lobby.leave", "back"]
             if member.role == "player":
                 actions.append("lobby.unready" if member.ready else "lobby.ready")
             if record.creator_player_id == account.player_id:
-                actions.extend(("lobby.start", "lobby.packets", "lobby.options"))
+                actions.append("lobby.start")
                 policy = await TournamentService(self.database).context(
                     session, record.tournament_id
                 )

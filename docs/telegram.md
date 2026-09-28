@@ -75,12 +75,19 @@ Unknown tournament action descriptors are ignored and logged.
 
 The player tournament context opens the tournament profile Mini App window through the
 **Info** button (**Leaders** deep-links the same window on its leaders section), and the
-manager tournament context opens it through the **Tournament profile** button. Starting a
+manager tournament context opens it through the **Tournament profile** button. The lobby
+menu offers readiness, start/search, leave, and a **Lobby info** button. Lobby info lists
+the tournament, every player and observer with the lobby owner marked, global and
+tournament ratings (when present), readiness, and the selected packets, followed by an
+actor-bound **Lobby settings** Mini App link: any participant may view settings and
+packets there, while changes remain owner-only. Starting a
 lobby without selected packets proposes an
 automatic assignment instead of refusing: packets playable for every member are picked,
 preferring the least (but non-zero) fresh themes and adding packets until the theme count
 is satisfied, then a Yes/No inline confirmation applies the selection and starts the game.
 Without a valid packet the bot reports that the tournament does not contain one.
+Readiness notices list every player's status with ✅/⏳ indicators instead of reporting a
+single player.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,
@@ -92,7 +99,8 @@ in [planned features](future-work.md).
 
 Gameplay uses Telegram messages and controls; there is no game Mini App.
 
-1. Assignment sends a Join button. Once players join, the bot announces participants and
+1. Assignment sends a Join button with the tournament, packets, and participants. Once
+   players join, the bot announces participants and
    installs a persistent keyboard: `+` for buzzing, `||` for pause/resume, `!` for appeal.
 2. Ordered events announce numbered themes and question value, then reveal text by editing a separate
    question message. Long questions use stable adjacent chunks.

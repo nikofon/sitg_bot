@@ -237,7 +237,14 @@ games; changes to assembling lobbies clear readiness.
 
 Classic SI games always use every theme in the round packet. Theme count is fixed for
 managers and players, including existing tournaments; unavailable themes block the game
-instead of reducing its length. Ladder theme count remains configurable.
+instead of reducing its length. Ladder theme count remains configurable. Ladder defaults
+and lobby settings may also store the `max` sentinel: the lobby then resolves it to every
+theme of its selected packets before validation and assignment, and unresolved themes
+block the game like Classic.
+
+The manager and lobby settings screens group parameters into categories (number of
+players, theme count, question appearance, message timings, and other parameters). The
+theme-count category offers a checkbox that selects the `max` sentinel.
 
 `minimum_players` and `maximum_players` default to four, including existing tournaments.
 Each has its own mutability grant. They must satisfy `1 <= minimum <= maximum <= 12`;
@@ -249,6 +256,9 @@ The runtime currently interprets policies for:
 - hybrid matchmaking enablement, only when the tournament type supports it;
 - rating enablement when the tournament type is rated;
 - an optional positive `maximum_participants` limit;
+- `packets_per_lobby` (default `one`): `one` restricts every lobby to a single selected
+  packet per game, `any` permits the tournament type's full packet range. The restriction
+  composes with the type limits by intersection;
 - `auto_approve_registrations` (default `false`), which approves new qualifying registrations;
 - `library_viewing_rule_default` (default `after-play`): copied to new packet assignments.
   Managers choose `never`, `after-play`, or `anytime` in Packet management. Rules govern
