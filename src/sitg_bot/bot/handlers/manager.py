@@ -263,6 +263,14 @@ def _language_prompt(localization: LocalizationService, locale: str) -> MessageM
     )
 
 
+async def _answer_with_flood_retry(message: Message, model: MessageModel) -> Message:
+    while True:
+        try:
+            return await send_message_model(message, model)
+        except TelegramRetryAfter as error:
+            await asyncio.sleep(error.retry_after)
+
+
 def packet_draft_message(
     draft: PacketDraftState,
     localization: LocalizationService,
@@ -290,7 +298,8 @@ def packet_draft_message(
         locale,
         name=(draft.packet_name or draft.source_filename)[:300],
         ruleset=draft.ruleset_key,
-        themes=draft.theme_count if draft.ruleset_key == "si" else "—",
+        themes=(draft.theme_count if draft.ruleset_key == "si" and draft.theme_count is not None
+                else "—"),
         questions=draft.question_count if draft.question_count is not None else "—",
         authors=authors,
         warning_count=len(draft.warnings),
@@ -390,12 +399,7 @@ async def handle_packet_document(
     await state.clear()
     for draft in drafts:
         model = packet_draft_message(draft, localization, locale, launch_links=launch_links)
-        while True:
-            try:
-                sent_message = await send_message_model(message, model)
-                break
-            except TelegramRetryAfter as error:
-                await asyncio.sleep(error.retry_after)
+        sent_message = await _answer_with_flood_retry(message, model)
         await backend.bind_packet_draft_message(
             telegram_update_claim,
             draft_id=draft.draft_id,
@@ -403,6 +407,11 @@ async def handle_packet_document(
             message_id=sent_message.message_id,
             locale=locale,
         )
+        if draft.themes_missing:
+            await _answer_with_flood_retry(
+                message,
+                MessageModel(localization.text("packet_upload.no_themes_warning", locale)),
+            )
 
 
 @router.message(StateFilter(PacketUploadState.waiting_document))

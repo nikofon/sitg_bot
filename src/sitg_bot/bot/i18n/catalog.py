@@ -31,12 +31,21 @@ class _TelegramHTMLValidator(HTMLParser):
         "del",
         "code",
     }
+    link_schemes = ("http://", "https://")
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.stack: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            href = attrs[0][1] if len(attrs) == 1 and attrs[0][0] == "href" else None
+            if not href or not href.startswith(self.link_schemes):
+                raise CatalogError(
+                    "Translated links must use exactly one http(s) href attribute"
+                )
+            self.stack.append(tag)
+            return
         if tag not in self.allowed_tags or attrs:
             raise CatalogError(f"Unsupported translated HTML element: {tag}")
         self.stack.append(tag)

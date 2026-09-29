@@ -303,7 +303,10 @@ Transactional notifications and Telegram alerts survive restarts without duplica
 assembling lobbies; direct invitation remains available.
 
 Tournament cards show the optional plain-text description (at most 2000 characters),
-editable with other metadata.
+editable with other metadata. Manager settings also carry optional organizer contacts
+(plain text, at most 2000 characters) and a tournament channel (a link, at most 500
+characters); both may be empty, are editable in tournament settings, and the profile
+general section shows them when set.
 
 ## Universal and technical constraints
 

@@ -36,6 +36,15 @@ def test_author_identity_change_counts_even_when_names_are_identical():
     )
 
 
+@pytest.mark.parametrize("kind", ["correction", "substitution"])
+def test_rejected_answer_changes_can_be_classified(kind):
+    old = content()
+    new = deepcopy(old)
+    path = "themes.0.questions.0.rejected_answers"
+    new["themes"][0]["questions"][0]["rejected_answers"] = ["Near miss"]
+    PacketAdminService._validate_changes(old, new, {}, {}, {path: kind})
+
+
 def test_substitution_cannot_change_authorship_or_packet_metadata():
     old = content()
     new = deepcopy(old)

@@ -2610,12 +2610,15 @@ class PersistentGameService:
             commentary=revision.commentary,
             value=placement.value,
             accepted_answers=tuple(revision.accepted_answers),
+            rejected_answers=tuple(revision.rejected_answers),
             form=revision.form,
             source=revision.source,
         )
         ruleset = await self._ruleset(session, game)
         correct = submitted_answer is not None and ruleset.judge_answer(
-            submitted_answer, question.all_answers
+            submitted_answer,
+            question.all_answers,
+            rejected_answers=question.all_rejected_answers,
         )
         attempt_number = (
             await session.scalar(

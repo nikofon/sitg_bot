@@ -114,7 +114,8 @@ export function renderLibraryReader(name: string, pages: LibraryPage[], i18n: I1
           : `${question.value}) ${question.text}`),
         element("p", {}, `${i18n.t("library.answer")}: ${question.answer}`));
       for (const [field, label] of [
-        ["accepted_answers", "library.additional_answers"], ["commentary", "library.commentary"],
+        ["accepted_answers", "library.additional_answers"], ["rejected_answers", "library.rejected_answers"],
+        ["commentary", "library.commentary"],
         ["author", "library.author"], ["source", "library.source"],
       ] as const) {
         const value = question[field];

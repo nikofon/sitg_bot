@@ -26,26 +26,41 @@ class Question:
     commentary: str
     value: int
     accepted_answers: tuple[str, ...] = ()
+    rejected_answers: tuple[str, ...] = ()
     form: str = ""
     source: str = ""
     author: str = ""
 
     @property
     def all_answers(self) -> tuple[str, ...]:
-        def expand(answer: str) -> list[str]:
-            match = re.search(r"\(([^()]*)\)", answer)
-            if match is None:
-                return [" ".join(answer.split())]
-            before, optional, after = answer[: match.start()], match.group(1), answer[match.end() :]
-            return [*expand(before + optional + after), *expand(before + after)]
-
         return tuple(
             dict.fromkeys(
                 variant
                 for answer in (self.answer, *self.accepted_answers)
-                for variant in expand(answer)
+                for variant in _expand_answer_variants(answer)
             )
         )
+
+    @property
+    def all_rejected_answers(self) -> tuple[str, ...]:
+        """Answers that are never correct, checked before accepted answers."""
+        return tuple(
+            dict.fromkeys(
+                variant
+                for answer in self.rejected_answers
+                for variant in _expand_answer_variants(answer)
+            )
+        )
+
+
+def _expand_answer_variants(answer: str) -> list[str]:
+    match = re.search(r"\(([^()]*)\)", answer)
+    if match is None:
+        return [" ".join(answer.split())]
+    before, optional, after = answer[: match.start()], match.group(1), answer[match.end() :]
+    with_optional = _expand_answer_variants(before + optional + after)
+    without_optional = _expand_answer_variants(before + after)
+    return [*with_optional, *without_optional]
 
 
 @dataclass(frozen=True, slots=True)

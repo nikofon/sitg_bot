@@ -18,7 +18,7 @@ WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": WORD_NAMESPACE}
 QUESTION_RE = re.compile(r"^(10|20|30|40|50)\s*[.)]\s*(?:\[([^]]*)])?\s*(.*)$")
 FIELD_RE = re.compile(
-    r"^(Ответ|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
+    r"^(Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
     re.I,
 )
 THEME_COMMENTARY_RE = re.compile(
@@ -26,7 +26,7 @@ THEME_COMMENTARY_RE = re.compile(
     re.I,
 )
 INLINE_FIELD_RE = re.compile(
-    r"(?=\s+(?:Ответ|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:)",
+    r"(?=\s+(?:Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:)",
     re.I,
 )
 MAX_DOCUMENT_XML_BYTES = 8 * 1024 * 1024
@@ -45,6 +45,10 @@ THEME_RE = re.compile(
     r"^(?:\d+\s*[.)]\s*Тема\s*:|Тема\s+(?:№\s*)?\d+\s*[.):]|Тема\s*:)\s*(.*)$",
     re.I,
 )
+
+
+class ZeroThemesError(ValueError):
+    """The source was read, but interpreted as containing no themes with questions."""
 
 
 class Line(NamedTuple):
@@ -195,7 +199,7 @@ def packets_from_document_bytes(source: bytes, source_filename: str) -> tuple[Pa
             body.append(line)
     finish()
     if not packets:
-        raise ValueError("The document contains no packets with recognizable theme headings")
+        raise ZeroThemesError("The document contains no packets with recognizable theme headings")
     return tuple(packets)
 
 
@@ -228,6 +232,11 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
             for answer in str(question["accepted_answers"]).split(",")
             if answer.strip()
         )
+        rejected = tuple(
+            answer.strip()
+            for answer in str(question["rejected_answers"]).split(",")
+            if answer.strip()
+        )
         questions.append(
             Question(
                 text=str(question["text"]).strip(),
@@ -235,6 +244,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
                 commentary=str(question["commentary"]).strip(),
                 value=value,
                 accepted_answers=accepted,
+                rejected_answers=rejected,
                 form=str(question["form"]).strip(),
                 source=str(question["source"]).strip(),
                 author=str(question["author"]).strip() or theme_author,
@@ -290,8 +300,8 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
             value, form, inline_text = marker.groups()
             question = {
                 "value": int(value), "form": form or "", "text": inline_text,
-                "answer": "", "accepted_answers": "", "commentary": "",
-                "source": "", "author": "",
+                "answer": "", "accepted_answers": "", "rejected_answers": "",
+                "commentary": "", "source": "", "author": "",
             }
             active_field = "text"
             continue
@@ -305,7 +315,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
             if question is None:
                 continue
             active_field = {
-                "ответ": "answer", "зачет": "accepted_answers",
+                "ответ": "answer", "зачет": "accepted_answers", "незачет": "rejected_answers",
                 "комментарий": "commentary", "источник": "source", "источники": "source",
                 "автор": "author", "автор вопроса": "author", "author": "author",
             }[label]
@@ -317,7 +327,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
             theme_commentary = f"{theme_commentary}\n{line.text}"
     finish_theme()
     if not themes:
-        raise ValueError(f"Packet {packet_name!r} contains no themes with questions")
+        raise ZeroThemesError(f"Packet {packet_name!r} contains no themes with questions")
     return packet_from_data(asdict(Packet(packet_name, tuple(themes))))
 
 
@@ -342,6 +352,8 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
     try:
         themes: list[Theme] = []
         raw_themes = sequence(data["themes"], "themes")
+        if not raw_themes:
+            raise ZeroThemesError("A packet must contain at least one theme")
         if len(raw_themes) > MAX_PACKET_THEMES:
             raise ValueError(f"a packet may contain at most {MAX_PACKET_THEMES} themes")
         question_count = 0
@@ -368,6 +380,12 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
                 )
                 if not all(isinstance(answer, str) for answer in accepted):
                     raise TypeError("accepted_answers entries must be strings")
+                rejected = sequence(
+                    raw_question.get("rejected_answers", ()),
+                    f"theme {theme_index} question {question_index} rejected_answers",
+                )
+                if not all(isinstance(answer, str) for answer in rejected):
+                    raise TypeError("rejected_answers entries must be strings")
                 value = raw_question["value"]
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise TypeError(
@@ -382,6 +400,7 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
                         ),
                         value=value,
                         accepted_answers=tuple(accepted),
+                        rejected_answers=tuple(rejected),
                         form=string(raw_question.get("form", ""), "question form"),
                         source=string(raw_question.get("source", ""), "question source"),
                         author=string(raw_question.get("author", ""), "question author"),
@@ -402,6 +421,8 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
             lead_author=string(data.get("lead_author"), "lead_author", default=""),
             language=string(data.get("language"), "language", default="und"),
         )
+    except ZeroThemesError:
+        raise
     except (KeyError, TypeError, ValueError, RecursionError) as error:
         raise ValueError(f"Packet data is invalid: {error}") from error
 

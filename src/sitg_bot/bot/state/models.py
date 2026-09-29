@@ -135,6 +135,7 @@ class PacketDraftState(FrontendState):
     warnings: tuple[str, ...]
     can_publish: bool
     can_reject: bool
+    themes_missing: bool = False
     launch_reference: str | None = None
     launch_expires_at: str | None = None
 

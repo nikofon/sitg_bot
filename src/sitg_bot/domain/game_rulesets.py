@@ -37,7 +37,13 @@ class GameRuleset(Protocol):
 
     def score_answer(self, value: int, correct: bool, parameters: RulesetParameters) -> Decimal: ...
 
-    def judge_answer(self, submitted: str, accepted_answers: Sequence[str]) -> bool: ...
+    def judge_answer(
+        self,
+        submitted: str,
+        accepted_answers: Sequence[str],
+        *,
+        rejected_answers: Sequence[str] = (),
+    ) -> bool: ...
 
     def ranking_key(
         self,
@@ -206,6 +212,7 @@ class SIGameRuleset:
                 "text",
                 "answer",
                 "accepted_answers",
+                "rejected_answers",
                 "commentary",
                 "source",
                 "author",
@@ -230,8 +237,18 @@ class SIGameRuleset:
             return points
         return -(points * Decimal(str(settings.minus_multiplier)))
 
-    def judge_answer(self, submitted: str, accepted_answers: Sequence[str]) -> bool:
+    def judge_answer(
+        self,
+        submitted: str,
+        accepted_answers: Sequence[str],
+        *,
+        rejected_answers: Sequence[str] = (),
+    ) -> bool:
         normalized = normalize_answer(submitted)
+        if rejected_answers and normalized in {
+            normalize_answer(answer) for answer in rejected_answers
+        }:
+            return False
         return normalized in {normalize_answer(answer) for answer in accepted_answers}
 
     def ranking_key(

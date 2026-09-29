@@ -73,6 +73,7 @@ class PostgresPacketRepository:
                     commentary=revision.commentary,
                     value=placement.value,
                     accepted_answers=tuple(revision.accepted_answers),
+                    rejected_answers=tuple(revision.rejected_answers),
                     form=revision.form,
                     source=revision.source,
                     author=question_author or theme_author or "",

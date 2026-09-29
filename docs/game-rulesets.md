@@ -120,7 +120,9 @@ conflict for any participant.
 
 Automated answer judgment compares normalized text against the primary and accepted answers:
 Unicode NFKC normalization, case folding, punctuation-to-space replacement, and collapsed
-whitespace. It is exact normalized matching; appeals handle disputed judgments.
+whitespace. It is exact normalized matching; appeals handle disputed judgments. A question's
+unaccepted answers (`rejected_answers`, labeled `Незачёт`) are checked first: a submission
+matching any of them is incorrect even when it also matches an accepted answer.
 
 If a participant abandons while their answer is pending, SI records an answer timeout. A
 participant who leaves during another player's question becomes ineligible for the remaining

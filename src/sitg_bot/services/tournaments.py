@@ -320,6 +320,8 @@ class TournamentManagerSettings:
     packet_assignment_count: int
     membership_count: int
     manager_count: int
+    organizer_contacts: str = ""
+    channel: str = ""
     classic: dict | None = None
 
 
@@ -546,6 +548,15 @@ class TournamentService:
         normalized = description.strip()
         if len(normalized) > 2000:
             raise ValueError("Tournament description must be at most 2000 characters")
+        return normalized
+
+    @staticmethod
+    def _normalize_optional_text(value: object, field: str, *, max_length: int) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"Tournament {field} must be a string")
+        normalized = value.strip()
+        if len(normalized) > max_length:
+            raise ValueError(f"Tournament {field} must be at most {max_length} characters")
         return normalized
 
     async def create_tournament(
@@ -1015,6 +1026,8 @@ class TournamentService:
         player_mutable_parameters: set[str] | frozenset[str],
         policies: dict[str, object],
         description: str = "",
+        organizer_contacts: str = "",
+        channel: str = "",
         ignore_late_registrations: bool = True,
         author_ids: tuple[UUID, ...] = (),
         registration_open_override: bool | None = None,
@@ -1105,6 +1118,12 @@ class TournamentService:
             tournament.name = normalized_name
             tournament.slug = normalized_slug
             tournament.description = self._normalize_description(description)
+            tournament.organizer_contacts = self._normalize_optional_text(
+                organizer_contacts, "organizer contacts", max_length=2000
+            )
+            tournament.channel = self._normalize_optional_text(
+                channel, "channel", max_length=500
+            )
             tournament.type_version_id = type_version.id
             tournament.game_ruleset_version_id = ruleset_version.id
             tournament.visibility = normalized_visibility
@@ -2491,6 +2510,8 @@ class TournamentService:
             packet_assignment_count=counts[0],
             membership_count=counts[1],
             manager_count=counts[2],
+            organizer_contacts=tournament.organizer_contacts,
+            channel=tournament.channel,
             classic=await ClassicService(self.database).snapshot(session, tournament_id)
             if item.type_key == "classic"
             else None,

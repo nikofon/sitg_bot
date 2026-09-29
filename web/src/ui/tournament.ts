@@ -71,6 +71,15 @@ function generalPanel(
       detailRow(i18n.t("tournament_profile.ruleset"), general.ruleset?.name ?? null),
       detailRow(i18n.t("tournament_profile.managers"), managers),
       detailRow(i18n.t("tournament_profile.authors"), authors),
+      detailRow(i18n.t("tournament_profile.organizer_contacts"), general.organizer_contacts),
+      general.channel
+        ? element(
+            "li",
+            {},
+            `${i18n.t("tournament_profile.channel")}: `,
+            element("a", { href: general.channel, target: "_blank", rel: "noopener noreferrer" }, general.channel),
+          )
+        : element("li", {}),
       detailRow(i18n.t("tournament_profile.language"), general.language),
       detailRow(i18n.t("tournament_profile.payment"), general.payment_type),
       detailRow(i18n.t("tournament_profile.visibility"), general.visibility),

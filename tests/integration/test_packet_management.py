@@ -175,6 +175,28 @@ async def test_upload_creates_independent_drafts_with_shared_provenance(database
         await database.close()
 
 
+async def test_zero_theme_upload_flags_the_summary_for_a_dedicated_warning(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        summary = await service.import_upload(
+            json.dumps({"name": "Empty", "themes": []}).encode(),
+            source_filename="empty.json",
+            uploader_id=fixture.manager.id, tournament_id=fixture.tournament_id,
+        )
+        assert summary["status"] == "validation_failed"
+        assert summary["themes_missing"] is True
+        assert summary["theme_count"] is None
+        interpreted = await service.import_upload(
+            json.dumps(asdict(packet())).encode(), source_filename="full.json",
+            uploader_id=fixture.manager.id, tournament_id=fixture.tournament_id,
+        )
+        assert "themes_missing" not in interpreted
+    finally:
+        await database.close()
+
+
 async def test_uploading_similar_packet_warns_but_does_not_reject(database_url):
     database = Database(database_url)
     try:

@@ -188,6 +188,8 @@ export interface TournamentProfileResource {
     name: string;
     slug: string;
     description: string;
+    organizer_contacts?: string;
+    channel?: string;
     status: string;
     moderation_status: string;
     visibility: "public" | "private";
@@ -227,6 +229,8 @@ export interface TournamentManagerSettingsResource {
   finalized_at?: string | null;
   registration_enabled: boolean;
   ignore_late_registrations: boolean;
+  organizer_contacts?: string;
+  channel?: string;
   available_actions: string[];
   type_options: string[];
   ruleset_options: string[];
@@ -473,6 +477,7 @@ export interface PacketQuestion {
   text: string;
   answer: string;
   accepted_answers: string[];
+  rejected_answers?: string[];
   commentary: string;
   source: string;
   author: string;

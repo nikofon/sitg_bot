@@ -403,7 +403,7 @@ export class MiniAppShell {
         }
         const buttons = element("span", { className: "packet-change-actions" });
         const substitution = (path.startsWith("themes.") && field === "name")
-          || (path.includes(".questions.") && ["text", "answer", "accepted_answers"].includes(field));
+          || (path.includes(".questions.") && ["text", "answer", "accepted_answers", "rejected_answers"].includes(field));
         for (const kind of substitution ? ["correction", "substitution"] as const : ["correction"] as const) {
           const button = element("button", {
             type: "button", className: `packet-change-button is-${kind}`,
@@ -413,7 +413,7 @@ export class MiniAppShell {
           }, kind === "correction" ? "✎" : "↪");
           button.addEventListener("click", () => {
             if (changes[path] === kind) {
-              const current = field === "accepted_answers"
+              const current = field === "accepted_answers" || field === "rejected_answers"
                 ? input.value.split(/\n/).map((answer) => answer.trim()).filter(Boolean)
                 : field === "year" ? (input.value ? Number(input.value) : null)
                 : field === "value" ? Number(input.value) : input.value;
@@ -553,8 +553,8 @@ export class MiniAppShell {
         if (!question) continue;
         const field = input.dataset.questionField as keyof typeof question;
         if (field === "value") question.value = Number(input.value);
-        else if (field === "accepted_answers") {
-          question.accepted_answers = input.value.split(modifying ? /\n/ : /\n|,/)
+        else if (field === "accepted_answers" || field === "rejected_answers") {
+          (question[field as "accepted_answers" | "rejected_answers"]) = input.value.split(modifying ? /\n/ : /\n|,/)
             .map((item) => item.trim()).filter(Boolean);
         } else {
           (question[field] as string) = input.value;
@@ -584,8 +584,10 @@ export class MiniAppShell {
       theme.questions.forEach((question, questionIndex) => {
         const fields = element("fieldset", {}, element("legend", {}, `${this.i18n.t("packet_editor.question")} ${questionIndex + 1}`));
         for (const field of resource.editor.question_fields) {
-          const current = field === "accepted_answers" ? question.accepted_answers.join("\n") : question[field as keyof typeof question];
-          const item = control(field, current as string | number, ["text", "answer", "accepted_answers", "commentary", "source"].includes(field), `themes.${themeIndex}.questions.${questionIndex}.${field}`);
+          const current = field === "accepted_answers" ? question.accepted_answers.join("\n")
+            : field === "rejected_answers" ? (question.rejected_answers ?? []).join("\n")
+            : question[field as keyof typeof question];
+          const item = control(field, current as string | number, ["text", "answer", "accepted_answers", "rejected_answers", "commentary", "source"].includes(field), `themes.${themeIndex}.questions.${questionIndex}.${field}`);
           const input = item.querySelector<HTMLInputElement | HTMLTextAreaElement>("[data-field]");
           if (input) {
             input.dataset.questionField = field;
@@ -1792,6 +1794,8 @@ export class MiniAppShell {
         select("tournament.visibility", "visibility", ["private", "public"], item.visibility),
         input("tournament.language", "language", item.language),
         element("label", {}, this.i18n.t("manager_settings.description"), element("textarea", { name: "description", rows: "3" }, item.description ?? "")),
+        element("label", {}, this.i18n.t("manager_settings.organizer_contacts"), element("textarea", { name: "organizer_contacts", rows: "3" }, resource.organizer_contacts ?? "")),
+        input("manager_settings.channel", "channel", resource.channel ?? ""),
         element("h3", {}, this.i18n.t("tournament.authors")),
         authors,
         authorSearch,
@@ -2352,6 +2356,8 @@ export class MiniAppShell {
             name: value("name"),
             slug: value("slug"),
             description: value("description"),
+            organizer_contacts: value("organizer_contacts"),
+            channel: value("channel"),
             type_key: value("type_key") || resource.tournament.type_key,
             game_ruleset_key: value("game_ruleset_key") || resource.tournament.ruleset_key,
             visibility: value("visibility"),

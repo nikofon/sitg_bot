@@ -35,7 +35,9 @@ def library_docx(name: str, pages: list[dict[str, object]]) -> bytes:
             paragraph(f"{question['value']}) {question['text']}")
             paragraph(f"Answer: {question['answer']}")
             for field, label in (
-                ("accepted_answers", "Additional answers"), ("commentary", "Commentary"),
+                ("accepted_answers", "Additional answers"),
+                ("rejected_answers", "Unaccepted answers"),
+                ("commentary", "Commentary"),
                 ("author", "Authors"), ("form", "Form"), ("source", "Source"),
             ):
                 value = question.get(field)

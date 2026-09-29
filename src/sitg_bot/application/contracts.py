@@ -395,6 +395,8 @@ class TournamentManagerSettingsUpdateOperation(ContractModel):
     starts_at: datetime | None = None
     planned_ends_at: datetime | None = None
     description: str = Field(default="", max_length=2000)
+    organizer_contacts: str = Field(default="", max_length=2000)
+    channel: str = Field(default="", max_length=500)
     author_names: tuple[str, ...] = ()
     author_ids: tuple[UUID, ...] = ()
     default_parameters: dict[str, JsonValue]

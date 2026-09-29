@@ -18,7 +18,11 @@ from sitg_bot.domain.packet import (
     question_content_fingerprint,
     similar_question_share,
 )
-from sitg_bot.packet_import import packet_from_data, packets_from_document_bytes
+from sitg_bot.packet_import import (
+    ZeroThemesError,
+    packet_from_data,
+    packets_from_document_bytes,
+)
 from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
@@ -294,7 +298,8 @@ class PacketAdminService:
                 path.startswith("themes.")
                 and path.endswith(".name")
                 or ".questions." in path
-                and path.rsplit(".", 1)[-1] in {"text", "answer", "accepted_answers"}
+                and path.rsplit(".", 1)[-1]
+                in {"text", "answer", "accepted_answers", "rejected_answers"}
             )
             if kind not in {"correction", "substitution"} or kind == "substitution" and not allowed:
                 raise ValueError(
@@ -456,7 +461,7 @@ class PacketAdminService:
                     path = f"{prefix}.questions.{j}"
                     replace_question = replace_theme or any(
                         changes.get(f"{path}.{field}") == "substitution"
-                        for field in ("text", "answer", "accepted_answers")
+                        for field in ("text", "answer", "accepted_answers", "rejected_answers")
                     )
                     question_author_id = author_ids[f"{path}.author"]
                     if (
@@ -485,6 +490,7 @@ class PacketAdminService:
                         text=question.text,
                         answer=question.answer,
                         accepted_answers=list(question.accepted_answers),
+                        rejected_answers=list(question.rejected_answers),
                         commentary=question.commentary,
                         form=question.form,
                         source=question.source,
@@ -669,7 +675,12 @@ class PacketAdminService:
                     )
                 )
                 draft_id = draft.id
-            return await self.draft_summary(draft_id, uploader_id)
+            summary = await self.draft_summary(draft_id, uploader_id)
+            # Zero-theme interpretations point the uploader at the reformatting
+            # prompt instead of leaving only the raw parse error.
+            if isinstance(error, ZeroThemesError):
+                summary["themes_missing"] = True
+            return summary
         draft_ids = await self._create_drafts(
             packets,
             source_filename=filename,
@@ -1131,6 +1142,7 @@ class PacketAdminService:
                         text=question.text,
                         answer=question.answer,
                         accepted_answers=list(question.accepted_answers),
+                        rejected_answers=list(question.rejected_answers),
                         commentary=question.commentary,
                         form=question.form,
                         source=question.source,

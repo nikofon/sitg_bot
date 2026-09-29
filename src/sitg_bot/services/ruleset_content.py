@@ -56,7 +56,9 @@ class SIContentAdapter:
         return [
             {"title": theme.name, "author": theme.author,
              "questions": [
-                 {**asdict(question), "accepted_answers": list(question.accepted_answers)}
+                 {**asdict(question),
+                  "accepted_answers": list(question.accepted_answers),
+                  "rejected_answers": list(question.rejected_answers)}
                  for question in theme.questions
              ]}
             for theme in stored.packet.themes

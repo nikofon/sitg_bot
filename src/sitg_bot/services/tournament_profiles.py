@@ -235,6 +235,8 @@ class TournamentProfileService:
             "name": tournament.name,
             "slug": tournament.slug,
             "description": tournament.description,
+            "organizer_contacts": tournament.organizer_contacts,
+            "channel": tournament.channel,
             "status": tournament.status,
             "moderation_status": tournament.moderation_status,
             "visibility": tournament.visibility,

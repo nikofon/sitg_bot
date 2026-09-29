@@ -29,6 +29,24 @@ def test_si_validates_configured_values_and_scores_fractional_penalties() -> Non
     assert ruleset.score_answer(300, False, settings) == Decimal("-75.00")
 
 
+def test_si_rejected_answers_take_precedence_over_accepted_answers() -> None:
+    ruleset = SIGameRuleset()
+    accepted = Question("Text", "Answer", "", 10, accepted_answers=("Alt",)).all_answers
+    rejected = Question("Text", "Answer", "", 10).rejected_answers
+
+    assert ruleset.judge_answer("Answer", accepted)
+    assert ruleset.judge_answer("alt", accepted)
+    assert ruleset.judge_answer("Answer", accepted, rejected_answers=rejected)  # empty list
+    assert not ruleset.judge_answer(
+        "Answer", accepted, rejected_answers=Question(
+            "Text", "Answer", "", 10, rejected_answers=("Answer",)
+        ).all_rejected_answers
+    )
+    assert ruleset.judge_answer(
+        "Other", accepted, rejected_answers=("Answer",)
+    ) is False
+
+
 def test_ruleset_registry_rejects_unknown_versions() -> None:
     assert DEFAULT_RULESETS.get("si", 1).key == "si"
 

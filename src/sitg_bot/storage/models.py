@@ -237,6 +237,8 @@ class TournamentRecord(Base, TimestampMixin):
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    organizer_contacts: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    channel: Mapped[str] = mapped_column(Text, nullable=False, default="")
     moderation_status: Mapped[str] = mapped_column(
         String(24), nullable=False, default="normal", server_default=text("'normal'")
     )
@@ -1035,6 +1037,7 @@ class QuestionRevisionRecord(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     accepted_answers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    rejected_answers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     commentary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     form: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source: Mapped[str] = mapped_column(Text, nullable=False, default="")

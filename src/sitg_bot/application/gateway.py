@@ -826,6 +826,8 @@ class ApplicationGateway:
                 starts_at=operation.starts_at,
                 planned_ends_at=operation.planned_ends_at,
                 description=operation.description,
+                organizer_contacts=operation.organizer_contacts,
+                channel=operation.channel,
                 author_names=operation.author_names,
                 author_ids=operation.author_ids,
                 default_parameters=dict(operation.default_parameters),

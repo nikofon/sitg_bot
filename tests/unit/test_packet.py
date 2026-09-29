@@ -17,6 +17,7 @@ from sitg_bot.domain.packet import (
     similar_question_share,
 )
 from sitg_bot.packet_import import (
+    ZeroThemesError,
     packet_from_data,
     packet_from_docx,
     packet_from_docx_bytes,
@@ -47,6 +48,43 @@ def test_nested_optional_answer_parts_expand_and_deduplicate() -> None:
         "Isaac Newton",
         "Newton",
     )
+
+
+def test_rejected_answers_round_trip_and_optional_expansion() -> None:
+    question = Question(
+        "Text",
+        "Answer",
+        "",
+        10,
+        accepted_answers=("Alt",),
+        rejected_answers=("Near (miss) one", "Near miss"),
+    )
+
+    assert question.all_answers == ("Answer", "Alt")
+    assert question.all_rejected_answers == ("Near miss one", "Near one", "Near miss")
+    assert Question("Text", "Answer", "", 10).all_rejected_answers == ()
+
+    packet = packet_from_data(
+        {
+            "name": "Rejected packet",
+            "themes": [
+                {
+                    "name": "Theme",
+                    "questions": [
+                        {
+                            "text": "Text",
+                            "answer": "Answer",
+                            "value": 10,
+                            "rejected_answers": ["Near miss"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    encoded = json.loads(packet_to_json(packet))
+    assert packet.themes[0].questions[0].rejected_answers == ("Near miss",)
+    assert encoded["themes"][0]["questions"][0]["rejected_answers"] == ["Near miss"]
 
 
 def test_theme_accepts_ruleset_configured_values_but_requires_increasing_order() -> None:
@@ -131,6 +169,7 @@ def test_docx_packet_import(tmp_path) -> None:
                 ("Normal", ""),
                 ("Normal", f"Ответ: ({value}) answer"),
                 ("Normal", "Зачёт: alternative one, alternative two"),
+                ("Normal", "Незачёт: near miss one, near miss two"),
                 ("Normal", f"Комментарий: Commentary {value}"),
                 ("Normal", f"Источник: https://example.com/{value}"),
             ]
@@ -162,6 +201,7 @@ def test_docx_packet_import(tmp_path) -> None:
     assert question.form == "SUBJECT"
     assert question.source == "https://example.com/10"
     assert question.accepted_answers == ("alternative one", "alternative two")
+    assert question.rejected_answers == ("near miss one", "near miss two")
     assert json.loads(packet_to_json(packet))["themes"][0]["questions"][0]["value"] == 10
 
     json_path = tmp_path / "packet.json"
@@ -207,6 +247,17 @@ def docx_bytes(paragraphs: list[tuple[str, str]]) -> bytes:
             f'wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>',
         )
     return source.getvalue()
+
+
+def test_zero_theme_interpretations_raise_a_dedicated_error() -> None:
+    with pytest.raises(ZeroThemesError, match="at least one theme"):
+        packet_from_data({"name": "Empty", "themes": []})
+    with pytest.raises(ZeroThemesError, match="recognizable theme headings"):
+        packets_from_document_bytes(docx_bytes([("Normal", "Only preamble text")]), "p.docx")
+    with pytest.raises(ZeroThemesError, match="no themes with questions"):
+        packets_from_document_bytes(
+            docx_bytes([("Heading2", "Theme without questions")]), "p.docx"
+        )
 
 
 def test_docx_multiple_packet_headings() -> None:

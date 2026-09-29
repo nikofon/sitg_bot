@@ -397,6 +397,7 @@
   "packet_upload.reject": "Отклонить",
   "packet_upload.published": "Пакет опубликован. Доступ к его турнирному назначению изначально отключён.",
   "packet_upload.rejected": "Черновик пакета отклонён.",
+  "packet_upload.no_themes_warning": "В вашем пакете 0 тем! Возможно, скрипт импорта не смог понять структуру вашего файла. Используйте <a href=\"https://docs.google.com/document/d/14tTuPTJH9LX4eCpOzQuJ6SglKxrP-YYz15U2gqnHT0U/edit?tab=t.0\">этот промпт</a> с любой LLM, чтобы исправить форматирование пакета.",
   "button.lobby.ready": "Готов",
   "button.lobby.unready": "Не готов",
   "button.lobby.start": "Начать игру",

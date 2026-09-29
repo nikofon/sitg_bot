@@ -36,17 +36,19 @@ Member upload and original-file retention remain [planned work](future-work.md).
 JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, and `language`
 (default `und`). Each theme has `name`, optional `author` and `commentary`, and `questions`.
 Each question requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
-(string list), `form`, `commentary`, `source`, and `author`. Use
+(string list), `rejected_answers` (string list of unaccepted answers), `form`, `commentary`,
+`source`, and `author`. Use
 `packet_to_json`/`packet_from_data` in the importer as the serialization contract.
 Uploads also accept an array of packet objects. JSON remains supported internally but is
 not advertised in Telegram's upload prompt.
 
 The DOCX converter uses Heading 1 for each packet name and Heading 2 for theme names
 (including Russian style names), question lines such as `10. [answer form] Question text`,
-and fields labeled `Ответ:`, `Зачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.
+and fields labeled `Ответ:`, `Зачёт:`, `Незачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.
 A theme-level commentary line starts with `Комментарий к теме:` (or `Theme commentary:`)
 after the theme heading or author line; following plain lines continue it.
-Accepted alternatives in `Зачёт:` are comma-separated; `Источники:` is also supported.
+Accepted alternatives in `Зачёт:` are comma-separated; `Незачёт:` entries are comma-separated
+unaccepted answers; `Источники:` is also supported.
 
 PDF uploads use `pypdf` layout extraction and require selectable text; scanned images need
 OCR before upload. Both PDF and DOCX recognize standalone `Бой I`/`Бой 1`, numbered or
@@ -268,6 +270,10 @@ questions match one packet, a warning names that packet's name, packet ID, and t
 tournaments actively using it, and suggests rejecting the draft and assigning the
 existing packet by packet ID instead. All author fields are optional and a draft
 with warnings may be published; nothing is rejected automatically.
+
+An upload interpreted as having no themes at all stores the failed draft and flags the
+returned summary with `themes_missing`; the Telegram upload reply then adds a dedicated
+warning that links an LLM prompt for correcting the source file's formatting.
 
 SI values are stored on packet question placements. Import validates those values against
 the creation tournament's current SI parameters; selection and assignment validate the

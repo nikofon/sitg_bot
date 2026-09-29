@@ -678,8 +678,10 @@ describe("MiniAppShell", () => {
     expect(playoffSettings.querySelectorAll("input")).toHaveLength(0);
     expect(playoffSettings.querySelector("button")!.classList.contains("primary-button")).toBe(true);
     expect(root.querySelector<HTMLInputElement>("[name=ignore_late_registrations]")?.checked).toBe(true);
-    expect(root.querySelectorAll("textarea")).toHaveLength(1);
+    expect(root.querySelectorAll("textarea")).toHaveLength(2);
     expect(root.querySelector<HTMLTextAreaElement>("[name=description]")?.value).toBe("");
+    expect(root.querySelector<HTMLTextAreaElement>("[name=organizer_contacts]")?.value).toBe("");
+    expect(root.querySelector<HTMLInputElement>("[name=channel]")?.value).toBe("");
     expect(root.querySelector("[name='setting:theme_count']")).not.toBeNull();
     expect(root.querySelector("[name='setting:question_values']")?.getAttribute("type")).toBe("text");
     expect(root.querySelector("[name=author_ids]")?.getAttribute("value")).toBe("00000000-0000-0000-0000-000000000004");
@@ -1121,6 +1123,7 @@ describe("MiniAppShell", () => {
       text,
       answer: "Old answer",
       accepted_answers: [],
+      rejected_answers: [],
       commentary: "",
       source: "",
       author: "Ada",
@@ -1153,7 +1156,7 @@ describe("MiniAppShell", () => {
         page_collection: "themes",
         packet_fields: ["name", "language", "lead_author", "year"],
         theme_fields: ["name", "author"],
-        question_fields: ["value", "text", "answer", "accepted_answers", "commentary", "source", "author"],
+        question_fields: ["value", "text", "answer", "accepted_answers", "rejected_answers", "commentary", "source", "author"],
         question_values: [10],
       },
     } as const;
@@ -1177,6 +1180,9 @@ describe("MiniAppShell", () => {
     const answer = root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]");
     expect(answer).not.toBeNull();
     if (answer) answer.value = "New answer";
+    const rejected = root.querySelector<HTMLTextAreaElement>("[data-question-field=rejected_answers]");
+    expect(rejected).not.toBeNull();
+    if (rejected) rejected.value = "Near miss";
     expect(Array.from(root.querySelectorAll("[data-packet-author] h3")).map((item) => item.textContent))
       .toEqual(["Ada", "Grace"]);
     const authorSelect = root.querySelector<HTMLSelectElement>('[data-packet-author="Ada"] select')!;
@@ -1207,6 +1213,7 @@ describe("MiniAppShell", () => {
     const submitted = JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body));
     expect(submitted.expected_version).toBe(2);
     expect(submitted.content.themes[0].questions[0].answer).toBe("New answer");
+    expect(submitted.content.themes[0].questions[0].rejected_answers).toEqual(["Near miss"]);
     expect(submitted.content.themes[1].name).toBe("Theme two");
     expect(submitted.author_bindings).toEqual({ Ada: "registered-ada" });
     expect(submitted.lead_author_id).toBe("new-lead");
