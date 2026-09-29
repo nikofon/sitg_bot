@@ -69,6 +69,7 @@ PAYMENT_TYPES = frozenset({"free", "one-time", "per-stage"})
 _UNSET = object()
 HYBRID_MATCHMAKING_POLICY = "hybrid_matchmaking_enabled"
 AUTO_APPROVE_REGISTRATIONS_POLICY = "auto_approve_registrations"
+MEMBER_UPLOADS_POLICY = "member_uploads"
 RULESET_RATING_WEIGHT_POLICY = "ruleset_rating_weight"
 MAXIMUM_PARTICIPANTS_POLICY = "maximum_participants"
 OBSERVING_POLICY = "observing"
@@ -122,6 +123,8 @@ def normalize_tournament_policies(
             raise ValueError(f"{name} must be a boolean")
     if not isinstance(normalized.setdefault(AUTO_APPROVE_REGISTRATIONS_POLICY, False), bool):
         raise ValueError(f"{AUTO_APPROVE_REGISTRATIONS_POLICY} must be a boolean")
+    if not isinstance(normalized.setdefault(MEMBER_UPLOADS_POLICY, False), bool):
+        raise ValueError(f"{MEMBER_UPLOADS_POLICY} must be a boolean")
     enabled = normalized.setdefault(HYBRID_MATCHMAKING_POLICY, False)
     if not isinstance(enabled, bool):
         raise ValueError(f"{HYBRID_MATCHMAKING_POLICY} must be a boolean")
@@ -924,6 +927,7 @@ class TournamentService:
         second_name: str | None,
         surname: str,
         telegram_link: str | None,
+        packet_draft_id: UUID | None = None,
     ) -> ManagerAuthorDescriptor:
         first = self._normalize_author_component(first_name, "Author name")
         second = (
@@ -935,7 +939,21 @@ class TournamentService:
         link, username = self._normalize_telegram_link(telegram_link)
         display_name = " ".join(part for part in (first, second, family) if part)
         async with self.database.transaction() as session:
-            await self._require_manager(session, tournament_id, manager_id)
+            if packet_draft_id is None:
+                await self._require_manager(session, tournament_id, manager_id)
+            else:
+                from sitg_bot.services.packets import PacketAdminService
+                from sitg_bot.storage.models import PacketDraftRecord
+
+                draft = await session.get(PacketDraftRecord, packet_draft_id, with_for_update=True)
+                if draft is None or draft.creation_tournament_id != tournament_id:
+                    raise LookupError("Packet draft not found")
+                context = await self.context(session, tournament_id)
+                await PacketAdminService(self.database)._require_draft_access(
+                    session, context, draft, manager_id,
+                )
+                if draft.status not in {"awaiting_confirmation", "validation_failed"}:
+                    raise ValueError("Only an unpublished packet draft can be edited")
             await self.require_modifiable(session, tournament_id)
             tournament = await session.get(TournamentRecord, tournament_id)
             if tournament is None or tournament.status != "active":
@@ -1018,6 +1036,7 @@ class TournamentService:
         ignore_late_registrations: bool = True,
         author_ids: tuple[UUID, ...] = (),
         registration_open_override: bool | None = None,
+        registration_requirements: tuple[dict, ...] | None = None,
     ) -> TournamentManagerSettings:
         normalized_name = name.strip()
         normalized_slug = slug.strip().casefold()
@@ -1050,6 +1069,11 @@ class TournamentService:
                 raise LookupError("Active tournament not found")
             if tournament.settings_version != expected_version:
                 raise StaleWriteError("Tournament settings have changed")
+
+            if registration_requirements is not None:
+                await self._replace_registration_requirements(
+                    session, tournament_id, manager_id, registration_requirements
+                )
 
             current_type = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
@@ -1377,6 +1401,50 @@ class TournamentService:
                 reasons=failures,
             )
 
+    async def _replace_registration_requirements(
+        self, session, tournament_id: UUID, manager_id: UUID, requirements: tuple[dict, ...]
+    ) -> None:
+        requested = {}
+        for item in requirements:
+            kind = item["kind"]
+            target_id = UUID(str(item["target_id"]))
+            message = (item.get("failure_message") or "").strip() or None
+            if kind not in REGISTRATION_REQUIREMENT_KINDS:
+                raise ValueError("Unknown registration requirement")
+            if message and len(message) > 500:
+                raise ValueError("Registration failure message supports at most 500 characters")
+            tournament_target = kind.endswith("tournament")
+            if tournament_target and target_id == tournament_id:
+                raise ValueError("A participation requirement must target another tournament")
+            model = TournamentRecord if tournament_target else LogicalPacketRecord
+            if await session.get(model, target_id) is None:
+                raise LookupError("Requirement target not found")
+            key = (kind, target_id)
+            if key in requested:
+                raise ValueError("This registration requirement is already active")
+            requested[key] = message
+        existing = await session.scalars(
+            select(TournamentRegistrationRequirementRecord).where(
+                TournamentRegistrationRequirementRecord.tournament_id == tournament_id,
+                TournamentRegistrationRequirementRecord.revoked_at.is_(None),
+            )
+        )
+        for record in existing:
+            key = (record.kind, record.target_tournament_id or record.target_packet_id)
+            if key in requested and requested[key] == record.failure_message:
+                del requested[key]
+            else:
+                record.revoked_at = datetime.now(UTC)
+                record.revoked_by_id = manager_id
+        await session.flush()
+        for (kind, target_id), message in requested.items():
+            session.add(TournamentRegistrationRequirementRecord(
+                tournament_id=tournament_id, kind=kind,
+                target_tournament_id=target_id if kind.endswith("tournament") else None,
+                target_packet_id=target_id if kind == "has-not-seen-packet" else None,
+                failure_message=message, created_by_id=manager_id,
+            ))
+
     async def add_registration_requirement(
         self,
         tournament_id: UUID,
@@ -1394,7 +1462,7 @@ class TournamentService:
             raise ValueError("Registration failure message supports at most 500 characters")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            await self.require_modifiable(session, tournament_id)
+            tournament = await self.require_modifiable(session, tournament_id)
             await self._active_tournament(session, tournament_id)
             target_tournament_id: UUID | None = None
             target_packet_id: UUID | None = None
@@ -1429,6 +1497,7 @@ class TournamentService:
                 created_by_id=manager_id,
             )
             session.add(requirement)
+            tournament.settings_version += 1
             await session.flush()
             return requirement.id
 
@@ -1437,7 +1506,7 @@ class TournamentService:
     ) -> None:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            await self.require_modifiable(session, tournament_id)
+            tournament = await self.require_modifiable(session, tournament_id)
             requirement = await session.get(TournamentRegistrationRequirementRecord, requirement_id)
             if (
                 requirement is None
@@ -1447,6 +1516,7 @@ class TournamentService:
                 raise LookupError("Active registration requirement not found")
             requirement.revoked_at = datetime.now(UTC)
             requirement.revoked_by_id = manager_id
+            tournament.settings_version += 1
 
     async def registration_requirements(
         self,
@@ -4064,6 +4134,7 @@ class TournamentService:
             AUTO_APPROVE_REGISTRATIONS_POLICY: policies.get(
                 AUTO_APPROVE_REGISTRATIONS_POLICY, False,
             ),
+            MEMBER_UPLOADS_POLICY: policies.get(MEMBER_UPLOADS_POLICY, False),
             "observing": policies.get("observing", "forbidden"),
             "maximum_participants": policies.get("maximum_participants"),
             PACKETS_PER_LOBBY_POLICY: policies.get(PACKETS_PER_LOBBY_POLICY, "one"),

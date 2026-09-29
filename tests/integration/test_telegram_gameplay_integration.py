@@ -11,7 +11,6 @@ from test_lobby_architecture import database_url as database_url
 from test_lobby_architecture import tournament_fixture
 
 from sitg_bot.application.contracts import ActionCode, GameActOperation
-from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.persistent_game import PersistentGameService
@@ -337,8 +336,9 @@ async def test_native_si_join_answer_appeal_pause_finish_and_recovery(database_u
         round_id = question["question"]["round_id"]
         assert question["question"]["revealed_answer"] is None
         assert question["question"]["form"] is None
-        with pytest.raises(StaleWriteError):
-            await act(service, player, game_id, "buzz", round_id=uuid4())
+        assert await act(service, player, game_id, "buzz", round_id=uuid4()) == {
+            "accepted": False, "reason": "question_changed",
+        }
         await act(service, player, game_id, "buzz", round_id=round_id)
         answering = await service.view(player.telegram_user_id, game_id)
         assert answering["question"]["form"] == "ANSWER"
@@ -450,6 +450,9 @@ async def test_simultaneous_buzzes_privacy_reputation_and_duplicate_reports(data
             return_exceptions=True,
         )
         assert sum(isinstance(r, dict) and r["accepted"] for r in results) == 1
+        assert [r["reason"] for r in results if isinstance(r, dict) and not r["accepted"]] == [
+            "another_answering"
+        ]
         async with database.transaction() as session:
             private = await session.get(PlayerRecord, fixture.players[1].id)
             private.real_name = "DO NOT DISCLOSE"

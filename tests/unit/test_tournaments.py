@@ -47,6 +47,7 @@ def test_library_viewing_rule_default_is_validated_and_exposed_as_enum():
         ("packets_readable_by_default", False),
         ("packets_released_by_default", False),
         ("auto_approve_registrations", False),
+        ("member_uploads", False),
     ),
 )
 def test_packet_access_policy_defaults_and_manager_editors(name: str, default: bool) -> None:

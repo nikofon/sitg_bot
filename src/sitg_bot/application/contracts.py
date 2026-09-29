@@ -375,6 +375,12 @@ class TournamentManagerSettingsLinkOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_MANAGER_SETTINGS_LINK]
 
 
+class RegistrationRequirementInput(ContractModel):
+    kind: Literal["has-played-tournament", "has-not-played-tournament", "has-not-seen-packet"]
+    target_id: UUID
+    failure_message: str | None = Field(default=None, max_length=500)
+
+
 class TournamentManagerSettingsUpdateOperation(ContractModel):
     action: Literal[ActionCode.TOURNAMENT_MANAGER_SETTINGS_UPDATE]
     tournament_id: UUID | None = None
@@ -400,6 +406,7 @@ class TournamentManagerSettingsUpdateOperation(ContractModel):
     default_parameters: dict[str, JsonValue]
     player_mutable_parameters: set[str]
     policies: dict[str, JsonValue]
+    registration_requirements: tuple[RegistrationRequirementInput, ...] | None = None
 
 
 class TournamentAuthorCreateOperation(ContractModel):

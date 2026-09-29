@@ -13,6 +13,7 @@ from sitg_bot.bot.keyboards.common import navigation_keyboard
 from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel, MessageModel
+from sitg_bot.bot.presenters.players import player_name
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import BotBackend, NavigationState
 
@@ -25,7 +26,9 @@ def _format_rating(value: object) -> str:
     return f"{float(value):g}"
 
 
-def lobby_info_text(lobby: dict, localization: LocalizationService, locale: str) -> str:
+def lobby_info_text(
+    lobby: dict, localization: LocalizationService, locale: str, bot_username=None
+) -> str:
     """Project a lobby snapshot into a readable participant overview."""
 
     creator_id = lobby.get("creator_telegram_user_id")
@@ -59,7 +62,7 @@ def lobby_info_text(lobby: dict, localization: LocalizationService, locale: str)
                     "lobby.info.player_line",
                     locale,
                     icon="✅" if member.get("ready") else "⏳",
-                    name=member.get("display_name", ""),
+                    name=player_name(member, bot_username),
                     owner=owner(member),
                     ratings=ratings(member),
                     status=localization.text(
@@ -77,7 +80,7 @@ def lobby_info_text(lobby: dict, localization: LocalizationService, locale: str)
                 localization.text(
                     "lobby.info.observer_line",
                     locale,
-                    name=member.get("display_name", ""),
+                    name=player_name(member, bot_username),
                     owner=owner(member),
                     ratings=ratings(member),
                 )
@@ -222,7 +225,9 @@ async def handle_lobby_action(
         return
     lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
     if lobby_action == "lobby.info":
-        info = MessageModel(lobby_info_text(lobby, localization, locale))
+        info = MessageModel(lobby_info_text(
+            lobby, localization, locale, (await message.bot.get_me()).username
+        ))
         await send_message_model(message, info)
         if launch_links:
             reference = await backend.lobby_link(

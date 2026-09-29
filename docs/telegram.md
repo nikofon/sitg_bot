@@ -57,6 +57,9 @@ Unknown tournament action descriptors are ignored and logged.
   button for player profiles.
 - **Other... → Authors** opens the player author catalogue and question-performance profiles
   in the Mini App; list cards show only name, tournament count, and question count.
+- In player tournament context, **Other... → Upload packet** starts the shared upload flow
+  when community uploads are enabled. The prompt warns that published packets can only be
+  modified or deleted by tournament managers; unavailable uploads return an error message.
 - `/bug` reports: `/bug <description>` submits a bug report to the administrators; a bare
   `/bug` prompts for the description. Reports store the reporter, commentary, and timestamp,
   and notify every active administrator through the admin notification audience and the
@@ -85,6 +88,12 @@ lobby without selected packets proposes an
 automatic assignment instead of refusing: packets playable for every member are picked,
 preferring the least (but non-zero) fresh themes and adding packets until the theme count
 is satisfied, then a Yes/No inline confirmation applies the selection and starts the game.
+
+Nicknames in lobby rosters/readiness lists and game participant lists/scores link to player
+profiles. Configure the bot's **Main Mini App** in BotFather to this Mini App frontend:
+links use `https://t.me/<bot>?startapp=player_<UUID hex>`, which opens `/players/{UUID}`.
+Authentication and profile authorization still run normally. Single-action notices such as
+joining or buzzing retain plain nicknames; Chairs have no profile link.
 Without a valid packet the bot reports that the tournament does not contain one.
 Readiness notices list every player's status with ✅/⏳ indicators instead of reporting a
 single player.
@@ -106,6 +115,8 @@ Gameplay uses Telegram messages and controls; there is no game Mini App.
    question message. Long questions use stable adjacent chunks.
 3. Buzz hides all question chunks and prompts the answering player with the answer form.
    Other players receive a named buzz notice and see the submitted answer; everyone sees the verdict or timeout.
+   Rejected actions explain the current restriction, including another player's answer,
+   a spent attempt, paused play, or an expired question/appeal. Server rejections cover races.
 4. A wrong answer restores the previous reveal position. Question completion fully reveals
    the text and sends answer, commentary, and author separately.
 5. Results show shared places, score, and points before penalties. Opponent reputation votes

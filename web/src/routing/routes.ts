@@ -227,3 +227,9 @@ export function routeRequestPath(route: RouteMatch): string {
   const query = route.query.toString();
   return `${route.path}${query ? `?${query}` : ""}`;
 }
+
+export function playerLaunchPath(initData: string): string | undefined {
+  const parameter = new URLSearchParams(initData).get("start_param") ?? "";
+  const match = /^player_([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i.exec(parameter);
+  return match ? `/players/${match.slice(1).join("-")}` : undefined;
+}

@@ -618,6 +618,7 @@ describe("MiniAppShell", () => {
               { name: "packets_discoverable_by_default", value_type: "boolean", description_key: "policy.packets_discoverable_by_default.description", value: true, options: [] },
               { name: "packets_playable_by_default", value_type: "boolean", description_key: "policy.packets_playable_by_default.description", value: false, options: [] },
               { name: "packets_readable_by_default", value_type: "boolean", description_key: "policy.packets_readable_by_default.description", value: false, options: [] },
+              { name: "member_uploads", value_type: "boolean", description_key: "policy.member_uploads.description", value: false, options: [] },
             ],
             registration_requirements: [],
             packet_assignment_count: 2,
@@ -700,6 +701,7 @@ describe("MiniAppShell", () => {
       ["packets_discoverable_by_default", true],
       ["packets_playable_by_default", false],
       ["packets_readable_by_default", false],
+      ["member_uploads", false],
     ] as const) {
       const control = root.querySelector<HTMLInputElement>(`[name='policy:${name}']`);
       expect(control?.type).toBe("checkbox");
@@ -709,6 +711,7 @@ describe("MiniAppShell", () => {
     expect(root.textContent).toContain("Packets discoverable by default");
     expect(root.textContent).toContain("Packets playable by default");
     expect(root.textContent).toContain("Packets readable by default");
+    expect(root.textContent).toContain("Community packet uploads");
     const packetsPerLobby = root.querySelector<HTMLSelectElement>("[name='policy:packets_per_lobby']")!;
     expect(packetsPerLobby.value).toBe("one");
     expect(Array.from(packetsPerLobby.options).map((option) => option.textContent)).toEqual([
@@ -716,11 +719,24 @@ describe("MiniAppShell", () => {
     ]);
     packetsPerLobby.value = "any";
     packetsPerLobby.dispatchEvent(new Event("change", { bubbles: true }));
+    const addRequirement = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Add requirement")!;
+    addRequirement.click();
+    addRequirement.click();
+    root.querySelectorAll<HTMLElement>("[data-requirement]")[1]!.querySelector("button")!.click();
+    root.querySelector<HTMLSelectElement>('[name="requirement_kind"]')!.value = "has-not-played-tournament";
+    root.querySelector<HTMLInputElement>('[name="requirement_target"]')!.value = "00000000-0000-0000-0000-000000000008";
+    root.querySelector<HTMLInputElement>('[name="requirement_message"]')!.value = "New players only";
     fetcher.mockRejectedValueOnce(new Error("Offline"));
     root.querySelector<HTMLFormElement>("form.settings-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
     const saved = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body));
     expect(saved.registration_open).toBe(true);
+    expect(saved.registration_requirements).toEqual([{
+      kind: "has-not-played-tournament",
+      target_id: "00000000-0000-0000-0000-000000000008",
+      failure_message: "New players only",
+    }]);
     expect(saved.registration_open_override).toBeUndefined();
     expect(saved.registration_starts_at).toBe(new Date("2026-09-12T12:00").toISOString());
     expect(saved.registration_ends_at).toBe(new Date("2026-09-12T13:00").toISOString());
@@ -728,6 +744,7 @@ describe("MiniAppShell", () => {
       packets_discoverable_by_default: false,
       packets_playable_by_default: true,
       packets_readable_by_default: true,
+      member_uploads: true,
       packets_per_lobby: "any",
     });
     const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))

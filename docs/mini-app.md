@@ -125,7 +125,8 @@ Mutations use current capabilities and versions; ordered lobby events trigger re
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
-management records. Registration settings contain the schedule switch and dates, using the
+registration requirements (type, target UUID, optional rejection message).
+Registration settings contain the schedule switch and dates, using the
 device timezone. Management's availability switch disables scheduling and applies a manual choice.
 Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.

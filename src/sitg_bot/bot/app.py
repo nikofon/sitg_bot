@@ -193,7 +193,8 @@ async def run_polling(settings: Settings) -> None:
         async with Bot(bot_token, default=defaults) as bot:
             await configure_bot_commands(bot, dependencies.localization)
             game_delivery = game_delivery_handler(
-                bot, dependencies.localization, protocol, dependencies.callback_references
+                bot, dependencies.localization, protocol, dependencies.callback_references,
+                (await bot.get_me()).username,
             )
             dependencies.backend.game_delivery = game_delivery
             handlers = {
@@ -205,7 +206,7 @@ async def run_polling(settings: Settings) -> None:
                 "game.event": game_delivery,
                 "telegram.game.cleanup": game_delivery.cleanup,
                 "telegram.lobby.notice": lobby_notice_delivery_handler(
-                    bot, dependencies.localization
+                    bot, dependencies.localization, game_delivery.bot_username
                 ),
                 "telegram.notification.alert": notification_alert_delivery_handler(
                     bot, dependencies.localization

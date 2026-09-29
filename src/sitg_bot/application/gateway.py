@@ -831,6 +831,10 @@ class ApplicationGateway:
                 default_parameters=dict(operation.default_parameters),
                 player_mutable_parameters=operation.player_mutable_parameters,
                 policies=dict(operation.policies),
+                registration_requirements=(
+                    tuple(item.model_dump() for item in operation.registration_requirements)
+                    if operation.registration_requirements is not None else None
+                ),
             )
         if isinstance(operation, TournamentAuthorCreateOperation):
             tournament_id = await self._manager_tournament_id(

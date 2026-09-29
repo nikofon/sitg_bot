@@ -29,7 +29,7 @@ standalone local import tool requires an explicit tournament ID.
 
 Initial draft import, Telegram upload, Mini App preview/editing, rejection, publication,
 tournament scoping, packet management, corrections, and substitutions are implemented.
-Member upload and original-file retention remain [planned work](future-work.md).
+Community uploads are opt-in; original-file retention remains [planned work](future-work.md).
 
 ## Input formats
 
@@ -68,7 +68,7 @@ file and combined interpreted-content limits. These are separate from per-game S
 
 ## Initial import and verification
 
-1. An authorized administrator or tournament manager imports a supported DOCX, PDF, or JSON
+1. An authorized administrator, tournament manager, or community uploader imports a DOCX, PDF, or JSON
    file in a specific tournament context. Publishing creates tournament assignments using
    each destination's configured access defaults. Automatic library release is disabled by
    default and can be enabled with `packets_released_by_default`.
@@ -283,7 +283,7 @@ The implemented initial-publication model stores:
 - logical packets and immutable packet versions;
 - optional packet-version creation year and lead-author reference, plus a BCP 47-style
   language tag (`und` when omitted);
-- owner-controlled packet-version library-release time;
+- manager-controlled packet-version library-release time;
 - logical questions and immutable question revisions;
 - the packet content schema and compatible game-ruleset versions;
 - the source file name, checksum, uploader, and confirmation timestamps;
@@ -298,14 +298,22 @@ The parsed packet content is stored in PostgreSQL. The original DOCX is an impor
 artifact, not the runtime source of truth; whether it is archived separately and for
 how long is a retention decision.
 
-## Member uploads
+## Community uploads
 
-Member-facing upload commands and moderation are not implemented. They will use the same
-validation, explicit tournament context, and immutable versioning principles while retaining
-the uploader. Upload permission will not automatically grant publication, game-selection,
-editorial, or content access.
-Requirements and open moderation questions are in
-[future-work.md](future-work.md).
+Managers enable **Community packet uploads** (`member_uploads`, default `false`) in tournament
+settings. Active participants use **Other... → Upload packet** in the tournament's player menu.
+The button remains available when uploads are disabled and explains that uploading is unavailable.
+The prompt warns that only tournament managers can modify or delete packets after publication.
+
+Community uploaders use the same validation, preview, author association, draft editing,
+publish/reject controls, and file limits as managers, restricted to their own drafts and one
+tournament. Permission is rechecked for each operation; disabling the policy or removing active
+membership blocks further work on existing drafts, which managers can still review.
+
+Publication applies the destination's current access defaults, library release default, and
+library viewing rule, and permanently burns content for the uploader and managers. Uploading
+grants no published-content editing, deletion, release, or library access rights. Published
+draft preview links cannot bypass the library's access rules.
 
 ## Visibility and authorization
 

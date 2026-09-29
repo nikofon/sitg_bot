@@ -82,6 +82,9 @@ See [Telegram](telegram.md) for bot flows.
 
 Managers may add any number of active requirements. They compose with AND semantics: every
 requirement must pass when the player submits registration.
+Settings provides add/remove rows with a requirement type, target tournament or logical packet
+UUID, and optional rejection message. Saving applies all rows atomically with the settings
+version check; unchanged requirements retain their audit identities.
 
 - `has-played-tournament` requires the player to have participated in a disclosed game in
   the referenced other tournament.
