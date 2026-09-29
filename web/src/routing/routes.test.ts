@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { matchRoute } from "./routes";
+import { matchRoute, playerLaunchPath } from "./routes";
+
+it("opens a player profile from a Mini App launch without accepting arbitrary paths", () => {
+  expect(playerLaunchPath("start_param=player_00000000000000000000000000000001"))
+    .toBe("/players/00000000-0000-0000-0000-000000000001");
+  expect(playerLaunchPath("start_param=https%3A%2F%2Fevil.example")).toBeUndefined();
+  expect(playerLaunchPath("start_param=player_bad")).toBeUndefined();
+});
 
 describe("route matching", () => {
   it.each([

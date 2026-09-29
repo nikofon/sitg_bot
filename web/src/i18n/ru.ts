@@ -1,6 +1,14 @@
 import type { MessageKey } from "./en";
 
 export const ru: Record<MessageKey, string> = {
+  "manager_settings.requirement_kind": "Требование",
+  "manager_settings.requirement_target": "UUID турнира или пакета",
+  "manager_settings.requirement_message": "Сообщение об отказе (необязательно)",
+  "manager_settings.requirement_add": "Добавить требование",
+  "manager_settings.requirement_help": "Все требования должны выполняться. Участие означает игру с раскрытым контентом, а не только регистрацию. Изменения применяются к будущим попыткам регистрации.",
+  "requirement.has-played-tournament": "Играл в другом турнире",
+  "requirement.has-not-played-tournament": "Не играл в другом турнире",
+  "requirement.has-not-seen-packet": "Не видел пакет",
   "authors.title": "Авторы",
   "authors.profile": "Профиль автора",
   "authors.empty": "Авторы не найдены.",
@@ -656,6 +664,8 @@ export const ru: Record<MessageKey, string> = {
   "policy.packets_per_lobby.one": "Только один",
   "policy.packets_per_lobby.any": "Любое количество",
   "policy.auto_approve_registrations.label": "Автоматически одобрять регистрации",
+  "policy.member_uploads.label": "Загрузка пакетов сообществом",
+  "policy.member_uploads.description": "Разрешить активным участникам загружать и публиковать пакеты. После публикации изменить или удалить их могут только менеджеры турнира. Действуют правила доступа и просмотра библиотеки турнира.",
   "policy.auto_approve_registrations.description": "Одобрять новые заявки, прошедшие все требования. В Ладдере игроки сразу становятся активными; в конечных турнирах нужно утвердить список участников.",
   "policy.hybrid_matchmaking_enabled.description": "Разрешает совместимым лобби искать игроков и объединяться.",
   "policy.observing.label": "Наблюдение",

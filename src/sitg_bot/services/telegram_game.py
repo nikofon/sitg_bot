@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, or_, select
 
 from sitg_bot.application.contracts import GameActOperation
-from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.domain.game_action_reasons import game_action_reason
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.trust import TrustService
@@ -171,16 +171,16 @@ class TelegramGameService:
                 await self._cleanup(session, game.id, telegram_user_id)
                 return {"accepted": True, "receipt": None}
             if command not in view["actions"]:
-                raise ValueError("Game action is no longer available")
+                return {"accepted": False, "reason": game_action_reason(view, command)}
             if (
                 command in {"buzz", "answer", "appeal", "pause", "resume"}
                 and operation.round_id != game.current_round_id
             ):
-                raise StaleWriteError("The question has changed")
+                return {"accepted": False, "reason": "question_changed"}
             if command in {"vote", "escalate", "commentary"} and (
                 not view["appeal"] or str(operation.appeal_id) != str(view["appeal"]["id"])
             ):
-                raise StaleWriteError("The appeal has changed")
+                return {"accepted": False, "reason": "appeal_changed"}
             bound = _BoundDatabase(session)
             games = PersistentGameService(bound)
             accepted = True
@@ -426,9 +426,21 @@ class TelegramGameService:
                         ),
                     }
                 if event.kind == "scoreboard":
+                    identities = dict((await session.execute(
+                        select(PlayerRecord.telegram_user_id, PlayerRecord.id).where(
+                            PlayerRecord.telegram_user_id.in_([
+                                p["telegram_user_id"] for p in params.get("players", ())
+                                if p.get("telegram_user_id") is not None
+                            ])
+                        )
+                    )).all())
                     params = {
                         "players": [
-                            {"name": p["display_name"], "score": p["score"]}
+                            {
+                                "name": p["display_name"], "score": p["score"],
+                                "player_id": str(identities[p["telegram_user_id"]])
+                                if p.get("telegram_user_id") in identities else None,
+                            }
                             for p in params.get("players", ())
                         ]
                     }
@@ -854,6 +866,7 @@ class TelegramGameService:
             "status": game.status,
             "phase": game.phase,
             "paused": game.paused,
+            "pausing_allowed": snapshot.settings.pausing_allowed,
             "ruleset": snapshot.game_ruleset,
             "ruleset_version": snapshot.game_ruleset_version,
             "locale": player.preferred_locale,

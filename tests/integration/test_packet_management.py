@@ -34,6 +34,7 @@ from sitg_bot.storage.models import (
     QuestionRevisionRecord,
     ThemeRevisionRecord,
     TournamentManagerRecord,
+    TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentPacketEntitlementRecord,
 )
@@ -41,6 +42,154 @@ from sitg_bot.storage.packets import PostgresPacketRepository
 
 pytestmark = pytest.mark.integration
 database_url = _database_url
+
+
+async def test_community_upload_ownership_publication_and_tournament_defaults(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        service = PacketAdminService(database)
+        tournaments = service.tournaments
+        uploader, other = fixture.players
+        content = asdict(packet())
+        args = dict(
+            source_filename="community.json", uploader_id=uploader.id,
+            tournament_id=fixture.tournament_id,
+        )
+        with pytest.raises(PermissionError):
+            await service.import_upload(json.dumps(content).encode(), **args)
+        settings = await tournaments.manager_settings(fixture.tournament_id, fixture.manager.id)
+        policies = {
+            **settings.policies, "member_uploads": True,
+            "packets_discoverable_by_default": False,
+            "packets_playable_by_default": True,
+            "packets_readable_by_default": True,
+            "packets_released_by_default": True,
+            "library_viewing_rule_default": "never",
+        }
+        await tournaments.update_policy(
+            fixture.tournament_id, fixture.manager.id,
+            default_parameters=settings.default_parameters,
+            player_mutable_parameters=set(settings.player_mutable_parameters), policies=policies,
+        )
+        for status in ("invited", "registered", "approved", "suspended", "left"):
+            async with database.transaction() as session:
+                member = await session.get(
+                    TournamentMembershipRecord, (fixture.tournament_id, uploader.id),
+                )
+                member.status = status
+            with pytest.raises(PermissionError):
+                await service.upload_eligibility(fixture.tournament_id, uploader.id)
+        async with database.transaction() as session:
+            member = await session.get(
+                TournamentMembershipRecord, (fixture.tournament_id, uploader.id),
+            )
+            member.status = "active"
+        summary = await service.import_upload(json.dumps(content).encode(), **args)
+        draft_id = UUID(summary["draft_id"])
+        assert summary["can_publish"] and summary["can_reject"]
+        for actor_id in (other.id,):
+            with pytest.raises(PermissionError):
+                await service.editable_draft(draft_id, actor_id)
+            with pytest.raises(PermissionError):
+                await service.update_draft(draft_id, actor_id, expected_version=1, content=content)
+            with pytest.raises(PermissionError):
+                await service.reject(draft_id, actor_id=actor_id)
+            with pytest.raises(PermissionError):
+                await service.publish(draft_id, administrator_id=actor_id)
+            with pytest.raises(PermissionError):
+                await service.create_author(
+                    draft_id, actor_id, first_name="Other", second_name=None,
+                    surname="Author", telegram_link=None,
+                )
+        author = await service.create_author(
+            draft_id, uploader.id, first_name="Community", second_name=None,
+            surname="Author", telegram_link=None,
+        )
+        edited = await service.update_draft(
+            draft_id, uploader.id, expected_version=1,
+            content={**content, "name": "Edited community packet"},
+            lead_author_id=UUID(author["author_id"]),
+        )
+        assert edited["can_publish"]
+        assert (await service.editable_draft(draft_id, fixture.manager.id))["can_publish"]
+        stored = await service.publish(draft_id, administrator_id=uploader.id)
+        async with database.sessions() as session:
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.packet_id == stored.logical_id,
+                TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
+            ))
+            assert assignment.discoverable_by_members is False
+            assert assignment.playable_by_members is True
+            assert assignment.content_visible_by_members is True
+            assert assignment.editable_by_members is False
+            assert assignment.library_viewing_rule == "never"
+            version = await session.get(PacketVersionRecord, stored.version_id)
+            assert version.library_released_at is not None
+            for actor_id in (uploader.id, fixture.manager.id):
+                assert await session.scalar(select(PlayerExposureClaimRecord).where(
+                    PlayerExposureClaimRecord.player_id == actor_id,
+                    PlayerExposureClaimRecord.packet_version_id == stored.version_id,
+                    PlayerExposureClaimRecord.state == "burnt",
+                )) is not None
+        with pytest.raises(PermissionError):
+            await service.editable_draft(draft_id, uploader.id)
+        with pytest.raises(ValueError, match="unpublished"):
+            await service.update_draft(draft_id, uploader.id, expected_version=2, content=content)
+        with pytest.raises(ValueError, match="unpublished"):
+            await service.reject(draft_id, actor_id=uploader.id)
+        with pytest.raises(PermissionError):
+            await service.management_editor(fixture.tournament_id, assignment.id, uploader.id)
+        with pytest.raises(PermissionError):
+            await service.management_action(
+                fixture.tournament_id, assignment.id, uploader.id, expected_version=1, delete=True,
+            )
+        with pytest.raises(PermissionError):
+            await service.set_library_release(stored.logical_id, uploader.id, released=False)
+        await service.management_action(
+            fixture.tournament_id, assignment.id, fixture.manager.id,
+            expected_version=1, delete=True,
+        )
+    finally:
+        await database.close()
+
+
+async def test_community_upload_policy_revocation_blocks_existing_drafts(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        settings = await service.tournaments.manager_settings(
+            fixture.tournament_id, fixture.manager.id,
+        )
+        policy_args = dict(
+            default_parameters=settings.default_parameters,
+            player_mutable_parameters=set(settings.player_mutable_parameters),
+        )
+        await service.tournaments.update_policy(
+            fixture.tournament_id, fixture.manager.id,
+            policies={**settings.policies, "member_uploads": True}, **policy_args,
+        )
+        uploader = fixture.players[0].id
+        content = asdict(packet())
+        summary = await service.import_upload(
+            json.dumps(content).encode(), source_filename="community.json",
+            uploader_id=uploader, tournament_id=fixture.tournament_id,
+        )
+        draft_id = UUID(summary["draft_id"])
+        await service.tournaments.update_policy(
+            fixture.tournament_id, fixture.manager.id,
+            policies={**settings.policies, "member_uploads": False}, **policy_args,
+        )
+        with pytest.raises(PermissionError):
+            await service.upload_eligibility(fixture.tournament_id, uploader)
+        with pytest.raises(PermissionError):
+            await service.update_draft(draft_id, uploader, expected_version=1, content=content)
+        with pytest.raises(PermissionError):
+            await service.publish(draft_id, administrator_id=uploader)
+        await service.publish(draft_id, administrator_id=fixture.manager.id)
+    finally:
+        await database.close()
 
 
 async def test_add_existing_packet_checks_both_roles_and_confirmation(database_url):

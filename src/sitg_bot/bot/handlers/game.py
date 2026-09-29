@@ -20,8 +20,10 @@ from sitg_bot.bot.presenters.game import (
     score_text,
 )
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel, MessageModel
+from sitg_bot.bot.presenters.players import player_name
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import GatewayCallError
+from sitg_bot.domain.game_action_reasons import game_action_reason
 
 router = Router(name=__name__)
 
@@ -197,6 +199,7 @@ async def current_game(message, backend, claim, navigation, localization, locale
         await message.answer(localization.text("flow.no_game", locale))
         return None
     view = await backend.game_view(claim, navigation.active_game.id)
+    view["bot_username"] = getattr(backend.game_delivery, "bot_username", None)
     if view.get("dismissed"):
         return None
     await backend.game_delivery.track(message.chat.id, view["id"], message.message_id)
@@ -221,10 +224,15 @@ async def perform(message, backend, claim, view, localization, locale, command, 
             raise
         result = {"accepted": False}
     if not result["accepted"]:
+        reason = result.get("reason")
+        if reason is None:
+            current = await backend.game_view(claim, UUID(view["id"]))
+            reason = game_action_reason(current, command)
+        text = localization.text("game.denied." + reason, locale)
         if view.get("dismissed"):
-            await message.answer(localization.text("game.unavailable", locale))
+            await message.answer(text)
         else:
-            await game_reply(message, backend, view, localization.text("game.unavailable", locale))
+            await game_reply(message, backend, view, text)
         return False
     return True
 
@@ -269,7 +277,9 @@ async def request_appeal(message, backend, claim, view, localization, locale):
         player = next(p for p in view["participants"] if p["id"] == attempt["player_id"])
         answer = attempt["submitted_answer"] or "—"
         preview = answer if len(answer) <= 120 else answer[:117] + "…"
-        lines.append(html.escape(f"{index}) {player['name']}: {preview}"))
+        lines.append(
+            f"{index}) {player_name(player, view.get('bot_username'))}: {html.escape(preview)}"
+        )
         kind = "reject_correct" if attempt["original_correct"] else "accept_incorrect"
         buttons.append((InlineButtonModel(
             f"{index}) " + localization.text("game.appeal_kind." + kind, locale),
@@ -403,7 +413,9 @@ async def handle_game_keyboard(
         message.text
     ]
     if command not in view["actions"]:
-        await game_reply(message, backend, view, localization.text("game.unavailable", locale))
+        await game_reply(message, backend, view, localization.text(
+            "game.denied." + game_action_reason(view, command), locale
+        ))
         return
     if command == "appeal":
         accepted = await request_appeal(
@@ -524,7 +536,7 @@ async def handle_game_command(
                     "game.player",
                     locale,
                     number=index,
-                    name=player["name"],
+                    name=player_name(player, view.get("bot_username")),
                     status=localization.text("game.player_status." + status, locale),
                     link=f"https://t.me/{player['telegram_username']}"
                     if player.get("telegram_username")
@@ -538,7 +550,9 @@ async def handle_game_command(
         return
     if command == "abandon":
         if not {"abandon", "observe_leave"}.intersection(view["actions"]):
-            await game_reply(message, backend, view, localization.text("game.unavailable", locale))
+            await game_reply(message, backend, view, localization.text(
+                "game.denied." + game_action_reason(view, command), locale
+            ))
             return
         await backend.game_delivery.send(
             message.chat.id,
@@ -551,7 +565,9 @@ async def handle_game_command(
     if command == "reconnect":
         command = "join"
     if command != "quit" and command not in view["actions"]:
-        await game_reply(message, backend, view, localization.text("game.unavailable", locale))
+        await game_reply(message, backend, view, localization.text(
+            "game.denied." + game_action_reason(view, command), locale
+        ))
         return
     if command == "report":
         await report_command(
@@ -585,7 +601,9 @@ async def handle_game_command(
             {},
         )
         if not notice:
-            await game_reply(message, backend, view, localization.text("game.unavailable", locale))
+            await game_reply(
+                message, backend, view, localization.text("game.denied.appeal_changed", locale)
+            )
             await sync_game(backend, message.chat.id, view["id"])
             return
         values.update(approve=argument.lower() in {"yes", "да"}, appeal_id=notice.get("appeal_id"))

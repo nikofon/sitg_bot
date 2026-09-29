@@ -38,7 +38,7 @@ import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
 import type { MiniAppPlatform } from "./platform/telegram";
 import { Router } from "./routing/router";
-import { routeRequestPath, type RouteMatch } from "./routing/routes";
+import { playerLaunchPath, routeRequestPath, type RouteMatch } from "./routing/routes";
 import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
@@ -73,6 +73,8 @@ export class MiniAppShell {
 
   start(): void {
     this.platform.initialize();
+    const profilePath = playerLaunchPath(this.platform.initData);
+    if (profilePath) window.history.replaceState(null, "", profilePath);
     this.router.subscribe((route) => void this.load(route));
     this.router.start();
   }
@@ -1779,6 +1781,31 @@ export class MiniAppShell {
       this.descriptorLabel(descriptor.name, "setting"),
     )));
 
+    const requirements = element("div", { className: "repeating-list" });
+    const appendRequirement = (kind = "has-played-tournament", target = "", message = "", name = ""): void => {
+      const row = element("div", { className: "repeating-row", "data-requirement": "true" },
+        element("label", {}, this.i18n.t("manager_settings.requirement_kind"),
+          element("select", { name: "requirement_kind" },
+            ...["has-played-tournament", "has-not-played-tournament", "has-not-seen-packet"].map((value) =>
+              element("option", { value, selected: value === kind }, this.i18n.t(`requirement.${value}` as MessageKey))))),
+        input("manager_settings.requirement_target", "requirement_target", target),
+        ...(name ? [element("span", {}, name)] : []),
+        input("manager_settings.requirement_message", "requirement_message", message),
+        element("button", { type: "button", className: "secondary-button" }, this.i18n.t("common.remove")),
+      );
+      const targetInput = row.querySelector<HTMLInputElement>('input[name="requirement_target"]')!;
+      targetInput.required = true;
+      targetInput.pattern = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+      row.querySelector<HTMLInputElement>('input[name="requirement_message"]')!.maxLength = 500;
+      row.querySelector("button")!.addEventListener("click", () => row.remove());
+      requirements.append(row);
+    };
+    for (const requirement of resource.registration_requirements ?? []) {
+      appendRequirement(requirement.kind, requirement.target_id, requirement.failure_message ?? "", requirement.target_name);
+    }
+    const addRequirement = element("button", { type: "button", className: "secondary-button" }, this.i18n.t("manager_settings.requirement_add"));
+    addRequirement.addEventListener("click", () => appendRequirement());
+
     form.append(
       this.managerNavigationButton(route, "management"),
       ...(resource.classic ? [this.classicSettings(route, resource.settings_version, resource.classic)] : []),
@@ -1830,6 +1857,12 @@ export class MiniAppShell {
         input("tournament.starts", "starts_at", dateTimeLocal(item.starts_at), "datetime-local"),
         input("tournament.ends", "planned_ends_at", dateTimeLocal(item.planned_ends_at), "datetime-local"),
         element("p", { className: "field-help" }, this.i18n.t("manager_settings.schedule_help")),
+      ),
+      group(
+        "tournament.requirements",
+        element("p", { className: "field-help" }, this.i18n.t("manager_settings.requirement_help")),
+        requirements,
+        addRequirement,
       ),
       group(
         "manager_settings.gameplay",
@@ -2375,6 +2408,11 @@ export class MiniAppShell {
             default_parameters: this.descriptorValues(form, settingDescriptors, "setting"),
             player_mutable_parameters: data.getAll("player_mutable_parameters").map(String),
             policies: this.descriptorValues(form, policyDescriptors, "policy"),
+            registration_requirements: Array.from(form.querySelectorAll<HTMLElement>("[data-requirement]")).map((row) => ({
+              kind: row.querySelector<HTMLSelectElement>('select[name="requirement_kind"]')!.value,
+              target_id: row.querySelector<HTMLInputElement>('input[name="requirement_target"]')!.value.trim(),
+              failure_message: row.querySelector<HTMLInputElement>('input[name="requirement_message"]')!.value.trim() || null,
+            })),
           },
         },
       );

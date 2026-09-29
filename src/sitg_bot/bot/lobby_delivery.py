@@ -13,6 +13,7 @@ from sitg_bot.application.protocol import (
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel
+from sitg_bot.bot.presenters.players import player_name
 from sitg_bot.bot.presenters.render import telegram_keyboard
 from sitg_bot.services.launch_references import LaunchReference
 
@@ -139,7 +140,7 @@ async def run_outbox_consumer(consumer: RemoteOutboxConsumer) -> None:
             await asyncio.sleep(0.1 if delivered else 1)
 
 
-def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService):
+def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService, bot_username=None):
     async def deliver(payload: dict[str, object]) -> None:
         locale = localization.locale(str(payload.get("locale", "ru")))
         kind = str(payload["kind"])
@@ -202,7 +203,7 @@ def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService):
                         "lobby.readiness.player",
                         locale,
                         icon="✅" if member.get("ready") else "⏳",
-                        name=member.get("name", ""),
+                        name=player_name(member, bot_username),
                         status=localization.text(
                             "button.lobby.ready"
                             if member.get("ready")

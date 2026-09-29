@@ -12,6 +12,7 @@ from sitg_bot.bot.keyboards.common import (
     OTHER_MENU_ACTIONS,
     PLAYER_MENU_ACTIONS,
     PLAYER_TOURNAMENT_ACTIONS,
+    PLAYER_TOURNAMENT_OTHER_ACTIONS,
     navigation_keyboard,
     other_menu_keyboard,
     setting_choices_keyboard,
@@ -32,13 +33,16 @@ from sitg_bot.bot.state import (
     SettingsState,
     SettingState,
 )
-from sitg_bot.bot.state.settings import BugReportState, SettingEditState
+from sitg_bot.bot.state.settings import BugReportState, PacketUploadState, SettingEditState
 
 router = Router(name=__name__)
 
 PLAYER_ACTIONS = tuple(
     action
-    for row in (*PLAYER_MENU_ACTIONS, *OTHER_MENU_ACTIONS, *PLAYER_TOURNAMENT_ACTIONS)
+    for row in (
+        *PLAYER_MENU_ACTIONS, *OTHER_MENU_ACTIONS,
+        *PLAYER_TOURNAMENT_ACTIONS, *PLAYER_TOURNAMENT_OTHER_ACTIONS,
+    )
     for action in row
 )
 PLACEHOLDER_ACTIONS: frozenset[str] = frozenset()
@@ -446,6 +450,27 @@ async def handle_player_menu_action(
         selected = navigation.selected_player_tournament
         if navigation.context != "tournament" or selected is None:
             await send_message_model(message, menu_message(navigation, localization, locale))
+            return
+        if player_action == "player.tournament.packet_upload":
+            try:
+                eligibility = await backend.packet_upload_eligibility(
+                    telegram_update_claim, tournament_id=selected.id,
+                )
+            except GatewayCallError as error:
+                if error.error.code != ErrorCode.FORBIDDEN:
+                    raise
+                await send_message_model(
+                    message, MessageModel(localization.text("packet_upload.unavailable", locale)),
+                )
+                return
+            await state.set_state(PacketUploadState.waiting_document)
+            await state.update_data(
+                tournament_id=str(selected.id), maximum_bytes=int(eligibility["maximum_bytes"]),
+            )
+            await send_message_model(message, MessageModel(
+                localization.text("packet_upload.community_warning", locale)
+                + "\n\n" + localization.text("packet_upload.document_prompt", locale),
+            ))
             return
         if player_action == "player.tournament.quit":
             updated = await backend.select_tournament(

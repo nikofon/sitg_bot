@@ -21,15 +21,17 @@ from sitg_bot.bot.presenters.game import (
     start_message,
 )
 from sitg_bot.bot.presenters.models import InlineKeyboardModel, MessageModel
+from sitg_bot.bot.presenters.players import player_name
 from sitg_bot.bot.presenters.render import telegram_keyboard
 
 
 class GameDelivery:
-    def __init__(self, bot, localization, protocol, references):
+    def __init__(self, bot, localization, protocol, references, bot_username=None):
         self.bot = bot
         self.localization = localization
         self.protocol = protocol
         self.references = references
+        self.bot_username = bot_username
         self.locks = defaultdict(asyncio.Lock)
         self.last_edit = {}
 
@@ -143,6 +145,7 @@ class GameDelivery:
                 if delivery["skip"]:
                     return
                 view, messages = delivery["view"], delivery["messages"]
+                view["bot_username"] = self.bot_username
                 events = delivery["events"]
                 index = 0
                 while index < len(events):
@@ -317,7 +320,7 @@ class GameDelivery:
                 t("game.scores")
                 + "\n"
                 + "\n".join(
-                    f"{html.escape(p['name'])}: {p['score']}"
+                    f"{player_name(p, self.bot_username)}: {p['score']}"
                     for p in sorted(params["players"], key=lambda p: -p["score"])
                 )
             )
@@ -467,5 +470,5 @@ class GameDelivery:
                 await self.record(chat, game, key="_deleted", value={"ids": sorted(done)})
 
 
-def game_delivery_handler(bot, localization, protocol, references):
-    return GameDelivery(bot, localization, protocol, references)
+def game_delivery_handler(bot, localization, protocol, references, bot_username=None):
+    return GameDelivery(bot, localization, protocol, references, bot_username)

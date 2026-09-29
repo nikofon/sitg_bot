@@ -72,6 +72,7 @@ class LobbyMemberSnapshot:
     validation_violations: tuple[dict[str, object], ...]
     role: str = "player"
     fresh_content_confirmed: bool = False
+    player_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,6 +751,7 @@ class InvitationMatchmakingService:
                     "members": [
                         {
                             "name": member_names.get(item.player_id, ""),
+                            "player_id": str(item.player_id),
                             "ready": bool(item.ready),
                         }
                         for item in members
@@ -1976,6 +1978,7 @@ class InvitationMatchmakingService:
                     tuple(member.validation_violations),
                     member.role,
                     member.fresh_content_confirmed,
+                    player.id,
                 )
                 for member, player in rows
             ),

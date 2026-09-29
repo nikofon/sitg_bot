@@ -471,7 +471,7 @@ async def test_reveal_coalesces_only_before_boundaries_and_restart_reuses_questi
     assert bot.send_message.await_count == 1
     assert bot.send_message.await_args.args[1] == "One two"
     protocol.events += [event(3, "player_buzzed", round_id=ROUND, mine=False, name="Other <b>")]
-    restarted = GameDelivery(bot, LocalizationService(), protocol, None)
+    restarted = GameDelivery(bot, LocalizationService(), protocol, None, "test_bot")
     await restarted.sync(42, GAME)
     assert bot.send_message.await_count == 2
     assert bot.send_message.await_args.args[1] == "Other &lt;b&gt; отбился!"
@@ -657,6 +657,20 @@ async def test_keyboard_buzz_is_bound_to_delivered_question_not_unseen_next_ques
     assert backend.game_action.await_args.kwargs["round_id"] == ROUND
 
 
+@pytest.mark.parametrize("raced", [False, True])
+async def test_rejected_buzz_explains_other_player_is_answering(raced):
+    snapshot = view(actions=["buzz"] if raced else [])
+    snapshot["participants"][0].update(active=True, joined=True)
+    snapshot["question"]["accepted_buzzer_id"] = str(UUID(int=3))
+    backend, message, navigation = handler_fixture(snapshot)
+    message.text = "+"
+    backend.game_action.return_value = {"accepted": False, "reason": "another_answering"}
+    await handle_game_keyboard(message, backend, object(), LocalizationService(), "en", navigation)
+    assert "Another player has already buzzed" in backend.game_delivery.send.await_args.args[3].text
+    if not raced:
+        backend.game_action.assert_not_awaited()
+
+
 async def test_commands_after_exit_do_not_resolve_a_historical_game():
     backend, message, navigation = handler_fixture()
     navigation.context, navigation.active_game = "menu", None
@@ -698,9 +712,12 @@ async def test_score_command_and_scoreboard_sort_descending():
     names = [html.escape(p["name"]) for p in snapshot["participants"]]
     assert text.index(names[1]) < text.index(names[2]) < text.index(names[0])
     bot, protocol, delivery = fixture(snapshot)
+    delivery.bot_username = "test_bot"
     protocol.events = [event(1, "scoreboard", players=[
-        {"name": p["name"], "score": p["score"]} for p in snapshot["participants"]
+        {"name": p["name"], "score": p["score"], "player_id": p["id"]}
+        for p in snapshot["participants"]
     ])]
     await delivery.sync(42, GAME)
     text = bot.send_message.await_args.args[1]
     assert text.index(names[1]) < text.index(names[2]) < text.index(names[0])
+    assert text.count('<a href="https://t.me/test_bot?startapp=player_') == 3

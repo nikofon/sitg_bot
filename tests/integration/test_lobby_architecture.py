@@ -1333,6 +1333,72 @@ async def test_registration_packet_metadata_and_viewing_rules(database_url: str)
     await database.close()
 
 
+async def test_manager_settings_replace_requirements_atomically(database_url: str) -> None:
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        target = await tournament_fixture(database, player_count=1)
+        service = TournamentService(database)
+        settings = await service.manager_settings(fixture.tournament_id, fixture.manager.id)
+        item = settings.tournament
+        values = dict(
+            expected_version=settings.settings_version, name=item.name, slug=item.slug,
+            type_key=item.type_key, game_ruleset_key=item.ruleset_key,
+            visibility=item.visibility, language=item.language, payment_type=item.payment_type,
+            pricing_plans=[], registration_open=item.registration_open,
+            registration_starts_at=item.registration_starts_at,
+            registration_ends_at=item.registration_ends_at, starts_at=item.starts_at,
+            planned_ends_at=item.planned_ends_at, author_names=settings.author_names,
+            default_parameters=settings.default_parameters,
+            player_mutable_parameters=set(settings.player_mutable_parameters),
+            policies=settings.policies,
+        )
+        requirements = (
+            {"kind": "has-played-tournament", "target_id": target.tournament_id},
+            {"kind": "has-not-seen-packet", "target_id": target.packet_id,
+             "failure_message": "Fresh packets only"},
+        )
+        updated = await service.update_manager_settings(
+            fixture.tournament_id, fixture.manager.id, **values,
+            registration_requirements=requirements,
+        )
+        assert len(updated.registration_requirements) == 2
+        assert updated.settings_version == settings.settings_version + 1
+        with pytest.raises(StaleWriteError):
+            await service.update_manager_settings(
+                fixture.tournament_id, fixture.manager.id, **values,
+                registration_requirements=(),
+            )
+        values["expected_version"] = updated.settings_version
+        with pytest.raises(ValueError, match="another tournament"):
+            await service.update_manager_settings(
+                fixture.tournament_id, fixture.manager.id, **values,
+                registration_requirements=({
+                    "kind": "has-played-tournament", "target_id": fixture.tournament_id,
+                },),
+            )
+        same = await service.update_manager_settings(
+            fixture.tournament_id, fixture.manager.id, **values,
+            registration_requirements=requirements,
+        )
+        assert {r.id for r in same.registration_requirements} == {
+            r.id for r in updated.registration_requirements
+        }
+        values["expected_version"] = same.settings_version
+        with pytest.raises(PermissionError):
+            await service.update_manager_settings(
+                fixture.tournament_id, fixture.players[0].id, **values,
+                registration_requirements=(),
+            )
+        cleared = await service.update_manager_settings(
+            fixture.tournament_id, fixture.manager.id, **values,
+            registration_requirements=(),
+        )
+        assert cleared.registration_requirements == ()
+    finally:
+        await database.close()
+
+
 async def test_registration_requirements_use_play_and_exposure_history(
     database_url: str,
 ) -> None:

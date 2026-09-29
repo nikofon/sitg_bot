@@ -68,7 +68,7 @@ from sitg_bot.bot.state.models import (
     TokenRequestPageState,
     TokenRequestState,
 )
-from sitg_bot.bot.state.settings import TournamentCreationState
+from sitg_bot.bot.state.settings import PacketUploadState, TournamentCreationState
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.telegram_auth import DuplicateTelegramUpdate
 from sitg_bot.storage.models import PlayerTelegramNavigationRecord
@@ -553,6 +553,51 @@ def test_player_tournament_context_is_capability_derived() -> None:
         "Info",
         "Quit to menu",
     )
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_player_tournament_upload_submenu_and_permission(allowed) -> None:
+    actions = TelegramNavigationService._allowed_actions(
+        active_mode="player", context="tournament", available_modes=("player",),
+        active_lobby=None, active_game=None, selected_player=None,
+    )
+    nav = navigation(
+        context="tournament", allowed_actions=actions,
+        selected_player_tournament={
+            "id": str(UUID(int=8)), "name": "Player Cup", "slug": "player-cup",
+            "status": "active",
+        },
+    )
+    localization = LocalizationService()
+    menu = menu_message(nav, localization, "en")
+    assert "Other..." in {label for row in menu.keyboard.rows for label in row}
+    assert "Upload packet" not in {label for row in menu.keyboard.rows for label in row}
+    other = other_menu_message(nav, localization, "en")
+    assert other.keyboard.rows == (("Upload packet",), ("Back",))
+    backend = SimpleNamespace(packet_upload_eligibility=AsyncMock(
+        return_value={"maximum_bytes": 4194304},
+        side_effect=None if allowed else GatewayCallError(GatewayResponse(
+            action=ActionCode.PACKET_UPLOAD_ELIGIBILITY, correlation_id=UUID(int=99), ok=False,
+            error={"code": "forbidden", "message_key": "error.forbidden"},
+        )),
+    ))
+    state = SimpleNamespace(set_state=AsyncMock(), update_data=AsyncMock())
+    message = SimpleNamespace(answer=AsyncMock())
+    await handle_player_menu_action(
+        message, "player.tournament.packet_upload", backend, object(), localization, "en",
+        nav, state, None,
+    )
+    assert backend.packet_upload_eligibility.await_args.kwargs["tournament_id"] == UUID(int=8)
+    if allowed:
+        state.set_state.assert_awaited_once_with(PacketUploadState.waiting_document)
+        state.update_data.assert_awaited_once_with(
+            tournament_id=str(UUID(int=8)), maximum_bytes=4194304,
+        )
+        assert "cannot modify or delete" in message.answer.await_args.args[0]
+        assert "DOCX or PDF" in message.answer.await_args.args[0]
+    else:
+        state.set_state.assert_not_awaited()
+        assert "unavailable" in message.answer.await_args.args[0]
 
 
 async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
@@ -1606,7 +1651,10 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
             )
         ),
     )
-    message = SimpleNamespace(answer=AsyncMock())
+    message = SimpleNamespace(
+        answer=AsyncMock(),
+        bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(username="test_bot"))),
+    )
     claim = SimpleNamespace()
     await handle_lobby_action(
         message,  # type: ignore[arg-type]

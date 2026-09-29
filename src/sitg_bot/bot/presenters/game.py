@@ -11,6 +11,7 @@ from sitg_bot.bot.presenters.models import (
     RemoveKeyboardModel,
     ReplyKeyboardModel,
 )
+from sitg_bot.bot.presenters.players import player_name
 
 
 def game_keyboard():
@@ -89,9 +90,12 @@ def join_message(view, localization, locale):
                 "game.info.packets", locale, packets=", ".join(view["packet_names"])
             )
         )
-    names = [p["name"] for p in view.get("participants") or ()]
+    names = [str(player_name(p, view.get("bot_username"))) for p in view.get("participants") or ()]
     if names:
-        details.append(localization.text("game.info.players", locale, players=", ".join(names)))
+        details.append(
+            localization.text("game.info.players", locale, players="{players}")
+            .replace("{players}", ", ".join(names))
+        )
     if details:
         text += "\n" + "\n".join(details)
     return MessageModel(
@@ -110,11 +114,18 @@ def join_message(view, localization, locale):
 
 
 def start_message(view, localization, locale):
-    players = "\n".join(f"{i}) {p['name']}" for i, p in enumerate(view["participants"], 1))
+    players = "\n".join(
+        f"{i}) {player_name(p, view.get('bot_username'))}"
+        for i, p in enumerate(view["participants"], 1)
+    )
     keyboard = (
         game_keyboard() if any(p["self"] for p in view["participants"]) else RemoveKeyboardModel()
     )
-    return MessageModel(localization.text("flow.started", locale, players=players), keyboard)
+    return MessageModel(
+        localization.text("flow.started", locale, players="{players}")
+        .replace("{players}", players),
+        keyboard,
+    )
 
 
 def score_text(view, localization, locale, *, final=False):
@@ -128,7 +139,7 @@ def score_text(view, localization, locale, *, final=False):
                 "flow.score_line",
                 locale,
                 rank=rank,
-                name=player["name"],
+                name=player_name(player, view.get("bot_username")),
                 score=player["score"],
                 correct=player.get("correct_points", 0),
             )

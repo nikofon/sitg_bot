@@ -39,8 +39,11 @@ PLAYER_TOURNAMENT_ACTIONS = (
     ("player.tournament.info",),
     ("player.tournament.chats",),
     ("lobby.reopen",),
+    ("player.other",),
     ("player.tournament.quit",),
 )
+
+PLAYER_TOURNAMENT_OTHER_ACTIONS = (("player.tournament.packet_upload",),)
 
 LOBBY_ACTIONS = (
     ("lobby.ready", "lobby.unready"),
@@ -161,9 +164,14 @@ def other_menu_keyboard(
     locale: str,
 ) -> ReplyKeyboardModel:
     allowed = set(navigation.allowed_actions)
+    layout = (
+        PLAYER_TOURNAMENT_OTHER_ACTIONS
+        if navigation.context == "tournament"
+        else OTHER_MENU_ACTIONS
+    )
     rows = tuple(
         tuple(localization.text(f"button.{action}", locale) for action in row if action in allowed)
-        for row in OTHER_MENU_ACTIONS
+        for row in layout
     )
     return ReplyKeyboardModel(
         rows=(*tuple(row for row in rows if row), (localization.text("button.back", locale),))

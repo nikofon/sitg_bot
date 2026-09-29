@@ -27,7 +27,11 @@ from sitg_bot.services.author_exposure import burn_author_content, tournament_ma
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
-from sitg_bot.services.tournaments import PACKET_ACCESS_DEFAULT_POLICIES, TournamentService
+from sitg_bot.services.tournaments import (
+    MEMBER_UPLOADS_POLICY,
+    PACKET_ACCESS_DEFAULT_POLICIES,
+    TournamentService,
+)
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -864,7 +868,6 @@ class PacketAdminService:
         draft, context = await self._authorized_draft(draft_id, actor_id)
         packet = self._optional_packet(draft.content)
         authors = self._detected_authors(packet) if packet is not None else ()
-        can_publish = await self._can_publish(context.tournament_id, actor_id)
         return {
             "draft_id": str(draft.id),
             "version": draft.version,
@@ -882,14 +885,13 @@ class PacketAdminService:
             "detected_authors": list(authors),
             "errors": list(draft.validation_errors),
             "warnings": list(draft.validation_warnings),
-            "can_publish": can_publish
-            and draft.status == "awaiting_confirmation"
+            "can_publish": draft.status == "awaiting_confirmation"
             and not draft.validation_errors,
             "can_reject": draft.status in {"awaiting_confirmation", "validation_failed"},
         }
 
     async def editable_draft(self, draft_id: UUID, actor_id: UUID) -> dict[str, object]:
-        draft, context = await self._authorized_draft(draft_id, actor_id)
+        draft, context = await self._authorized_draft(draft_id, actor_id, content_access=True)
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
         summary = await self.draft_summary(draft_id, actor_id)
         content = (
@@ -934,6 +936,7 @@ class PacketAdminService:
         author = await self.tournaments.create_tournament_author(
             context.tournament_id, actor_id, first_name=first_name,
             second_name=second_name, surname=surname, telegram_link=telegram_link,
+            packet_draft_id=draft_id,
         )
         return {"author_id": str(author.id), "display_name": author.display_name}
 
@@ -956,7 +959,7 @@ class PacketAdminService:
             if draft is None:
                 raise LookupError("Packet draft not found")
             context = await self.tournaments.context(session, draft.creation_tournament_id)
-            await self._require_upload_access(session, context, actor_id)
+            await self._require_draft_access(session, context, draft, actor_id)
             if draft.status not in {"awaiting_confirmation", "validation_failed"}:
                 raise ValueError("Only an unpublished packet draft can be edited")
             if draft.version != expected_version:
@@ -1040,7 +1043,7 @@ class PacketAdminService:
                 raise LookupError("Packet draft not found")
             if actor_id is not None:
                 context = await self.tournaments.context(session, draft.creation_tournament_id)
-                await self._require_upload_access(session, context, actor_id)
+                await self._require_draft_access(session, context, draft, actor_id)
             if draft.status not in {"awaiting_confirmation", "validation_failed"}:
                 raise ValueError("Only an unpublished draft can be rejected")
             draft.status = "rejected"
@@ -1064,21 +1067,8 @@ class PacketAdminService:
             if draft.status != "awaiting_confirmation":
                 raise ValueError("Only a validated draft awaiting confirmation can publish")
             if administrator_id is not None and draft.creation_tournament_id is not None:
-                await self.tournaments.context(session, draft.creation_tournament_id)
-                administrator = await session.get(PlatformAdministratorRecord, administrator_id)
-                manager = await session.get(
-                    TournamentManagerRecord,
-                    (draft.creation_tournament_id, administrator_id),
-                )
-                if not (
-                    administrator is not None
-                    and administrator.revoked_at is None
-                    or manager is not None
-                    and manager.revoked_at is None
-                ):
-                    raise PermissionError(
-                        "Tournament manager or platform administrator role is required"
-                    )
+                context = await self.tournaments.context(session, draft.creation_tournament_id)
+                await self._require_draft_access(session, context, draft, administrator_id)
 
             packet = self._packet_from_content(draft.content)
             logical_packet = LogicalPacketRecord(uploader_id=draft.uploader_id)
@@ -1259,23 +1249,19 @@ class PacketAdminService:
         if changed:
             tournament.settings_version += 1
 
-    async def _authorized_draft(self, draft_id: UUID, actor_id: UUID):
+    async def _authorized_draft(
+        self, draft_id: UUID, actor_id: UUID, *, content_access: bool = False,
+    ):
         async with self.database.sessions() as session:
             draft = await session.get(PacketDraftRecord, draft_id)
             if draft is None:
                 raise LookupError("Packet draft not found")
             context = await self.tournaments.context(session, draft.creation_tournament_id)
-            await self._require_upload_access(session, context, actor_id)
+            manager = await self._require_draft_access(session, context, draft, actor_id)
+            if content_access and not manager and draft.status == "published":
+                raise PermissionError("Published packets must be accessed through the library")
             session.expunge(draft)
             return draft, context
-
-    async def _can_publish(self, tournament_id: UUID, actor_id: UUID) -> bool:
-        async with self.database.sessions() as session:
-            administrator = await session.get(PlatformAdministratorRecord, actor_id)
-            if administrator is not None and administrator.revoked_at is None:
-                return True
-            manager = await session.get(TournamentManagerRecord, (tournament_id, actor_id))
-            return manager is not None and manager.revoked_at is None
 
     @staticmethod
     async def _enqueue_bound_telegram_status(
@@ -1333,15 +1319,32 @@ class PacketAdminService:
         released: bool,
         version_id: UUID | None = None,
     ) -> None:
-        """Set the owner-controlled packet library release gate."""
+        """Set the manager-controlled packet library release gate."""
         async with self.database.transaction() as session:
             packet = await session.get(LogicalPacketRecord, packet_id)
             if packet is None:
                 raise LookupError("Packet not found")
             administrator = await session.get(PlatformAdministratorRecord, actor_id)
             is_administrator = administrator is not None and administrator.revoked_at is None
-            if packet.uploader_id != actor_id and not is_administrator:
-                raise PermissionError("Packet owner or platform administrator role is required")
+            if not is_administrator:
+                if packet.uploader_id != actor_id:
+                    raise PermissionError("Packet owner or platform administrator role is required")
+                tournament_id = await session.scalar(
+                    select(TournamentPacketAssignmentRecord.tournament_id)
+                    .join(TournamentManagerRecord, (
+                        TournamentManagerRecord.tournament_id
+                        == TournamentPacketAssignmentRecord.tournament_id
+                    ))
+                    .where(
+                        TournamentPacketAssignmentRecord.packet_id == packet_id,
+                        TournamentPacketAssignmentRecord.status == "active",
+                        TournamentManagerRecord.player_id == actor_id,
+                        TournamentManagerRecord.revoked_at.is_(None),
+                    ).limit(1)
+                )
+                if tournament_id is None:
+                    raise PermissionError("Tournament manager role is required")
+                await self.tournaments.require_modifiable(session, tournament_id)
             version = (
                 await session.get(PacketVersionRecord, version_id)
                 if version_id is not None
@@ -1460,21 +1463,38 @@ class PacketAdminService:
     def _packet_from_content(content: dict[str, object]) -> Packet:
         return packet_from_data(content)
 
-    @staticmethod
-    async def _require_upload_access(session, context, player_id: UUID) -> None:
+    async def _require_upload_access(self, session, context, player_id: UUID) -> bool:
+        """Check upload permission and return whether the actor has a management role."""
         await TournamentService.require_modifiable(session, context.tournament_id)
+        # Read policy after the tournament lock, so policy revocation serializes with uploads.
+        context = await self.tournaments.context(session, context.tournament_id)
         administrator = await session.get(PlatformAdministratorRecord, player_id)
         if administrator is not None and administrator.revoked_at is None:
-            return
+            return True
         manager = await session.get(TournamentManagerRecord, (context.tournament_id, player_id))
         if manager is not None and manager.revoked_at is None:
-            return
+            return True
         membership = await session.get(
             TournamentMembershipRecord, (context.tournament_id, player_id)
         )
         if not (
-            context.policies.get("member_uploads")
+            context.policies.get(MEMBER_UPLOADS_POLICY) is True
             and membership is not None
             and membership.status == "active"
         ):
             raise PermissionError("Tournament packet upload permission is required")
+        return False
+
+    async def _require_draft_access(self, session, context, draft, player_id: UUID) -> bool:
+        if await self._require_upload_access(session, context, player_id):
+            return True
+        if draft.uploader_id != player_id:
+            raise PermissionError("Players can only access their own packet drafts")
+        destinations = (await session.scalars(
+            select(PacketDraftTournamentRecord.tournament_id).where(
+                PacketDraftTournamentRecord.draft_id == draft.id,
+            )
+        )).all()
+        if any(destination != context.tournament_id for destination in destinations):
+            raise PermissionError("Community uploads can only target their own tournament")
+        return False
