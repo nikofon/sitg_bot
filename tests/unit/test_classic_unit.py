@@ -1,10 +1,12 @@
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
+from sitg_bot.application.contracts import ClassicSeedingValues
 from sitg_bot.domain.classic import (
     SCHEMES,
     balanced_groups,
@@ -14,6 +16,11 @@ from sitg_bot.domain.classic import (
     validate_scheme,
 )
 from sitg_bot.services.classic import ClassicService
+
+
+def test_seeding_contract_rejects_unknown_automatic_strategy():
+    with pytest.raises(ValidationError):
+        ClassicSeedingValues.model_validate({"mode": "automatic", "strategy": "invalid"})
 
 
 @pytest.mark.parametrize("kind,expected", [("first", "6"), ("playoff", "0")])
@@ -63,6 +70,62 @@ def test_balanced_groups_preserve_every_player_and_pad_with_chairs():
     assert sorted(s for g in groups for s in g if s is not None) == sorted(ratings)
     assert sum(s is None for g in groups for s in g) == 1
     assert groups == balanced_groups(ratings, 16)
+
+
+@pytest.mark.parametrize("stage_type,scheme,size,count", [
+    ("groups", "groups-9-4", 9, 18),
+    ("playoff", "top-16", 4, 16),
+    ("swiss", None, 4, 12),
+])
+async def test_automatic_strategies_use_global_ratings_and_prescribed_games(
+    stage_type, scheme, size, count,
+):
+    # Resolve the library ID without depending on the display name of play-off schemes.
+    if stage_type == "playoff":
+        scheme = next(s["id"] for s in SCHEMES.values()
+                      if s["kind"] == "playoff" and s["size"] == count)
+    players = [SimpleNamespace(id=uuid4()) for _ in range(count)]
+    ids = [str(p.id) for p in players]
+    ratings = {p.id: Decimal(2000 - i * 50) for i, p in enumerate(players)}
+    service = ClassicService(None)
+    service.eligible = AsyncMock(return_value=players)
+    session = SimpleNamespace(execute=AsyncMock(return_value=Mock(
+        all=Mock(return_value=list(ratings.items())),
+    )))
+    stage = SimpleNamespace(stage_type=stage_type, scheme_key=scheme, players_per_game=size,
+                            kind="playoff" if stage_type == "playoff" else "first",
+                            tournament_id=uuid4())
+
+    def groups(seeds):
+        if stage_type == "playoff":
+            return [[seeds[0][source - 1] for source in game["sources"]]
+                    for game in SCHEMES[scheme]["games"] if game["round"] == 1]
+        if stage_type == "swiss":
+            return [seeds[0][i:i + size] for i in range(0, count, size)]
+        return seeds
+
+    best = await service._seed(session, stage, "si", {"mode": "automatic", "strategy": "best"})
+    assert groups(best) == [ids[i:i + size] for i in range(0, count, size)]
+    average = await service._seed(
+        session, stage, "si", {"mode": "automatic", "strategy": "average"},
+    )
+    by_id = {str(p): rating for p, rating in ratings.items()}
+    means = [sum(by_id[p] for p in g) / len(g) for g in groups(average)]
+    assert max(means) - min(means) <= 50
+    assert sorted(p for g in average for p in g) == sorted(ids)
+    for mode in ("manual", "random"):
+        seeded = await service._seed(session, stage, "si", {"mode": mode, "seeds": best})
+        assert sorted(p for g in seeded for p in g) == sorted(ids)
+    with pytest.raises(ValueError, match="strategy"):
+        await service._seed(session, stage, "si", {"strategy": "invalid"})
+
+
+def test_average_swiss_fills_consecutive_games_and_playoff_keeps_empty_games():
+    ratings = {str(i): Decimal(1000 + i * 100) for i in range(9)}
+    groups = balanced_groups(ratings, 4, full_games=True)
+    assert [sum(p is not None for p in g) for g in groups] == [4, 4, 1]
+    sparse = balanced_groups({"a": Decimal(1500)}, 4, count=4)
+    assert sparse == [["a", None, None, None], [None] * 4, [None] * 4, [None] * 4]
 
 
 def test_place_awards_include_split_places_and_score_multiplier():

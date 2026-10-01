@@ -54,6 +54,7 @@ class ActionCode(StrEnum):
     TOURNAMENT_MANAGER_MANAGEMENT_LINK = "tournaments.manager.management.link.v1"
     TOURNAMENT_REGISTRATION_OVERRIDE = "tournaments.manager.registration.override.v1"
     TOURNAMENT_CLASSIC_UPDATE = "tournaments.manager.classic.update.v1"
+    TOURNAMENT_SUBSCRIPTIONS_UPDATE = "tournaments.manager.subscriptions.update.v1"
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
@@ -449,6 +450,7 @@ class ClassicConfigurationValues(ContractModel):
 
 class ClassicSeedingValues(ContractModel):
     mode: Literal["automatic", "random", "manual"] = "automatic"
+    strategy: Literal["best", "average"] | None = None
     seeds: list[list[UUID | None]] | None = None
 
 
@@ -480,6 +482,45 @@ class TournamentClassicUpdateOperation(ContractModel):
         object.__setattr__(
             self, "values", parsed.model_dump(mode="json", exclude_unset=self.command == "round")
         )
+        return self
+
+
+class SubscriptionCardValues(ContractModel):
+    name: str = Field(min_length=1, max_length=200)
+    packet_count: int | None = Field(default=None, ge=1, le=2147483647, strict=True)
+    discoverable: bool | None = Field(default=None, strict=True)
+    readable: bool | None = Field(default=None, strict=True)
+    playable: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def normalize_name(self):
+        if not self.name.strip():
+            raise ValueError("Subscription card name is required")
+        object.__setattr__(self, "name", self.name.strip())
+        return self
+
+
+class SubscriptionAssignValues(ContractModel):
+    card_id: UUID
+    player_id: UUID
+
+
+class SubscriptionRevokeValues(ContractModel):
+    subscription_id: UUID
+
+
+class TournamentSubscriptionsUpdateOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE]
+    tournament_id: UUID
+    expected_version: int = Field(ge=1, strict=True)
+    command: Literal["create", "assign", "revoke"]
+    values: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def validate_values(self):
+        schema = {"create": SubscriptionCardValues, "assign": SubscriptionAssignValues,
+                  "revoke": SubscriptionRevokeValues}[self.command]
+        object.__setattr__(self, "values", schema.model_validate(self.values).model_dump(mode="json"))
         return self
 
 
@@ -992,6 +1033,7 @@ GatewayOperation = Annotated[
     | TournamentManagerManagementLinkOperation
     | TournamentRegistrationOverrideOperation
     | TournamentClassicUpdateOperation
+    | TournamentSubscriptionsUpdateOperation
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
     | PacketManagementGetOperation

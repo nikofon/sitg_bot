@@ -340,6 +340,8 @@
   "notification.author_link.decided": "Запрос на привязку автора рассмотрен со статусом: {status}.",
   "notification.packet.substituted": "Организатор {manager_name} сделал замену в пакете «{packet_name}» в другом турнире. В вашем турнире сохраняется текущая версия.",
   "notification.tournament.start_due": "Пора начинать турнир «{name}»! Откройте управление турниром и запустите его вручную (для классического турнира — начните этап).",
+  "notification.subscription.assigned": "Вам назначен абонемент «{card_name}» в турнире «{tournament_name}». Количество пакетов: {packet_count}.",
+  "notification.subscription.unlimited": "без ограничений",
   "notification.generic": "Уведомление: {kind}",
   "notification.packet.available": "Пакет «{packet_name}» доступен для игры в турнире «{tournament_name}».",
   "notification.packet.opponents": "Соперники: {opponents}",

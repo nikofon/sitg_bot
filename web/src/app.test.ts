@@ -1036,10 +1036,9 @@ describe("MiniAppShell", () => {
     button("First round seeding").click();
     expect(button("Automatic seeding").classList.contains("secondary-button")).toBe(true);
     button("Automatic seeding").click();
-    await vi.waitFor(() => expect(root.querySelectorAll(".classic-seeding select")).toHaveLength(9));
-    const slots = root.querySelectorAll<HTMLSelectElement>(".classic-seeding select");
-    slots[0]!.value = "";
-    slots[1]!.value = "player-1";
+    await vi.waitFor(() => expect(root.querySelector("[data-seat='0:0']")?.textContent).toContain("Ada"));
+    root.querySelector<HTMLButtonElement>("[data-seat='0:1']")!.click();
+    document.querySelector<HTMLButtonElement>(".seeding-picker [data-player-id='player-1']")!.click();
     button("Save manual seeding").click();
     await vi.waitFor(() => expect(mutations).toHaveLength(3));
     expect(mutations[2]).toMatchObject({ expected_version: 6, command: "seed", values: { mode: "manual", seeds: [[null, "player-1", ...Array(7).fill(null)]] } });

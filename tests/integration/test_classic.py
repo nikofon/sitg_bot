@@ -28,6 +28,7 @@ from sitg_bot.storage.models import (
     ScoreLedgerRecord,
     ThemeRevisionRecord,
     TournamentCreationTokenRecord,
+    TournamentMembershipRecord,
     TournamentRecord,
 )
 
@@ -78,6 +79,53 @@ async def first_round(database, fixture, kind="first"):
     return stage["rounds"][0], next(
         item.assignment_id for item in view.packets if item.packet_id == fixture.packet_id
     )
+
+
+async def test_seeding_requires_finalized_players_and_rechecks_membership_on_start(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await setup(database, 4)
+        ids = [p.id for p in fixture.players]
+        service = ClassicService(database)
+        async with database.transaction() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            tournament.participants_finalized_at = None
+            tournament.registration_open = False
+            tournament.registration_open_override = False
+            for player_id, status in zip(
+                ids, ("approved", "registered", "rejected", "approved"), strict=True,
+            ):
+                member = await session.get(TournamentMembershipRecord,
+                                           (fixture.tournament_id, player_id))
+                member.status = status
+        async with database.sessions() as session:
+            assert (await service.snapshot(session, fixture.tournament_id))["players"] == []
+        with pytest.raises(ValueError, match="Finalize"):
+            await mutate(database, fixture, "seed", mode="random")
+        await TournamentService(database).finalize_participants(
+            fixture.tournament_id, set((ids[0], ids[3])), manager_id=fixture.manager.id,
+        )
+        async with database.sessions() as session:
+            snapshot = await service.snapshot(session, fixture.tournament_id)
+            assert {p["id"] for p in snapshot["players"]} == {str(ids[0]), str(ids[3])}
+        seeds = [[str(ids[3]), str(ids[0]), *[None] * 7]]
+        await mutate(database, fixture, "seed", mode="manual", seeds=seeds)
+        with pytest.raises(ValueError, match="exactly once"):
+            await mutate(database, fixture, "seed", mode="manual",
+                         seeds=[[str(ids[0]), str(ids[1]), *[None] * 7]])
+        async with database.transaction() as session:
+            snapshot = await service.snapshot(session, fixture.tournament_id)
+            assert snapshot["stages"][0]["seeds"] == seeds
+            member = await session.get(TournamentMembershipRecord, (fixture.tournament_id, ids[3]))
+            member.status = "rejected"
+        with pytest.raises(ValueError, match="exactly once"):
+            await mutate(database, fixture, "start")
+        async with database.sessions() as session:
+            assert (await service.snapshot(session, fixture.tournament_id))["stages"][0][
+                "started_at"
+            ] is None
+    finally:
+        await database.close()
 
 
 async def test_classic_theme_count_is_fixed_for_existing_tournaments_and_updates(database_url):

@@ -44,6 +44,28 @@ async def snapshot(database, fixture):
         return await ClassicService(database).snapshot(session, fixture.tournament_id)
 
 
+@pytest.mark.parametrize("mode", ["manual", "random"])
+async def test_swiss_custom_seeding_is_used_by_opening_matches(database_url, mode):
+    database = Database(database_url)
+    try:
+        fixture = await swiss_setup(database, count=7)
+        ids = [str(p.id) for p in reversed(fixture.players)]
+        await mutate(database, fixture, "seed", mode=mode, seeds=[ids])
+        saved = (await snapshot(database, fixture))["stages"][0]["seeds"][0]
+        assert set(saved) == set(ids)
+        if mode == "manual":
+            assert saved == ids
+        await mutate(database, fixture, "start")
+        async with database.sessions() as session:
+            stage = (await ClassicService.stages(session, fixture.tournament_id))[0]
+            matches = await ClassicService.matches(session, stage.id)
+            assert matches[0].seats == saved[:4]
+            assert matches[1].seats[:3] == saved[4:]
+            assert matches[1].seats[3].startswith("chair:")
+    finally:
+        await database.close()
+
+
 async def test_swiss_configuration_persists_and_reconfiguration_is_atomic(database_url):
     database = Database(database_url)
     try:
@@ -69,9 +91,8 @@ async def test_swiss_configuration_persists_and_reconfiguration_is_atomic(databa
                     "stage_type": "swiss", "round_count": 3, "players_per_game": 4, **values,
                 })
             assert (await snapshot(database, fixture))["stages"][0] == saved
-        for mode in ("manual", "random"):
-            with pytest.raises(ValueError, match="automatic"):
-                await mutate(database, fixture, "seed", mode=mode)
+        with pytest.raises(ValueError, match="slots"):
+            await mutate(database, fixture, "seed", mode="manual", seeds=[])
         async with database.sessions() as session:
             version = (await session.get(TournamentRecord, fixture.tournament_id)).settings_version
         for actor, expected_version, error in (
@@ -95,7 +116,7 @@ async def test_swiss_configuration_persists_and_reconfiguration_is_atomic(databa
         await database.close()
 
 
-async def test_swiss_seeding_refreshes_ruleset_ratings_and_persists_chairs(database_url):
+async def test_swiss_seeding_preserves_saved_order_and_persists_chairs(database_url):
     database = Database(database_url)
     try:
         fixture = await swiss_setup(database, count=7)
@@ -110,13 +131,12 @@ async def test_swiss_seeding_refreshes_ruleset_ratings_and_persists_chairs(datab
         await mutate(database, fixture, "seed", mode="automatic")
         preview = (await snapshot(database, fixture))["stages"][0]
         ordered = sorted(range(7), key=lambda i: (-ratings[i], str(players[i].id)))
-        assert preview["seeds"] == [[*[str(players[i].id) for i in ordered], None]]
+        assert preview["seeds"] == [[str(players[i].id) for i in ordered]]
         async with database.transaction() as session:
             rating = await session.get(RulesetRatingRecord, ("si", players[0].id))
             rating.rating = ratings[0] = Decimal(1600)
         await mutate(database, fixture, "start")
         started = (await snapshot(database, fixture))["stages"][0]
-        ordered = sorted(range(7), key=lambda i: (-ratings[i], str(players[i].id)))
         assert started["seeds"][0][:-1] == [str(players[i].id) for i in ordered]
         chair = started["seeds"][0][-1]
         assert chair.startswith("chair:")
@@ -127,7 +147,7 @@ async def test_swiss_seeding_refreshes_ruleset_ratings_and_persists_chairs(datab
             assert row.status == "anonymized" and row.public_nickname == "Chair"
             stage = (await ClassicService.stages(session, fixture.tournament_id))[0]
             matches = await ClassicService.matches(session, stage.id)
-            assert [m.seats for m in matches] == [started["seeds"][0][i::2] for i in range(2)]
+            assert [m.seats for m in matches] == [started["seeds"][0][i:i + 4] for i in (0, 4)]
         for command, values in (
             ("configure", {"stage_type": "swiss", "round_count": 4, "players_per_game": 4}),
             ("seed", {"mode": "automatic"}),

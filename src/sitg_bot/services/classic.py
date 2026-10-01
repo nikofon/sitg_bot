@@ -92,9 +92,14 @@ class ClassicService:
                     TournamentMembershipRecord,
                     TournamentMembershipRecord.player_id == PlayerRecord.id,
                 )
+                .join(
+                    TournamentRecord,
+                    TournamentRecord.id == TournamentMembershipRecord.tournament_id,
+                )
                 .where(
                     TournamentMembershipRecord.tournament_id == tournament_id,
-                    TournamentMembershipRecord.status.in_(("approved", "active")),
+                    TournamentMembershipRecord.status == "active",
+                    TournamentRecord.participants_finalized_at.is_not(None),
                     PlayerRecord.status == "active",
                 )
                 .order_by(PlayerRecord.id)
@@ -149,6 +154,8 @@ class ClassicService:
             elif command == "seed":
                 if stage.started_at or stage.stage_type == "none":
                     raise ValueError("Seeding requires a configured, unstarted stage")
+                if stage.stage_type == "quiz":
+                    raise ValueError("Solo stages do not require seeding")
                 if kind == "playoff" and any(
                     s.kind == "first" and s.stage_type != "none" for s in stages
                 ):
@@ -245,26 +252,11 @@ class ClassicService:
         players = await self.eligible(session, stage.tournament_id)
         ids = {str(p.id) for p in players}
         if not ids:
-            raise ValueError("Approve participants before seeding")
-        if stage.stage_type == "swiss":
-            if values.get("mode", "automatic") != "automatic":
-                raise ValueError("Swiss seeding is automatic by global ruleset rating")
-            if len(ids) < 2:
-                raise ValueError("Swiss requires at least two approved participants")
-            ratings = dict(
-                (str(player_id), Decimal(rating))
-                for player_id, rating in (
-                    await session.execute(
-                        select(RulesetRatingRecord.player_id, RulesetRatingRecord.rating).where(
-                            RulesetRatingRecord.ruleset_key == ruleset_key,
-                            RulesetRatingRecord.player_id.in_([p.id for p in players]),
-                        )
-                    )
-                ).all()
-            )
-            ordered = sorted(ids, key=lambda p: (-ratings.get(p, Decimal(1000)), p))
-            return [ordered + [None] * (-len(ordered) % stage.players_per_game)]
-        size = SCHEMES[stage.scheme_key]["size"] if stage.scheme_key else 1
+            raise ValueError("Finalize the participant list before seeding")
+        if stage.stage_type == "swiss" and len(ids) < 2:
+            raise ValueError("Swiss requires at least two confirmed participants")
+        size = (len(ids) if stage.stage_type == "swiss" else
+                SCHEMES[stage.scheme_key]["size"] if stage.scheme_key else 1)
         if stage.kind == "playoff" and len(ids) > size:
             raise ValueError("Too many participants: change the scheme or revoke registrations")
         if values.get("mode") == "manual":
@@ -279,13 +271,20 @@ class ClassicService:
             if any(not isinstance(s, str) for s in flattened):
                 raise ValueError("Invalid player seed")
             if len(flattened) != len(ids) or set(flattened) != ids:
-                raise ValueError("Seed every approved participant exactly once")
+                raise ValueError("Seed every confirmed participant exactly once")
             if len(groups) != (len(ids) + size - 1) // size:
                 raise ValueError("Use only the groups needed for the participant count")
             return groups
         if values.get("mode", "automatic") not in {"automatic", "random"}:
             raise ValueError("Unknown seeding mode")
-        if stage.stage_type == "groups" and values.get("mode") != "random":
+        mode = values.get("mode", "automatic")
+        strategy = values.get("strategy") or (
+            "best" if stage.stage_type == "swiss" else "average"
+        )
+        if strategy not in {"best", "average"}:
+            raise ValueError("Unknown automatic seeding strategy")
+        ratings = {}
+        if mode == "automatic":
             ratings = dict(
                 (str(p), Decimal(r))
                 for p, r in (
@@ -297,9 +296,33 @@ class ClassicService:
                     )
                 ).all()
             )
-            return balanced_groups({p: ratings.get(p, Decimal(1000)) for p in ids}, size)
-        ordered = sorted(ids)
-        random.SystemRandom().shuffle(ordered)
+        ordered = sorted(ids, key=lambda p: (-ratings.get(p, Decimal(1000)), p))
+        if mode == "random":
+            random.SystemRandom().shuffle(ordered)
+        game_size = stage.players_per_game if stage.stage_type == "swiss" else size
+        opening = []
+        if stage.kind == "playoff":
+            opening = [g for g in SCHEMES[stage.scheme_key]["games"] if g["round"] == 1]
+            game_size = len(opening[0]["sources"])
+        if mode == "automatic" and strategy == "average":
+            groups = balanced_groups(
+                {p: ratings.get(p, Decimal(1000)) for p in ids}, game_size,
+                count=len(opening) or None,
+                full_games=stage.stage_type == "swiss",
+            )
+            ordered = [p for group in groups for p in group]
+        if opening:
+            seats = [None] * size
+            ordered += [None] * (size - len(ordered))
+            for game, group in zip(opening, (
+                ordered[i:i + game_size] for i in range(0, size, game_size)
+            ), strict=True):
+                for source, player in zip(game["sources"], group, strict=True):
+                    seats[source - 1] = player
+            return [seats]
+        if stage.stage_type == "swiss":
+            # Only human seats are editable; Chairs are appended at stage start.
+            return [[p for p in ordered if p is not None]]
         return [
             ordered[i : i + size] + [None] * max(0, size - len(ordered[i : i + size]))
             for i in range(0, len(ordered), size)
@@ -381,13 +404,17 @@ class ClassicService:
             size = SCHEMES[stage.scheme_key]["size"]
             seeds = [r["seat"] for r in ranking[:size]]
             stage.seeds = [seeds + [None] * (size - len(seeds))]
-        elif stage.stage_type == "swiss":
-            stage.seeds = await self._seed(session, stage, ruleset_key, {"mode": "automatic"})
         else:
+            if stage.stage_type == "swiss" and stage.seeds:
+                # Normalize previews saved before Swiss manual seeding was available.
+                stage.seeds = [[seat for seat in stage.seeds[0] if seat is not None]]
             if not stage.seeds:
                 stage.seeds = await self._seed(session, stage, ruleset_key, {"mode": "automatic"})
             # Registrations can change between previewing seeds and starting.
             await self._seed(session, stage, ruleset_key, {"mode": "manual", "seeds": stage.seeds})
+        if stage.stage_type == "swiss":
+            padding = -len(stage.seeds[0]) % stage.players_per_game
+            stage.seeds = [stage.seeds[0] + [None] * padding]
         now = datetime.now(UTC)
         stage.seeds = [[seat or f"chair:{uuid4()}" for seat in group] for group in stage.seeds]
         for seat in (s for group in stage.seeds for s in group):
@@ -727,7 +754,9 @@ class ClassicService:
         names = {str(p.id): p.public_nickname for p in players}
         result = {
             "schemes": [
-                {k: s[k] for k in ("id", "kind", "size", "round_count")} for s in SCHEMES.values()
+                {**{k: s[k] for k in ("id", "kind", "size", "round_count")},
+                 "opening_games": [g["sources"] for g in s["games"] if g["round"] == 1]}
+                for s in SCHEMES.values()
             ],
             "players": [{"id": str(p.id), "name": p.public_nickname} for p in players],
             "stages": [],

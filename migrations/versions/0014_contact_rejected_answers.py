@@ -4,7 +4,9 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0014_tournament_contact_and_rejected_answers"
+# NOTE: revision identifiers must be <= 32 characters because
+# alembic_version.version_num is VARCHAR(32).
+revision = "0014_contact_rejected_answers"
 down_revision = "0013_classic_swiss"
 branch_labels = None
 depends_on = None
@@ -13,9 +15,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("tournaments", sa.Column("organizer_contacts", sa.Text(), nullable=True))
     op.execute("UPDATE tournaments SET organizer_contacts = '' WHERE organizer_contacts IS NULL")
-    op.alter_column(
-        "tournaments", "organizer_contacts", existing_type=sa.Text(), nullable=False
-    )
+    op.alter_column("tournaments", "organizer_contacts", existing_type=sa.Text(), nullable=False)
     op.add_column("tournaments", sa.Column("channel", sa.Text(), nullable=True))
     op.execute("UPDATE tournaments SET channel = '' WHERE channel IS NULL")
     op.alter_column("tournaments", "channel", existing_type=sa.Text(), nullable=False)

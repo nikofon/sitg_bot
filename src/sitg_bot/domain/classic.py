@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from importlib.resources import files
 from itertools import combinations
-from statistics import median
+from statistics import mean
 
 
 def scheme_library() -> dict[str, dict]:
@@ -49,26 +49,43 @@ for _scheme in SCHEMES.values():
     validate_scheme(_scheme)
 
 
-def balanced_groups(ratings: dict[str, Decimal], size: int) -> list[list[str | None]]:
-    """Snake seed, then improve the spread of group medians through pair swaps."""
+def balanced_groups(
+    ratings: dict[str, Decimal], size: int, *, count: int | None = None,
+    full_games: bool = False,
+) -> list[list[str | None]]:
+    """Snake seed, then improve the spread of group averages through pair swaps."""
     if not ratings or size < 1:
         raise ValueError("Seeding requires players and a positive group size")
-    count = math.ceil(len(ratings) / size)
+    count = count or math.ceil(len(ratings) / size)
+    if count * size < len(ratings) or (full_games and count != math.ceil(len(ratings) / size)):
+        raise ValueError("Group count does not fit the participants")
     groups: list[list[str | None]] = [[] for _ in range(count)]
     ordered = sorted(ratings, key=lambda p: (-ratings[p], p))
-    for index, player in enumerate(ordered):
-        band, offset = divmod(index, count)
-        groups[offset if band % 2 == 0 else count - offset - 1].append(player)
-    target = median(list(ratings.values()))
+    capacities = [size] * count
+    if full_games:
+        capacities[-1] = len(ratings) - size * (count - 1)
+    index = 0
+    for player in ordered:
+        while True:
+            band, offset = divmod(index, count)
+            target_group = offset if band % 2 == 0 else count - offset - 1
+            index += 1
+            if len(groups[target_group]) < capacities[target_group]:
+                groups[target_group].append(player)
+                break
+    target = mean(list(ratings.values()))
+
+    def average(group: list) -> Decimal:
+        return mean([ratings[p] for p in group]) if group else target
 
     def cost(group: list) -> Decimal:
-        return abs(median([ratings[p] for p in group]) - target)
+        return abs(average(group) - target)
 
     for _ in range(8):
         improved = False
-        by_median = sorted(groups, key=lambda g: median([ratings[p] for p in g]))
+        by_average = sorted(groups, key=average)
         for left, right in zip(
-            by_median[: count // 2], reversed(by_median[count // 2 :]), strict=False
+            by_average[: count // 2], reversed(by_average[count // 2 :]), strict=False
         ):
             before = cost(left) + cost(right)
             best = None
@@ -104,9 +121,9 @@ def competition_points(place: Decimal, occupied: int, points: list[str]) -> Deci
 
 
 def swiss_pairings(seeds: list[str], size: int, matches: list) -> list[list[str]]:
-    """Pair rating-ordered seeds, then prefer fresh opponents with nearby stage points.
+    """Pair saved seeds, then prefer fresh opponents with nearby stage points.
 
-    The first round draws one seed from each rating band. Later rounds greedily
+    The first round uses consecutive seats. Later rounds greedily
     minimize previous encounters, then score distance; pair swaps improve that
     same objective. Repeats remain possible when the search cannot avoid them.
     Chairs fill the configured game size but do not count as opponents.
@@ -116,8 +133,7 @@ def swiss_pairings(seeds: list[str], size: int, matches: list) -> list[list[str]
     if any(match.results is None for match in matches):
         raise ValueError("Finish every game before pairing the next Swiss round")
     if not matches:
-        count = len(seeds) // size
-        return [seeds[offset::count] for offset in range(count)]
+        return [seeds[offset:offset + size] for offset in range(0, len(seeds), size)]
 
     points = dict.fromkeys(seeds, Decimal(0))
     encounters: Counter = Counter()

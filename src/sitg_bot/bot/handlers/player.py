@@ -108,6 +108,16 @@ def other_menu_message(
 def notification_text(
     kind: str, payload: dict[str, object], localization: LocalizationService, locale: str
 ) -> str:
+    if kind == "subscription.assigned":
+        count = payload.get("packet_count")
+        return localization.text(
+            "notification.subscription.assigned", locale,
+            card_name=payload.get("card_name", ""),
+            tournament_name=payload.get("tournament_name", ""),
+            packet_count=count if count is not None else localization.text(
+                "notification.subscription.unlimited", locale,
+            ),
+        )
     if kind == "packet.available":
         text = localization.text("notification.packet.available", locale,
             packet_name=payload.get("packet_name", ""),

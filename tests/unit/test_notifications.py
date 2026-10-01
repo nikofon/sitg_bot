@@ -28,6 +28,18 @@ def test_packet_available_notification_renders_roster_deadline_and_escapes_names
     assert ("Chair" if locale == "en" else "Стул") in text
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("packet_count", [52, None])
+def test_subscription_notification_renders_allowance_and_escapes_names(locale, packet_count):
+    text = notification_text("subscription.assigned", {
+        "card_name": "<Yearly>", "tournament_name": "<Cup>", "packet_count": packet_count,
+    }, LocalizationService(), locale)
+    assert "&lt;Yearly&gt;" in text and "&lt;Cup&gt;" in text
+    assert ("subscription card" if locale == "en" else "абонемент") in text
+    allowance = "52" if packet_count else "unlimited" if locale == "en" else "без ограничений"
+    assert allowance in text
+
+
 class AlertSession:
     def __init__(self, player: PlayerRecord, *, mode: str = "player") -> None:
         self.player = player

@@ -32,11 +32,11 @@ def stage(**values):
     })
 
 
-def test_opening_pairings_draw_from_rating_bands():
+def test_opening_pairings_use_consecutive_seeded_seats():
     seeds = [str(i) for i in range(16)]
     assert swiss_pairings(seeds, 4, []) == [
-        ["0", "4", "8", "12"], ["1", "5", "9", "13"],
-        ["2", "6", "10", "14"], ["3", "7", "11", "15"],
+        ["0", "1", "2", "3"], ["4", "5", "6", "7"],
+        ["8", "9", "10", "11"], ["12", "13", "14", "15"],
     ]
 
 
@@ -45,7 +45,7 @@ def test_later_pairings_prefer_similar_points_and_avoid_repeat_opponents():
     opening = swiss_pairings(seeds, 4, [])
     matches = [match(*(result(p, 4 - index) for index, p in enumerate(g))) for g in opening]
     paired = swiss_pairings(seeds, 4, matches)
-    assert paired == [seeds[i:i + 4] for i in range(0, 16, 4)]
+    assert paired == [seeds[i::4] for i in range(4)]
     old_pairs = {frozenset(pair) for group in opening for pair in combinations(group, 2)}
     assert not any(frozenset(pair) in old_pairs for g in paired for pair in combinations(g, 2))
     assert paired == swiss_pairings(seeds, 4, matches)
@@ -120,19 +120,21 @@ async def test_seeding_uses_global_rating_for_associated_ruleset_and_defaults_un
     ]))))
     configured = stage()
     assert await service._seed(session, configured, "si", {}) == [[
-        str(players[2].id), str(players[1].id), str(players[0].id), None,
+        str(players[2].id), str(players[1].id), str(players[0].id),
     ]]
     statement = session.execute.call_args.args[0]
     assert statement.compile().params["ruleset_key_1"] == "si"
-    for mode in ("manual", "random"):
-        with pytest.raises(ValueError, match="automatic"):
-            await service._seed(session, configured, "si", {"mode": mode})
+    manual = [[str(p.id) for p in players]]
+    saved = await service._seed(session, configured, "si", {"mode": "manual", "seeds": manual})
+    assert saved == manual
+    random = await service._seed(session, configured, "si", {"mode": "random"})
+    assert set(random[0]) == set(manual[0])
 
 
-async def test_start_refreshes_swiss_seeds_and_creates_only_first_round():
+async def test_start_preserves_swiss_seeds_and_creates_only_first_round():
     service = ClassicService(None)
     seeds = [str(uuid4()) for _ in range(8)]
-    configured = stage(seeds=[[str(uuid4())]])
+    configured = stage(seeds=[seeds])
     rounds = [ClassicRoundRecord(id=uuid4(), number=n) for n in range(1, 4)]
     service._seed = AsyncMock(return_value=[seeds])
     service.rounds = AsyncMock(return_value=rounds)
@@ -143,6 +145,7 @@ async def test_start_refreshes_swiss_seeds_and_creates_only_first_round():
     tournament = SimpleNamespace(id=configured.tournament_id, actual_starts_at=None)
     await service._start(session, tournament, configured, [configured], "si", uuid4())
     assert configured.seeds == [seeds]
+    assert service._seed.call_args.args[-1] == {"mode": "manual", "seeds": [seeds]}
     assert len(added) == 2
     assert all(m.round_id == rounds[0].id for m in added)
     assert {p for m in added for p in m.seats} == set(seeds)
