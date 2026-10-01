@@ -117,6 +117,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
+    TournamentSubscriptionsUpdateOperation,
     TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
@@ -308,6 +309,9 @@ ACTION_POLICIES.update(
             mutation=True,
             idempotency_required=True,
             stale_write_field="expected_version",
+        ),
+        ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_REGISTRATION_DECIDE: ActionPolicy(
             mutation=True, idempotency_required=True
@@ -877,6 +881,14 @@ class ApplicationGateway:
                 telegram_user_id, operation.tournament_id
             )
             return await self.tournaments.manager_management(tournament_id, player_id)
+        if isinstance(operation, TournamentSubscriptionsUpdateOperation):
+            from sitg_bot.services.subscriptions import SubscriptionService
+
+            return await SubscriptionService(self.tournaments).mutate(
+                operation.tournament_id, player_id,
+                expected_version=operation.expected_version,
+                command=operation.command, values=dict(operation.values),
+            )
         if isinstance(operation, TournamentClassicUpdateOperation):
             from sitg_bot.services.classic import ClassicService
 

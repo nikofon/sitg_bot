@@ -248,6 +248,7 @@ export interface TournamentManagerSettingsResource {
 }
 
 export type ManagementSection =
+  | "subscriptions"
   | "first_stage"
   | "playoff_stage"
   | "first_round_seeding"
@@ -289,7 +290,16 @@ export interface ManagementPacket {
   released?: boolean;
 }
 
+export interface TournamentSubscriptions {
+  cards: Array<{ id: string; name: string; packet_count: number | null;
+    discoverable: boolean | null; readable: boolean | null; playable: boolean | null }>;
+  players: Array<{ id: string; name: string; active: boolean }>;
+  instances: Array<{ id: string; card_id: string; player_id: string;
+    remaining_packets: number | null; revoked_at: string | null; assigned_at: string }>;
+}
+
 export interface TournamentManagerManagementResource {
+  subscriptions?: TournamentSubscriptions | null;
   classic?: ClassicTournament | null;
   kind: "manager_management";
   state: "ready";
@@ -332,7 +342,7 @@ export interface ClassicStage {
 }
 
 export interface ClassicTournament {
-  schemes: Array<{ id: string; kind: string; size: number; round_count: number }>;
+  schemes: Array<{ id: string; kind: string; size: number; round_count: number; opening_games?: number[][] }>;
   players: Array<{ id: string; name: string }>;
   stages: ClassicStage[];
 }

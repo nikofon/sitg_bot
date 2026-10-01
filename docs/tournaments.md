@@ -168,7 +168,7 @@ The database registers two type descriptors:
 ### Classic competition
 
 Settings provides optional first (groups, Swiss, solo quiz) and play-off stages. Explicitly
-starting a configured stage activates approved players, closes registration, locks its type,
+starting a configured stage uses the finalized participant list, closes registration, locks its type,
 scheme, scoring and seeds, and opens lobby assembly. Unstarted play-offs remain editable.
 Managers complete tournaments manually. Round permissions, rosters and deadlines govern play.
 
@@ -176,16 +176,29 @@ The CSV-derived library contains nine group schedules, Top-8/16/32/64 play-offs 
 double elimination. Top-32 DE round 4 references to round 3 games 5–6 places 1–2 are corrected
 to games 1–2 places 3–4. Validated advancement references are persisted at stage start.
 
-Group schemes fix group size and games per player; group count is unlimited. Automatic seeding
-uses ruleset ratings (unrated: 1000), snake distribution and swaps to balance group medians.
-Before starting, managers may randomize/edit seeds, change schemes or revoke registrations.
-Vacancies become **Chairs**.
+Group schemes fix group size and games per player; group count follows the finalized participant
+count. Management → First round seeding selects the stage, then a group, opening play-off game,
+or Swiss seat. The searchable picker sorts names alphabetically, unassigned players first, and
+labels occupied seats. Assigning an already seated player swaps seats. Solo quiz needs no seeding.
 
-Swiss managers choose a positive round count and 2–12 players per game; at least two approved
-players are required. Seeds automatically follow descending global rating in the tournament's
-ruleset (unrated: 1000; player ID breaks rating ties), refreshed at stage start. Manual/random
-seeding is unavailable; Chairs fill vacancies. The opening round draws one seed from each
-rating band per game. Later rounds order players by accumulated points, then initial seed.
+Automatic **Best vs best** orders players by descending global ruleset rating (unrated: 1000;
+player ID breaks ties), putting adjacent players together. **Average** uses snake distribution
+and improving swaps to balance group/game mean ratings. Random seeding shuffles the roster.
+Manual, automatic and random choices persist until changed; stage start revalidates eligibility.
+Vacancies become **Chairs**. Seeds and stage configuration lock at start.
+
+CSV export lists eligible names and IDs in columns A–B, leaves C blank, then uses a name/ID
+column pair per group or opening game from D onward; Swiss has one seat-list pair. Row one holds
+headers; following rows are seats. Keep headers and move names with IDs; IDs determine assignments.
+Import validates the layout and requires every eligible player exactly once, rejecting unknown IDs,
+duplicates and extra seats. Import previews changes; **Save manual seeding** persists them using
+the tournament settings version. Blank name/ID pairs are vacancies. UTF-8, quoted fields and
+multiline names are supported; exported names that resemble spreadsheet formulas are escaped.
+
+Swiss managers choose a positive round count and 2–12 players per game; at least two confirmed
+players are required. The editable list has one seat per participant; stage start appends Chairs
+to fill the last game. The opening round uses consecutive seats. Later rounds order players by
+accumulated points, then initial seed.
 Deterministic greedy pairing prefers fewer previous encounters, then smaller point differences;
 up to eight pair-swap passes improve that objective. Repeats are allowed when this search cannot
 avoid them. Only round one is paired at start; subsequent pairings are persisted after all
@@ -208,7 +221,7 @@ Remaining ties use the persisted random seed. The displayed sum is provisional u
 results finalize; final standings and play-off qualification use the same calculation.
 
 Play-offs take top first-stage finishers up to capacity, padding with Chairs. Without a first
-stage, managers seed randomly/manually and must revoke excess registrations or enlarge the
+stage, managers seed automatically, randomly or manually and must reduce the participant list or enlarge the
 scheme. Advancement uses game ranking; play-off settings omit first-stage scoring parameters.
 
 Each round uses one published packet, never reused within the tournament. Discovery/play switches
@@ -332,6 +345,29 @@ currently supports at most 128 themes per game. The full SI contract is in
 [game-rulesets.md](game-rulesets.md).
 
 ## Packet availability and visibility
+
+### Ladder subscription cards
+
+Management → **Subscription cards** (**Абонементы**) creates named templates with a positive
+packet count or unlimited allowance and Yes/No/Default discovery, reading, and play rights.
+The searchable participant picker lists assigned instances, remaining allowances, and revocation
+controls. Managers can assign multiple instances, including repeated copies of one template.
+Each assignment sends the player a notification naming the card, tournament, and packet allowance.
+
+Every newly published or newly assigned logical packet consumes one unit from each active
+participant's oldest unrevoked, unexhausted instance. Unlimited instances remain first until
+revoked. Previewing, correcting, substituting, or reactivating an existing assignment consumes
+nothing. Assignment, revocation, and consumption serialize on the tournament row.
+
+Explicit card choices become ordinary per-packet overrides, including denials. Default preserves
+existing individual rights, otherwise inheriting assignment defaults. Managers can subsequently
+change packet access normally. Revocation affects future packets only. Subscription reading
+rights do not bypass library viewing rules, release gates, or exposure restrictions.
+
+Templates and instances are managed through `tournaments.manager.subscriptions.update.v1`
+with manager authorization, an idempotency key, and the current tournament settings version.
+
+### Access evaluation
 
 Active participation does not grant access to every packet assigned to a tournament. Packet
 access is a separate, explicit entitlement evaluated for a player or tournament role

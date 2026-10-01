@@ -340,6 +340,8 @@
   "notification.author_link.decided": "Your author-link request was resolved with status: {status}.",
   "notification.packet.substituted": "Manager {manager_name} made a substitution in packet “{packet_name}” in another tournament. Your tournament keeps its current version.",
   "notification.tournament.start_due": "It is time to start “{name}”! Open tournament management and start the tournament manually (start a stage for Classic).",
+  "notification.subscription.assigned": "You have been assigned the subscription card “{card_name}” for “{tournament_name}”. Packets: {packet_count}.",
+  "notification.subscription.unlimited": "unlimited",
   "notification.generic": "Notification: {kind}",
   "notification.packet.available": "Packet “{packet_name}” is available to play in “{tournament_name}”.",
   "notification.packet.opponents": "Opponents: {opponents}",

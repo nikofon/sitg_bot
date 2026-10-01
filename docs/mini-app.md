@@ -264,6 +264,11 @@ the table groups endpoints rather than duplicating their schemas.
 
 ## Development and verification
 
+Buttons generally need external margins so they do not touch adjacent controls or content.
+Use consistent vertical and horizontal spacing, including in dialogs and when rows wrap.
+An existing flex/grid `gap` may provide equivalent separation. Padding inside a button does
+not replace external spacing; avoid horizontal margins that make full-width buttons overflow.
+
 Buttons for important, impactful, or irreversible actions must stand out from ordinary
 controls. Use yellow warning styling for cautionary actions such as Halt, and red danger
 styling for destructive or restrictive actions such as Abolish and Ban. Keep labels explicit

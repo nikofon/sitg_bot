@@ -47,8 +47,10 @@ import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderTournamentProfile } from "./ui/tournament";
+import { renderClassicSeeding } from "./ui/classic-seeding";
 import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
+import { renderSubscriptions } from "./ui/subscriptions";
 import { renderAuthorProfile, renderAuthors } from "./ui/authors";
 
 export class MiniAppShell {
@@ -1406,6 +1408,12 @@ export class MiniAppShell {
       renderPacket(resource.packets[0]!);
     }
     section("packet_accessibility", packetAccessibility);
+    if (resource.tournament.type_key === "ladder" && resource.subscriptions) {
+      section("subscriptions", renderSubscriptions(resource.subscriptions, can("subscriptions"), this.i18n,
+        (command, values) => this.mutateManagerManagement(route, "/subscriptions", {
+          expected_version: resource.settings_version, command, values,
+        }), this.subscriptionPlayer, (id) => { this.subscriptionPlayer = id; }));
+    }
     const managedPackets = element("div", { className: "lobby-packets" });
     if (can("packet_management")) managedPackets.append(element("button", {
       type: "button", className: "primary-button",
@@ -1592,6 +1600,8 @@ export class MiniAppShell {
     table.append(head, body);
     return table;
   }
+
+  private subscriptionPlayer = "";
 
   private async mutateManagerManagement(
     route: RouteMatch,
@@ -2009,40 +2019,8 @@ export class MiniAppShell {
   }
 
   private classicSeeding(route: RouteMatch, resource: TournamentManagerManagementResource): HTMLElement {
-    const classic = resource.classic!;
-    const container = element("div", { className: "classic-seeding" });
-    const first = classic.stages.find((s) => s.kind === "first" && s.stage_type !== "none");
-    const stage = first ?? classic.stages.find((s) => s.kind === "playoff" && s.stage_type !== "none");
-    if (!stage) return element("p", {}, this.i18n.t("classic.configure_first"));
-    const locked = !!stage.started_at || resource.tournament.status !== "active";
-    if (stage.stage_type === "swiss") {
-      container.append(element("p", {}, this.i18n.t("classic.swiss_seeding_help")),
-        element("button", { type: "button", className: "secondary-button", disabled: locked,
-          onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, { mode: "automatic" })) as EventListener,
-        }, this.i18n.t("classic.automatic")),
-        element("ol", {}, ...stage.seeds.flat().filter((seat) => seat && !seat.startsWith("chair:")).map((seat) =>
-          element("li", {}, classic.players.find((player) => player.id === seat)?.name ?? seat))));
-      return container;
-    }
-    container.append(element("p", {}, this.i18n.t("classic.seeding_help")));
-    for (const mode of ["automatic", "random"] as const) container.append(element("button", {
-      type: "button", className: "secondary-button", disabled: locked,
-      onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, { mode })) as EventListener,
-    }, this.i18n.t(`classic.${mode}`)));
-    const groups: HTMLSelectElement[][] = [];
-    stage.seeds.forEach((group, i) => {
-      const selectors = group.map((seat) => element("select", { disabled: locked },
-        element("option", { value: "", selected: seat === null || seat.startsWith("chair:") }, this.i18n.t("classic.chair")),
-        ...classic.players.map((p) => element("option", { value: p.id, selected: p.id === seat }, p.name))));
-      groups.push(selectors);
-      container.append(element("fieldset", {}, element("legend", {}, `${this.i18n.t("classic.group")} ${i + 1}`),
-        ...selectors.map((select, index) => element("label", {}, `${this.i18n.t("classic.seat")} ${index + 1}`, select))));
-    });
-    if (groups.length) container.append(element("button", { type: "button", className: "primary-button", disabled: locked,
-      onclick: (() => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, {
-        mode: "manual", seeds: groups.map((group) => group.map((select) => select.value || null)),
-      })) as EventListener }, this.i18n.t("classic.save_seeding")));
-    return container;
+    return renderClassicSeeding(resource.classic!, resource.tournament.status === "active", this.i18n,
+      (stage, values) => void this.mutateClassic(route, resource.settings_version, "seed", stage.kind, values));
   }
 
   private managerNavigationButton(route: RouteMatch, view: "settings" | "management"): HTMLButtonElement {

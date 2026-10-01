@@ -939,12 +939,45 @@ class TournamentPacketEntitlementRecord(Base, TimestampMixin):
     )
     player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
     discoverable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Nullable overrides preserve legacy grants while allowing explicit denials.
+    discoverable_override: Mapped[bool | None] = mapped_column(Boolean)
+    readable_override: Mapped[bool | None] = mapped_column(Boolean)
     # None inherits member-wide playability; False explicitly revokes it.
     playable: Mapped[bool | None] = mapped_column(Boolean)
     content_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     editable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     granted_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TournamentSubscriptionCardRecord(Base, TimestampMixin):
+    __tablename__ = "tournament_subscription_cards"
+
+    id: Mapped[UUID] = uuid_column()
+    tournament_id: Mapped[UUID] = mapped_column(ForeignKey("tournaments.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    packet_count: Mapped[int | None] = mapped_column(Integer)
+    discoverable: Mapped[bool | None] = mapped_column(Boolean)
+    readable: Mapped[bool | None] = mapped_column(Boolean)
+    playable: Mapped[bool | None] = mapped_column(Boolean)
+    created_by_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+
+    __table_args__ = (CheckConstraint("packet_count IS NULL OR packet_count >= 1"),)
+
+
+class TournamentSubscriptionRecord(Base, TimestampMixin):
+    __tablename__ = "tournament_subscriptions"
+
+    id: Mapped[UUID] = uuid_column()
+    card_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tournament_subscription_cards.id"), nullable=False
+    )
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    remaining_packets: Mapped[int | None] = mapped_column(Integer)
+    assigned_by_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint("remaining_packets IS NULL OR remaining_packets >= 0"),)
 
 
 class PacketDraftTournamentRecord(Base, TimestampMixin):

@@ -74,6 +74,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
+    TournamentSubscriptionsUpdateOperation,
     TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
@@ -221,6 +222,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/packet-access",
             self._set_packet_access,
+        )
+        app.router.add_post(
+            "/api/miniapp/manager/tournaments/{launch_ref}/subscriptions",
+            self._update_subscriptions,
         )
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/complete",
@@ -1188,6 +1193,22 @@ class MiniAppHttpServer:
                 "decision": body.get("decision"),
             }
         )
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request)
+        )
+        return self._gateway_response(result)
+
+    async def _update_subscriptions(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, tournament_id = await self._resolve_manager_reference(
+            request, request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE, mutation=True,
+            expected_routes={"manager_management"},
+        )
+        operation = TournamentSubscriptionsUpdateOperation.model_validate({
+            **body, "action": ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE,
+            "tournament_id": tournament_id,
+        })
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )

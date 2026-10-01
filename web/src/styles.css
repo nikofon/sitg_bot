@@ -1301,6 +1301,27 @@ p {
   width: 100%;
   max-width: 100%;
 }
+.seeding-seats, .seeding-seats ol {
+  display: grid;
+  gap: .5rem;
+}
+.classic-seeding button, .seeding-picker button {
+  margin-block: .375rem;
+  margin-inline-end: .5rem;
+}
+.seeding-seats button, .seeding-picker .resource-list button {
+  width: 100%;
+  margin-inline: 0;
+  min-height: 2.75rem;
+  padding: .5rem;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.seeding-picker input[type="search"] {
+  width: 100%;
+  margin-block: .75rem;
+}
+.seeding-picker .resource-list { margin-top: .75rem; }
 .admin-metadata { overflow-wrap: anywhere; }
 .admin-metadata > div { margin-block: .5rem; }
 .admin-metadata dt { font-weight: 600; }

@@ -402,7 +402,14 @@ async def test_packet_management_mutations_use_launch_scope_and_write_guards(com
 
 
 @pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
-async def test_classic_mutation_binds_target_and_write_guards(references):
+@pytest.mark.parametrize("command,values", [
+    ("start", {}),
+    ("seed", {"mode": "automatic", "strategy": "best"}),
+    ("seed", {"mode": "automatic", "strategy": "average"}),
+    ("seed", {"mode": "random"}),
+    ("seed", {"mode": "manual", "seeds": [[str(UUID(int=1)), None]]}),
+])
+async def test_classic_mutation_binds_target_and_write_guards(references, command, values):
     gateway = FakeGateway()
     http = MiniAppHttpServer(FakeAuth(), gateway, launch_references=references())
     request = make_mocked_request(
@@ -420,10 +427,10 @@ async def test_classic_mutation_binds_target_and_write_guards(references):
     request._read_bytes = json.dumps(
         {
             "tournament_id": str(UUID(int=99)),
-            "command": "start",
+            "command": command,
             "kind": "first",
             "expected_version": 5,
-            "values": {},
+            "values": values,
         }
     ).encode()
     result = await http._update_classic(request)
@@ -432,6 +439,8 @@ async def test_classic_mutation_binds_target_and_write_guards(references):
     assert operation.tournament_id == UUID(int=10)
     assert operation.action == ActionCode.TOURNAMENT_CLASSIC_UPDATE
     assert operation.expected_version == 5
+    assert operation.command == command
+    assert all(operation.values[key] == value for key, value in values.items())
     assert gateway.requests[0].metadata.idempotency_key == "classic-start"
 
 

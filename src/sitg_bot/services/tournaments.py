@@ -28,6 +28,7 @@ from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
+from sitg_bot.services.subscriptions import SubscriptionService, subscription_snapshot
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -381,6 +382,7 @@ class TournamentManagement:
     packets: tuple[ManagementPacket, ...]
     available_actions: tuple[str, ...]
     classic: dict | None = None
+    subscriptions: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2223,6 +2225,8 @@ class TournamentService:
                     else effective[membership.player_id]
                 )
                 setattr(entitlement, entitlement_field, value)
+                if right in {"discoverable", "readable"}:
+                    setattr(entitlement, f"{right}_override", value)
                 entitlement.granted_by_id = manager_id
                 entitlement.revoked_at = None
             if player_id is None:
@@ -2753,10 +2757,14 @@ class TournamentService:
         )
         if item.type_key == "classic":
             sections += ("first_stage", "playoff_stage", "first_round_seeding")
+        if item.type_key == "ladder":
+            sections += ("subscriptions",)
         scheduled_open = self._scheduled_registration_is_open(tournament, datetime.now(UTC))
         actions: list[str] = ["packet_management"]
         if tournament.status == "active":
             actions.extend(("registration_decide", "packet_access"))
+            if item.type_key == "ladder" and tournament.moderation_status == "normal":
+                actions.append("subscriptions")
             if tournament.finalized_at is None:
                 actions.append("finalize")
             else:
@@ -2783,6 +2791,8 @@ class TournamentService:
             classic=await ClassicService(self.database).snapshot(session, tournament_id)
             if item.type_key == "classic"
             else None,
+            subscriptions=await subscription_snapshot(session, tournament_id)
+            if item.type_key == "ladder" else None,
         )
 
     async def update_policy(
@@ -2984,6 +2994,9 @@ class TournamentService:
                 )
                 session.add(assignment)
                 await session.flush()
+                await SubscriptionService.apply_to_new_assignment(
+                    session, assignment, context.type_key
+                )
             else:
                 for key, value in values.items():
                     setattr(assignment, key, value)
@@ -3036,6 +3049,12 @@ class TournamentService:
                 session.add(entitlement)
             for right, granted in rights.items():
                 setattr(entitlement, right, granted)
+                override = {
+                    "discoverable": "discoverable_override",
+                    "content_visible": "readable_override",
+                }.get(right)
+                if override:
+                    setattr(entitlement, override, granted)
             entitlement.revoked_at = None
             await self._invalidate_assembling_lobbies(session, assignment.tournament_id)
 
@@ -3188,6 +3207,13 @@ class TournamentService:
         entitlement = await session.get(
             TournamentPacketEntitlementRecord, (assignment.id, player_id)
         )
+        override = {
+            "discoverable": "discoverable_override", "content_visible": "readable_override",
+        }.get(right)
+        if entitlement is not None and entitlement.revoked_at is None and override:
+            explicit = getattr(entitlement, override)
+            if explicit is not None:
+                return explicit
         if (
             right == "playable"
             and entitlement is not None

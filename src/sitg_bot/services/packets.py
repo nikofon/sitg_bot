@@ -27,6 +27,7 @@ from sitg_bot.services.author_exposure import burn_author_content, tournament_ma
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
+from sitg_bot.services.subscriptions import SubscriptionService
 from sitg_bot.services.tournaments import (
     MEMBER_UPLOADS_POLICY,
     PACKET_ACCESS_DEFAULT_POLICIES,
@@ -171,6 +172,9 @@ class PacketAdminService:
                             version.library_released_at or datetime.now(UTC)
                         )
                 session.add(assignment)
+                if existing is None:
+                    await session.flush()
+                    await SubscriptionService.apply_to_new_assignment(session, assignment, context.type_key)
                 await burn_author_content(
                     session, version_id=version.id,
                     player_ids=await tournament_manager_ids(session, [tournament_id]),
@@ -1176,20 +1180,21 @@ class PacketAdminService:
                     session, tournament_id, operation_authors.values(), administrator_id,
                     lead=lead_author,
                 )
-                session.add(
-                    TournamentPacketAssignmentRecord(
-                        tournament_id=tournament_id,
-                        packet_id=logical_packet.id,
-                        adopted_version_id=version.id,
-                        assigned_by_id=administrator_id,
-                        discoverable_by_members=access_defaults["packets_discoverable_by_default"],
-                        playable_by_members=access_defaults["packets_playable_by_default"],
-                        content_visible_by_members=access_defaults["packets_readable_by_default"],
-                        library_viewing_rule=(
-                            context.policies.get("library_viewing_rule_default", "after-play")
-                        ),
-                    )
+                assignment = TournamentPacketAssignmentRecord(
+                    tournament_id=tournament_id,
+                    packet_id=logical_packet.id,
+                    adopted_version_id=version.id,
+                    assigned_by_id=administrator_id,
+                    discoverable_by_members=access_defaults["packets_discoverable_by_default"],
+                    playable_by_members=access_defaults["packets_playable_by_default"],
+                    content_visible_by_members=access_defaults["packets_readable_by_default"],
+                    library_viewing_rule=(
+                        context.policies.get("library_viewing_rule_default", "after-play")
+                    ),
                 )
+                session.add(assignment)
+                await session.flush()
+                await SubscriptionService.apply_to_new_assignment(session, assignment, context.type_key)
             # The uploader and every manager of each destination tournament have
             # seen this content and must never be able to play it.
             seen_players = await tournament_manager_ids(session, intended_tournaments)
