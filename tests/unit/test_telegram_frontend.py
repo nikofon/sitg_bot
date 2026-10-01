@@ -163,6 +163,51 @@ async def test_packet_upload_warns_when_the_packet_has_no_themes() -> None:
         'YYz15U2gqnHT0U/edit?tab=t.0">this prompt</a>' in warning
     )
 
+async def test_packet_upload_delivers_similarity_warning_as_separate_message() -> None:
+    similarity = (
+        "A very similar packet already exists: “Packet 1” (packet ID "
+        f"{UUID(int=7)}); used by tournaments: none. "
+        "Consider rejecting this draft and adding the existing packet to the "
+        "tournament by its packet ID instead."
+    )
+    summary = {
+        "draft_id": str(UUID(int=1)), "version": 1,
+        "status": "awaiting_confirmation", "source_filename": "packets.docx",
+        "ruleset_key": "si", "ruleset_version": 1, "packet_name": "Packet copy",
+        "theme_count": 6, "question_count": 30, "detected_authors": [],
+        "errors": [],
+        "warnings": ["Question 5 is missing its source.", similarity],
+        "can_publish": True, "can_reject": True,
+        "launch_reference": "preview1",
+    }
+    gateway = SimpleNamespace(execute_update=AsyncMock(side_effect=[
+        SimpleNamespace(ok=True, data=summary),
+        SimpleNamespace(ok=True),
+    ]))
+    message = SimpleNamespace(
+        document=SimpleNamespace(file_name="packets.docx", file_size=5),
+        bot=SimpleNamespace(download=AsyncMock(return_value=io.BytesIO(b"input"))),
+        answer=AsyncMock(side_effect=[
+            SimpleNamespace(chat=SimpleNamespace(id=42), message_id=10),
+            SimpleNamespace(chat=SimpleNamespace(id=42), message_id=11),
+        ]),
+    )
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"tournament_id": str(UUID(int=3))}), clear=AsyncMock()
+    )
+    await handle_packet_document(
+        message, BotBackend(gateway), object(), LocalizationService(), "en", state,
+        "https://example.org/app",
+    )
+    texts = [call.args[0] for call in message.answer.await_args_list]
+    assert "Packet copy" in texts[0]
+    assert "Question 5 is missing its source." in texts[0]
+    assert similarity not in texts[0]
+    similarity_message = texts[1]
+    assert similarity_message.startswith("⚠️❗️")
+    assert "Your upload may be a duplicate!" in similarity_message
+    assert similarity in similarity_message
+
 
 def registration(*, step: str, locale: str = "ru", version: int = 2) -> RegistrationState:
     completed = ("real_name", "nickname", "telegram_public")

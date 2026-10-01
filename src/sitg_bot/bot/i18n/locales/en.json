@@ -430,6 +430,7 @@
   "packet_upload.published": "The packet was published. Its tournament assignment starts with access disabled.",
   "packet_upload.rejected": "The packet draft was rejected.",
   "packet_upload.no_themes_warning": "Your packet has 0 themes! It is possible that the importer script failed to understand your file's structure. Use <a href=\"https://docs.google.com/document/d/14tTuPTJH9LX4eCpOzQuJ6SglKxrP-YYz15U2gqnHT0U/edit?tab=t.0\">this prompt</a> with any LLM to correct formatting of your packet.",
+  "packet_upload.similar_packet_warning": "⚠️❗️ <b>Your upload may be a duplicate!</b>\n{warning}",
   "button.lobby.ready": "Ready",
   "button.lobby.unready": "Not ready",
   "button.lobby.start": "Start game",

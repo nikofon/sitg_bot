@@ -271,16 +271,37 @@ async def _answer_with_flood_retry(message: Message, model: MessageModel) -> Mes
             await asyncio.sleep(error.retry_after)
 
 
+SIMILAR_PACKET_WARNING_PREFIX = "A very similar packet already exists"
+
+
+def _split_similarity_warnings(
+    warnings: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Separate duplicate-packet warnings from structural warnings.
+
+    Similarity warnings are returned first so the handler can deliver them as
+    dedicated follow-up messages instead of burying them in the diagnostics list.
+    """
+    similar = tuple(
+        item for item in warnings if item.startswith(SIMILAR_PACKET_WARNING_PREFIX)
+    )
+    remaining = tuple(
+        item for item in warnings if not item.startswith(SIMILAR_PACKET_WARNING_PREFIX)
+    )
+    return similar, remaining
+
+
 def packet_draft_message(
     draft: PacketDraftState,
     localization: LocalizationService,
     locale: str,
     *,
     launch_links: str | None,
+    warnings: tuple[str, ...] | None = None,
 ) -> MessageModel:
     def diagnostics(items: tuple[str, ...]) -> str:
-        # 500 characters keep similarity warnings readable, including the existing
-        # packet ID and the tournaments that already use that packet.
+        # 500 characters keep structural warnings readable. Similarity warnings
+        # are delivered as separate follow-up messages, not in this list.
         displayed = [f"• {item[:500]}" for item in items[:5]]
         if len(items) > len(displayed):
             displayed.append(
@@ -288,7 +309,8 @@ def packet_draft_message(
             )
         return "\n".join(displayed) or "—"
 
-    warnings = diagnostics(draft.warnings)
+    draft_warnings = draft.warnings if warnings is None else warnings
+    warnings_text = diagnostics(draft_warnings)
     errors = diagnostics(draft.errors)
     authors = ", ".join(name[:60] for name in draft.detected_authors[:10]) or "—"
     if len(draft.detected_authors) > 10:
@@ -302,9 +324,9 @@ def packet_draft_message(
                 else "—"),
         questions=draft.question_count if draft.question_count is not None else "—",
         authors=authors,
-        warning_count=len(draft.warnings),
+        warning_count=len(draft_warnings),
         error_count=len(draft.errors),
-        warnings=warnings,
+        warnings=warnings_text,
         errors=errors,
     )
     rows: list[tuple[InlineButtonModel, ...]] = []
@@ -398,7 +420,14 @@ async def handle_packet_document(
     )
     await state.clear()
     for draft in drafts:
-        model = packet_draft_message(draft, localization, locale, launch_links=launch_links)
+        similar_warnings, remaining_warnings = _split_similarity_warnings(draft.warnings)
+        model = packet_draft_message(
+            draft,
+            localization,
+            locale,
+            launch_links=launch_links,
+            warnings=remaining_warnings,
+        )
         sent_message = await _answer_with_flood_retry(message, model)
         await backend.bind_packet_draft_message(
             telegram_update_claim,
@@ -407,6 +436,17 @@ async def handle_packet_document(
             message_id=sent_message.message_id,
             locale=locale,
         )
+        for warning in similar_warnings:
+            # Similarity warnings get a dedicated message so uploaders cannot
+            # overlook a near-duplicate of an already published packet.
+            await _answer_with_flood_retry(
+                message,
+                MessageModel(
+                    localization.text(
+                        "packet_upload.similar_packet_warning", locale, warning=warning
+                    )
+                ),
+            )
         if draft.themes_missing:
             await _answer_with_flood_retry(
                 message,

@@ -268,8 +268,10 @@ form or source. Draft creation also compares question texts and answers — neve
 metadata — against published packets: when at least 90% of a draft's distinct
 questions match one packet, a warning names that packet's name, packet ID, and the
 tournaments actively using it, and suggests rejecting the draft and assigning the
-existing packet by packet ID instead. All author fields are optional and a draft
-with warnings may be published; nothing is rejected automatically.
+existing packet by packet ID instead. The Telegram upload flow delivers that similarity
+warning as a dedicated follow-up message with an attention emoji rather than inside the
+draft's warning list, so it is not lost among structural warnings. All author fields are
+optional and a draft with warnings may be published; nothing is rejected automatically.
 
 An upload interpreted as having no themes at all stores the failed draft and flags the
 returned summary with `themes_missing`; the Telegram upload reply then adds a dedicated
