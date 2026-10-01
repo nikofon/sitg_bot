@@ -8,6 +8,7 @@
 The default database is `postgresql+asyncpg://sitg:sitg@localhost:5432/sitg`.
 [compose.yaml](../compose.yaml) provides PostgreSQL 17 with the `sitg-postgres` named volume.
 The application TCP listener defaults to `127.0.0.1:8765`.
+For the complete Docker stack with HTTPS, see [VPS deployment](deployment.md).
 
 The Telegram process loads `.env` through [Settings](../src/sitg_bot/config.py).
 `sitg-server`, Alembic, and database CLIs read exported environment variables instead.

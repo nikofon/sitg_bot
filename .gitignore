@@ -34,3 +34,4 @@ rating-simulation-output/
 Packets-for-parcer-update/
 /scripts/simulate_swiss.py
 swiss-simulation-output/
+docs/deployment.md

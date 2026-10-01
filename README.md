@@ -29,6 +29,7 @@ implemented. Some menu destinations remain placeholders; the project is still in
 | --- | --- |
 | Navigate the code or understand the architecture | [Architecture and developer guide](docs/architecture.md) — technical index and contribution guidelines |
 | Understand project configuration and database constraints | [Project configuration and database operations](docs/database-operations.md) |
+| Deploy the server, bot, and Mini App on a VPS | [VPS deployment](docs/deployment.md) |
 | Use the console interface | [Console user guide](docs/console-commands.md) |
 | Choose work that is still planned | [Planned features](docs/future-work.md) |
 
