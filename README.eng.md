@@ -2,6 +2,8 @@
 
 English | [Русский](README.md)
 
+Bot link: t.me/SITGsite_bot
+
 SITG is a tournament platform for Jeopardy-style multiplayer games.
 
 ## How to start playing
