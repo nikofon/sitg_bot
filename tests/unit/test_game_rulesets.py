@@ -1,6 +1,8 @@
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
+
 from sitg_bot.domain.game_rulesets import (
     DEFAULT_RULESETS,
     ExposureClaim,
@@ -56,6 +58,62 @@ def test_ruleset_registry_rejects_unknown_versions() -> None:
         assert "si version 2" in str(error)
     else:
         raise AssertionError("Unknown ruleset version was accepted")
+
+
+@pytest.mark.parametrize(
+    ("accepted", "submitted", "expected"),
+    [
+        ("Центр Помпиду", "центл Памптду", True),
+        ("Центр Помпиду", "Це\u0301нтр Помпиду\u0301", True),
+        ("Центр Помпиду", "центр Памптд", True),
+        ("Центр Помпиду", "центры Помпиду", True),
+        ("Центр Помпиду", "цинтл Памптдю", False),
+        ("Центр Помпиду", "Лувр", False),
+        ("Paris", "Parix", True),
+        ("Paris", "Pxrix", False),
+        ("Rome", "Roma", False),
+        ("12345", "12346", False),
+        ("Apollo 11", "Apollo 12", False),
+        ("Apollo 11", "Apolo 11", True),
+        ("Café", "CAFE", True),
+        ("Pushkin", "Пу\u0301шкин", True),
+        ("Chaykovskiy", "Чайковский", True),
+        ("Borshch", "Борщ", True),
+        ("Yozh", "Ёж", True),
+        ("Obyekt", "Объект", True),
+        ("Rus", "Русь", True),
+        ("Пушкин", "Pushkin", False),
+        ("Answer", "", False),
+        ("Answer", "!!!", False),
+        ("abcdefghijklmnopqrst", "abcdXXXXijklmnopqrst", False),
+    ],
+)
+def test_si_answer_matching(accepted: str, submitted: str, expected: bool) -> None:
+    assert SIGameRuleset().judge_answer(submitted, (accepted,)) is expected
+
+
+def test_si_fuzzy_matching_includes_alternatives_and_optional_words() -> None:
+    question = Question("Text", "Museum", "", 10, accepted_answers=("(Центр) Помпиду",))
+    assert SIGameRuleset().judge_answer("Пампиду", question.all_answers)
+
+
+@pytest.mark.parametrize(
+    ("submitted", "accepted", "rejected", "expected"),
+    [
+        ("центл Памптду", "Центр Помпиду", "ЦЕНТЛ ПАМПТДУ!", False),
+        ("центл Памптду", "Центр Помпиду", "центл Памптда", True),
+        ("Це\u0301нтр Помпиду", "Центр Помпиду", "Центр Помпиду", False),
+        ("CAFE", "Café", "Café", False),
+        ("Пушкин", "Pushkin", "Пу\u0301шкин", False),
+        ("Пушкин", "Pushkin", "Pushkin", True),
+    ],
+)
+def test_si_rejected_matching_stays_exact(
+    submitted: str, accepted: str, rejected: str, expected: bool,
+) -> None:
+    assert SIGameRuleset().judge_answer(
+        submitted, (accepted,), rejected_answers=(rejected,),
+    ) is expected
 
 
 def test_si_assignment_plan_is_seeded_and_preserves_canonical_claims() -> None:

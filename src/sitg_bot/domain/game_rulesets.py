@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
-from sitg_bot.domain.answers import normalize_answer
+from sitg_bot.domain.answers import matches_accepted_answer, normalize_answer
 from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.domain.packet import Packet
 
@@ -249,7 +249,10 @@ class SIGameRuleset:
             normalize_answer(answer) for answer in rejected_answers
         }:
             return False
-        return normalized in {normalize_answer(answer) for answer in accepted_answers}
+        return any(
+            matches_accepted_answer(normalized, normalize_answer(answer))
+            for answer in accepted_answers
+        )
 
     def ranking_key(
         self,
