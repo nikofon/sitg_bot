@@ -362,7 +362,7 @@
   "registration.nickname.prompt": "Под каким именем вас будут видеть другие игроки? Мы рекомендуем использовать настоящие Имя и Фамилию, но выбор за Вами.",
   "registration.real_name.prompt": "Пожалуйста, назовите свои настоящие Имя и Фамилию (в таком порядке). Они будут видны только организаторам турниров.",
   "registration.start_required": "Отправьте /start, чтобы начать или продолжить регистрацию.",
-  "registration.telegram_public.prompt": "Хотите сделать свой телеграм публичным? (Да/Нет) Так вас смогут найти игроки, которые попадались с вами в играх. Вы можете завести новых друзей!",
+  "registration.telegram_public.prompt": "Хотите сделать свой телеграм публичным? Его будет видно в вашим профиле игрока. (Да/Нет)",
   "settings.choose": "Выберите настройку:",
   "settings.command_usage": "Используйте: <code>/set nickname Новое имя</code>. Доступные ключи: <code>real_name</code>, <code>nickname</code>, <code>telegram_public</code>, <code>language</code>.",
   "settings.item": "• <b>{label}</b>: {value}",

@@ -362,7 +362,7 @@
   "registration.nickname.prompt": "What name should other players see? We recommend using your real first and last name, but the choice is yours.",
   "registration.real_name.prompt": "Please provide your real first and last name, in that order. They will be visible only to tournament organizers.",
   "registration.start_required": "Send /start to begin or continue registration.",
-  "registration.telegram_public.prompt": "Would you like to make your Telegram account public? (Yes/No) Players you meet in games will then be able to find you. You may make new friends!",
+  "registration.telegram_public.prompt": "Would you like to make your Telegram account public? It will be visible in your player profile (Yes/No)",
   "settings.choose": "Choose a setting to change:",
   "settings.command_usage": "Use: <code>/set nickname New name</code>. Available keys: <code>real_name</code>, <code>nickname</code>, <code>telegram_public</code>, <code>language</code>.",
   "settings.item": "• <b>{label}</b>: {value}",
