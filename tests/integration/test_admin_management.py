@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -492,3 +492,104 @@ async def test_author_merge_transfers_identity_and_drops_conflicts(database_url)
         assert all(c.state == "burnt" for c in await claims_for(database, fixture.players[0].id))
     finally:
         await database.close()
+
+
+async def test_ongoing_games_catalogue_lists_lobby_and_active_games(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        service = AdminManagementService(database)
+        with pytest.raises(PermissionError):
+            await service.catalogue(fixture.manager.id, "ongoing_games")
+        await administrator(database, fixture.manager.id)
+
+        async def add_game(
+            session, tournament, policy, *, status: str, phase: str, participants: tuple
+        ) -> UUID:
+            game = GameRecord(
+                tournament_id=tournament.id,
+                tournament_type_version_id=tournament.type_version_id,
+                game_ruleset_version_id=tournament.game_ruleset_version_id,
+                tournament_policy_version_id=policy.id,
+                host_player_id=fixture.players[0].id,
+                status=status,
+                phase=phase,
+            )
+            session.add(game)
+            await session.flush()
+            for seat, player in enumerate(participants, start=1):
+                session.add(
+                    GameParticipantRecord(
+                        game_id=game.id,
+                        tournament_id=tournament.id,
+                        player_id=player.id,
+                        seat=seat,
+                        rating_sequence=seat,
+                        global_game_sequence=seat,
+                        joined=True,
+                        ready=True,
+                        is_chair=seat == 1,
+                    )
+                )
+            return game.id
+
+        async with database.transaction() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            policy = await session.scalar(
+                select(TournamentPolicyVersionRecord).where(
+                    TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id
+                )
+            )
+            assert tournament is not None and policy is not None
+            active_id = await add_game(
+                session,
+                tournament,
+                policy,
+                status="active",
+                phase="question",
+                participants=(fixture.players[0], fixture.players[1]),
+            )
+            lobby_id = await add_game(
+                session,
+                tournament,
+                policy,
+                status="lobby",
+                phase="lobby",
+                participants=(fixture.manager,),
+            )
+            finished_id = await add_game(
+                session,
+                tournament,
+                policy,
+                status="completed",
+                phase="finished",
+                participants=(),
+            )
+
+        catalogue = await service.catalogue(fixture.manager.id, "ongoing_games")
+        assert catalogue["section"] == "ongoing_games"
+        listed = {str(item["id"]) for item in catalogue["items"]}
+        assert str(active_id) in listed
+        assert str(lobby_id) in listed
+        assert str(finished_id) not in listed
+        card = next(
+            item for item in catalogue["items"] if str(item["id"]) == str(active_id)
+        )
+        assert card["name"] == tournament.name
+        assert card["status"] == "active"
+        assert card["phase"] == "question"
+        assert card["ruleset"] == "si"
+        assert card["type"] == "ladder"
+        assert card["settings"]["policies"]["rating_enabled"] is True
+        assert card["host"]["id"] == fixture.players[0].id
+        assert card["participant_count"] == 2
+        assert [p["seat"] for p in card["participants"]] == [1, 2]
+        assert {p["id"] for p in card["participants"]} == {
+            fixture.players[0].id,
+            fixture.players[1].id,
+        }
+        assert card["participants"][0]["is_chair"] is True
+        assert card["participants"][1]["is_chair"] is False
+    finally:
+        await database.close()
+

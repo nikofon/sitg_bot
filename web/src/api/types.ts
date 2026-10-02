@@ -811,7 +811,13 @@ export interface AdminSuspicionLedgerResource {
   items: SuspicionLedgerCard[];
 }
 
-export type AdminSection = "tournaments" | "authors" | "players" | "packets" | "link_requests";
+export type AdminSection =
+  | "tournaments"
+  | "authors"
+  | "players"
+  | "packets"
+  | "link_requests"
+  | "ongoing_games";
 export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
 export interface AdminCard {
   id: string;

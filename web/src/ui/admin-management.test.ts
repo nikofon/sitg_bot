@@ -103,4 +103,40 @@ describe("admin management", () => {
     expect([...view.querySelectorAll("article button")].map(b => b.textContent)).toEqual(["Link", "Join"]);
     expect(view.querySelector("article button.danger-button")?.textContent).toBe("Join");
   });
+
+  it("lists ongoing games with a count, links, and no actions", () => {
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "ongoing_games", items: [
+      { id: "g1", name: "Alpha", status: "active", phase: "question", paused: false,
+        tournament: { id: "t1", name: "Alpha" }, host: { id: "p1", public_nickname: "Alice" },
+        participant_count: 2, type: "ladder", ruleset: "si",
+        created_at: "2026-09-01T10:00:00+00:00", last_activity_at: "2026-09-02T10:00:00+00:00",
+        participants: [
+          { id: "p1", public_nickname: "Alice", seat: 1, score: 10, ready: true, joined: true, active: true, is_chair: true },
+          { id: "p2", public_nickname: "Bob", seat: 2, score: 5, ready: true, joined: true, active: true, is_chair: false },
+        ],
+        settings: { policies: { rating_enabled: true } } },
+      { id: "g2", name: "Beta", status: "lobby", phase: "lobby", paused: false,
+        tournament: { id: "t2", name: "Beta" }, host: { id: "p3", public_nickname: "Carol" },
+        participant_count: 1, type: "ladder", ruleset: "si",
+        created_at: "2026-09-03T10:00:00+00:00", last_activity_at: "2026-09-03T10:00:00+00:00",
+        participants: [{ id: "p3", public_nickname: "Carol", seat: 1, score: 0, ready: false, joined: false, active: true, is_chair: false }] },
+    ] }, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    expect(view.textContent).toContain("Ongoing games: 2");
+    expect([...view.querySelectorAll("nav button")].map(b => b.textContent)).toContain("Ongoing games");
+    expect(view.querySelector("select")?.value).toBe("created_at:desc");
+    const card = view.querySelector('[data-resource-id="g2"]')!;
+    expect(card.querySelectorAll("button")).toHaveLength(0);
+    expect(card.querySelector("a")?.getAttribute("href")).toContain("info=t2");
+    const links = [...card.querySelectorAll("a")].map(a => a.getAttribute("href"));
+    expect(links).toContain("/players/p3");
+    expect(card.textContent).toContain("lobby");
+    expect(card.textContent).toContain("ladder");
+    const first = view.querySelector('[data-resource-id="g1"]')!;
+    const playerLinks = [...first.querySelectorAll("a")]
+      .map(a => a.getAttribute("href"))
+      .filter((href): href is string => href?.startsWith("/players/") ?? false);
+    expect(new Set(playerLinks)).toEqual(new Set(["/players/p1", "/players/p2"]));
+    expect(first.textContent).toContain("Alice");
+    expect(first.textContent).toContain("Bob");
+  });
 });

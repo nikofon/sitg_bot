@@ -934,9 +934,9 @@ class BugReportCreateOperation(ContractModel):
 
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
-    section: Literal["tournaments", "authors", "players", "packets", "link_requests"] = (
-        "tournaments"
-    )
+    section: Literal[
+        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+    ] = ("tournaments")
 
 
 class AdminTournamentModerateOperation(ContractModel):

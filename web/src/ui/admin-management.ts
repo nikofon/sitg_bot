@@ -30,10 +30,11 @@ export function renderAdminManagement(
         ...entries.map((entry) => {
           if (entry === null || typeof entry !== "object") return element("p", {}, String(entry ?? "—"));
           if (Array.isArray(entry)) return element("p", {}, entry.join(", "));
-          const profile = (key === "players" || key === "managers" || key === "player")
+          const profile = (key === "players" || key === "managers" || key === "player"
+              || key === "participants" || key === "host")
             && typeof entry.id === "string"
             ? link(`/players/${entry.id}`, name(entry))
-            : key === "tournaments" && typeof entry.id === "string"
+            : (key === "tournaments" || key === "tournament") && typeof entry.id === "string"
               ? link(`/tournaments?role=admin&info=${entry.id}`, name(entry)) : null;
           return element("section", { className: "admin-related" }, profile, metadata(entry));
         })))];
@@ -42,7 +43,7 @@ export function renderAdminManagement(
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
   const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets", "link_requests"] as const).map((section) => element("button", {
+    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"] as const).map((section) => element("button", {
       type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
       "aria-current": resource.section === section ? "page" : undefined,
       onclick: (() => navigate(`/admin/management?section=${section}`)) as EventListener,
@@ -72,6 +73,13 @@ export function renderAdminManagement(
         ? link(`/players/${(item.player as { id: string }).id}`, label("profile")) : null;
       if (item.status === "pending") { add("approve"); add("reject"); }
     } else if (resource.section === "authors") { add("link"); add("merge"); }
+    else if (resource.section === "ongoing_games") {
+      profile = typeof item.tournament === "object" && item.tournament !== null
+        && !Array.isArray(item.tournament)
+        && typeof (item.tournament as { id?: unknown }).id === "string"
+        ? link(`/tournaments?role=admin&info=${(item.tournament as { id: string }).id}`,
+          label("profile")) : null;
+    }
     else if (resource.section === "players") {
       profile = link(`/players/${item.id}`, label("profile"));
       if (!item.administrator) add(item.ban ? "unban" : "ban");
@@ -105,6 +113,7 @@ export function renderAdminManagement(
       players: ["id", "real_name", "telegram_username", "suspicion", "reputation", "ban", "games_played", "rulesets", "reports"],
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
       link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
+      ongoing_games: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "last_activity_at"],
     }[resource.section];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)));
@@ -115,7 +124,8 @@ export function renderAdminManagement(
   const render = (): void => {
     const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
     const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-      : resource.section === "link_requests" ? "created_at:desc" : "name:asc");
+      : resource.section === "link_requests" ? "created_at:desc"
+      : resource.section === "ongoing_games" ? "created_at:desc" : "name:asc");
     const [key, direction] = order.split(":");
     const items = resource.items.filter((item) => JSON.stringify(item).toLocaleLowerCase(i18n.locale).includes(search));
     const value = (item: AdminCard): string | number => key === "name" ? name(item) :
@@ -126,7 +136,11 @@ export function renderAdminManagement(
         ? first - second : String(first).localeCompare(String(second), i18n.locale, { numeric: true });
       return comparison * (direction === "desc" ? -1 : 1) || a.id.localeCompare(b.id);
     });
-    list.replaceChildren(...items.map(card));
+    const summary = resource.section === "ongoing_games"
+      ? [element("p", { className: "resource-summary" },
+        `${label("ongoing_games")}: ${resource.items.length}`)]
+      : [];
+    list.replaceChildren(...summary, ...items.map(card));
     if (!items.length) list.append(element("p", {}, label("empty")));
   };
   const search = element("input", { type: "search", value: filters.search ?? "", "aria-label": label("search") });
@@ -135,12 +149,14 @@ export function renderAdminManagement(
     tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
     link_requests: ["status", "decided_at"],
+    ongoing_games: ["status", "phase", "participant_count", "last_activity_at"],
   }[resource.section]];
   const sort = element("select", { "aria-label": label("sort") }, ...sortKeys.flatMap((key) =>
     ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
       `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
   sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-    : resource.section === "link_requests" ? "created_at:desc" : "name:asc");
+    : resource.section === "link_requests" || resource.section === "ongoing_games"
+      ? "created_at:desc" : "name:asc");
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
   render();
   return element("section", { className: "route-content" }, tabs,

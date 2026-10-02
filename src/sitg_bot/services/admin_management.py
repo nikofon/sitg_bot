@@ -55,7 +55,9 @@ class AdminManagementService:
         self.database = database
 
     async def catalogue(self, administrator_id: UUID, section: str) -> dict:
-        if section not in {"tournaments", "authors", "players", "packets", "link_requests"}:
+        if section not in {
+            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+        }:
             raise ValueError("Unknown management section")
         async with self.database.sessions() as session:
             await _require_administrator(session, administrator_id)
@@ -96,6 +98,71 @@ class AdminManagementService:
                             ),
                         },
                     })
+                return {
+                    "kind": "admin_management",
+                    "state": "ready",
+                    "section": section,
+                    "items": items,
+                }
+            if section == "ongoing_games":
+                for game in await session.scalars(
+                    select(GameRecord)
+                    .where(GameRecord.status.in_(("lobby", "active")))
+                    .order_by(GameRecord.created_at.desc(), GameRecord.id.desc())
+                ):
+                    tournament = await session.get(TournamentRecord, game.tournament_id)
+                    policy = await session.get(
+                        TournamentPolicyVersionRecord, game.tournament_policy_version_id
+                    )
+                    host = await session.get(PlayerRecord, game.host_player_id)
+                    type_version = await session.get(
+                        TournamentTypeVersionRecord, game.tournament_type_version_id
+                    )
+                    ruleset_version = await session.get(
+                        GameRulesetVersionRecord, game.game_ruleset_version_id
+                    )
+                    if (
+                        tournament is None
+                        or policy is None
+                        or host is None
+                        or type_version is None
+                        or ruleset_version is None
+                    ):
+                        continue
+                    card = fields(game)
+                    card["name"] = tournament.name
+                    card["tournament"] = {"id": tournament.id, "name": tournament.name}
+                    card["host"] = {
+                        "id": host.id,
+                        "public_nickname": host.public_nickname,
+                    }
+                    card["participants"] = [
+                        {
+                            "id": player.id,
+                            "public_nickname": player.public_nickname,
+                            "seat": participant.seat,
+                            "score": participant.score,
+                            "ready": participant.ready,
+                            "joined": participant.joined,
+                            "active": participant.active,
+                            "is_chair": participant.is_chair,
+                            "abandoned_at": participant.abandoned_at,
+                        }
+                        for participant, player in await session.execute(
+                            select(GameParticipantRecord, PlayerRecord)
+                            .join(
+                                PlayerRecord,
+                                PlayerRecord.id == GameParticipantRecord.player_id,
+                            )
+                            .where(GameParticipantRecord.game_id == game.id)
+                            .order_by(GameParticipantRecord.seat)
+                        )
+                    ]
+                    card["participant_count"] = len(card["participants"])
+                    card["settings"] = fields(policy)
+                    card["type"] = type_version.key
+                    card["ruleset"] = ruleset_version.key
+                    items.append(card)
                 return {
                     "kind": "admin_management",
                     "state": "ready",

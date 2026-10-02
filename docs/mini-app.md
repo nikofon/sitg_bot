@@ -211,11 +211,11 @@ with fresh-content exposure claims still applying.
 
 **Admin management:** `/admin/management`, opened by **Management** in the admin keyboard.
 Every query and action requires an active platform administrator. Tournaments, Authors,
-Players, and Packets have searchable, sortable cards; filters persist per section. Detailed
-metadata, settings, and related records are collapsed initially. Tournament cards link profiles,
-offer confirmed Halt, Resume, and permanent Abolish actions (see [tournaments](tournaments.md)),
-and carry a global rating weight slider (0.1–1 in 0.05 steps) whose green **V** button must be
-pressed to save the `ruleset_rating_weight` policy.
+Players, Packets, and Ongoing games have searchable, sortable cards; filters persist per
+section. Detailed metadata, settings, and related records are collapsed initially.
+Tournament cards link profiles, offer confirmed Halt, Resume, and permanent Abolish actions
+(see [tournaments](tournaments.md)), and carry a global rating weight slider (0.1–1 in 0.05
+steps) whose green **V** button must be pressed to save the `ruleset_rating_weight` policy.
 Authors show contributions and linked player data; Link accepts a player UUID or `@username`
 and records an approved author link with permanent authorship exposure.
 
@@ -228,6 +228,13 @@ Packets include every version regardless of discoverability, release, retirement
 access. View reuses the library reader and Download queues the same DOCX delivery. Fresh-content
 confirmation permanently burns the packet for the admin, including existing reserved claims.
 These administrative reads bypass normal library restrictions.
+
+Ongoing games lists every game with `lobby` or `active` status across all tournaments, newest
+first, with a count line above the cards. Cards are read-only: the tournament (linked to its
+admin profile), host, and participants (linked to player profiles, with seat, score, readiness,
+and chair role), status, phase, paused flag, ruleset, tournament type, and timing. The
+tournament's settings snapshot and remaining execution details stay collapsed under the card's
+details summary.
 
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
