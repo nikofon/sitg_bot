@@ -2,9 +2,7 @@
 
 English | [Русский](README.md)
 
-SITG is a tournament platform for Jeopardy-style multiplayer games, played through private
-Telegram conversations. A console interface supports local play and development, and a
-Telegram Mini App handles tournament, lobby, and packet management.
+SITG is a tournament platform for Jeopardy-style multiplayer games.
 
 ## How to start playing
 
