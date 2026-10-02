@@ -1,64 +1,67 @@
 # SITG Bot
 
-English | [Русский](README.ru.md)
+[English](README.eng.md) | Русский
 
-SITG is a tournament platform for Jeopardy-style multiplayer games, played through private
-Telegram conversations. A console interface supports local play and development, and a
-Telegram Mini App handles tournament, lobby, and packet management.
+SITG — платформа для турниров по «Своей игре» в личных сообщениях Telegram.
+Консольный интерфейс предназначен для локальной игры и разработки, а мини-приложение
+Telegram — для управления турнирами, лобби и пакетами вопросов.
 
-## How to start playing
+## Как начать играть
 
-1. Open the bot in Telegram, send `/start`, and follow the registration prompts.
-2. Open **Tournaments**, register for an ongoing tournament, and wait for approval.
-   Press **Select** in the tournament list.
-3. Press **Create lobby** and share the invitation link with friends registered in that tournament.
-4. Open **Lobby info → Lobby settings**, select a packet, and gather the required number of players.
-5. Everyone presses **Ready**; the lobby creator presses **Start game**.
-   Each player then presses **Join** in the bot's game invitation.
-6. Press `+` to buzz and reply to the bot's answer prompt before time runs out.
-   Use `/score` to check scores and `/quit` after the game ends.
+1. Откройте бота в Telegram, отправьте `/start` и пройдите регистрацию.
+2. Откройте **Турниры**, зарегистрируйтесь в текущем турнире и дождитесь одобрения.
+   Нажмите **Выбрать** в списке турниров.
+3. Нажмите **Создать лобби** и отправьте ссылку друзьям, зарегистрированным в этом турнире.
+4. Откройте **Информация о лобби → Настройки лобби**, выберите пакет и соберите нужное число игроков.
+5. Все игроки нажимают **Готов**, а создатель лобби — **Начать игру**.
+   Затем каждый нажимает **Присоединиться** в приглашении от бота.
+6. Нажмите `+`, чтобы отбиться, и ответьте на запрос бота до истечения времени.
+   Команда `/score` покажет счёт, а `/quit` позволит выйти после окончания игры.
 
-## How to set up your own tournament
+## Как создать свой турнир
 
-1. Complete `/start` registration, then choose **Switch mode → Manager**.
-2. Press **Request tournament token**, enter the tournament name and a short message,
-   and wait for administrator approval. Check **My tokens** for the result.
-3. Press **Create tournament**. Choose **Ladder** for an ongoing tournament, select the
-   SI ruleset, fill in the requested details, and confirm creation.
-4. Open **Tournament management → Settings**. Set the number of players and themes per game,
-   enable **Automatically approve registrations** and **Packets playable by default**, and save.
-5. Return to the bot and press **Upload packets**. Send a question packet in JSON or DOCX
-   format, review the upload, and publish it.
-6. Open **Tournament management → General**, press **Finalize tournament**, enable
-   **Registration available**, and press **Start tournament**.
-7. Return to the bot, press **Registration link**, and share it with players.
-   They can now register and create lobbies. You manage this tournament and cannot play in it.
+1. Пройдите регистрацию через `/start`, затем выберите **Сменить режим → Организатор**.
+2. Нажмите **Запросить токен**, укажите название турнира и короткое сообщение,
+   затем дождитесь одобрения администратора. Результат можно проверить в **Мои токены**.
+3. Нажмите **Создать турнир**. Выберите **Ладдер** для постоянного турнира и правила СИ,
+   заполните предложенные поля и подтвердите создание.
+4. Откройте **Управление турниром → Настройки**. Задайте число игроков и тем в игре,
+   включите **Автоматически одобрять регистрации** и **Пакеты доступны для игры по умолчанию**,
+   затем сохраните настройки.
+5. Вернитесь в бота и нажмите **Загрузить пакеты**. Отправьте пакет вопросов в формате
+   JSON или DOCX, проверьте результат загрузки и опубликуйте пакет.
+6. Откройте **Управление турниром → Общее**, нажмите **Финализировать турнир**,
+   включите **Регистрация доступна** и нажмите **Начать турнир**.
+7. Вернитесь в бота, нажмите **Ссылка на регистрацию** и отправьте её игрокам.
+   Теперь они могут регистрироваться и создавать лобби. Вы управляете этим турниром и не можете играть в нём.
 
-## Product baseline
+## Основные возможности
 
-- **Tournaments** organize participation, managers, game settings, packet access, and ratings.
-  Ladder supports ongoing competition; Classic supports groups, solo quizzes, play-offs,
-  and double elimination with prescribed participants and round deadlines.
-- **Lobbies** let players assemble by invitation or, where enabled, find other players.
-  Observers can join when tournament policy permits.
-- **Games** currently use the SI ruleset: questions revealed progressively, buzzing,
-  timed answers, scoring, and appeals. Additional game formats are planned.
-- **Packets** are reusable collections of questions. Managers can import, review, publish,
-  correct, and substitute content while preserving past games.
-- **Fair play** includes global protection against repeating exposed content, tournament and
-  ruleset ratings, player reputation, reports, and reviewable suspicion signals.
-- **Continuity and privacy** are core requirements: games and conversations recover after
-  interruption; public nicknames are separate from private registration details.
+- **Турниры** объединяют участников, менеджеров, настройки игр, доступ к пакетам и рейтинги.
+  Ладдер подходит для постоянных соревнований; Классик — для групп, сольных викторин,
+  плей-офф и сеток с выбыванием после двух поражений, с заданными составами и сроками раундов.
+- **Лобби** позволяют собирать игроков по приглашению или через поиск, если он включён.
+  Наблюдатели могут присоединяться, если это разрешено правилами турнира.
+- **Игры** используют правила СИ: постепенное раскрытие вопросов, отбивка,
+  ограниченное время на ответ, подсчёт очков и апелляции. Планируются другие форматы.
+- **Пакеты** — наборы вопросов. Менеджеры могут загружать, проверять, публиковать,
+  исправлять и заменять материалы с сохранением истории прошедших игр.
+- **Честная игра** обеспечивается защитой от повторного отыгрыша знакомых вопросов,
+  рейтингами турниров и игровых форматов, репутацией, жалобами и проверкой подозрений.
+- **Восстановление и приватность**: игры и диалоги восстанавливаются после сбоев,
+  а публичные имена отделены от личных регистрационных данных.
 
-Telegram registration, gameplay, participant chat, appeals, and manager workflows are
-implemented. Some menu destinations remain placeholders; the project is still in development.
+Регистрация, игра, чат участников, апелляции и инструменты менеджеров в Telegram реализованы.
+Некоторые пункты меню пока остаются заглушками; проект находится в разработке.
 
-## Documentation
+## Документация
 
-| If you need to… | Read |
+Техническая документация доступна на английском языке.
+
+| Задача | Документ |
 | --- | --- |
-| Navigate the code or understand the architecture | [Architecture and developer guide](docs/architecture.md) — technical index and contribution guidelines |
-| Understand project configuration and database constraints | [Project configuration and database operations](docs/database-operations.md) |
-| Choose work that is still planned | [Planned features](docs/future-work.md) |
+| Разобраться в коде и архитектуре | [Архитектура и руководство разработчика](docs/architecture.md) — технический указатель и правила внесения изменений |
+| Настроить проект и разобраться с ограничениями базы данных | [Настройка проекта и работа с базой данных](docs/database-operations.md) |
+| Найти запланированные задачи | [Планируемые возможности](docs/future-work.md) |
 
-Implementation guides for each subsystem are indexed in the architecture document.
+Ссылки на руководства по отдельным подсистемам собраны в документе об архитектуре.
