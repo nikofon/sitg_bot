@@ -393,6 +393,80 @@ p {
   font-weight: 700;
 }
 
+.subscription-cards,
+.subscription-regions,
+.subscription-details {
+  display: grid;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.subscription-regions,
+.settings-form .subscription-create-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.subscription-region {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  padding-top: 1.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+}
+
+.subscription-region h2,
+.subscription-card h3 {
+  margin: 0;
+}
+
+.subscription-region h2 { font-size: 1.2rem; }
+.subscription-card h3 { font-size: 1rem; }
+
+.subscription-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+
+.subscription-card {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.subscription-card .subscription-status {
+  margin: 0;
+  font-weight: 600;
+  color: var(--tg-theme-link-color);
+}
+
+.subscription-rights { display: grid; gap: 0.4rem; margin: 0; }
+.subscription-rights > div { display: flex; justify-content: space-between; gap: 1rem; }
+.subscription-rights dt { color: var(--tg-theme-hint-color); }
+.subscription-rights dd { margin: 0; font-weight: 600; text-align: end; }
+
+.subscription-picker {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: var(--tg-theme-bg-color);
+}
+
+.subscription-assignment {
+  padding-top: 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 20%, transparent);
+}
+
+@media (min-width: 600px) {
+  .subscription-picker,
+  .subscription-assignment {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: end;
+  }
+}
+
 .field-help {
   margin: 0;
   color: var(--tg-theme-hint-color);

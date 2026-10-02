@@ -24,8 +24,7 @@ afterEach(() => { document.body.replaceChildren(); });
 
 describe("subscription cards", () => {
   it("creates unlimited cards with tri-state rights", () => {
-    const { root, save, button, field } = render();
-    button("Create subscription card").click();
+    const { root, save, field } = render();
     field<HTMLInputElement>("Subscription card name").value = "Unlimited play";
     field<HTMLInputElement>("Unlimited").click();
     const selects = root.querySelectorAll<HTMLSelectElement>("form select");
