@@ -22,7 +22,7 @@ from sitg_bot.bot.presenters.game import (
 )
 from sitg_bot.bot.presenters.models import InlineKeyboardModel, MessageModel
 from sitg_bot.bot.presenters.players import player_name
-from sitg_bot.bot.presenters.render import telegram_keyboard
+from sitg_bot.bot.presenters.render import DISABLED_LINK_PREVIEW, telegram_keyboard
 
 
 class GameDelivery:
@@ -68,7 +68,11 @@ class GameDelivery:
         if edit and ids:
             try:
                 await self.bot.edit_message_text(
-                    model.text, chat_id=chat, message_id=ids[0], reply_markup=inline
+                    model.text,
+                    chat_id=chat,
+                    message_id=ids[0],
+                    reply_markup=inline,
+                    link_preview_options=DISABLED_LINK_PREVIEW,
                 )
             except TelegramBadRequest as error:
                 if "message is not modified" not in str(error).lower():
@@ -83,6 +87,7 @@ class GameDelivery:
                 chat,
                 model.text,
                 reply_markup=markup if markup is not None else telegram_keyboard(model.keyboard),
+                link_preview_options=DISABLED_LINK_PREVIEW,
             )
             ids = [sent.message_id]
         value = {**entry, **metadata, "ids": ids, "digest": digest}

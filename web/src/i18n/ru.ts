@@ -681,6 +681,7 @@ export const ru: Record<MessageKey, string> = {
   "setting.theme_count.max": "Все темы выбранных пакетов",
   "settings.category.players": "Количество игроков",
   "settings.category.themes": "Количество тем",
+  "settings.category.question_values": "Стоимость вопросов",
   "settings.category.question_appearance": "Внешний вид вопросов",
   "settings.category.timings": "Тайминги сообщений",
   "settings.category.other": "Прочие параметры",

@@ -679,6 +679,7 @@ export const en = {
   "setting.theme_count.max": "All themes from the selected packets",
   "settings.category.players": "Number of players",
   "settings.category.themes": "Theme count",
+  "settings.category.question_values": "Question values",
   "settings.category.question_appearance": "Question appearance",
   "settings.category.timings": "Message timings",
   "settings.category.other": "Other settings",

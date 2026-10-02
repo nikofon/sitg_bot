@@ -22,8 +22,9 @@ are served by the application server from `web/dist`. Descriptor editors for rul
 that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`),
 replayed through a `⏵` (U+23F5) button;
 the lobby settings section lists changeable options before fixed ones. Ruleset settings are
-grouped into categories (number of players, theme count, question appearance, message
-timings, other); multi-parameter categories use a dropdown with one visible input panel,
+grouped into categories (number of players, theme count, question values, question
+appearance, message timings, other); each category renders in its own bordered card with an
+alternating background tint. Multi-parameter categories use a dropdown with one visible input panel,
 single-parameter categories show their input directly, and theme count offers a
 "all themes from the selected packets" checkbox that submits the `max` sentinel. The author-link
 window (`/authors/link`) lets a registered player search authors, submit a link request

@@ -83,7 +83,7 @@ async def test_durable_lobby_delivery_builds_localized_reopenable_button() -> No
     bot.send_message.assert_awaited_once()
     assert bot.send_message.await_args.args[:2] == (
         42,
-        "This lobby link remains available while the lobby is active.",
+        "Open the lobby to change its settings and choose packets for the game.",
     )
     markup = bot.send_message.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].web_app.url == (

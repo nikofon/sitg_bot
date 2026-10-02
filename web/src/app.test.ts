@@ -234,17 +234,32 @@ describe("MiniAppShell", () => {
 
   it("groups settings into categories and submits the maximum-themes sentinel", async () => {
     const { root, fetcher } = lobbyShell("settings", {
-      settings: { theme_count: 3, ready_delay: 1, minimum_players: 4 },
-      mutable_parameters: ["theme_count", "ready_delay", "minimum_players"],
+      settings: { theme_count: 3, ready_delay: 1, minimum_players: 4, question_values: [10, 20] },
+      mutable_parameters: [
+        "theme_count", "ready_delay", "minimum_players", "question_values", "minus_multiplier",
+        "question_token_target_chars", "question_token_delay",
+      ],
       setting_descriptors: [
         { name: "theme_count", value: 3, value_type: "integer", description_key: "ruleset.si.theme_count.description", options: [] },
         { name: "ready_delay", value: 1, value_type: "number", description_key: "ruleset.si.ready_delay.description", options: [] },
         { name: "minimum_players", value: 4, value_type: "integer", description_key: "ruleset.si.minimum_players.description", options: [] },
+        { name: "question_values", value: [10, 20], value_type: "array", description_key: "ruleset.si.question_values.description", options: [] },
+        { name: "minus_multiplier", value: 1, value_type: "number", description_key: "ruleset.si.minus_multiplier.description", options: [] },
+        { name: "question_token_target_chars", value: 18, value_type: "integer", description_key: "ruleset.si.question_token_target_chars.description", options: [] },
+        { name: "question_token_delay", value: 0.6, value_type: "number", description_key: "ruleset.si.question_token_delay.description", options: [] },
       ],
     });
     await vi.waitFor(() => expect(root.querySelector('input[name="setting:theme_count"]')).not.toBeNull());
     const headings = Array.from(root.querySelectorAll(".descriptor-category"), (node) => node.textContent);
-    expect(headings).toEqual(["Number of players", "Theme count", "Message timings"]);
+    expect(headings).toEqual([
+      "Number of players", "Theme count", "Question values", "Question appearance", "Message timings",
+    ]);
+    const groups = Array.from(root.querySelectorAll(".descriptor-category-group"), (group) => group.textContent);
+    expect(groups[2]).toContain("Question values");
+    expect(groups[2]).toContain("Wrong-answer multiplier");
+    expect(groups[3]).toContain("Question token size");
+    expect(groups[3]).toContain("Question token delay");
+    expect(groups[3]).not.toContain("Question values");
     const maximum = root.querySelector<HTMLInputElement>('input[name="setting:theme_count:max"]')!;
     const count = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
     expect(maximum.checked).toBe(false);
@@ -255,7 +270,15 @@ describe("MiniAppShell", () => {
     count.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/settings"))).toBe(true));
     const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/settings"));
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { theme_count: "max" } });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      expected_version: 7,
+      changes: {
+        theme_count: "max",
+        minus_multiplier: 1,
+        question_token_target_chars: 18,
+        question_token_delay: 0.6,
+      },
+    });
   });
 
   it("shows the maximum-themes sentinel as a fixed value without edit controls", async () => {
@@ -693,7 +716,7 @@ describe("MiniAppShell", () => {
       .find((button) => button.textContent === "Add price");
     addPrice?.click();
     expect(root.querySelectorAll(".pricing-price-row")).toHaveLength(3);
-    const settingPanels = root.querySelectorAll<HTMLElement>(".descriptor-editor:first-of-type .descriptor-panel");
+    const settingPanels = root.querySelectorAll<HTMLElement>(".descriptor-category-group:first-of-type .descriptor-panel");
     expect(Array.from(settingPanels).filter((panel) => !panel.hidden)).toHaveLength(1);
     expect(root.querySelector(".setting-demo")).toBeNull();
     expect(root.textContent).not.toContain("Management overview");

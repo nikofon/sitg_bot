@@ -92,6 +92,7 @@ is satisfied, then a Yes/No inline confirmation applies the selection and starts
 Nicknames in lobby rosters/readiness lists and game participant lists/scores link to player
 profiles. Configure the bot's **Main Mini App** in BotFather to this Mini App frontend:
 links use `https://t.me/<bot>?startapp=player_<UUID hex>`, which opens `/players/{UUID}`.
+These messages disable Telegram link previews so player lists stay compact.
 Authentication and profile authorization still run normally. Single-action notices such as
 joining or buzzing retain plain nicknames; Chairs have no profile link.
 Without a valid packet the bot reports that the tournament does not contain one.

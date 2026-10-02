@@ -2,6 +2,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    LinkPreviewOptions,
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -49,9 +50,17 @@ def telegram_keyboard(keyboard: KeyboardModel):  # type: ignore[no-untyped-def]
     return None
 
 
+# Messages listing player profiles must not render a Telegram link preview below the text.
+PLAYER_PROFILE_LINK_MARKER = "?startapp=player_"
+DISABLED_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+
 async def send_message_model(message: Message, model: MessageModel) -> Message:
     return await message.answer(
         model.text,
         reply_markup=telegram_keyboard(model.keyboard),
         protect_content=model.protect_content,
+        link_preview_options=(
+            DISABLED_LINK_PREVIEW if PLAYER_PROFILE_LINK_MARKER in model.text else None
+        ),
     )

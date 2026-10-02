@@ -531,7 +531,20 @@ p {
 
 .descriptor-categories {
   display: grid;
+  gap: 0.9rem;
+}
+
+.descriptor-category-group {
+  display: grid;
   gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 30%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 5%, transparent);
+}
+
+.descriptor-category-group:nth-of-type(even) {
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 12%, transparent);
 }
 
 .descriptor-category {

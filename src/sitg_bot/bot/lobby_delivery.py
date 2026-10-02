@@ -14,7 +14,7 @@ from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel
 from sitg_bot.bot.presenters.players import player_name
-from sitg_bot.bot.presenters.render import telegram_keyboard
+from sitg_bot.bot.presenters.render import DISABLED_LINK_PREVIEW, telegram_keyboard
 from sitg_bot.services.launch_references import LaunchReference
 
 
@@ -246,7 +246,10 @@ def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService, b
                 )
         try:
             await bot.send_message(
-                int(payload["recipient_telegram_user_id"]), text, reply_markup=keyboard
+                int(payload["recipient_telegram_user_id"]),
+                text,
+                reply_markup=keyboard,
+                link_preview_options=DISABLED_LINK_PREVIEW,
             )
         except TelegramRetryAfter as error:
             raise RetryableDeliveryError(

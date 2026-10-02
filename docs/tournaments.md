@@ -259,8 +259,10 @@ theme of its selected packets before validation and assignment, and unresolved t
 block the game like Classic.
 
 The manager and lobby settings screens group parameters into categories (number of
-players, theme count, question appearance, message timings, and other parameters). The
-theme-count category offers a checkbox that selects the `max` sentinel.
+players, theme count, question values, question appearance, message timings, and other
+parameters), each rendered in its own bordered card. The question values category holds
+`question_values` and `minus_multiplier`; question appearance holds the token size and
+token delay. The theme-count category offers a checkbox that selects the `max` sentinel.
 
 `minimum_players` and `maximum_players` default to four, including existing tournaments.
 Each has its own mutability grant. They must satisfy `1 <= minimum <= maximum <= 12`;

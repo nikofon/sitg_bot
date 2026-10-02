@@ -2143,23 +2143,29 @@ export class MiniAppShell {
     };
     const remaining = (): ManagerSettingDescriptor[] =>
       descriptors.filter((item) => !used.has(item.name));
+    const playerItems = pick(["minimum_players", "maximum_players"]);
+    const themeItems = pick(["theme_count"]);
+    const questionValueItems = pick(["question_values", "minus_multiplier"]);
+    const appearanceItems = pick(["question_token_target_chars", "question_token_delay"]);
     const timingPattern = /(_delay|_timeout)$/;
     const timingItems = remaining().filter((item) => timingPattern.test(item.name));
     for (const item of timingItems) used.add(item.name);
     const categories: Array<[MessageKey, ManagerSettingDescriptor[]]> = [
-      ["settings.category.players", pick(["minimum_players", "maximum_players"])],
-      ["settings.category.themes", pick(["theme_count"])],
-      [
-        "settings.category.question_appearance",
-        pick(["question_values", "minus_multiplier", "question_token_target_chars", "question_token_delay"]),
-      ],
+      ["settings.category.players", playerItems],
+      ["settings.category.themes", themeItems],
+      ["settings.category.question_values", questionValueItems],
+      ["settings.category.question_appearance", appearanceItems],
       ["settings.category.timings", timingItems],
       ["settings.category.other", remaining()],
     ];
     for (const [key, items] of categories) {
       if (!items.length) continue;
-      container.append(element("h3", { className: "descriptor-category" }, this.i18n.t(key)));
-      container.append(this.renderDescriptorGroup(items, prefix));
+      container.append(element(
+        "section",
+        { className: "descriptor-category-group" },
+        element("h3", { className: "descriptor-category" }, this.i18n.t(key)),
+        this.renderDescriptorGroup(items, prefix),
+      ));
     }
     return container;
   }
