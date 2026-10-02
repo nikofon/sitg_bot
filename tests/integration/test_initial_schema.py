@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0013_classic_swiss"
+                "0015_subscription_cards"
             )
             types = (
                 await connection.execute(
@@ -148,7 +148,7 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
                     "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0013_classic_swiss"]
+                ))).scalars().all() == ["0015_subscription_cards"]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(
@@ -273,7 +273,7 @@ def test_swiss_migration_refuses_to_discard_existing_swiss_stages(baseline_datab
                 assert view["stages"][0]["players_per_game"] == 4
                 assert len(view["stages"][0]["rounds"]) == 3
                 assert await session.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "0013_classic_swiss"
+                    "0015_subscription_cards"
                 )
         finally:
             await database.close()
@@ -363,9 +363,13 @@ def test_player_limits_migration_initializes_existing_tournaments(baseline_datab
                         assert "minimum_players" not in values and "maximum_players" not in values
                 assert lobby.max_players == 4
                 if upgraded:
-                    tournament = await session.get(TournamentRecord, tournament_id)
-                    assert not tournament.registration_open
-                    assert tournament.registration_open_override
+                    # Raw SQL: the ORM includes columns added by later revisions.
+                    row = (await session.execute(text("""
+                        SELECT registration_open, registration_open_override
+                        FROM tournaments WHERE id = :id
+                    """), {"id": tournament_id})).one()
+                    assert not row.registration_open
+                    assert row.registration_open_override
                     rule, playable = (await session.execute(text("""
                         SELECT access_level_by_members, playable_by_members
                         FROM tournament_packet_assignments WHERE tournament_id = :id

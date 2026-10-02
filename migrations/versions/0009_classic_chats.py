@@ -18,7 +18,8 @@ def upgrade() -> None:
             "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
         ),
         sa.Column(
-            "match_id", pg.UUID(as_uuid=True), sa.ForeignKey("classic_matches.id"), unique=True
+            "match_id", pg.UUID(as_uuid=True), sa.ForeignKey("classic_matches.id"), unique=True,
+            nullable=False,
         ),
         sa.Column(
             "tournament_id",

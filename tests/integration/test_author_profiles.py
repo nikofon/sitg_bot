@@ -173,5 +173,10 @@ async def test_author_counts_and_final_performance_do_not_expose_private_data(da
                 status="completed", finalized_at=None,
             ))
         assert (await service.profile(empty.id))["statistics"]["presentations"] == 0
+        # Restore the finalized state so shared-database rating sweeps skip this game.
+        async with database.transaction() as session:
+            await session.execute(update(GameRecord).where(GameRecord.id == game_id).values(
+                status="finalized", finalized_at=datetime.now(UTC),
+            ))
     finally:
         await database.close()

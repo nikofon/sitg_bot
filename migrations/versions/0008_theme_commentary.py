@@ -17,8 +17,9 @@ def upgrade() -> None:
     op.execute("UPDATE tournaments SET description = '' WHERE description IS NULL")
     op.alter_column("tournaments", "description", existing_type=sa.Text(), nullable=False)
     op.drop_constraint("ck_games_a1f33c7c9c3b", "games", type_="check")
+    # The digest name must match the models' naming convention for the new text.
     op.create_check_constraint(
-        "ck_games_a1f33c7c9c3b",
+        "ck_games_6f3264afdeda",
         "games",
         "progression_stage IS NULL OR progression_stage IN "
         "('ready_countdown', 'theme_start', 'theme_commentary', 'question_start', "
@@ -28,7 +29,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_games_a1f33c7c9c3b", "games", type_="check")
+    op.drop_constraint("ck_games_6f3264afdeda", "games", type_="check")
     op.create_check_constraint(
         "ck_games_a1f33c7c9c3b",
         "games",

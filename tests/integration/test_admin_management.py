@@ -435,6 +435,8 @@ async def test_author_merge_transfers_identity_and_drops_conflicts(database_url)
                     PacketVersionRecord.packet_id == fixture.packet_id
                 )
             )
+            # The fixture's publication registers the packet author as a tournament author.
+            packet_author_id = version.lead_author_id
             version.lead_author_id = secondary.id
             primary_id, secondary_id = primary.id, secondary.id
         service = AdminManagementService(database)
@@ -477,7 +479,9 @@ async def test_author_merge_transfers_identity_and_drops_conflicts(database_url)
                     )
                 )
             )
-            assert {row.author_id for row in tournament_authors} == {primary_id}
+            assert {row.author_id for row in tournament_authors} == {
+                primary_id, packet_author_id
+            }
             request = await session.scalar(
                 select(PlayerAuthorLinkRequestRecord).where(
                     PlayerAuthorLinkRequestRecord.player_id == fixture.players[1].id

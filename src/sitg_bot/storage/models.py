@@ -233,7 +233,7 @@ class TournamentRecord(Base, TimestampMixin):
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     registration_code: Mapped[str] = mapped_column(
         String(32), nullable=False, unique=True,
-        server_default=text("replace(gen_random_uuid()::text, '-', '')"),
+        server_default=text("replace((gen_random_uuid())::text, '-'::text, ''::text)"),
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
