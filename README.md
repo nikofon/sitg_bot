@@ -2,7 +2,9 @@
 
 [English](README.eng.md) | Русский
 
-ССЫЛКА НА БОТ: t.me/SITGsite_bot
+ССЫЛКА НА БОТ: https://t.me/SITGsite_bot
+Сайт бота: https://sitg.site
+Гитхаб сайта бота: https://github.com/nikofon/sitg_site
 
 SITG — платформа для кнопочных дисциплин в Telegram. Играйте и/или оргинизуйте турниры.
 
