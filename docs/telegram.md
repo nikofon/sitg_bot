@@ -90,9 +90,9 @@ preferring the least (but non-zero) fresh themes and adding packets until the th
 is satisfied, then a Yes/No inline confirmation applies the selection and starts the game.
 
 Nicknames in lobby rosters/readiness lists and game participant lists/scores link to player
-profiles. Configure the bot's **Main Mini App** in BotFather to this Mini App frontend:
-links use `https://t.me/<bot>?startapp=player_<UUID hex>`, which opens `/players/{UUID}`.
-These messages disable Telegram link previews so player lists stay compact.
+profiles. Register a named Mini App through BotFather's `/newapp` with short name
+`profiles` and URL matching `MINI_APP_BASE_URL`. The Main Mini App can remain disabled.
+Links use `https://t.me/<bot>/profiles?startapp=player_<UUID hex>`, which opens `/players/{UUID}`.
 Authentication and profile authorization still run normally. Single-action notices such as
 joining or buzzing retain plain nicknames; Chairs have no profile link.
 Without a valid packet the bot reports that the tournament does not contain one.

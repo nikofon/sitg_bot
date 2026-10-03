@@ -22,7 +22,10 @@ class PlayerName:
             player_id = UUID(str(self.player_id)).hex
         except ValueError:
             return name
-        return f'<a href="https://t.me/{self.bot_username}?startapp=player_{player_id}">{name}</a>'
+        return (
+            f'<a href="https://t.me/{self.bot_username}/profiles'
+            f'?startapp=player_{player_id}">{name}</a>'
+        )
 
 
 def player_name(player: dict, bot_username: str | None = None) -> PlayerName:
