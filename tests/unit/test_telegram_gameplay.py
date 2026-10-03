@@ -720,4 +720,4 @@ async def test_score_command_and_scoreboard_sort_descending():
     await delivery.sync(42, GAME)
     text = bot.send_message.await_args.args[1]
     assert text.index(names[1]) < text.index(names[2]) < text.index(names[0])
-    assert text.count('<a href="https://t.me/test_bot?startapp=player_') == 3
+    assert text.count('<a href="https://t.me/test_bot/profiles?startapp=player_') == 3

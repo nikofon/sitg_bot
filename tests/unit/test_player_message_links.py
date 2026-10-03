@@ -18,7 +18,7 @@ def test_player_lists_link_profiles_and_escape_nicknames():
                 "player_id": player["id"], "display_name": player["name"], "role": "player",
             }]}, localization, locale, "test_bot"),
         ):
-            assert f'href="https://t.me/test_bot?startapp=player_{UUID(int=1).hex}"' in text
+            assert f'href="https://t.me/test_bot/profiles?startapp=player_{UUID(int=1).hex}"' in text
             assert "&lt;b&gt;A &amp; B&lt;/b&gt;</a>" in text
             assert "&lt;a" not in text
 
