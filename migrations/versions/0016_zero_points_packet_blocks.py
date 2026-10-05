@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0016_zero_points_and_packet_blocks"
+revision = "0016_zero_points_packet_blocks"
 down_revision = "0015_subscription_cards"
 branch_labels = None
 depends_on = None

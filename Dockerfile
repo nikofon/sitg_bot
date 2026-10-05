@@ -19,6 +19,7 @@ RUN pip install . \
     && chown sitg:sitg /app/logs
 COPY alembic.ini ./
 COPY migrations/ ./migrations/
+RUN chmod -R a+rX /app/migrations
 COPY --from=web-build /web/dist/ ./web/dist/
 USER sitg
 CMD ["sitg-server", "--host", "0.0.0.0"]
