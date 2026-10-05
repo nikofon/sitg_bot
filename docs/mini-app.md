@@ -57,6 +57,18 @@ game time. Participants set a new time (replacing any previous one) or remove it
 is shared for the whole match and is advisory only. Mutations go through
 `POST /api/miniapp/chats/{chat_id}/game-time` and post a system message to the chat.
 
+The tournament packet window (`/tournaments/{tournament_id}/packets`, opened by the bot's
+player **Packets** button) lists every packet assigned to the tournament that the active
+participant may discover, mirroring the lobby packet cards (metadata, fresh/total themes,
+playability) plus a **View in library** action gated by the library viewing rules and
+**Block/Unblock** controls. Lobby packet cards carry the same block controls. Blocking is
+player-scoped and global across tournaments: fresh-content computation treats every theme
+and question of a blocked packet as burnt without writing exposure claims, while library
+viewing of a blocked packet still burns content normally. Mutations go through
+`POST /api/miniapp/tournaments/{tournament_id}/packets/{packet_id}/{block,unblock}`
+(`packets.block.v1` / `packets.unblock.v1`); the listing is
+`tournaments.packets.list.v1`.
+
 ## Independent website
 
 The website is a separate project in `SITGBot-website`, with its own frontend source,
@@ -260,6 +272,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |
+| GET route resolution of `/tournaments/{id}/packets`; POST `/tournaments/{id}/packets/{packet_id}/{block,unblock}` | Tournament packet listing with library links and player packet blocks |
 | GET route resolution of `/chats/{chat_id}/schedule`; POST `/chats/{chat_id}/game-time` | Classic chat scheduling window and shared game-time mutations |
 | GET `/lobbies/{ref}/events`; POST `/lobbies/{ref}/{command}` | Lobby refresh and mutations |
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |

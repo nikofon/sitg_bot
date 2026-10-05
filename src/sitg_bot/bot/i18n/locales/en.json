@@ -261,6 +261,8 @@
   "button.player.tournament.history": "History",
   "button.player.tournament.quit": "Quit to menu",
   "button.player.tournament.leaders": "Leaders",
+  "button.player.tournament.packets": "Packets",
+  "miniapp.tournament_packets.prompt": "Open the packet list to review the packets assigned to this tournament, block the ones you dislike, or open them in the library.",
   "button.lobby.open": "Open lobby",
   "button.lobby.reopen": "Open lobby",
   "button.russian": "Русский",

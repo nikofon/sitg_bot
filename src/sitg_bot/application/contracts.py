@@ -60,6 +60,9 @@ class ActionCode(StrEnum):
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
     PACKET_EXISTING_PREVIEW = "packets.existing.preview.v1"
     PACKET_EXISTING_ADD = "packets.existing.add.v1"
+    TOURNAMENT_PACKET_LIST = "tournaments.packets.list.v1"
+    PACKET_BLOCK = "packets.block.v1"
+    PACKET_UNBLOCK = "packets.unblock.v1"
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
@@ -579,6 +582,16 @@ class LibraryListOperation(ContractModel):
     action: Literal[ActionCode.LIBRARY_LIST]
 
 
+class TournamentPacketListOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_PACKET_LIST]
+    tournament_id: UUID
+
+
+class PacketBlockOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_BLOCK, ActionCode.PACKET_UNBLOCK]
+    packet_id: UUID
+
+
 class LibraryAccessOperation(ContractModel):
     action: Literal[ActionCode.LIBRARY_VIEW, ActionCode.LIBRARY_DOWNLOAD]
     version_id: UUID
@@ -1039,6 +1052,8 @@ GatewayOperation = Annotated[
     | PacketManagementGetOperation
     | PacketExistingPreviewOperation
     | PacketExistingAddOperation
+    | TournamentPacketListOperation
+    | PacketBlockOperation
     | LibraryListOperation
     | LibraryAccessOperation
     | PlayerListOperation

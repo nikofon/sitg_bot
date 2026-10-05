@@ -57,6 +57,11 @@ Unknown tournament action descriptors are ignored and logged.
   button for player profiles.
 - **Other... → Authors** opens the player author catalogue and question-performance profiles
   in the Mini App; list cards show only name, tournament count, and question count.
+- In player tournament context, **Packets** opens the tournament packet list Mini App window
+  (`/tournaments/{id}/packets`): every packet assigned to the tournament that the player may
+  discover, with a **View in library** action (subject to library viewing rules) and
+  **Block/Unblock** controls. The **Chats** action moved into the **Other...** submenu next to
+  **Upload packet**.
 - In player tournament context, **Other... → Upload packet** starts the shared upload flow
   when community uploads are enabled. The prompt warns that published packets can only be
   modified or deleted by tournament managers; unavailable uploads return an error message.

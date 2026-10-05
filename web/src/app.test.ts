@@ -306,10 +306,48 @@ describe("MiniAppShell", () => {
     expect(root.textContent).not.toContain("Invite player");
     expect(root.textContent).not.toContain("Discoverable packet");
     expect(root.querySelector("form")).toBeNull();
-    expect(root.querySelector(".lobby-packet-card button")).toBeNull();
+    const packetButtons = root.querySelectorAll<HTMLButtonElement>(".lobby-packet-card button");
+    expect([...packetButtons].every((button) => button.textContent === "Block")).toBe(true);
     expect(root.textContent).toContain("Ready delay");
     expect(root.querySelector('[role="alert"]')?.textContent).toContain("Not enough themes");
     expect(root.querySelector(".lobby-overview")?.lastElementChild?.getAttribute("role")).toBe("alert");
+  });
+
+  it("renders tournament packets with library links and block toggles", async () => {
+    const tournamentId = "11111111-1111-1111-1111-111111111111";
+    window.history.replaceState({}, "", `/tournaments/${tournamentId}/packets`);
+    const items = [
+      { packet_id: "packet-1", version_id: "version-1", name: "Cup packet", year: 2024, published_at: "2025-02-01T00:00:00Z", lead_author: "Anna", authors: ["Anna"], playable: true, blocked: false, library_viewable: true, total_play_unit_count: 5, fresh_play_unit_count: 3 },
+      { packet_id: "packet-2", version_id: "version-2", name: "Hidden packet", year: 2023, published_at: "2025-03-01T00:00:00Z", lead_author: "Boris", authors: ["Boris"], playable: false, blocked: true, library_viewable: false, total_play_unit_count: 4, fresh_play_unit_count: 0 },
+    ];
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      return response({ locale: "en", authorization: { allowed: true }, resource: {
+        kind: "tournament_packets", state: "ready", tournament_id: tournamentId, tournament_name: "Cup", items,
+      } });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelectorAll(".lobby-packet-card")).toHaveLength(2));
+    const cards = root.querySelectorAll<HTMLElement>(".lobby-packet-card");
+    expect(cards[0]?.textContent).toContain("Cup packet");
+    expect(cards[0]?.textContent).not.toContain("Blocked");
+    expect(cards[1]?.textContent).toContain("Blocked");
+    const libraryButton = cards[0]?.querySelector<HTMLButtonElement>("button");
+    const blockButton = cards[0]?.querySelectorAll<HTMLButtonElement>("button")[1];
+    expect(libraryButton?.textContent).toBe("View in library");
+    expect(blockButton?.textContent).toBe("Block");
+    blockButton?.click();
+    await vi.waitFor(() => expect(
+      fetcher.mock.calls.some(([url]) => String(url).endsWith(`/tournaments/${tournamentId}/packets/packet-1/block`)),
+    ).toBe(true));
+    const hiddenButtons = cards[1]?.querySelectorAll<HTMLButtonElement>("button");
+    expect(hiddenButtons?.[0]?.disabled).toBe(true);
+    expect(hiddenButtons?.[1]?.textContent).toBe("Unblock");
+    libraryButton?.click();
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/library/version-1"));
   });
 
   it("shows selected cards first with metadata, shared freshness, and independent playability", async () => {

@@ -4,6 +4,7 @@ import type {
   LibraryAccess,
   RouteResource,
   LobbyResource,
+  TournamentPacketsResource,
   GameObservation,
   OngoingGame,
   OngoingLobby,
@@ -43,6 +44,7 @@ import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
+import { renderTournamentPackets } from "./ui/tournament-packets";
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
@@ -224,6 +226,12 @@ export class MiniAppShell {
       route.id === "tournament_profile" && isTournamentProfileResource(payload.resource)
     ) {
       this.renderTournamentProfileRoute(route, payload.resource);
+      return;
+    }
+    if (
+      route.id === "tournament_packets" && isTournamentPacketsResource(payload.resource)
+    ) {
+      this.renderTournamentPacketsRoute(route, payload.resource);
       return;
     }
     if (route.id === "chat_schedule" && isTournamentChatResource(payload.resource)) {
@@ -867,6 +875,43 @@ export class MiniAppShell {
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
+  private async togglePacketBlock(
+    route: RouteMatch,
+    tournamentId: string,
+    packetId: string,
+    blocked: boolean,
+  ): Promise<void> {
+    try {
+      await this.api.request(
+        `/api/miniapp/tournaments/${encodeURIComponent(tournamentId)}`
+        + `/packets/${encodeURIComponent(packetId)}/${blocked ? "block" : "unblock"}`,
+        { method: "POST", body: {} },
+      );
+      this.platform.notifySuccess();
+      await this.load(route);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.platform.notifyError();
+      this.showTextDialog(this.i18n.t(`error.${code}`), []);
+    }
+  }
+
+  private renderTournamentPacketsRoute(
+    route: RouteMatch,
+    resource: TournamentPacketsResource,
+  ): void {
+    const content = renderTournamentPackets(resource.items, this.i18n, {
+      viewInLibrary: (packet) => this.router.navigate(
+        `/library/${encodeURIComponent(packet.version_id)}`,
+      ),
+      toggleBlock: (packet) => void this.togglePacketBlock(
+        route, resource.tournament_id, packet.packet_id, !packet.blocked,
+      ),
+    });
+    this.renderFrame(route, content);
+    queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
   private renderLobby(route: RouteMatch, lobby: LobbyResource): void {
     if (lobby.game_id) {
       this.renderFrame(route, this.statusCard("empty", this.i18n.t("lobby.game_assigned")));
@@ -911,7 +956,12 @@ export class MiniAppShell {
     );
     const packetFilters = this.lobbyPacketFilters.get(lobby.id) ?? {};
     this.lobbyPacketFilters.set(lobby.id, packetFilters);
-    const packetList = renderLobbyPackets(lobby, this.i18n, packetFilters, section === "packets", mutate);
+    const packetList = renderLobbyPackets(
+      lobby, this.i18n, packetFilters, section === "packets", mutate,
+      (packet) => this.togglePacketBlock(
+        route, lobby.tournament_id, packet.packet_id, !packet.blocked,
+      ),
+    );
     const descriptors = lobby.setting_descriptors ?? Object.entries(lobby.settings).map(([name, value]) => ({
       name, value, value_type: typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : "string",
       description_key: name, options: [],
@@ -3199,6 +3249,12 @@ function isTournamentProfileResource(
   value: RoutePayload["resource"],
 ): value is TournamentProfileResource {
   return "kind" in value && value.kind === "tournament_profile";
+}
+
+function isTournamentPacketsResource(
+  value: RoutePayload["resource"],
+): value is TournamentPacketsResource {
+  return "kind" in value && value.kind === "tournament_packets";
 }
 
 function isTournamentChatResource(

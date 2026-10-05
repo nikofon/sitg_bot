@@ -13,6 +13,7 @@ export function renderLobbyPackets(
   filters: LobbyPacketFilters,
   editable: boolean,
   mutate: (command: string, body: Record<string, unknown>) => Promise<void>,
+  toggleBlock?: (packet: LobbyPacket) => Promise<void>,
 ): HTMLElement {
   const container = element("div", { className: "lobby-packets" });
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
@@ -56,12 +57,26 @@ export function renderLobbyPackets(
       const added = selected.has(packet.packet_id);
       const command = added ? "packet-remove" : "packet-select";
       const allowed = lobby.available_actions.includes(added ? "packet_remove" : "packet_select");
+      const buttons = element("div", { className: "settings-actions" });
+      if (editable && allowed) {
+        buttons.append(element("button", {
+          type: "button", className: added ? "secondary-button" : "primary-button",
+          onclick: (() => void mutate(command, { packet_id: packet.packet_id })) as EventListener,
+        }, i18n.t(added ? "lobby.packet_remove" : "lobby.packet_add")));
+      }
+      if (toggleBlock) {
+        buttons.append(element("button", {
+          type: "button", className: packet.blocked ? "secondary-button" : "warning-button",
+          onclick: (() => void toggleBlock(packet)) as EventListener,
+        }, i18n.t(packet.blocked ? "packet.unblock" : "packet.block")));
+      }
       return element("article", {
         className: `resource-card lobby-packet-card${added ? " is-selected" : ""}`,
         "data-packet-id": packet.packet_id,
       },
       element("h3", {}, packet.name),
       added ? element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected")) : null,
+      packet.blocked ? element("span", { className: "lobby-packet-selected" }, i18n.t("packet.blocked")) : null,
       element("dl", { className: "lobby-packet-details" },
         detail("lobby.packet_year", packet.year?.toString() ?? "—"),
         detail("lobby.packet_publication_year", packet.published_at?.slice(0, 4) || "—"),
@@ -71,10 +86,7 @@ export function renderLobbyPackets(
       ),
       element("p", { className: `lobby-packet-access ${packet.playable_for_all ? "is-playable" : "is-unplayable"}` },
         `${i18n.t("lobby.packet_playable")}: ${i18n.t(packet.playable_for_all ? "lobby.packet_yes" : "lobby.packet_no")}`),
-      editable && allowed ? element("button", {
-        type: "button", className: added ? "secondary-button" : "primary-button",
-        onclick: (() => void mutate(command, { packet_id: packet.packet_id })) as EventListener,
-      }, i18n.t(added ? "lobby.packet_remove" : "lobby.packet_add")) : null);
+      buttons.childElementCount ? buttons : null);
     }));
     if (!visible.length) list.append(element("p", {}, i18n.t(editable ? "lobby.packet_no_matches" : "lobby.packet_none")));
   };

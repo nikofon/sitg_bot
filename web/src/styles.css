@@ -626,6 +626,17 @@ p {
   flex: 1 1 12rem;
 }
 
+.warning-button {
+  min-height: 2.75rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid #d5a321;
+  border-radius: 0.75rem;
+  background: #fff0b3;
+  color: #664d03;
+  cursor: pointer;
+  font-weight: 700;
+}
+
 .danger-button {
   min-height: 2.75rem;
   padding: 0.6rem 1rem;

@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.domain.game_rulesets import ExposureClaim, PlayUnit
 from sitg_bot.storage.models import (
     PacketQuestionRecord,
+    PacketVersionRecord,
     PlayerExposureClaimRecord,
+    PlayerPacketBlockRecord,
     QuestionRevisionRecord,
     ThemeRevisionRecord,
 )
@@ -131,19 +133,24 @@ class SIContentAdapter:
         packet_order = {
             selection.packet_version_id: selection.selection_order for selection in selections
         }
-        themes = list(
-            (
-                await session.execute(
-                    select(ThemeRevisionRecord)
-                    .where(ThemeRevisionRecord.packet_version_id.in_(packet_order))
-                    .order_by(
-                        ThemeRevisionRecord.packet_version_id,
-                        ThemeRevisionRecord.position,
-                    )
+        theme_rows = (
+            await session.execute(
+                select(ThemeRevisionRecord, PacketVersionRecord.packet_id)
+                .join(
+                    PacketVersionRecord,
+                    PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id,
                 )
-            ).scalars()
-        )
+                .where(ThemeRevisionRecord.packet_version_id.in_(packet_order))
+                .order_by(
+                    ThemeRevisionRecord.packet_version_id,
+                    ThemeRevisionRecord.position,
+                )
+            )
+        ).all()
+        themes = [theme for theme, _ in theme_rows]
+        version_packets = {theme.packet_version_id: packet_id for theme, packet_id in theme_rows}
         blocked: set[tuple[str, UUID]] = set()
+        blocked_packets: set[UUID] = set()
         if player_ids:
             blocked = set(
                 (
@@ -158,8 +165,21 @@ class SIContentAdapter:
                     )
                 ).tuples()
             )
+            # A player-declared block treats every theme and question of the
+            # packet as burnt without persisting exposure claims.
+            blocked_packets = set(
+                (
+                    await session.execute(
+                        select(PlayerPacketBlockRecord.packet_id).where(
+                            PlayerPacketBlockRecord.player_id.in_(player_ids)
+                        )
+                    )
+                ).scalars()
+            )
         units: list[PlayUnit] = []
         for theme in themes:
+            if version_packets.get(theme.packet_version_id) in blocked_packets:
+                continue
             questions = list(
                 (
                     await session.execute(

@@ -1417,6 +1417,17 @@ class PlayerExposureClaimRecord(Base, TimestampMixin):
     )
 
 
+class PlayerPacketBlockRecord(Base, TimestampMixin):
+    """A player-declared packet block: content is treated as burnt without claims."""
+
+    __tablename__ = "player_packet_blocks"
+
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    packet_id: Mapped[UUID] = mapped_column(
+        ForeignKey("logical_packets.id"), primary_key=True
+    )
+
+
 class PregameLobbyRecord(Base, TimestampMixin):
     __tablename__ = "pregame_lobbies"
 

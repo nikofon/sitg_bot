@@ -634,6 +634,7 @@ class TelegramNavigationService:
                         "player.tournament",
                         "player.tournament.create_lobby",
                         "player.tournament.info",
+                        "player.tournament.packets",
                         "player.tournament.chats",
                         "player.other",
                         "player.tournament.packet_upload",

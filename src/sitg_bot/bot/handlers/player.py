@@ -549,6 +549,33 @@ async def handle_player_menu_action(
                 callback_references=callback_references,
             )
             return
+        if player_action == "player.tournament.packets":
+            if launch_links is None:
+                await send_message_model(
+                    message,
+                    MessageModel(localization.text("error.capability_unavailable", locale)),
+                )
+                return
+            url = mini_app_route_url(launch_links, f"tournaments/{selected.id}/packets")
+            await send_message_model(
+                message,
+                MessageModel(
+                    localization.text("miniapp.tournament_packets.prompt", locale),
+                    InlineKeyboardModel(
+                        rows=(
+                            (
+                                InlineButtonModel(
+                                    localization.text(
+                                        "button.player.tournament.packets", locale
+                                    ),
+                                    web_app_url=url,
+                                ),
+                            ),
+                        )
+                    ),
+                ),
+            )
+            return
         if player_action == "player.tournament.create_lobby":
             await backend.create_lobby(telegram_update_claim, tournament_id=selected.id)
             updated = await backend.navigation(telegram_update_claim)

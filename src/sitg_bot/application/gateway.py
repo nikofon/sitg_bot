@@ -70,6 +70,7 @@ from sitg_bot.application.contracts import (
     NotificationsListOperation,
     NotificationsReadAllOperation,
     OngoingListOperation,
+    PacketBlockOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
@@ -125,6 +126,7 @@ from sitg_bot.application.contracts import (
     TournamentRegistrationLinkOperation,
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
+    TournamentPacketListOperation,
 )
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.admin_management import AdminManagementService
@@ -136,6 +138,7 @@ from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
 from sitg_bot.services.moderation import BugReportService, PlayerModerationService
 from sitg_bot.services.navigation import TelegramNavigationService
+from sitg_bot.services.packet_blocks import PacketBlockService
 from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
 from sitg_bot.services.players import PlayerAccountService, ProfileVersionConflict
@@ -152,6 +155,7 @@ from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     ApplicationIdempotencyRecord,
     ApplicationRequestAuditRecord,
+    PlayerPacketBlockRecord,
     PlayerRecord,
     PregameLobbyEventRecord,
     PregameLobbyMemberRecord,
@@ -338,6 +342,8 @@ ACTION_POLICIES.update(
         ActionCode.PACKET_EXISTING_ADD: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version_id"
         ),
+        ActionCode.PACKET_BLOCK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.PACKET_UNBLOCK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.PACKET_MANAGEMENT_DELETE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
@@ -476,6 +482,7 @@ class ApplicationGateway:
         self.admin_authentication = admin_authentication
         self.launch_references = launch_references
         self.packets = packets or PacketAdminService(database)
+        self.packet_blocks = PacketBlockService(database)
         self.library = PacketLibraryService(database)
         self.profiles = PlayerProfileService(database)
         self.tournament_profiles = TournamentProfileService(database)
@@ -962,6 +969,16 @@ class ApplicationGateway:
             return await self.packets.upload_eligibility(tournament_id, player_id)
         if isinstance(operation, LibraryListOperation):
             return await self.library.list_packets(player_id)
+        if isinstance(operation, TournamentPacketListOperation):
+            return await self.packet_blocks.list_tournament_packets(
+                player_id, operation.tournament_id
+            )
+        if isinstance(operation, PacketBlockOperation):
+            return await self.packet_blocks.set_blocked(
+                player_id,
+                operation.packet_id,
+                blocked=action == ActionCode.PACKET_BLOCK,
+            )
         if isinstance(operation, LibraryAccessOperation):
             return await self.library.access(
                 player_id, operation.version_id, confirm=operation.confirm,
@@ -1623,6 +1640,19 @@ class ApplicationGateway:
             member["tournament_rating"] = member_ratings.get("tournament_rating")
         payload["creator_name"] = creator_name
         payload["creator_telegram_user_id"] = creator_telegram_id
+        if viewer.player_id is not None:
+            async with self.database.sessions() as session:
+                viewer_blocked = set(
+                    await session.scalars(
+                        select(PlayerPacketBlockRecord.packet_id).where(
+                            PlayerPacketBlockRecord.player_id == viewer.player_id
+                        )
+                    )
+                )
+            payload["selected_packets"] = [
+                {**item, "blocked": item["packet_id"] in viewer_blocked}
+                for item in payload["selected_packets"]
+            ]
         return payload
 
     def _tokens(self) -> TournamentTokenRequestService:
