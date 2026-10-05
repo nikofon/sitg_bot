@@ -3,7 +3,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from sitg_bot.storage.database import normalize_database_url
@@ -31,9 +31,12 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection: object) -> None:
+def do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
     with context.begin_transaction():
+        # Fail fast instead of blocking forever when application sessions hold
+        # locks that the migration DDL needs (e.g. ALTER TABLE constraints).
+        connection.execute(text("SET lock_timeout = '30s'"))
         context.run_migrations()
 
 
