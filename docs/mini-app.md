@@ -117,12 +117,17 @@ language, text search, ordering, and cursor pagination. Default ordering is `sta
 alternatives are `starts_desc`, `name_asc`, and `name_desc`.
 
 **Lobbies:** overview, packet selection, and settings. The overview shows current selections
-and validation warnings. Packet cards show author/year metadata, shared fresh-theme counts,
+and validation warnings, with permission-aware Remove buttons for selected packets.
+Packet cards show author/year metadata, shared fresh-theme counts,
 and playability for all players; observers do not affect freshness/playability. Selected cards
 come first. Text and inclusive packet/publication year filters survive refresh, and a sort
 control reorders cards by fresh-theme count; the default mode sorts fresh-theme counts
 ascending with zero-fresh packets last, and plain descending/default modes remain available.
-Mutations use current capabilities and versions; ordered lobby events trigger refresh.
+Mutations use current capabilities and versions. Actions, ordered lobby events, and periodic
+reconciliation refresh data in the background. Packet cards update in place, preserving
+filters, sorting, focus, and the visible packet's scroll position where possible. Membership,
+readiness, permissions, and packet availability still follow the server snapshot; unsaved
+settings defer background updates. Navigation and terminal lobby states may replace the screen.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and
