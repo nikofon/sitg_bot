@@ -1,3 +1,4 @@
+from dataclasses import replace
 from decimal import Decimal
 from uuid import UUID
 
@@ -47,6 +48,42 @@ def test_si_rejected_answers_take_precedence_over_accepted_answers() -> None:
     assert ruleset.judge_answer(
         "Other", accepted, rejected_answers=("Answer",)
     ) is False
+
+
+@pytest.mark.parametrize("values", [(10, 20, 30, 40, 50), (100, 200, 300)])
+@pytest.mark.parametrize("multiplier", [0, 0.25, 1, 1_000_000])
+def test_si_optional_zero_question_ignores_scoring_and_tiebreakers(values, multiplier) -> None:
+    ruleset = SIGameRuleset()
+    settings = GameSettings(question_values=values, minus_multiplier=multiplier, theme_count=2)
+    packet = Packet("Zero", tuple(
+        Theme("Theme", tuple(Question("Q", "A", "", v) for v in theme_values))
+        for theme_values in ((0, *values), values)
+    ))
+    assert ruleset.validate_content(packet, settings) == ()
+    for correct in (True, False):
+        assert ruleset.score_answer(0, correct, settings) == 0
+    assert ruleset.ranking_key(score=Decimal(0), correct_values=[0], parameters=settings) == (
+        ruleset.ranking_key(score=Decimal(0), correct_values=[], parameters=settings)
+    )
+    units = tuple(PlayUnit(
+        kind="si_theme", logical_id=UUID(int=i), revision_id=UUID(int=i + 10),
+        packet_version_id=UUID(int=20), packet_order=1, position=i,
+        question_revision_ids=(), claims=(),
+        metadata={"question_values": [q.value for q in theme.questions]},
+    ) for i, theme in enumerate(packet.themes, 1))
+    plan = ruleset.prepare_assignment(
+        player_count=2, packet_version_ids=(UUID(int=20),), available_play_units=units,
+        parameters=settings, seed="zero",
+    )
+    assert plan.play_units == units
+    missing_regular = replace(packet, themes=(replace(
+        packet.themes[0], questions=packet.themes[0].questions[:-1],
+    ),))
+    assert ruleset.validate_content(missing_regular, settings)
+    assert ruleset.validate_lobby(
+        player_count=2, packet_count=1, parameters=settings,
+        available_play_units=(replace(units[0], metadata={"question_values": [0]}), units[1]),
+    )[0].code == "packet_content_incompatible"
 
 
 def test_ruleset_registry_rejects_unknown_versions() -> None:

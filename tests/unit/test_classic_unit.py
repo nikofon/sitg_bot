@@ -151,3 +151,16 @@ def test_stage_tiebreaks_sum_correct_answers_across_games():
     assert ranking[0]["score"] == "200"
     assert ranking[0]["key"][:3] == ["8", "60", "1"]
     assert order_results(ranking, seed="test") == ranking
+
+
+@pytest.mark.parametrize("quiz,swiss", [(False, False), (True, False), (False, True)])
+def test_stage_tiebreaks_ignore_zero_point_answers(quiz, swiss):
+    def matches(values):
+        return [SimpleNamespace(results=[
+            {"seat": "a", "points": "5", "score": "100", "correct_values": values},
+            {"seat": "b", "points": "5", "score": "100", "correct_values": [50]},
+        ])]
+
+    assert standings(matches([0, 0, 50]), quiz=quiz, swiss=swiss, seed="zero") == standings(
+        matches([50]), quiz=quiz, swiss=swiss, seed="zero",
+    )

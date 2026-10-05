@@ -16,7 +16,7 @@ from sitg_bot.domain.packet import Packet, Question, Theme
 
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": WORD_NAMESPACE}
-QUESTION_RE = re.compile(r"^(10|20|30|40|50)\s*[.)]\s*(?:\[([^]]*)])?\s*(.*)$")
+QUESTION_RE = re.compile(r"^(0|10|20|30|40|50)\s*[.)]\s*(?:\[([^]]*)])?\s*(.*)$")
 FIELD_RE = re.compile(
     r"^(Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
     re.I,

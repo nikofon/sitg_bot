@@ -324,7 +324,7 @@ class PersistentGameService:
                     ).all()
                 )
                 values = tuple(placement.value for placement, _ in question_rows)
-                if values != settings.question_values:
+                if values not in (settings.question_values, (0, *settings.question_values)):
                     raise ValueError(
                         "Packet content does not match the tournament SI question_values"
                     )

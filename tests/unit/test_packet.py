@@ -90,7 +90,7 @@ def test_rejected_answers_round_trip_and_optional_expansion() -> None:
 def test_theme_accepts_ruleset_configured_values_but_requires_increasing_order() -> None:
     assert Theme("Valid", (Question("Text", "Answer", "Commentary", 100),)).questions
 
-    with pytest.raises(ValueError, match="unique increasing positive"):
+    with pytest.raises(ValueError, match="unique increasing non-negative"):
         Theme(
             "Invalid",
             (
@@ -110,6 +110,43 @@ def test_packet_requires_themes_and_a_four_digit_year() -> None:
     )
     with pytest.raises(ValueError, match="four digits"):
         Packet("Invalid year", (theme,), year=999)
+
+
+def test_zero_point_question_json_round_trip() -> None:
+    packet = Packet("Zero points", (
+        Theme("With zero", tuple(Question(str(v), "A", "", v) for v in (0, 10, 20))),
+        Theme("Without zero", tuple(Question(str(v), "A", "", v) for v in (10, 20))),
+    ))
+    assert packet_from_data(json.loads(packet_to_json(packet))) == packet
+
+
+@pytest.mark.parametrize("values", [(-1, 10), (0, 0, 10), (10, 0), (False, 10)])
+def test_zero_point_questions_still_require_unique_increasing_integer_values(values) -> None:
+    with pytest.raises(ValueError, match="unique increasing non-negative"):
+        Theme("Invalid", tuple(Question("Q", "A", "", v) for v in values))
+
+
+@pytest.mark.parametrize("extension", [".docx", ".pdf"])
+def test_zero_point_document_question(monkeypatch, extension) -> None:
+    lines = [
+        "Тема: With zero", "0. [ANSWER] Warmup", "Ответ: Zero answer",
+        "10. Regular question", "Ответ: Regular answer",
+    ]
+    if extension == ".pdf":
+        page = SimpleNamespace(
+            get_contents=lambda: SimpleNamespace(get_data=lambda: b"text"),
+            extract_text=lambda **kwargs: "\n".join(lines),
+        )
+        monkeypatch.setattr("sitg_bot.packet_import.PdfReader", lambda _: SimpleNamespace(
+            pages=[page], is_encrypted=False,
+        ))
+        source = b"pdf"
+    else:
+        source = docx_bytes([("Normal", line) for line in lines])
+    packet, = packets_from_document_bytes(source, f"zero{extension}")
+    zero, regular = packet.themes[0].questions
+    assert (zero.value, zero.text, zero.answer, zero.form) == (0, "Warmup", "Zero answer", "ANSWER")
+    assert regular.value == 10
 
 
 def test_optional_packet_metadata_round_trips() -> None:

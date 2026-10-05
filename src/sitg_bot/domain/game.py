@@ -20,7 +20,7 @@ class Player:
 
     def apply_answer(self, value: int, *, correct: bool) -> None:
         self.score += value if correct else -value
-        if correct:
+        if correct and value != 0:
             self.correct_points += value
             self.correct_by_value[value] = self.correct_by_value.get(value, 0) + 1
 

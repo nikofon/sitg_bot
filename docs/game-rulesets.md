@@ -87,7 +87,10 @@ host.
 
 An SI packet contains ordered themes. Every theme contains one ordered question for
 each configured entry in `question_values`. All themes in the same game use the same
-ordered values.
+ordered positive values. A theme may additionally start with one question whose `value`
+is `0`. It follows normal gameplay, including timeouts and appeals, but always changes
+the score by zero, regardless of tournament/lobby scoring settings or `minus_multiplier`.
+It contributes to no game or tournament tiebreaker.
 
 SI play follows this flow:
 
@@ -162,7 +165,8 @@ draw.
 `question_values` is the ordered list of question point values used by every theme in
 an SI game. Its default is `[10, 20, 30, 40, 50]`; a tournament may configure another
 list such as `[100, 200, 300, 400, 500]`. Each theme must contain exactly one question
-at every configured position/value.
+at every configured value, optionally preceded by a zero-point question. Zero is not
+included in `question_values`.
 
 `minus_multiplier` controls the penalty for an incorrect answer or answer timeout:
 
@@ -175,7 +179,7 @@ Its default is `1`. For example, with a value of `50` and a
 `minus_multiplier` of `0.5`, an incorrect answer changes the score by `-25`.
 The multiplier is snapshotted on the game with the other effective SI parameters.
 
-Question values are positive, strictly increasing integers up to `1,000,000,000`.
+Configured question values are positive, strictly increasing integers up to `1,000,000,000`.
 `minus_multiplier` is between `0` and `1,000,000` with at most eight decimal places.
 Scores and ledger deltas use `NUMERIC(24, 8)`, so every accepted configuration is
 stored without integer truncation.

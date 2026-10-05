@@ -2,26 +2,34 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 from test_lobby_architecture import database_url as database_url
+from test_lobby_architecture import packet as architecture_packet
 from test_lobby_architecture import tournament_fixture
 
 from sitg_bot.application.contracts import ActionCode, GameActOperation
+from sitg_bot.domain.packet import Question
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.telegram_game import TelegramGameService
+from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    AnswerAttemptRecord,
     GameRecord,
     GameThemeRecord,
     OutboxEventRecord,
+    PacketVersionRecord,
     PlayerRecord,
     RatingLedgerRecord,
+    ScoreLedgerRecord,
+    SIPlayerQuestionSuspicionMetricRecord,
     TelegramGameViewRecord,
     ThemeRevisionRecord,
     TournamentMembershipRecord,
@@ -29,6 +37,108 @@ from sitg_bot.storage.models import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize("via_lobby", [True, False])
+async def test_zero_point_gameplay_timeout_appeal_and_recovery(
+    database_url, monkeypatch, via_lobby,
+):
+    original = architecture_packet()
+    packet = replace(original, themes=(replace(
+        original.themes[0],
+        questions=(Question("Warmup question", "warmup", "Explanation", 0),
+                   *original.themes[0].questions),
+    ),))
+    monkeypatch.setattr("test_lobby_architecture.packet", lambda: packet)
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=3)
+        async with database.transaction() as session:
+            policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id,
+            ))
+            policy.default_parameters = {**policy.default_parameters, "minus_multiplier": 0.25}
+            version_id = await session.scalar(select(PacketVersionRecord.id).where(
+                PacketVersionRecord.packet_id == fixture.packet_id,
+            ))
+        if via_lobby:
+            matchmaking = InvitationMatchmakingService(database)
+            lobby = await matchmaking.create_lobby(
+                fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=3,
+            )
+            for player in fixture.inputs[1:]:
+                await matchmaking.join(lobby.invitation_code, player)
+            await matchmaking.select_packet(
+                lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id,
+            )
+            for player in fixture.inputs:
+                await matchmaking.set_ready(lobby.id, player.telegram_user_id)
+            result = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
+            game_id = result.game.id
+        else:
+            game = await PersistentGameService(database).create_game(
+                version_id, list(fixture.inputs), tournament_id=fixture.tournament_id,
+            )
+            game_id = game.id
+        service = TelegramGameService(database)
+        first, second, third = fixture.inputs
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        view = await progress_until(database, game_id, first, lambda v: "buzz" in v["actions"])
+        assert view["question"]["value"] == 0
+        round_id = view["question"]["round_id"]
+        await act(service, first, game_id, "buzz", round_id=round_id)
+        await act(service, first, game_id, "answer", round_id=round_id, text="wrong")
+        await act(service, second, game_id, "buzz", round_id=round_id)
+        await progress_until(database, game_id, third, lambda v: "buzz" in v["actions"])
+        await act(service, third, game_id, "buzz", round_id=round_id)
+        await act(service, third, game_id, "answer", round_id=round_id, text="warmup")
+        view = await service.view(first.telegram_user_id, game_id)
+        assert all(p["score"] == p["correct_points"] == 0 for p in view["participants"])
+        target = next(a for a in view["appeal_targets"]
+                      if a["player_id"] == str(fixture.players[0].id))
+        await act(service, first, game_id, "appeal", round_id=round_id, target_id=target["id"])
+        view = await service.view(first.telegram_user_id, game_id)
+        for player in (first, second):
+            await act(
+                service, player, game_id, "vote", appeal_id=view["appeal"]["id"], approve=True,
+            )
+        # Restart on the next regular question; its value and scoring are unchanged.
+        service = TelegramGameService(database)
+        view = await progress_until(database, game_id, third, lambda v: "buzz" in v["actions"])
+        assert view["question"]["value"] == 10
+        await act(service, third, game_id, "buzz", round_id=view["question"]["round_id"])
+        await act(service, third, game_id, "answer",
+                  round_id=view["question"]["round_id"], text="answer 10")
+        final = await progress_until(database, game_id, first, lambda v: v["status"] == "finalized")
+        players = {p["id"]: p for p in final["participants"]}
+        for player in fixture.players[:2]:
+            assert players[str(player.id)]["score"] == 0
+            assert players[str(player.id)]["place"] == 2.5
+        assert players[str(fixture.players[2].id)]["score"] == 10
+        async with database.sessions() as session:
+            attempts = list(await session.scalars(select(AnswerAttemptRecord).where(
+                AnswerAttemptRecord.round_id == round_id,
+            ).order_by(AnswerAttemptRecord.attempt_number)))
+            assert [a.final_correct for a in attempts] == [True, False, False]
+            assert attempts[1].timed_out
+            deltas = list(await session.scalars(select(ScoreLedgerRecord.delta).where(
+                ScoreLedgerRecord.round_id == round_id,
+            )))
+            assert deltas and all(delta == 0 for delta in deltas)
+        async with database.transaction() as session:
+            game = await session.get(GameRecord, game_id)
+            await TrustService(database)._materialize_si_game(session, game)
+        async with database.sessions() as session:
+            metrics = list(await session.scalars(
+                select(SIPlayerQuestionSuspicionMetricRecord).where(
+                    SIPlayerQuestionSuspicionMetricRecord.round_id == round_id,
+                ),
+            ))
+            assert len(metrics) == 3
+            assert all(metric.question_value == 0 for metric in metrics)
+    finally:
+        await database.close()
 
 
 async def test_abandon_dismisses_only_leaving_players_and_survives_restart(database_url):

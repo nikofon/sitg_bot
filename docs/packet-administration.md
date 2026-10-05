@@ -42,6 +42,10 @@ Each question requires integer `value`, `text`, and `answer`; optional fields ar
 Uploads also accept an array of packet objects. JSON remains supported internally but is
 not advertised in Telegram's upload prompt.
 
+A theme may optionally start with one zero-point question (`"value": 0`), followed by
+its usual increasing positive values. DOCX/PDF use `0. [answer form] Question text`.
+Zero-point questions play normally but never affect scores or tiebreakers.
+
 The DOCX converter uses Heading 1 for each packet name and Heading 2 for theme names
 (including Russian style names), question lines such as `10. [answer form] Question text`,
 and fields labeled `Ответ:`, `Зачёт:`, `Незачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.

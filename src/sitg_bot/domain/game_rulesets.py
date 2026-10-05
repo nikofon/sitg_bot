@@ -226,12 +226,14 @@ class SIGameRuleset:
         expected = settings.question_values
         for position, theme in enumerate(packet.themes, 1):
             actual = tuple(question.value for question in theme.questions)
-            if actual != expected:
+            if actual not in (expected, (0, *expected)):
                 errors.append(f"Theme {position} has question values {actual}; expected {expected}")
         return tuple(errors)
 
     def score_answer(self, value: int, correct: bool, parameters: RulesetParameters) -> Decimal:
         settings = self._settings(parameters)
+        if value == 0:
+            return Decimal(0)
         points = Decimal(value)
         if correct:
             return points
@@ -262,6 +264,7 @@ class SIGameRuleset:
         parameters: RulesetParameters,
     ) -> tuple[Any, ...]:
         settings = self._settings(parameters)
+        correct_values = tuple(value for value in correct_values if value != 0)
         no_minuses = sum(correct_values)
         counts = tuple(
             correct_values.count(value) for value in reversed(settings.question_values[1:])
@@ -290,7 +293,8 @@ class SIGameRuleset:
         incompatible = [
             str(unit.revision_id)
             for unit in available_play_units
-            if tuple(unit.metadata.get("question_values", ())) != settings.question_values
+            if tuple(unit.metadata.get("question_values", ()))
+            not in (settings.question_values, (0, *settings.question_values))
         ]
         if incompatible:
             violations.append(

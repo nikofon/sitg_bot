@@ -75,10 +75,12 @@ class Theme:
         if (
             not values
             or any(isinstance(value, bool) or not isinstance(value, int) for value in values)
-            or any(value <= 0 for value in values)
+            or any(value < 0 for value in values)
             or tuple(sorted(set(values))) != values
         ):
-            raise ValueError("Theme question values must be unique increasing positive integers")
+            raise ValueError(
+                "Theme question values must be unique increasing non-negative integers"
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -273,7 +273,7 @@ def standings(matches: list, *, quiz: bool, seed: str, swiss: bool = False) -> l
             )
             item["points"] += Decimal(result["points"])
             item["score"] += Decimal(result["score"])
-            item["correct"].update(result.get("correct_values", []))
+            item["correct"].update(v for v in result.get("correct_values", []) if v != 0)
     values = sorted({v for t in totals.values() for v in t["correct"]}, reverse=True)
     rows = []
     for item in totals.values():

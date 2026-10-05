@@ -1097,7 +1097,7 @@ class PacketQuestionRecord(Base):
     __table_args__ = (
         UniqueConstraint("theme_revision_id", "position"),
         UniqueConstraint("theme_revision_id", "value"),
-        CheckConstraint("value > 0"),
+        CheckConstraint("value >= 0"),
     )
 
 
@@ -2011,7 +2011,7 @@ class SIPlayerQuestionSuspicionMetricRecord(Base):
 
     __table_args__ = (
         UniqueConstraint("round_id", "player_id"),
-        CheckConstraint("question_value > 0"),
+        CheckConstraint("question_value >= 0"),
         CheckConstraint("buzz_revealed_fraction IS NULL OR buzz_revealed_fraction BETWEEN 0 AND 1"),
         CheckConstraint(
             "buzz_time_remaining_fraction IS NULL OR buzz_time_remaining_fraction BETWEEN 0 AND 1"
