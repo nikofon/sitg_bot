@@ -176,6 +176,8 @@ export const en = {
   "packet_management.themes": "Themes",
   "packet_management.questions": "Questions",
   "policy.packets_released_by_default.label": "Automatically release uploaded packets",
+  "policy.packet_notifications_enabled.label": "Notify players about available packets",
+  "policy.packet_notifications_enabled.description": "Notify players when a packet becomes available to play. Enabled by default. Re-enabling also announces eligible packets not yet announced.",
   "policy.packets_released_by_default.description": "Release new packets for library access when their upload is confirmed. Disabled by default. Readers must still satisfy packet read eligibility.",
   "common.return_to_bot": "Return to bot",
   "common.previous": "Previous",

@@ -178,6 +178,8 @@ export const ru: Record<MessageKey, string> = {
   "packet_management.changes_required": "Измените хотя бы одно поле. Каждое поле, выбранное для исправления или замены, должно быть изменено.",
   "packet_management.delete_confirm": "Удалить пакет из турнира? Результаты игр и статистика сохранятся.",
   "policy.packets_released_by_default.label": "Автоматически выпускать загруженные пакеты",
+  "policy.packet_notifications_enabled.label": "Уведомлять игроков о доступных пакетах",
+  "policy.packet_notifications_enabled.description": "Уведомлять игроков, когда пакет становится доступен для игры. По умолчанию включено. При повторном включении отправляются и пропущенные уведомления о доступных пакетах.",
   "policy.packets_released_by_default.description": "Выпускать новые пакеты для библиотеки после подтверждения загрузки. По умолчанию выключено. Условия допуска к чтению сохраняются.",
   "common.return_to_bot": "Вернуться в бот",
   "common.previous": "Назад",

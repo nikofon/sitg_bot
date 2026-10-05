@@ -237,7 +237,10 @@ async def test_player_limits_enforce_capacity_readiness_and_mutability(database_
         await database.close()
 
 
-async def test_packet_notifications_survive_retries_and_wait_for_access(database_url):
+@pytest.mark.parametrize("initially_disabled", [False, True])
+async def test_packet_notifications_survive_retries_and_wait_for_access(
+    database_url, initially_disabled,
+):
     database = Database(database_url)
     try:
         fixture = await tournament_fixture(database, player_count=2)
@@ -253,8 +256,6 @@ async def test_packet_notifications_survive_retries_and_wait_for_access(database
             player_id=fixture.players[1].id,
         )
         notifier = PacketAvailabilityService(database)
-        await notifier.reconcile()
-        await notifier.reconcile()
 
         async def notices():
             async with database.sessions() as session:
@@ -268,7 +269,26 @@ async def test_packet_notifications_survive_retries_and_wait_for_access(database
                     )
                 )
 
+        async def set_notifications(enabled):
+            settings = await service.manager_settings(fixture.tournament_id, fixture.manager.id)
+            await service.update_policy(
+                fixture.tournament_id,
+                fixture.manager.id,
+                default_parameters=settings.default_parameters,
+                player_mutable_parameters=set(settings.player_mutable_parameters),
+                policies={**settings.policies, "packet_notifications_enabled": enabled},
+            )
+
+        if initially_disabled:
+            await set_notifications(False)
+            await notifier.reconcile()
+            await notifier.reconcile()
+            assert await notices() == []
+            await set_notifications(True)
+        await notifier.reconcile()
+        await notifier.reconcile()
         assert [n.recipient_player_id for n in await notices()] == [fixture.players[0].id]
+        await set_notifications(False)
         await service.set_management_packet_access(
             fixture.tournament_id,
             assignment_id,
@@ -278,7 +298,12 @@ async def test_packet_notifications_survive_retries_and_wait_for_access(database
             player_id=fixture.players[1].id,
         )
         await notifier.reconcile()
+        assert [n.recipient_player_id for n in await notices()] == [fixture.players[0].id]
+        await set_notifications(True)
+        await notifier.reconcile()
+        await notifier.reconcile()
         assert {n.recipient_player_id for n in await notices()} == {p.id for p in fixture.players}
+        assert len(await notices()) == 2
     finally:
         await database.close()
 

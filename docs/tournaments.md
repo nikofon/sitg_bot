@@ -247,6 +247,11 @@ message and scheduling player reminders 24 hours and one hour beforehand. See [T
 
 ## Tournament settings
 
+The `packet_notifications_enabled` policy defaults to `true` and controls player notices
+when assigned packets become playable. Managers can toggle it in Settings. Disabling it
+stops new notices without cancelling queued ones. Re-enabling announces currently eligible
+packets that have not yet been announced; existing per-player deduplication still applies.
+
 Managers choose defaults and per-parameter player mutability. Effective parameters must satisfy
 tournament type, ruleset, and technical limits. Assignment snapshots preserve them for existing
 games; changes to assembling lobbies clear readiness.
