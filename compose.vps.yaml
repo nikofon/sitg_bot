@@ -29,8 +29,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sitg -d sitg"]
       interval: 5s
-      timeout: 3s
+      timeout: 10s
       retries: 20
+      start_period: 30s
     volumes:
       - sitg-postgres:/var/lib/postgresql/data
     logging: *logging
