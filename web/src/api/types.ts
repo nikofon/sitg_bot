@@ -382,6 +382,7 @@ export interface LobbyPacket {
   lead_author: string | null;
   authors: string[];
   playable_for_all: boolean;
+  blocked: boolean;
   total_play_unit_count: number;
   fresh_play_unit_count: number;
   validation_violations: Array<{ code: string; details?: Record<string, unknown> }>;
@@ -861,6 +862,7 @@ export interface RoutePayload {
     | RouteResource
     | TournamentRouteResource
     | TournamentProfileResource
+    | TournamentPacketsResource
     | TournamentChatResource
     | TournamentManagerSettingsResource
     | TournamentManagerManagementResource
@@ -891,6 +893,29 @@ export interface TournamentChatResource {
   planned_by_id?: string | null;
   participants: Array<{ player_id: string; nickname: string }>;
   unread?: boolean;
+}
+
+export interface TournamentPacket {
+  packet_id: string;
+  version_id: string;
+  name: string;
+  year: number | null;
+  published_at: string | null;
+  lead_author: string | null;
+  authors: string[];
+  playable: boolean;
+  blocked: boolean;
+  library_viewable: boolean;
+  total_play_unit_count: number;
+  fresh_play_unit_count: number;
+}
+
+export interface TournamentPacketsResource {
+  kind: "tournament_packets";
+  state: "ready" | "empty";
+  tournament_id: string;
+  tournament_name: string;
+  items: TournamentPacket[];
 }
 
 export interface RequestOptions {

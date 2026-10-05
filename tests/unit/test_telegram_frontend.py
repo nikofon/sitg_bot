@@ -664,7 +664,7 @@ async def test_player_tournament_upload_submenu_and_permission(allowed) -> None:
     assert "Other..." in {label for row in menu.keyboard.rows for label in row}
     assert "Upload packet" not in {label for row in menu.keyboard.rows for label in row}
     other = other_menu_message(nav, localization, "en")
-    assert other.keyboard.rows == (("Upload packet",), ("Back",))
+    assert other.keyboard.rows == (("Chats",), ("Upload packet",), ("Back",))
     backend = SimpleNamespace(packet_upload_eligibility=AsyncMock(
         return_value={"maximum_bytes": 4194304},
         side_effect=None if allowed else GatewayCallError(GatewayResponse(

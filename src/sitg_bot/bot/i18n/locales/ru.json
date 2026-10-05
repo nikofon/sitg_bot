@@ -261,6 +261,8 @@
   "button.player.tournament.history": "История",
   "button.player.tournament.quit": "Выйти в меню",
   "button.player.tournament.leaders": "Лидеры",
+  "button.player.tournament.packets": "Пакеты",
+  "miniapp.tournament_packets.prompt": "Откройте список пакетов, назначенных этому турниру: заблокируйте неинтересные или посмотрите их в библиотеке.",
   "button.lobby.open": "Открыть лобби",
   "button.lobby.reopen": "Открыть лобби",
   "button.russian": "Русский",

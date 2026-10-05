@@ -14,6 +14,7 @@ export function renderLobbyPackets(
   filters: LobbyPacketFilters,
   showPicker: boolean,
   mutate: (command: string, body: Record<string, unknown>) => Promise<void>,
+  toggleBlock?: (packet: LobbyPacket) => Promise<void>,
 ): { element: HTMLElement; update: (next: LobbyResource) => void } {
   const container = element("div", { className: "lobby-packets" });
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
@@ -61,6 +62,7 @@ export function renderLobbyPackets(
       if (!card) {
         const title = element("h3");
         const badge = element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected"));
+        const blockedBadge = element("span", { className: "lobby-packet-selected" }, i18n.t("packet.blocked"));
         const details = element("dl", { className: "lobby-packet-details" },
           ...(["lobby.packet_year", "lobby.packet_publication_year", "lobby.packet_lead_author", "lobby.packet_authors", "lobby.packet_fresh"] as const)
             .map((key) => detail(key, "")));
@@ -74,6 +76,16 @@ export function renderLobbyPackets(
             }
           }) as EventListener,
         });
+        const currentPacket = (): LobbyPacket | undefined =>
+          lobby.selected_packets.find((item) => item.packet_id === packet.packet_id)
+          ?? lobby.packet_suggestions.find((item) => item.packet_id === packet.packet_id);
+        const blockButton = toggleBlock ? element("button", {
+          type: "button",
+          onclick: (() => {
+            const current = currentPacket();
+            if (current) void toggleBlock(current);
+          }) as EventListener,
+        }) : null;
         const node = element("article", { "data-packet-id": packet.packet_id }, title, details, access);
         let previous = "";
         card = { node, update: (current, isSelected, canChange) => {
@@ -84,6 +96,8 @@ export function renderLobbyPackets(
           title.textContent = current.name;
           if (isSelected) node.insertBefore(badge, details);
           else badge.remove();
+          if (current.blocked) node.insertBefore(blockedBadge, details);
+          else blockedBadge.remove();
           const values = [current.year?.toString() ?? "—", current.published_at?.slice(0, 4) || "—",
             current.lead_author || "—", current.authors?.join(", ") || "—",
             `${current.fresh_play_unit_count ?? 0} / ${current.total_play_unit_count ?? 0}`];
@@ -92,8 +106,15 @@ export function renderLobbyPackets(
           access.textContent = `${i18n.t("lobby.packet_playable")}: ${i18n.t(current.playable_for_all ? "lobby.packet_yes" : "lobby.packet_no")}`;
           button.className = isSelected ? "secondary-button" : "primary-button";
           button.textContent = i18n.t(isSelected ? "lobby.packet_remove" : "lobby.packet_add");
-          if (canChange && button.parentNode !== node) node.append(button);
-          else if (!canChange) button.remove();
+          if (canChange && button.parentNode !== node) {
+            if (blockButton?.parentNode === node) node.insertBefore(button, blockButton);
+            else node.append(button);
+          } else if (!canChange) button.remove();
+          if (blockButton) {
+            blockButton.className = current.blocked ? "secondary-button" : "warning-button";
+            blockButton.textContent = i18n.t(current.blocked ? "packet.unblock" : "packet.block");
+            if (blockButton.parentNode !== node) node.append(blockButton);
+          }
         } };
         cards.set(packet.packet_id, card);
       }

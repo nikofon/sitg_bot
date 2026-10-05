@@ -219,6 +219,32 @@ class FakeGateway:
                 "games": {"kind": "classic", "stages": []},
                 "leaders": {"kind": "classic", "stages": []},
             }
+        elif operation.action == ActionCode.TOURNAMENT_PACKET_LIST:
+            data = {
+                "tournament_id": str(UUID(int=10)),
+                "tournament_name": "Managed Cup",
+                "items": [
+                    {
+                        "packet_id": str(UUID(int=30)),
+                        "version_id": str(UUID(int=31)),
+                        "name": "Assigned packet",
+                        "year": 2024,
+                        "published_at": "2026-01-01T00:00:00+00:00",
+                        "lead_author": "Anna",
+                        "authors": [],
+                        "playable": True,
+                        "blocked": False,
+                        "library_viewable": True,
+                        "total_play_unit_count": 5,
+                        "fresh_play_unit_count": 3,
+                    }
+                ],
+            }
+        elif operation.action in {ActionCode.PACKET_BLOCK, ActionCode.PACKET_UNBLOCK}:
+            data = {
+                "packet_id": str(operation.packet_id),
+                "blocked": operation.action == ActionCode.PACKET_BLOCK,
+            }
         elif operation.action == ActionCode.ONGOING_LIST:
             data = {
                 "lobbies": [
@@ -618,6 +644,85 @@ async def test_tournament_profile_route_resolves_sections() -> None:
     operation = gateway.requests[0].operation
     assert operation.action == ActionCode.TOURNAMENT_PROFILE
     assert operation.tournament_id == tournament_id
+
+
+async def test_tournament_packets_route_resolves_listing() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    tournament_id = UUID(int=10)
+    request = make_mocked_request(
+        "GET",
+        f"/api/miniapp/routes/resolve?path=/tournaments/{tournament_id}/packets",
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+        },
+    )
+    response = await http._resolve_route(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["resource"]["kind"] == "tournament_packets"
+    assert payload["resource"]["state"] == "ready"
+    assert payload["resource"]["items"][0]["packet_id"] == str(UUID(int=30))
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.TOURNAMENT_PACKET_LIST
+    assert operation.tournament_id == tournament_id
+
+
+async def test_tournament_packet_block_mutation_maps_command() -> None:
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        gateway,  # type: ignore[arg-type]
+    )
+    packet_id = UUID(int=30)
+    request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/tournaments/{UUID(int=10)}/packets/{packet_id}/block",
+        match_info={
+            "tournament_id": str(UUID(int=10)),
+            "packet_id": str(packet_id),
+            "command": "block",
+        },
+        headers={
+            "Origin": "https://mini.example.test",
+            "Cookie": "__Host-sitg_session=test-session",
+            "X-CSRF-Token": "csrf",
+            "X-Idempotency-Key": "idempotency-key-1",
+            "Content-Type": "application/json",
+        },
+    )
+    response = await http._packet_block(request)
+
+    assert response.status == 200
+    payload = json.loads(response.text)
+    assert payload["blocked"] is True
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.PACKET_BLOCK
+    assert operation.packet_id == packet_id
+
+
+async def test_tournament_packet_unknown_command_is_not_found() -> None:
+    http = MiniAppHttpServer(
+        FakeAuth(),  # type: ignore[arg-type]
+        FakeGateway(),  # type: ignore[arg-type]
+    )
+    request = make_mocked_request(
+        "POST",
+        f"/api/miniapp/tournaments/{UUID(int=10)}/packets/{UUID(int=30)}/archive",
+        match_info={
+            "tournament_id": str(UUID(int=10)),
+            "packet_id": str(UUID(int=30)),
+            "command": "archive",
+        },
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(web.HTTPNotFound):
+        await http._packet_block(request)
 
 
 async def test_ongoing_route_resolves_lobbies_and_games() -> None:

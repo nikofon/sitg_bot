@@ -22,7 +22,7 @@ from sitg_bot.bot.handlers.chat import chat_scope
 from sitg_bot.bot.handlers.player import notification_text
 from sitg_bot.bot.handlers.tournament_chat import send_tournament_chat_list
 from sitg_bot.bot.i18n import LocalizationService
-from sitg_bot.bot.keyboards.common import PLAYER_TOURNAMENT_ACTIONS
+from sitg_bot.bot.keyboards.common import PLAYER_TOURNAMENT_ACTIONS, PLAYER_TOURNAMENT_OTHER_ACTIONS
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import RemoveKeyboardModel
 from sitg_bot.services.navigation import TelegramNavigationService
@@ -67,11 +67,15 @@ def flattened(actions):
     return {action for row in actions for action in row}
 
 
-def test_player_tournament_keyboard_replaces_link_and_leaders_with_chats():
+def test_player_tournament_keyboard_replaces_link_and_leaders_with_packets():
     actions = flattened(PLAYER_TOURNAMENT_ACTIONS)
     assert "tournament.registration_link" not in actions
     assert "player.tournament.leaders" not in actions
-    assert "player.tournament.chats" in actions
+    assert "player.tournament.chats" not in actions
+    assert "player.tournament.packets" in actions
+    other = flattened(PLAYER_TOURNAMENT_OTHER_ACTIONS)
+    assert "player.tournament.chats" in other
+    assert "player.tournament.packet_upload" in other
 
 
 def test_player_tournament_allowed_actions_drop_registration_link():

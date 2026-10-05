@@ -37,13 +37,16 @@ MANAGER_MENU_ACTIONS = (
 PLAYER_TOURNAMENT_ACTIONS = (
     ("player.tournament.create_lobby",),
     ("player.tournament.info",),
-    ("player.tournament.chats",),
+    ("player.tournament.packets",),
     ("lobby.reopen",),
     ("player.other",),
     ("player.tournament.quit",),
 )
 
-PLAYER_TOURNAMENT_OTHER_ACTIONS = (("player.tournament.packet_upload",),)
+PLAYER_TOURNAMENT_OTHER_ACTIONS = (
+    ("player.tournament.chats",),
+    ("player.tournament.packet_upload",),
+)
 
 LOBBY_ACTIONS = (
     ("lobby.ready", "lobby.unready"),

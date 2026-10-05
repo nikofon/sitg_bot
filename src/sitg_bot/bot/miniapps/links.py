@@ -5,6 +5,7 @@ from sitg_bot.services.launch_references import LaunchReference
 
 _PLAYER_PROFILE_ROUTE = re.compile(r"players/[0-9a-fA-F-]{36}")
 _TOURNAMENT_PROFILE_ROUTE = re.compile(r"tournaments/[0-9a-fA-F-]{36}")
+_TOURNAMENT_PACKETS_ROUTE = re.compile(r"tournaments/[0-9a-fA-F-]{36}/packets")
 _CHAT_SCHEDULE_ROUTE = re.compile(r"chats/[0-9a-fA-F-]{36}/schedule")
 
 
@@ -21,6 +22,7 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
         }
         and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
         and _TOURNAMENT_PROFILE_ROUTE.fullmatch(normalized_route) is None
+        and _TOURNAMENT_PACKETS_ROUTE.fullmatch(normalized_route) is None
         and _CHAT_SCHEDULE_ROUTE.fullmatch(normalized_route) is None
     ):
         raise ValueError("Unsupported Mini App route")

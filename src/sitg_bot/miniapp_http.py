@@ -48,6 +48,7 @@ from sitg_bot.application.contracts import (
     LobbySimpleMutationOperation,
     NavigationTournamentSetOperation,
     OngoingListOperation,
+    PacketBlockOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
@@ -74,6 +75,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
+    TournamentPacketListOperation,
     TournamentSubscriptionsUpdateOperation,
     TournamentProfileOperation,
     TournamentRegisterOperation,
@@ -166,6 +168,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/tournaments/{tournament_id}/register",
             self._register,
+        )
+        app.router.add_post(
+            "/api/miniapp/tournaments/{tournament_id}/packets/{packet_id}/{command}",
+            self._packet_block,
         )
         app.router.add_post(
             "/api/miniapp/chats/{chat_id}/game-time",
@@ -525,6 +531,9 @@ class MiniAppHttpServer:
         tournament_profile_match = re.fullmatch(
             r"/tournaments/([0-9a-fA-F-]{36})", normalized_path
         )
+        tournament_packets_match = re.fullmatch(
+            r"/tournaments/([0-9a-fA-F-]{36})/packets", normalized_path
+        )
         chat_schedule_match = re.fullmatch(
             r"/chats/([0-9a-fA-F-]{36})/schedule", normalized_path
         )
@@ -600,6 +609,29 @@ class MiniAppHttpServer:
         )
         packet_match = re.fullmatch(r"/manager/packets/([A-Za-z0-9_-]+)/edit", normalized_path)
         lobby_match = re.fullmatch(r"/lobbies/([A-Za-z0-9_-]+)", normalized_path)
+        if tournament_packets_match is not None:
+            session, result = await self._query(
+                request,
+                TournamentPacketListOperation(
+                    action=ActionCode.TOURNAMENT_PACKET_LIST,
+                    tournament_id=UUID(tournament_packets_match.group(1)),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            assert isinstance(result.data, dict)
+            items = result.data.get("items", [])
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "tournament_packets",
+                        "state": "ready" if items else "empty",
+                        **result.data,
+                    },
+                }
+            )
         if player_game_match is not None:
             session, result = await self._query(
                 request,
@@ -895,6 +927,18 @@ class MiniAppHttpServer:
         operation = TournamentRegisterOperation(
             action=ActionCode.TOURNAMENT_REGISTER,
             tournament_id=self._tournament_id(request),
+        )
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _packet_block(self, request: web.Request) -> web.Response:
+        command = request.match_info["command"]
+        if command not in {"block", "unblock"}:
+            raise web.HTTPNotFound()
+        action = ActionCode.PACKET_BLOCK if command == "block" else ActionCode.PACKET_UNBLOCK
+        operation = PacketBlockOperation(
+            action=action,
+            packet_id=self._path_uuid(request, "packet_id"),
         )
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)

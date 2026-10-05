@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -47,6 +47,7 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlayerBlacklistRecord,
     PlayerExposureClaimRecord,
+    PlayerPacketBlockRecord,
     PlayerRecord,
     PregameLobbyEventRecord,
     PregameLobbyMemberRecord,
@@ -111,6 +112,7 @@ class PacketSuggestion:
     lead_author: str | None = None
     authors: tuple[str, ...] = ()
     playable_for_all: bool = False
+    blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1420,6 +1422,13 @@ class InvitationMatchmakingService:
             if telegram_user_id is not None:
                 viewer = await self._member(session, lobby.id, telegram_user_id)
                 viewer_id = viewer.player_id
+            viewer_blocked = set(
+                await session.scalars(
+                    select(PlayerPacketBlockRecord.packet_id).where(
+                        PlayerPacketBlockRecord.player_id == viewer_id
+                    )
+                )
+            )
             suggestions: list[PacketSuggestion] = []
             for packet, assignment in packet_rows:
                 if not await self.tournaments.has_assignment_access(
@@ -1470,9 +1479,12 @@ class InvitationMatchmakingService:
                         )
                     )
                     suggestions.append(
-                        await self._describe_packet(
-                            session, candidate, version, members,
-                            total=total, fresh=len(available), violations=violations,
+                        replace(
+                            await self._describe_packet(
+                                session, candidate, version, members,
+                                total=total, fresh=len(available), violations=violations,
+                            ),
+                            blocked=packet.id in viewer_blocked,
                         )
                     )
             return tuple(sorted(suggestions, key=lambda item: item.name.casefold()))

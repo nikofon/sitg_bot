@@ -81,6 +81,19 @@ Claims move through this lifecycle:
 The partial unique index on player, claim namespace, and claim identity makes reservation
 universal and race-safe. Packet-version provenance remains separately stored on the game.
 
+## Player packet blocks
+
+Players may block packets they dislike (`services/packet_blocks.py`, the
+`tournaments.packets.list.v1`, `packets.block.v1`, and `packets.unblock.v1` operations).
+A block row (`player_packet_blocks`) is keyed by player and logical packet, so blocking a
+packet assigned to several tournaments blocks it in all of them, and blocks are removable.
+The content adapter treats every theme and question of a blocked packet as burnt for
+fresh-content computation — suggestion lists, validation, auto-assignment, and plans —
+without writing exposure claims. Library viewing ignores blocks and still burns content
+normally. Blocking requires current discoverable access to the packet through an active
+tournament role; the lobby and tournament packet cards expose the controls, and lobby
+projections flag the viewer's blocked packets.
+
 ## Settings and mutability
 
 The ruleset owns parameter names, types, defaults, and validation. A tournament type can
