@@ -79,7 +79,10 @@ file and combined interpreted-content limits. These are separate from per-game S
    Telegram sends a separate preview/edit link and publish/reject controls for each packet.
    A parse failure creates a validation-failed draft; it does not import a partial batch.
    The upload response retains the existing summary for one draft; multiple drafts return
-   an ordered `drafts` array of those summaries.
+   an ordered `drafts` array of those summaries. The Telegram upload session stays open
+   after each file, so one prompt can receive several files, sent one after another or as
+   a media group; each file is imported separately into the same tournament until the
+   uploader cancels the session.
 3. The application validates the draft and presents its complete interpreted content
    back to the uploader and authorized reviewers. The preview includes packet
    metadata, ruleset-specific content structure and ordering, resolved authors, and

@@ -421,7 +421,7 @@
   "tournament_create.visibility.prompt": "Set visibility. Suggested default: <code>{suggested}</code>",
   "unsupported.menu": "I could not recognize that action. Opening the current menu.",
   "unsupported.prompt": "A response to the current question is expected.",
-  "packet_upload.document_prompt": "Upload a DOCX or PDF file containing one or more packets. Each packet will have its own preview. Use /cancel to stop.",
+  "packet_upload.document_prompt": "Upload DOCX or PDF files containing one or more packets. You can send several files one after another or as an album; each file is imported separately. Each packet will have its own preview. Use /cancel to finish.",
   "packet_upload.file_invalid": "Send a file whose name ends in .docx or .pdf.",
   "packet_upload.file_too_large": "The file is too large. Maximum size: {maximum_mb} MB.",
   "packet_upload.result": "<b>{name}</b>\nRuleset: <code>{ruleset}</code>\nThemes: {themes}\nQuestions: {questions}\nDetected authors: {authors}\n\n<b>Warnings ({warning_count})</b>\n{warnings}\n\n<b>Errors ({error_count})</b>\n{errors}",

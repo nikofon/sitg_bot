@@ -101,7 +101,9 @@ single player.
 
 The manager creation wizard confirms token consumption and supports revising previous inputs.
 Upload checks tournament permission before accepting a bounded file; it reports validation,
-counts, and authors, then offers authorized preview/edit, publish, or reject actions.
+counts, and authors, then offers authorized preview/edit, publish, or reject actions. The
+upload session accepts several files — sent one after another or as a Telegram media group;
+each file is imported separately into the same tournament until `/cancel` ends the session.
 Manager packet modification uses the Mini App. Remaining placeholder destinations are tracked
 in [planned features](future-work.md).
 

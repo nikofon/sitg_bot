@@ -250,6 +250,22 @@ p {
   opacity: 0.45;
 }
 
+/* Theme pagination: the current page must stand out from its siblings. */
+.pagination button.pagination-page {
+  background: color-mix(in srgb, var(--tg-theme-button-color) 14%, transparent);
+  color: var(--tg-theme-text-color);
+  font-weight: 600;
+  min-width: 3rem;
+}
+
+.pagination button.pagination-page[aria-current="page"] {
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+  font-weight: 700;
+  outline: 2px solid color-mix(in srgb, var(--tg-theme-button-color) 55%, transparent);
+  outline-offset: 1px;
+}
+
 .resource-summary {
   color: var(--tg-theme-hint-color);
 }
@@ -1140,6 +1156,11 @@ p {
 }
 
 .library-page + .pagination { flex-wrap: wrap; gap: .5rem; }
+
+.library-question-statistics {
+  margin-top: .75rem;
+  color: var(--tg-theme-hint-color);
+}
 
 .profile,
 .classic-rounds, .classic-seeding, .classic-settings {

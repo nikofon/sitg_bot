@@ -53,15 +53,61 @@ class SIContentAdapter:
         stored = await PostgresPacketRepository().get(session, packet_version_id)
         if stored is None:
             raise LookupError("Packet version not found")
+        theme_rows = (
+            await session.execute(
+                select(ThemeRevisionRecord.id, ThemeRevisionRecord.author_id)
+                .where(ThemeRevisionRecord.packet_version_id == packet_version_id)
+                .order_by(ThemeRevisionRecord.position)
+            )
+        ).all()
+        question_rows = (
+            await session.execute(
+                select(
+                    PacketQuestionRecord.theme_revision_id,
+                    PacketQuestionRecord.question_revision_id,
+                    QuestionRevisionRecord.author_id,
+                )
+                .join(
+                    QuestionRevisionRecord,
+                    QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
+                )
+                .where(PacketQuestionRecord.packet_version_id == packet_version_id)
+                .order_by(
+                    PacketQuestionRecord.theme_revision_id, PacketQuestionRecord.position
+                )
+            )
+        ).all()
+        questions_by_theme: dict[UUID, list[tuple[UUID, UUID | None]]] = {}
+        for theme_revision_id, question_revision_id, author_id in question_rows:
+            questions_by_theme.setdefault(theme_revision_id, []).append(
+                (question_revision_id, author_id)
+            )
         return [
-            {"title": theme.name, "author": theme.author,
-             "questions": [
-                 {**asdict(question),
-                  "accepted_answers": list(question.accepted_answers),
-                  "rejected_answers": list(question.rejected_answers)}
-                 for question in theme.questions
-             ]}
-            for theme in stored.packet.themes
+            {
+                "title": theme.name,
+                "author": theme.author,
+                "commentary": theme.commentary,
+                "author_id": str(author_id) if author_id is not None else None,
+                "questions": [
+                    {
+                        **asdict(question),
+                        "accepted_answers": list(question.accepted_answers),
+                        "rejected_answers": list(question.rejected_answers),
+                        "id": str(question_revision_id),
+                        "author_id": str(question_author_id)
+                        if question_author_id is not None
+                        else None,
+                    }
+                    for question, (question_revision_id, question_author_id) in zip(
+                        theme.questions,
+                        questions_by_theme.get(theme_revision_id, ()),
+                        strict=True,
+                    )
+                ],
+            }
+            for (theme_revision_id, author_id), theme in zip(
+                theme_rows, stored.packet.themes, strict=True
+            )
         ]
 
     async def play_unit_count(self, session: AsyncSession, packet_version_id: UUID) -> int:
