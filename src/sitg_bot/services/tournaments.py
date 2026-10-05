@@ -71,6 +71,7 @@ _UNSET = object()
 HYBRID_MATCHMAKING_POLICY = "hybrid_matchmaking_enabled"
 AUTO_APPROVE_REGISTRATIONS_POLICY = "auto_approve_registrations"
 MEMBER_UPLOADS_POLICY = "member_uploads"
+PACKET_NOTIFICATIONS_POLICY = "packet_notifications_enabled"
 RULESET_RATING_WEIGHT_POLICY = "ruleset_rating_weight"
 MAXIMUM_PARTICIPANTS_POLICY = "maximum_participants"
 OBSERVING_POLICY = "observing"
@@ -126,6 +127,8 @@ def normalize_tournament_policies(
         raise ValueError(f"{AUTO_APPROVE_REGISTRATIONS_POLICY} must be a boolean")
     if not isinstance(normalized.setdefault(MEMBER_UPLOADS_POLICY, False), bool):
         raise ValueError(f"{MEMBER_UPLOADS_POLICY} must be a boolean")
+    if not isinstance(normalized.setdefault(PACKET_NOTIFICATIONS_POLICY, True), bool):
+        raise ValueError(f"{PACKET_NOTIFICATIONS_POLICY} must be a boolean")
     enabled = normalized.setdefault(HYBRID_MATCHMAKING_POLICY, False)
     if not isinstance(enabled, bool):
         raise ValueError(f"{HYBRID_MATCHMAKING_POLICY} must be a boolean")
@@ -4182,6 +4185,7 @@ class TournamentService:
                 AUTO_APPROVE_REGISTRATIONS_POLICY, False,
             ),
             MEMBER_UPLOADS_POLICY: policies.get(MEMBER_UPLOADS_POLICY, False),
+            PACKET_NOTIFICATIONS_POLICY: policies.get(PACKET_NOTIFICATIONS_POLICY, True),
             "observing": policies.get("observing", "forbidden"),
             "maximum_participants": policies.get("maximum_participants"),
             PACKETS_PER_LOBBY_POLICY: policies.get(PACKETS_PER_LOBBY_POLICY, "one"),

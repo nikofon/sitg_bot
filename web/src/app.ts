@@ -43,6 +43,7 @@ import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
+import { preserveListPosition } from "./ui/scroll";
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
@@ -879,20 +880,71 @@ export class MiniAppShell {
     let dirty = false;
     let busy = false;
     const section = route.query.get("section") ?? "overview";
+    const signal = this.request!.signal;
+    let active = true;
+    let refreshing = false;
+    let refreshSequence = 0;
+    const isActive = (): boolean => active && !signal.aborted;
+    const stopRefreshing = (): void => {
+      active = false;
+      window.clearTimeout(this.pollTimer);
+      window.clearTimeout(this.eventTimer);
+    };
+    const refresh = async (force = false): Promise<void> => {
+      if (!isActive() || (!force && (dirty || busy || refreshing))) return;
+      const sequence = ++refreshSequence;
+      refreshing = true;
+      try {
+        const path = encodeURIComponent(routeRequestPath(route));
+        const payload = await this.api.request<RoutePayload>(`/api/miniapp/routes/resolve?path=${path}`, { signal });
+        if (!isActive() || sequence !== refreshSequence || (!force && dirty)) return;
+        if (!payload.authorization?.allowed) {
+          stopRefreshing();
+          this.renderError(route, payload.authorization?.reason_code ?? "forbidden");
+          return;
+        }
+        if (!isLobbyResource(payload.resource) || payload.resource.game_id
+          || payload.resource.state === "empty" || payload.resource.status !== "assembling") {
+          stopRefreshing();
+          this.renderRoute(route, payload);
+          return;
+        }
+        if (JSON.stringify(lobby) === JSON.stringify(payload.resource) && !dirty) return;
+        lobby = payload.resource;
+        dirty = false;
+        preserveListPosition(content, () => {
+          renderDetails();
+          packetList.update(lobby);
+        });
+      } catch (error) {
+        if (!isActive() || sequence !== refreshSequence) return;
+        if (error instanceof ApiError && ["authentication_required", "forbidden", "not_found"].includes(error.code)) {
+          stopRefreshing();
+          this.renderError(route, error.code);
+        }
+        // Keep the current view on transient failures; subsequent polls retry.
+      } finally {
+        if (sequence === refreshSequence) refreshing = false;
+      }
+    };
     const mutate = async (command: string, body: Record<string, unknown> = {}): Promise<void> => {
-      if (busy) return;
+      if (busy || !isActive()) return;
       busy = true;
+      ++refreshSequence; // An older snapshot must not overwrite this action's result.
+      refreshing = false;
       try {
         await this.api.request(
           `/api/miniapp/lobbies/${encodeURIComponent(route.params.launch_ref ?? "")}/${command}`,
-          { method: "POST", body: { expected_version: lobby.version, ...body } },
+          { method: "POST", body: { expected_version: lobby.version, ...body }, signal },
         );
+        if (!isActive()) return;
         this.platform.notifySuccess();
         if (command === "leave" || command === "cancel") this.platform.returnToBot();
-        else await this.load(route);
+        else await refresh(true);
       } catch (error) {
+        if (!isActive()) return;
         const code = error instanceof ApiError ? error.code : "internal_error";
-        if (code === "stale_write") await this.load(route);
+        if (code === "stale_write") await refresh(true);
         else {
           this.platform.notifyError();
           this.showTextDialog(this.i18n.t(`error.${code}`), []);
@@ -901,48 +953,10 @@ export class MiniAppShell {
         busy = false;
       }
     };
-    const members = element(
-      "ul", { className: "detail-list" },
-      ...lobby.members.map((member) => element(
-        "li", {}, `${member.display_name} · ${this.i18n.t(member.role === "observer" ? "lobby.observer" : "lobby.player")} · ${member.ready ? this.i18n.t("lobby.ready") : this.i18n.t("lobby.not_ready")}`,
-      )),
-    );
     const packetFilters = this.lobbyPacketFilters.get(lobby.id) ?? {};
     this.lobbyPacketFilters.set(lobby.id, packetFilters);
     const packetList = renderLobbyPackets(lobby, this.i18n, packetFilters, section === "packets", mutate);
-    const descriptors = lobby.setting_descriptors ?? Object.entries(lobby.settings).map(([name, value]) => ({
-      name, value, value_type: typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : "string",
-      description_key: name, options: [],
-    }));
-    const editable = descriptors.filter((item) => can("settings_update") && lobby.mutable_parameters.includes(item.name));
-    const editableNames = new Set(editable.map((item) => item.name));
-    const fixed = descriptors.filter((item) => !editableNames.has(item.name));
-    const settings = element("form", { className: "settings-form" });
-    settings.addEventListener("input", () => { dirty = true; });
-    if (editable.length) {
-      settings.append(element("h3", {}, this.i18n.t("lobby.settings_editable")));
-      settings.append(this.renderCategorizedSettings(editable, "setting"));
-      settings.append(element("button", { type: "submit", className: "primary-button" }, this.i18n.t("lobby.settings_save")));
-      settings.addEventListener("submit", (event) => {
-        event.preventDefault();
-        try {
-          const values = this.descriptorValues(settings, editable, "setting");
-          const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(lobby.settings[key])));
-          if (Object.keys(changes).length) void mutate("settings", { changes });
-        } catch {
-          this.showTextDialog(this.i18n.t("error.validation_failed"), []);
-        }
-      });
-    }
-    const settingValue = (item: { name: string; value: unknown }): string =>
-      item.name === "theme_count" && item.value === "max"
-        ? this.i18n.t("setting.theme_count.max")
-        : typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value);
-    const fixedSettings = fixed.length ? element("div", { className: "resource-card" },
-      element("h3", {}, this.i18n.t("lobby.settings_fixed")),
-      ...fixed.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item)))) : null;
-    const currentSettings = element("div", { className: "resource-card" },
-      ...descriptors.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item))));
+    const title = element("h2", { className: "lobby-tournament-title" });
     const tabs = element("nav", { className: "settings-actions", "aria-label": this.i18n.t("lobby.sections") });
     for (const [value, key] of [["overview", "lobby.overview"], ["packets", "lobby.packets"], ["settings", "lobby.options"]] as const) {
       const query = new URLSearchParams(route.query);
@@ -952,81 +966,132 @@ export class MiniAppShell {
         onclick: (() => this.router.navigate(`${route.path}?${query}`)) as EventListener,
       }, this.i18n.t(key)));
     }
-    const actions = element("div", { className: "settings-actions" });
-    const action = (capability: string, command: string, key: MessageKey, body: Record<string, unknown> = {}, dangerous = false): void => {
-      if (!can(capability)) return;
-      actions.append(element("button", {
-        type: "button", className: dangerous ? "danger-button" : "primary-button",
-        onclick: (() => {
-          if (!dangerous || window.confirm(this.i18n.t("lobby.confirm"))) void mutate(command, body);
-        }) as EventListener,
-      }, this.i18n.t(key)));
+    const body = element("section", { className: section === "overview" ? "route-content lobby-overview" : undefined },
+      section === "settings" ? null : packetList.element);
+    const content = element("section", { className: "route-content lobby-content" }, tabs, title, body);
+    if (section === "packets") packetList.element.before(element("h2", {}, this.i18n.t("lobby.packets")));
+    const renderDetails = (): void => {
+      title.textContent = lobby.tournament_name ?? "";
+      if (section === "packets") return;
+      const members = element(
+        "ul", { className: "detail-list" },
+        ...lobby.members.map((member) => element(
+          "li", {}, `${member.display_name} · ${this.i18n.t(member.role === "observer" ? "lobby.observer" : "lobby.player")} · ${member.ready ? this.i18n.t("lobby.ready") : this.i18n.t("lobby.not_ready")}`,
+        )),
+      );
+      const descriptors = lobby.setting_descriptors ?? Object.entries(lobby.settings).map(([name, value]) => ({
+        name, value, value_type: typeof value === "boolean" ? "boolean" : typeof value === "number" ? "number" : "string",
+        description_key: name, options: [],
+      }));
+      const editable = descriptors.filter((item) => can("settings_update") && lobby.mutable_parameters.includes(item.name));
+      const editableNames = new Set(editable.map((item) => item.name));
+      const fixed = descriptors.filter((item) => !editableNames.has(item.name));
+      const settings = element("form", { className: "settings-form" });
+      settings.addEventListener("input", () => { dirty = true; });
+      settings.addEventListener("change", () => { dirty = true; });
+      if (editable.length) {
+        settings.append(element("h3", {}, this.i18n.t("lobby.settings_editable")));
+        settings.append(this.renderCategorizedSettings(editable, "setting"));
+        settings.append(element("button", { type: "submit", className: "primary-button" }, this.i18n.t("lobby.settings_save")));
+        settings.addEventListener("submit", (event) => {
+          event.preventDefault();
+          try {
+            const values = this.descriptorValues(settings, editable, "setting");
+            const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(lobby.settings[key])));
+            if (Object.keys(changes).length) void mutate("settings", { changes });
+          } catch {
+            this.showTextDialog(this.i18n.t("error.validation_failed"), []);
+          }
+        });
+      }
+      const settingValue = (item: { name: string; value: unknown }): string =>
+        item.name === "theme_count" && item.value === "max"
+          ? this.i18n.t("setting.theme_count.max")
+          : typeof item.value === "boolean" ? this.i18n.t(item.value ? "common.enabled" : "common.disabled") : JSON.stringify(item.value);
+      const fixedSettings = fixed.length ? element("div", { className: "resource-card" },
+        element("h3", {}, this.i18n.t("lobby.settings_fixed")),
+        ...fixed.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item)))) : null;
+      const currentSettings = element("div", { className: "resource-card" },
+        ...descriptors.map((item) => this.detail(this.descriptorLabel(item.name, "setting"), settingValue(item))));
+      const actions = element("div", { className: "settings-actions" });
+      const action = (capability: string, command: string, key: MessageKey, body: Record<string, unknown> = {}, dangerous = false): void => {
+        if (!can(capability)) return;
+        actions.append(element("button", {
+          type: "button", className: dangerous ? "danger-button" : "primary-button",
+          onclick: (() => {
+            if (!dangerous || window.confirm(this.i18n.t("lobby.confirm"))) void mutate(command, body);
+          }) as EventListener,
+        }, this.i18n.t(key)));
+      };
+      action("ready", "ready", "lobby.action.ready", { ready: true });
+      action("unready", "ready", "lobby.action.unready", { ready: false });
+      action("role_player", "role", "lobby.action.play", { role: "player" });
+      action("role_observer", "role", "lobby.action.observe", { role: "observer", confirm_fresh: true }, true);
+      action("search_start", "search-start", "lobby.action.search_start");
+      action("search_cancel", "search-cancel", "lobby.action.search_cancel");
+      action("start", "start", "lobby.action.start");
+      action("leave", "leave", "lobby.action.leave", {}, true);
+      action("cancel", "cancel", "lobby.action.cancel", {}, true);
+      const violationKeys: Record<string, MessageKey> = {
+        insufficient_fresh_content: "lobby.error.fresh",
+        packet_not_playable: "lobby.error.packet",
+        packet_content_incompatible: "lobby.error.content",
+        ruleset_player_limit_exceeded: "lobby.error.players",
+        tournament_stage_closed: "lobby.error.closed",
+        tournament_capacity_restriction: "lobby.error.players",
+        tournament_packet_limit_exceeded: "lobby.error.packet_count",
+        tournament_membership_required: "lobby.error.membership",
+        classic_participants_required: "classic.participants_required",
+      };
+      const violations = lobby.validation_violations.length
+        ? element("aside", { className: "lobby-warnings", role: "alert" },
+          element("h3", {}, this.i18n.t("lobby.errors")),
+          element("ul", {}, ...lobby.validation_violations.map((item) => {
+            const key = item.code === "packet_not_playable" && item.details?.reason === "missing"
+              ? "lobby.error.packet_required" : violationKeys[item.code];
+            return element("li", {}, key ? this.i18n.t(key)
+              : `${this.i18n.t("lobby.error.other")} (${item.code})`);
+          })))
+        : null;
+      if (section === "settings") {
+        replaceChildren(body, element("h2", {}, this.i18n.t("lobby.options")), settings, fixedSettings);
+      } else {
+        for (const child of Array.from(body.children)) {
+          if (child !== packetList.element) child.remove();
+        }
+        packetList.element.before(
+          lobby.invitation_url ? element("a", { href: lobby.invitation_url, className: "resource-card lobby-invitation-link" },
+            this.i18n.t("lobby.invitation"), ": ", lobby.invitation_url) : this.detail(this.i18n.t("lobby.invitation"), lobby.invitation_code),
+          this.detail(this.i18n.t("lobby.capacity"), `${lobby.members.filter((member) => member.role === "player").length}/${lobby.max_players}`),
+          element("h2", {}, this.i18n.t("lobby.members")), members,
+          element("h2", {}, this.i18n.t("lobby.packets")),
+        );
+        packetList.element.after(
+          element("h2", {}, this.i18n.t("lobby.options")), currentSettings,
+          actions, ...(violations ? [violations] : []),
+        );
+      }
     };
-    action("ready", "ready", "lobby.action.ready", { ready: true });
-    action("unready", "ready", "lobby.action.unready", { ready: false });
-    action("role_player", "role", "lobby.action.play", { role: "player" });
-    action("role_observer", "role", "lobby.action.observe", { role: "observer", confirm_fresh: true }, true);
-    action("search_start", "search-start", "lobby.action.search_start");
-    action("search_cancel", "search-cancel", "lobby.action.search_cancel");
-    action("start", "start", "lobby.action.start");
-    action("leave", "leave", "lobby.action.leave", {}, true);
-    action("cancel", "cancel", "lobby.action.cancel", {}, true);
-    const violationKeys: Record<string, MessageKey> = {
-      insufficient_fresh_content: "lobby.error.fresh",
-      packet_not_playable: "lobby.error.packet",
-      packet_content_incompatible: "lobby.error.content",
-      ruleset_player_limit_exceeded: "lobby.error.players",
-      tournament_stage_closed: "lobby.error.closed",
-      tournament_capacity_restriction: "lobby.error.players",
-      tournament_packet_limit_exceeded: "lobby.error.packet_count",
-      tournament_membership_required: "lobby.error.membership",
-      classic_participants_required: "classic.participants_required",
-    };
-    const violations = lobby.validation_violations.length
-      ? element("aside", { className: "lobby-warnings", role: "alert" },
-        element("h3", {}, this.i18n.t("lobby.errors")),
-        element("ul", {}, ...lobby.validation_violations.map((item) => {
-          const key = item.code === "packet_not_playable" && item.details?.reason === "missing"
-            ? "lobby.error.packet_required" : violationKeys[item.code];
-          return element("li", {}, key ? this.i18n.t(key)
-            : `${this.i18n.t("lobby.error.other")} (${item.code})`);
-        })))
-      : null;
-    this.renderFrame(route, element(
-      "section", { className: "route-content lobby-content" }, tabs,
-      element("h2", { className: "lobby-tournament-title" }, lobby.tournament_name ?? ""),
-      section === "packets" ? element("section", {}, element("h2", {}, this.i18n.t("lobby.packets")), packetList) :
-      section === "settings" ? element("section", {}, element("h2", {}, this.i18n.t("lobby.options")), settings, fixedSettings) :
-      element("section", { className: "route-content lobby-overview" },
-        lobby.invitation_url ? element("a", { href: lobby.invitation_url, className: "resource-card lobby-invitation-link" },
-          this.i18n.t("lobby.invitation"), ": ", lobby.invitation_url) : this.detail(this.i18n.t("lobby.invitation"), lobby.invitation_code),
-        this.detail(this.i18n.t("lobby.capacity"), `${lobby.members.filter((member) => member.role === "player").length}/${lobby.max_players}`),
-        element("h2", {}, this.i18n.t("lobby.members")), members,
-        element("h2", {}, this.i18n.t("lobby.packets")), packetList,
-        element("h2", {}, this.i18n.t("lobby.options")), currentSettings,
-        actions, violations,
-      ),
-    ));
+    renderDetails();
+    this.renderFrame(route, content);
     const watchEvents = async (): Promise<void> => {
       try {
         const feed = await this.api.request<{ items: Array<{ sequence: number }> }>(
           `/api/miniapp/lobbies/${encodeURIComponent(route.params.launch_ref ?? "")}/events?after=${lobby.last_event_sequence}`,
+          { signal },
         );
-        if (feed.items.length && !dirty && !busy) {
-          await this.load(route);
-          return;
-        }
+        if (feed.items.length) await refresh();
       } catch {
         // The full snapshot reconciliation below remains authoritative.
       }
-      this.eventTimer = window.setTimeout(() => void watchEvents(), Math.max(2, lobby.poll_after_seconds) * 1000);
+      if (isActive()) this.eventTimer = window.setTimeout(() => void watchEvents(), Math.max(2, lobby.poll_after_seconds) * 1000);
     };
     this.eventTimer = window.setTimeout(() => void watchEvents(), Math.max(2, lobby.poll_after_seconds) * 1000);
-    const reconcile = (): void => {
-      if (!dirty && !busy) void this.load(route);
-      else this.pollTimer = window.setTimeout(reconcile, 30_000);
+    const reconcile = async (): Promise<void> => {
+      await refresh();
+      if (isActive()) this.pollTimer = window.setTimeout(() => void reconcile(), 30_000);
     };
-    this.pollTimer = window.setTimeout(reconcile, 30_000);
+    this.pollTimer = window.setTimeout(() => void reconcile(), 30_000);
   }
 
   private renderTournamentRoute(

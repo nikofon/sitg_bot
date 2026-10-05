@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.ruleset_content import DEFAULT_CONTENT_ADAPTERS, PacketSelection
-from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.services.tournaments import PACKET_NOTIFICATIONS_POLICY, TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     ClassicRoundRecord,
@@ -44,6 +44,8 @@ class PacketAvailabilityService:
                 # Serialize recipients and rule edits with other tournament mutations.
                 context = await self.tournaments.context(session, tournament_id, lock=True)
                 if not context.assembly_open:
+                    continue
+                if not context.policies.get(PACKET_NOTIFICATIONS_POLICY, True):
                     continue
                 tournament = await session.get(TournamentRecord, tournament_id)
                 if tournament.moderation_status != "normal":

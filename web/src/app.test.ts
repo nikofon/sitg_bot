@@ -29,6 +29,7 @@ describe("MiniAppShell", () => {
     shell = undefined;
     document.body.replaceChildren();
     sessionStorage.clear();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -67,13 +68,18 @@ describe("MiniAppShell", () => {
         resource.version += 1;
         return response({ removed: true });
       }
+      if (String(url).includes("/events?")) {
+        const after = Number(new URL(String(url), window.location.origin).searchParams.get("after"));
+        return response({ items: resource.last_event_sequence > after ? [{ sequence: resource.last_event_sequence }] : [] });
+      }
       return response({ locale: "en", authorization: { allowed: true }, resource });
     });
     const root = document.createElement("div");
     document.body.append(root);
-    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+    const router = new Router();
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), router, new FakePlatform(), false);
     shell.start();
-    return { root, fetcher };
+    return { root, fetcher, resource, router };
   }
 
   function libraryShell(command: "view" | "download", confirm: boolean) {
@@ -195,6 +201,204 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Add packet"));
     const remove = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
     expect(JSON.parse(String(remove?.[1]?.body))).toEqual({ expected_version: 8, packet_id: "discoverable" });
+  });
+
+  it("keeps the packet list, filters, sort and focused button mounted after actions and reconciliation", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const main = root.querySelector("main");
+    const card = root.querySelector('[data-packet-id="discoverable"]')!;
+    const button = card.querySelector<HTMLButtonElement>("button")!;
+    const search = root.querySelector<HTMLInputElement>('input[name="name"]')!;
+    search.value = "packet";
+    search.dispatchEvent(new Event("input"));
+    const sort = root.querySelector<HTMLSelectElement>("select")!;
+    sort.value = "fresh";
+    sort.dispatchEvent(new Event("change"));
+    button.focus();
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button.textContent).toBe("Remove");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/routes/resolve"))).toHaveLength(3);
+    expect(root.querySelector("main")).toBe(main);
+    expect(root.querySelector('[data-packet-id="discoverable"]')).toBe(card);
+    expect(card.querySelector("button")).toBe(button);
+    expect(document.activeElement).toBe(button);
+    expect(root.querySelector('input[name="name"]')).toBe(search);
+    expect(search.value).toBe("packet");
+    expect(root.querySelector("select")).toBe(sort);
+    expect(sort.value).toBe("fresh");
+  });
+
+  it("applies event-driven freshness and permission changes without disturbing a packet search", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, resource, fetcher } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const card = root.querySelector('[data-packet-id="discoverable"]');
+    const search = root.querySelector<HTMLInputElement>('input[name="name"]')!;
+    search.focus();
+    search.value = "Discover";
+    search.dispatchEvent(new Event("input"));
+    resource.packet_suggestions[0]!.fresh_play_unit_count = 1;
+    resource.packet_suggestions[0]!.playable_for_all = true;
+    resource.available_actions = [];
+    resource.last_event_sequence = 2;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.querySelector('[data-packet-id="discoverable"]')).toBe(card);
+    expect(card?.textContent).toContain("1 / 6");
+    expect(card?.textContent).toContain("Playable for all: Yes");
+    expect(card?.querySelector("button")).toBeNull();
+    expect(document.activeElement).toBe(search);
+    expect(search.value).toBe("Discover");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/events?after=2"))).toBe(true);
+  });
+
+  it("updates joined and departed members, readiness, capacity and actions around mounted overview packets", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, resource } = lobbyShell("overview");
+    await vi.advanceTimersByTimeAsync(0);
+    const main = root.querySelector("main");
+    const card = root.querySelector('[data-packet-id="selected"]');
+    expect(card?.querySelector("button")?.textContent).toBe("Remove");
+    resource.members.push({ display_name: "Bob", role: "player", ready: false });
+    resource.members[0]!.ready = false;
+    resource.available_actions = ["ready"];
+    resource.validation_violations = [];
+    resource.last_event_sequence = 2;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.textContent).toContain("Bob");
+    expect(root.textContent).toContain("2/4");
+    expect(root.textContent).toContain("Alice <b> · Player · Not ready");
+    expect(root.querySelector(".lobby-overview .settings-actions")?.textContent).toBe("Ready");
+    expect(card?.querySelector("button")).toBeNull();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    resource.members.shift();
+    resource.last_event_sequence = 3;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.textContent).not.toContain("Alice <b>");
+    expect(root.textContent).toContain("1/4");
+    expect(root.querySelector("main")).toBe(main);
+    expect(root.querySelector('[data-packet-id="selected"]')).toBe(card);
+  });
+
+  it("refreshes stale actions in place and uses the current version on retry", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher, resource } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const button = root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button')!;
+    resource.version = 12;
+    fetcher.mockResolvedValueOnce(response({ error: { code: "stale_write" } }, 409));
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelector('[data-packet-id="discoverable"] button')).toBe(button);
+    expect(button.textContent).toBe("Add packet");
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button.textContent).toBe("Remove");
+    const calls = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/packet-select"));
+    expect(calls.map(([, options]) => JSON.parse(String(options?.body)).expected_version)).toEqual([7, 12]);
+  });
+
+  it("ignores snapshots fetched before a packet action", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher, resource } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const original = fetcher.getMockImplementation()!;
+    const oldSnapshot = response({ locale: "en", authorization: { allowed: true }, resource });
+    let resolveSnapshot!: (value: Response) => void;
+    let delaySnapshot = true;
+    fetcher.mockImplementation((url, options) => {
+      if (String(url).includes("/routes/resolve") && delaySnapshot) {
+        delaySnapshot = false;
+        return new Promise<Response>((resolve) => { resolveSnapshot = resolve; });
+      }
+      return original(url, options);
+    });
+    resource.last_event_sequence = 2;
+    await vi.advanceTimersByTimeAsync(5_000);
+    const button = root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button')!;
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button.textContent).toBe("Remove");
+    resolveSnapshot(oldSnapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(button.textContent).toBe("Remove");
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const remove = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
+    expect(JSON.parse(String(remove?.[1]?.body)).expected_version).toBe(8);
+  });
+
+  it("keeps the listing on a transient refresh failure and retries later", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher, resource } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const main = root.querySelector("main");
+    const original = fetcher.getMockImplementation()!;
+    let fail = true;
+    fetcher.mockImplementation((url, options) => {
+      if (String(url).includes("/routes/resolve") && fail) {
+        fail = false;
+        return Promise.resolve(response({ error: { code: "internal_error" } }, 503));
+      }
+      return original(url, options);
+    });
+    resource.last_event_sequence = 2;
+    resource.packet_suggestions[0]!.fresh_play_unit_count = 1;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.querySelector("main")).toBe(main);
+    expect(root.querySelector('[data-packet-id="discoverable"]')?.textContent).toContain("4 / 6");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.querySelector('[data-packet-id="discoverable"]')?.textContent).toContain("1 / 6");
+  });
+
+  it("does not return to a previous lobby section when an event request completes after navigation", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher, router } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    let resolveEvents!: (value: Response) => void;
+    fetcher.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveEvents = resolve; }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    router.navigate("/lobbies/ref?section=overview");
+    await vi.advanceTimersByTimeAsync(0);
+    resolveEvents(response({ items: [{ sequence: 2 }] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelector(".lobby-overview")).not.toBeNull();
+    expect(root.querySelector('input[name="name"]')).toBeNull();
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/routes/resolve"))).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it("preserves unsaved settings while polling", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, resource } = lobbyShell("settings");
+    await vi.advanceTimersByTimeAsync(0);
+    const input = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
+    input.value = "5";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    resource.last_event_sequence = 2;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(root.querySelector('input[name="setting:theme_count"]')).toBe(input);
+    expect(input.value).toBe("5");
+  });
+
+  it.each(["game", "closed", "forbidden"])("ends live updates when the lobby becomes %s", async (transition) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher, resource } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const original = fetcher.getMockImplementation()!;
+    resource.last_event_sequence = 2;
+    fetcher.mockImplementation((url, options) => String(url).includes("/routes/resolve")
+      ? Promise.resolve(response({ locale: "en", authorization: { allowed: transition !== "forbidden" }, resource: {
+        ...resource, game_id: transition === "game" ? "game-id" : null,
+        status: transition === "closed" ? "cancelled" : "assembling",
+      } })) : original(url, options));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(root.querySelector(".lobby-packets")).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("shows all settings and edits only granted fields with typed controls", async () => {
@@ -321,7 +525,7 @@ describe("MiniAppShell", () => {
   });
 
   it("shows lobby membership without an invite-player form", async () => {
-    const { root } = lobbyShell("overview");
+    const { root, fetcher } = lobbyShell("overview");
     await vi.waitFor(() => expect(root.textContent).toContain("Alice <b>"));
     expect(root.querySelector("li b")).toBeNull();
     expect(root.textContent).toContain("Selected packet");
@@ -329,10 +533,18 @@ describe("MiniAppShell", () => {
     expect(root.textContent).not.toContain("Invite player");
     expect(root.textContent).not.toContain("Discoverable packet");
     expect(root.querySelector("form")).toBeNull();
-    expect(root.querySelector(".lobby-packet-card button")).toBeNull();
+    const remove = root.querySelector<HTMLButtonElement>(".lobby-packet-card button")!;
+    expect(remove.textContent).toBe("Remove");
     expect(root.textContent).toContain("Ready delay");
     expect(root.querySelector('[role="alert"]')?.textContent).toContain("Not enough themes");
     expect(root.querySelector(".lobby-overview")?.lastElementChild?.getAttribute("role")).toBe("alert");
+    const overview = root.querySelector(".lobby-overview");
+    remove.click();
+    await vi.waitFor(() => expect(root.querySelector('[data-packet-id="selected"]')).toBeNull());
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "selected" });
+    expect(root.querySelector(".lobby-overview")).toBe(overview);
+    expect(root.querySelector(".lobby-packet-card")).toBeNull();
   });
 
   it("shows selected cards first with metadata, shared freshness, and independent playability", async () => {
