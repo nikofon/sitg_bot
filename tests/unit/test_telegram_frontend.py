@@ -118,10 +118,56 @@ async def test_packet_upload_sends_controls_for_every_draft(filename) -> None:
         assert any(button.callback_data == f"packet:draft:publish:{UUID(int=index)}"
                    for button in buttons)
     bindings = [call.args[1] for call in gateway.execute_update.await_args_list[1:]]
+
     assert [(binding.draft_id, binding.message_id) for binding in bindings] == [
         (UUID(int=1), 10), (UUID(int=2), 11),
     ]
-    state.clear.assert_awaited_once()
+    # The upload session stays open for further files instead of ending here.
+    state.clear.assert_not_awaited()
+
+
+async def test_packet_upload_accepts_several_files_in_one_session() -> None:
+    summaries = [
+        {
+            "draft_id": str(UUID(int=index)), "version": 1,
+            "status": "awaiting_confirmation", "source_filename": filename,
+            "ruleset_key": "si", "ruleset_version": 1, "packet_name": f"Packet {index}",
+            "theme_count": 6, "question_count": 30, "detected_authors": [],
+            "errors": [], "warnings": [], "can_publish": True, "can_reject": True,
+            "launch_reference": f"preview{index}",
+        }
+        for index, filename in ((1, "first.docx"), (2, "second.pdf"))
+    ]
+    gateway = SimpleNamespace(execute_update=AsyncMock(side_effect=[
+        SimpleNamespace(ok=True, data={"drafts": [summaries[0]]}),
+        SimpleNamespace(ok=True),
+        SimpleNamespace(ok=True, data={"drafts": [summaries[1]]}),
+        SimpleNamespace(ok=True),
+    ]))
+    state = SimpleNamespace(
+        get_data=AsyncMock(return_value={"tournament_id": str(UUID(int=3))}), clear=AsyncMock()
+    )
+    for index, summary in enumerate(summaries, 1):
+        filename = str(summary["source_filename"])
+        message = SimpleNamespace(
+            document=SimpleNamespace(file_name=filename, file_size=5),
+            bot=SimpleNamespace(download=AsyncMock(return_value=io.BytesIO(b"input"))),
+            answer=AsyncMock(return_value=SimpleNamespace(
+                chat=SimpleNamespace(id=42), message_id=10 + index,
+            )),
+        )
+        await handle_packet_document(
+            message, BotBackend(gateway), object(), LocalizationService(), "en", state,
+            "https://example.org/app",
+        )
+        assert f"Packet {index}" in message.answer.await_args.args[0]
+    operations = [call.args[1] for call in gateway.execute_update.await_args_list]
+    uploads = [operation for operation in operations if operation.action == ActionCode.PACKET_UPLOAD]
+    assert [upload.source_filename for upload in uploads] == ["first.docx", "second.pdf"]
+    assert all(
+        upload.tournament_id == UUID(int=3) and upload.source_base64 for upload in uploads
+    )
+    state.clear.assert_not_awaited()
 
 
 async def test_packet_upload_warns_when_the_packet_has_no_themes() -> None:

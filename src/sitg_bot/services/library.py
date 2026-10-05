@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import or_, select, text, tuple_
+from sqlalchemy import func, or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,12 +16,18 @@ from sitg_bot.services.ruleset_content import (
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    AnswerAttemptRecord,
+    AppealRecord,
     AuthorRecord,
+    GameRecord,
+    GameRulesetVersionRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
     PlayerExposureClaimRecord,
+    PlayerQuestionStateRecord,
     PlayerRecord,
     QuestionRevisionRecord,
+    QuestionRoundRecord,
     ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
@@ -167,6 +173,73 @@ class PacketLibraryService:
                 cards.values(), key=lambda card: (card["name"], card["version_id"])
             )}
 
+    async def _question_statistics(
+        self, session: AsyncSession, version_id: UUID
+    ) -> dict[str, dict[str, object]]:
+        """Per-question view and buzz aggregates from finalized, appeal-free SI games."""
+        revisions = select(PacketQuestionRecord.question_revision_id).where(
+            PacketQuestionRecord.packet_version_id == version_id
+        )
+        rounds = select(
+            QuestionRoundRecord.id, QuestionRoundRecord.question_revision_id,
+        ).join(GameRecord, GameRecord.id == QuestionRoundRecord.game_id).join(
+            GameRulesetVersionRecord,
+            GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
+        ).where(
+            QuestionRoundRecord.question_revision_id.in_(revisions),
+            GameRulesetVersionRecord.key == "si",
+            GameRecord.status == "finalized",
+            QuestionRoundRecord.status == "completed",
+            QuestionRoundRecord.started_at.is_not(None),
+            ~select(AppealRecord.id).where(
+                AppealRecord.game_id == GameRecord.id,
+                AppealRecord.status.not_in(("accepted", "rejected")),
+            ).exists(),
+        ).subquery()
+        exposures = select(
+            PlayerQuestionStateRecord.round_id,
+            func.count().label("views"),
+            func.count().filter(
+                PlayerQuestionStateRecord.accepted_buzz_order.is_not(None)
+            ).label("buzzes"),
+        ).join(rounds, rounds.c.id == PlayerQuestionStateRecord.round_id).group_by(
+            PlayerQuestionStateRecord.round_id,
+        ).subquery()
+        attempts = select(
+            AnswerAttemptRecord.round_id,
+            func.count().label("attempts"),
+            func.count().filter(AnswerAttemptRecord.final_correct).label("correct"),
+        ).join(rounds, rounds.c.id == AnswerAttemptRecord.round_id).group_by(
+            AnswerAttemptRecord.round_id,
+        ).subquery()
+        rows = (await session.execute(select(
+            rounds.c.question_revision_id,
+            func.coalesce(func.sum(exposures.c.views), 0).label("views"),
+            func.coalesce(func.sum(exposures.c.buzzes), 0).label("buzzes"),
+            func.coalesce(func.sum(attempts.c.attempts), 0).label("attempts"),
+            func.coalesce(func.sum(attempts.c.correct), 0).label("correct"),
+        ).outerjoin(
+            exposures, exposures.c.round_id == rounds.c.id,
+        ).outerjoin(
+            attempts, attempts.c.round_id == rounds.c.id,
+        ).group_by(rounds.c.question_revision_id))).all()
+        statistics: dict[str, dict[str, object]] = {}
+        for revision_id, views, buzzes, attempt_count, correct in rows:
+            counts = {
+                "views": int(views), "buzzes": int(buzzes),
+                "attempts": int(attempt_count), "correct": int(correct),
+            }
+            counts["incorrect"] = counts["attempts"] - counts["correct"]
+            denominator = counts["attempts"]
+            statistics[str(revision_id)] = {
+                **counts,
+                "correct_rate": round(counts["correct"] * 100 / denominator, 1)
+                if denominator else None,
+                "incorrect_rate": round(counts["incorrect"] * 100 / denominator, 1)
+                if denominator else None,
+            }
+        return statistics
+
     async def access(
         self, player_id: UUID, version_id: UUID, *,
         confirm: bool = False, download: bool = False, request_key: str,
@@ -249,7 +322,12 @@ class PacketLibraryService:
                 raise PermissionError(
                     "Packet exposure changed during reading; retry after the game"
                 )
-            result = {"confirmation_required": False, "name": version.name, "pages": pages}
+            result = {
+                "confirmation_required": False,
+                "name": version.name,
+                "pages": pages,
+                "statistics": await self._question_statistics(session, version_id),
+            }
             if download:
                 player = await session.get(PlayerRecord, player_id)
                 if player is None or player.telegram_user_id is None:

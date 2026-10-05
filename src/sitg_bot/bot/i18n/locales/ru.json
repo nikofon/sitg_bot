@@ -421,7 +421,7 @@
   "tournament_create.visibility.prompt": "Укажите видимость. Предлагаемое значение: <code>{suggested}</code>",
   "unsupported.menu": "Не удалось распознать действие. Открываю текущее меню.",
   "unsupported.prompt": "Сейчас ожидается ответ на текущий вопрос.",
-  "packet_upload.document_prompt": "Загрузите файл DOCX или PDF с одним или несколькими пакетами. Каждый пакет можно будет проверить отдельно. Для отмены используйте /cancel.",
+  "packet_upload.document_prompt": "Загрузите файлы DOCX или PDF с одним или несколькими пакетами. Можно отправить несколько файлов подряд или альбомом — каждый файл загружается отдельно. Каждый пакет можно будет проверить отдельно. Для завершения используйте /cancel.",
   "packet_upload.file_invalid": "Отправьте файл, имя которого заканчивается на .docx или .pdf.",
   "packet_upload.file_too_large": "Файл слишком большой. Максимальный размер: {maximum_mb} МБ.",
   "packet_upload.result": "<b>{name}</b>\nНабор правил: <code>{ruleset}</code>\nТемы: {themes}\nВопросы: {questions}\nНайденные авторы: {authors}\n\n<b>Предупреждения ({warning_count})</b>\n{warnings}\n\n<b>Ошибки ({error_count})</b>\n{errors}",

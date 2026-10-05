@@ -198,8 +198,11 @@ Cards link visible tournament profiles, show viewer-specific fresh/total theme c
 filter by packet/tournament name or slug, author, and packet/publication years; a sort control
 orders cards by fresh-theme count ascending by default or by the default order. View opens
 ruleset-defined pages (SI themes), with a dropdown
-and numbered navigation. Download queues a DOCX in Telegram. Both actions recheck access
-and request confirmation before burning fresh content.
+and numbered navigation whose current page button is visually distinct. Pages show theme
+commentary when present; theme and question author names link to public author profiles.
+Each question lists finalized-game statistics (views, accepted buzzes, and correct/incorrect
+answer rates; unplayed questions say so). Download queues a DOCX in Telegram. Both actions
+recheck access and request confirmation before burning fresh content.
 
 **Ongoing games:** active lobbies and observable games from the viewer's tournaments
 (opened from the player menu's "Ongoing games" button). Lobby cards show the tournament,

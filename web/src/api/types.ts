@@ -491,6 +491,8 @@ export interface PacketQuestion {
   commentary: string;
   source: string;
   author: string;
+  id?: string | null;
+  author_id?: string | null;
 }
 
 export interface PacketTheme {
@@ -647,12 +649,24 @@ export interface LibraryResource {
 export interface LibraryPage {
   title: string;
   author: string;
+  commentary?: string;
+  author_id?: string | null;
   questions: PacketQuestion[];
+}
+
+export interface LibraryQuestionStatistics {
+  views: number;
+  buzzes: number;
+  attempts: number;
+  correct: number;
+  incorrect: number;
+  correct_rate: number | null;
+  incorrect_rate: number | null;
 }
 
 export type LibraryAccess =
   | { confirmation_required: true; fresh_unit_count: number }
-  | { confirmation_required: false; name: string; pages: LibraryPage[] }
+  | { confirmation_required: false; name: string; pages: LibraryPage[]; statistics?: Record<string, LibraryQuestionStatistics> }
   | { confirmation_required: false; queued: true };
 
 export interface PlayerProfileIdentity {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LibraryPacket, LibraryPage } from "../api/types";
+import type { LibraryPacket, LibraryPage, LibraryQuestionStatistics } from "../api/types";
 import { I18n } from "../i18n";
 import { renderLibrary, renderLibraryReader } from "./library";
 
@@ -88,5 +88,56 @@ describe("library", () => {
     expect(root.querySelector('[aria-current="page"]')!.textContent).toBe("2");
     root.querySelector<HTMLButtonElement>("nav button")!.click();
     expect(select.value).toBe("0");
+  });
+
+  it("links authors to profiles, shows theme commentary and question statistics", () => {
+    const authorId = "11111111-1111-1111-1111-111111111111";
+    const playedId = "22222222-2222-2222-2222-222222222222";
+    const unplayedId = "33333333-3333-3333-3333-333333333333";
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [], commentary: "", author: "Writer", source: "", form: "" };
+    const pages: LibraryPage[] = [
+      { title: "First", author: "Theme Writer", commentary: "Theme commentary", author_id: authorId, questions: [{ ...question, id: playedId, author_id: authorId }] },
+      { title: "Second", author: "", questions: [{ ...question, text: "Second question", id: unplayedId, author_id: null }] },
+    ];
+    const statistics: Record<string, LibraryQuestionStatistics> = {
+      [playedId]: { views: 8, buzzes: 2, attempts: 2, correct: 1, incorrect: 1, correct_rate: 50, incorrect_rate: 50 },
+    };
+    const navigate = vi.fn();
+    const root = renderLibraryReader("Packet", pages, new I18n("en"), statistics, navigate);
+    expect(root.querySelector(".library-page")!.textContent).toContain("Theme commentary");
+    const links = root.querySelectorAll<HTMLAnchorElement>(".library-page a");
+    expect(links).toHaveLength(2);
+    for (const link of links) expect(link.getAttribute("href")).toBe(`/authors/${authorId}`);
+    links[0]!.click();
+    expect(navigate).toHaveBeenCalledWith(`/authors/${authorId}`);
+    const stats = root.querySelector(".library-question-statistics")!;
+    expect(stats.textContent).toContain("Views 8");
+    expect(stats.textContent).toContain("Buzzes 2");
+    expect(stats.textContent).toContain("Correct 50%");
+    expect(stats.textContent).toContain("Incorrect 50%");
+    const select = root.querySelector("select")!;
+    select.value = "1";
+    select.dispatchEvent(new Event("change"));
+    expect(root.querySelector(".library-page")!.textContent).toContain("has not been played");
+    expect(root.querySelector(".library-page a")).toBeNull();
+  });
+
+  it("marks the current pagination button so it stands out from its siblings", () => {
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [], commentary: "", author: "", source: "", form: "" };
+    const pages: LibraryPage[] = [
+      { title: "First", author: "", questions: [question] },
+      { title: "Second", author: "", questions: [question] },
+    ];
+    const root = renderLibraryReader("Packet", pages, new I18n("en"));
+    const buttons = root.querySelectorAll<HTMLButtonElement>("nav button");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.className).toBe("pagination-page");
+    expect(buttons[0]!.getAttribute("aria-current")).toBe("page");
+    expect(buttons[1]!.className).toBe("pagination-page");
+    expect(buttons[1]!.getAttribute("aria-current")).toBeNull();
+    buttons[1]!.click();
+    const refreshed = root.querySelectorAll<HTMLButtonElement>("nav button");
+    expect(refreshed[1]!.getAttribute("aria-current")).toBe("page");
+    expect(refreshed[0]!.getAttribute("aria-current")).toBeNull();
   });
 });

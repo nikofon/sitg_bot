@@ -341,7 +341,9 @@ export class MiniAppShell {
             type: "button", className: "secondary-button",
             onclick: (() => this.router.navigate(back)) as EventListener,
           }, this.i18n.t("route.library.title")),
-          renderLibraryReader(result.name, result.pages, this.i18n)));
+          renderLibraryReader(
+            result.name, result.pages, this.i18n, result.statistics,
+            (path) => this.router.navigate(path))));
       } else if ("queued" in result) {
         this.showTextDialog(this.i18n.t("library.download"), [this.i18n.t("library.queued")]);
       }

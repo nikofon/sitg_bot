@@ -418,7 +418,11 @@ async def handle_packet_document(
         source_filename=filename,
         source=source,
     )
-    await state.clear()
+    # The upload session stays open so one prompt can receive several files:
+    # sent one after another or as a Telegram media group (each album item
+    # arrives as its own document message). Every file is imported into the
+    # same tournament until /cancel or another state-changing command ends
+    # the session.
     for draft in drafts:
         similar_warnings, remaining_warnings = _split_similarity_warnings(draft.warnings)
         model = packet_draft_message(

@@ -1,4 +1,4 @@
-import type { LibraryPacket, LibraryPage } from "../api/types";
+import type { LibraryPacket, LibraryPage, LibraryQuestionStatistics } from "../api/types";
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
@@ -96,17 +96,39 @@ export function renderLibrary(
   return element("section", { className: "route-content" }, controls, list);
 }
 
-export function renderLibraryReader(name: string, pages: LibraryPage[], i18n: I18n): HTMLElement {
+export function renderLibraryReader(
+  name: string, pages: LibraryPage[], i18n: I18n,
+  statistics?: Record<string, LibraryQuestionStatistics>,
+  navigate: (path: string) => void = () => {},
+): HTMLElement {
   const content = element("section", { className: "library-page" });
   const navigation = element("nav", { className: "pagination", "aria-label": i18n.t("library.pages") });
   const select = element("select", { className: "library-theme-select", "aria-label": i18n.t("library.jump") }, ...pages.map((page, index) =>
     element("option", { value: String(index) }, `${i18n.t("library.theme")}: ${page.title}`)));
+  const authorField = (label: MessageKey, value: string, authorId?: string | null): HTMLElement =>
+    element("p", {}, `${i18n.t(label)}: `, authorId
+      ? element("a", {
+        href: `/authors/${encodeURIComponent(authorId)}`,
+        onclick: ((event: Event) => {
+          event.preventDefault();
+          navigate(`/authors/${encodeURIComponent(authorId)}`);
+        }) as EventListener,
+      }, value)
+      : value);
+  const percent = (value: number | null): string => value === null ? "—" : `${value}%`;
+  const questionStatistics = (stats: LibraryQuestionStatistics): HTMLElement =>
+    element("p", { className: "library-question-statistics" },
+      `${i18n.t("library.statistics")}: ${i18n.t("library.stats_views")} ${stats.views}, `,
+      `${i18n.t("library.stats_buzzes")} ${stats.buzzes} (`,
+      `${i18n.t("library.stats_correct")} ${percent(stats.correct_rate)}, `,
+      `${i18n.t("library.stats_incorrect")} ${percent(stats.incorrect_rate)})`);
   const render = (index: number): void => {
     const page = pages[index];
     if (!page) return;
     select.value = String(index);
     content.replaceChildren(element("h2", { className: "library-theme-title", tabindex: "-1" }, `${i18n.t("library.theme")}: ${page.title}`));
-    if (page.author) content.append(element("p", {}, `${i18n.t("library.author")}: ${page.author}`));
+    if (page.author) content.append(authorField("library.author", page.author, page.author_id));
+    if (page.commentary) content.append(element("p", {}, `${i18n.t("library.commentary")}: ${page.commentary}`));
     for (const question of page.questions) {
       const block = element("article", { className: "library-question" },
         element("h3", {}, question.form
@@ -116,15 +138,22 @@ export function renderLibraryReader(name: string, pages: LibraryPage[], i18n: I1
       for (const [field, label] of [
         ["accepted_answers", "library.additional_answers"], ["rejected_answers", "library.rejected_answers"],
         ["commentary", "library.commentary"],
-        ["author", "library.author"], ["source", "library.source"],
+        ["source", "library.source"],
       ] as const) {
         const value = question[field];
         if (value?.length) block.append(element("p", {}, `${i18n.t(label)}: ${Array.isArray(value) ? value.join(", ") : value}`));
       }
+      if (question.author) block.append(authorField("library.author", question.author, question.author_id));
+      if (statistics !== undefined && question.id) {
+        const stats = statistics[question.id];
+        if (stats) block.append(questionStatistics(stats));
+        else block.append(element("p", { className: "library-question-statistics" },
+          `${i18n.t("library.statistics")}: ${i18n.t("library.stats_empty")}`));
+      }
       content.append(block);
     }
     navigation.replaceChildren(...pages.map((_, pageIndex) => element("button", {
-      type: "button", className: index === pageIndex ? "primary-button" : "secondary-button",
+      type: "button", className: "pagination-page",
       "aria-current": index === pageIndex ? "page" : undefined,
       onclick: (() => { render(pageIndex); content.querySelector<HTMLElement>("h2")?.focus(); }) as EventListener,
     }, String(pageIndex + 1))));

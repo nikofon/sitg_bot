@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -16,14 +17,23 @@ from sitg_bot.services.ruleset_content import PacketSelection, SIContentAdapter
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    AnswerAttemptRecord,
+    AuthorRecord,
+    GameParticipantRecord,
+    GameRecord,
     OutboxEventRecord,
+    PacketQuestionRecord,
     PacketVersionRecord,
     PlayerExposureClaimRecord,
+    PlayerQuestionStateRecord,
+    QuestionRevisionRecord,
+    QuestionRoundRecord,
     ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentPacketEntitlementRecord,
+    TournamentPolicyVersionRecord,
     TournamentRecord,
 )
 
@@ -265,6 +275,123 @@ async def test_partial_exposure_still_requires_confirmation(database_url):
         )
         assert result == {"confirmation_required": True, "fresh_unit_count": 1}
         assert len(await claims_for(database, fixture.players[0].id)) == 1
+    finally:
+        await database.close()
+
+
+async def test_reader_exposes_authors_commentary_and_question_statistics(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        _, version_id = await configure(database, fixture)
+        now = datetime.now(UTC)
+        async with database.transaction() as session:
+            author = AuthorRecord(display_name="Library Theme Author")
+            session.add(author)
+            await session.flush()
+            theme = await session.scalar(select(ThemeRevisionRecord).where(
+                ThemeRevisionRecord.packet_version_id == version_id
+            ))
+            theme.author_id = author.id
+            theme.commentary = "Integration theme commentary"
+            played_revision = (await session.scalars(
+                select(PacketQuestionRecord.question_revision_id)
+                .where(PacketQuestionRecord.theme_revision_id == theme.id)
+                .order_by(PacketQuestionRecord.position)
+            )).first()
+            revision = await session.get(QuestionRevisionRecord, played_revision)
+            revision.author_id = author.id
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                TournamentPolicyVersionRecord.tournament_id == tournament.id
+            ))
+            game = GameRecord(
+                tournament_id=tournament.id,
+                tournament_type_version_id=tournament.type_version_id,
+                game_ruleset_version_id=tournament.game_ruleset_version_id,
+                tournament_policy_version_id=policy.id,
+                host_player_id=fixture.manager.id,
+                status="finalized",
+                phase="finished",
+                completed_at=now,
+                finalized_at=now,
+                assignment_plan={},
+            )
+            session.add(game)
+            await session.flush()
+            participants = []
+            for seat, player in enumerate(fixture.players, start=1):
+                participant = GameParticipantRecord(
+                    tournament_id=tournament.id,
+                    game_id=game.id,
+                    player_id=player.id,
+                    seat=seat,
+                    rating_sequence=seat,
+                    global_game_sequence=seat,
+                    score=Decimal(0),
+                    final_place=seat,
+                    active=False,
+                )
+                session.add(participant)
+                participants.append(participant)
+            await session.flush()
+            round_record = QuestionRoundRecord(
+                game_id=game.id,
+                question_revision_id=played_revision,
+                sequence=1,
+                status="completed",
+                started_at=now,
+                completed_at=now,
+            )
+            session.add(round_record)
+            await session.flush()
+            session.add_all([
+                PlayerQuestionStateRecord(
+                    round_id=round_record.id,
+                    participant_id=participants[0].id,
+                    eligible=False,
+                    attempted=True,
+                    accepted_buzz_order=1,
+                    buzzed_at=now,
+                ),
+                PlayerQuestionStateRecord(
+                    round_id=round_record.id,
+                    participant_id=participants[1].id,
+                    eligible=True,
+                    attempted=False,
+                ),
+            ])
+            session.add(AnswerAttemptRecord(
+                round_id=round_record.id,
+                participant_id=participants[0].id,
+                attempt_number=1,
+                submitted_answer="answer",
+                timed_out=False,
+                original_correct=True,
+                final_correct=True,
+            ))
+
+        library = PacketLibraryService(database)
+        result = await library.access(
+            fixture.players[0].id, version_id, confirm=True, request_key="stats"
+        )
+        page = result["pages"][0]
+        assert page["commentary"] == "Integration theme commentary"
+        assert page["author_id"] == str(author.id)
+        question = page["questions"][0]
+        assert question["id"] == str(played_revision)
+        assert question["author_id"] == str(author.id)
+        assert result["statistics"] == {
+            str(played_revision): {
+                "views": 2,
+                "buzzes": 1,
+                "attempts": 1,
+                "correct": 1,
+                "incorrect": 0,
+                "correct_rate": 100.0,
+                "incorrect_rate": 0.0,
+            }
+        }
     finally:
         await database.close()
 
