@@ -1242,6 +1242,32 @@ p {
   stroke-linejoin: round;
 }
 
+.rating-graph-label {
+  fill: var(--tg-theme-hint-color);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rating-graph-axis {
+  fill: none;
+  stroke: var(--tg-theme-hint-color);
+  stroke-width: 1;
+}
+
+.rating-graph-grid {
+  stroke: color-mix(in srgb, var(--tg-theme-hint-color) 20%, transparent);
+  stroke-width: 1;
+}
+
+.profile-si-statistics th {
+  overflow-wrap: anywhere;
+}
+
+.profile-si-statistics .table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .profile-stats-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1347,9 +1373,27 @@ p {
 
 .game-participant {
   display: grid;
-  grid-template-columns: 2.2rem 1fr auto;
+  grid-template-columns: 2.2rem minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 0.6rem;
+}
+
+.game-participant-identity {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.game-participant-ratings {
+  display: grid;
+  gap: 0.15rem;
+  color: var(--tg-theme-hint-color);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-game-packets {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .game-participant-place {

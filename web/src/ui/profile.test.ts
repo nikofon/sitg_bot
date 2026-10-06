@@ -188,3 +188,120 @@ describe("player game results", () => {
     expect(openPlayer).toHaveBeenCalledWith(playerOneId);
   });
 });
+
+
+describe("additional profile statistics", () => {
+  it("localizes SI statistics and distinguishes zero scores from missing data", () => {
+    const render = (average: number | null) => renderPlayerProfile({
+      ...profile,
+      si_statistics: { average_normalized_score: average, buzz_times: [
+        { value: 10, average_seconds: 1.25, samples: 3 },
+        { value: 20, average_seconds: null, samples: 0 },
+      ] },
+    }, new I18n("ru"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    const root = render(0);
+    expect(root.querySelector(".profile-si-statistics h3")!.textContent).toBe("Статистика СИ");
+    expect(root.querySelector(".profile-si-statistics dd")!.textContent).toBe("0");
+    expect(root.querySelector(".profile-si-statistics tbody td")!.textContent).toBe("1,25");
+    expect(render(null).querySelector(".profile-si-statistics dd")!.textContent).toBe("—");
+  });
+
+  it("labels both rating axes and spaces chronologically ordered points by elapsed time", () => {
+    const history = [
+      { played_at: "2026-09-11T12:00:00Z", rating: 1100 },
+      { played_at: "2026-09-01T12:00:00Z", rating: 1000 },
+      { played_at: "2026-09-02T12:00:00Z", rating: 1050 },
+    ];
+    const root = renderPlayerProfile({ ...profile, rating: { value: 1100, history } }, new I18n("en"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    const graph = root.querySelector(".rating-graph")!;
+    expect([...graph.querySelectorAll(".rating-graph-y-label")].map(label => label.textContent))
+      .toEqual(["999", "1,050", "1,101"]);
+    const dates = [...graph.querySelectorAll(".rating-graph-x-label")].map(label => label.textContent);
+    const format = new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "2-digit" });
+    expect(dates).toEqual([1, 6, 11].map(day => format.format(new Date(`2026-09-${String(day).padStart(2, "0")}T12:00:00Z`))));
+    const xs = graph.querySelector("polyline")!.getAttribute("points")!.split(" ").map(point => Number(point.split(",")[0]));
+    expect((xs[1]! - xs[0]!) / (xs[2]! - xs[0]!)).toBeCloseTo(0.1);
+    expect(graph.getAttribute("aria-label")).toContain("1,050");
+    expect(history[0]!.rating).toBe(1100);
+  });
+
+  it("keeps constant ratings and identical timestamps finite and adds intraday time labels", () => {
+    const history = [
+      { played_at: "2026-09-01T12:00:00Z", rating: 1000 },
+      { played_at: "2026-09-01T12:00:00Z", rating: 1000 },
+    ];
+    const root = renderPlayerProfile({ ...profile, rating: { value: 1000, history } }, new I18n("ru"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    const graph = root.querySelector(".rating-graph")!;
+    expect(graph.querySelectorAll(".rating-graph-x-label")).toHaveLength(1);
+    expect(graph.querySelectorAll(".rating-graph-time-label")).toHaveLength(1);
+    const points = graph.querySelector("polyline")!.getAttribute("points")!.split(/[ ,]/).map(Number);
+    expect(points.every(Number.isFinite)).toBe(true);
+    expect(points[1]).toBe(points[3]);
+    expect(graph.querySelectorAll(".rating-graph-y-label")).toHaveLength(3);
+  });
+
+  it("omits graphs without enough valid dated ratings", () => {
+    const root = renderPlayerProfile({ ...profile, rating: { value: 1000, history: [
+      { played_at: "invalid", rating: 1000 },
+      { played_at: "2026-09-01T12:00:00Z", rating: NaN },
+      { played_at: "2026-09-02T12:00:00Z", rating: 1000 },
+    ] } }, new I18n("en"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    expect(root.querySelector(".rating-graph")).toBeNull();
+  });
+
+  it("shows packet names and post-game ratings safely, without substituting current ratings", () => {
+    const resource = structuredClone(profile);
+    resource.games[0]!.packets = [{ name: "Packet <script>" }, { name: "Second packet" }];
+    resource.games[0]!.participants[0]!.global_rating_after = 1200.5;
+    resource.games[0]!.participants[0]!.tournament_rating_after = 0;
+    const root = renderPlayerProfile(resource, new I18n("en"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    expect(root.querySelector(".profile-game-packets")!.textContent).toBe("Packets used: Packet <script>, Second packet");
+    expect(root.querySelector("script")).toBeNull();
+    const ratings = root.querySelectorAll(".game-participant-ratings");
+    expect(ratings[0]!.textContent).toContain("Global rating: 1,200.5");
+    expect(ratings[0]!.textContent).toContain("Tournament rating: 0");
+    expect(ratings[0]!.getAttribute("title")).toBe("Ratings when this game ended");
+    expect(ratings[1]!.textContent).toBe("Global rating: —");
+  });
+
+  it("renders SI aggregates only when supplied, preserving zero and missing samples", () => {
+    const render = (resource: PlayerProfileResource) => renderPlayerProfile(resource, new I18n("en"), () => "—", {
+      selectRuleset: vi.fn(), openPlayer: vi.fn(), openGame: vi.fn(),
+    });
+    expect(render(profile).querySelector(".profile-si-statistics")!.textContent).toContain("not available yet");
+    const root = render({ ...profile, si_statistics: {
+      average_normalized_score: -12.25,
+      buzz_times: [{ value: 10, average_seconds: 0, samples: 2 }, { value: 20, average_seconds: null, samples: 0 }],
+    } });
+    expect(root.querySelector(".profile-si-statistics dd")!.textContent).toBe("-12.25");
+    const rows = root.querySelectorAll(".profile-si-statistics tbody tr");
+    expect(rows).toHaveLength(5);
+    expect([...rows[0]!.children].map(cell => cell.textContent)).toEqual(["10", "0", "2"]);
+    expect([...rows[1]!.children].map(cell => cell.textContent)).toEqual(["20", "—", "0"]);
+    expect([...rows[2]!.children].map(cell => cell.textContent)).toEqual(["30", "—", "—"]);
+    expect(render({ ...profile, ruleset_key: "other" }).querySelector(".profile-si-statistics")).toBeNull();
+  });
+
+  it("shows packets in game details and distinguishes unavailable data from no packets", () => {
+    for (const [packets, expected] of [
+      [undefined, "Not available"], [null, "Not available"], [[], "None"],
+      [[{ name: "First <b>packet</b>" }, { name: null }], "First <b>packet</b>, Not available"],
+    ] as const) {
+      const root = renderPlayerGame({ ...game, packets: packets ? [...packets] : packets }, new I18n("en"), () => "—", {
+        back: vi.fn(), openPlayer: vi.fn(),
+      });
+      expect(root.querySelector(".profile-game-packets")!.textContent).toBe(`Packets used: ${expected}`);
+      expect(root.querySelector(".profile-game-packets b")).toBeNull();
+    }
+  });
+});

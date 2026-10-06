@@ -235,7 +235,7 @@ def fixture(snapshot=None):
 
 @pytest.mark.parametrize("locale", ["en", "ru"])
 @pytest.mark.parametrize("mine", [False, True])
-@pytest.mark.parametrize("kind", ["player_abandoned", "game_cancelled"])
+@pytest.mark.parametrize("kind", ["player_abandoned", "player_quit", "game_cancelled"])
 async def test_player_leave_notice_identifies_player_for_others_once(locale, mine, kind):
     bot, protocol, delivery = fixture(view(locale=locale))
     protocol.events = [event(

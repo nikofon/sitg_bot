@@ -207,7 +207,7 @@ class GameDelivery:
         key = f"event:{event['sequence']}"
         round_id = params.get("round_id")
         if not params.get("mine") and (
-            kind == "player_abandoned"
+            kind in {"player_abandoned", "player_quit"}
             or (
                 kind == "game_cancelled"
                 and params.get("reason") == "player_abandoned_before_theme_reveal"

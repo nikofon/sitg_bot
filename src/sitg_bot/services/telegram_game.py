@@ -169,6 +169,9 @@ class TelegramGameService:
                 cursor.dismissed_at = datetime.now(UTC)
                 cursor.connected = False
                 await self._cleanup(session, game.id, telegram_user_id)
+                await PersistentGameService._event(
+                    session, game.id, "player_quit", {"player_id": str(player.id)},
+                )
                 return {"accepted": True, "receipt": None}
             if command not in view["actions"]:
                 return {"accepted": False, "reason": game_action_reason(view, command)}
@@ -387,6 +390,10 @@ class TelegramGameService:
                         answer=attempt.submitted_answer,
                         mine=public.id == player.id,
                     )
+                if event.kind == "player_quit":
+                    public = await session.get(PlayerRecord, UUID(params["player_id"]))
+                    params["mine"] = public.id == player.id
+                    params["name"] = public.public_nickname
                 if event.kind in {"player_reconnected", "player_abandoned"} or (
                     event.kind == "game_cancelled"
                     and params.get("reason") == "player_abandoned_before_theme_reveal"

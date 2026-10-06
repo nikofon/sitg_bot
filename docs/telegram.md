@@ -175,8 +175,10 @@ links require consent and a shared completed game.
 state. The game-event consumer coalesces adjacent reveal events only, preserving lifecycle
 boundaries. Manual and outbox sends share per-chat locking and durable message identities.
 
-`/abandon` requires confirmation. Completed-game `/quit` restores menu context and stops
-delivery. Ordinary menu commands do not reopen historical games. Explicit `/reconnect`
+`/abandon` requires confirmation. Completed-game `/quit` restores menu context, stops
+delivery to the departing user, and tells remaining participants “Player_name left the game.”
+The notice uses the durable game event stream, including retry/restart deduplication.
+Ordinary menu commands do not reopen historical games. Explicit `/reconnect`
 restores an abandoned running game until a later game assignment forfeits that right.
 
 Exit queues durable best-effort deletion of tracked inputs and gameplay messages. Cleanup

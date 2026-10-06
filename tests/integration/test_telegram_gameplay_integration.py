@@ -141,6 +141,53 @@ async def test_zero_point_gameplay_timeout_appeal_and_recovery(
         await database.close()
 
 
+async def test_quit_notifies_remaining_players_once(database_url):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 3)
+        service = TelegramGameService(database)
+        first, second, third = fixture.inputs
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        with pytest.raises(ValueError, match="must be abandoned"):
+            await act(service, first, game_id, "quit")
+        await progress_until(
+            database, game_id, first, lambda v: v["status"] in {"completed", "finalized"},
+        )
+        await act(service, first, game_id, "quit")
+        with pytest.raises(PermissionError, match="has been left"):
+            await act(service, first, game_id, "quit")
+        restarted = TelegramGameService(database)
+        assert (await restarted.delivery(first.telegram_user_id, game_id))["skip"]
+        for player in (second, third):
+            delivered = await restarted.delivery(player.telegram_user_id, game_id)
+            departures = [event for event in delivered["events"] if event["kind"] == "player_quit"]
+            assert len(departures) == 1
+            departure = departures[0]
+            assert departure["parameters"]["name"] == fixture.players[0].public_nickname
+            assert departure["parameters"]["mine"] is False
+            await restarted.record_delivery(
+                player.telegram_user_id, game_id, sequence=departure["sequence"],
+            )
+            assert not (await restarted.delivery(player.telegram_user_id, game_id))["events"]
+        async with database.sessions() as session:
+            notices = list(await session.scalars(select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == game_id,
+                OutboxEventRecord.topic == "game.event",
+                OutboxEventRecord.aggregate_sequence == departure["sequence"],
+            )))
+        assert {event.payload["recipient_telegram_user_id"] for event in notices} >= {
+            second.telegram_user_id, third.telegram_user_id,
+        }
+        await act(service, second, game_id, "quit")
+        assert (await restarted.delivery(first.telegram_user_id, game_id))["skip"]
+        departures = (await restarted.delivery(third.telegram_user_id, game_id))["events"]
+        assert len(departures) == 1 and departures[0]["kind"] == "player_quit"
+        assert departures[0]["parameters"]["name"] == fixture.players[1].public_nickname
+    finally:
+        await database.close()
+
+
 async def test_abandon_dismisses_only_leaving_players_and_survives_restart(database_url):
     database = Database(database_url)
     try:

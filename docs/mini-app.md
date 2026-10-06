@@ -180,13 +180,18 @@ worse), SI per-question-value correct/incorrect counts (custom tournament scales
 onto canonical 10–50 values), optional SI aggregates (`si_statistics`: the average
 per-game normalized score, where each question's signed contribution is scaled by its actual
 ruleset value onto the canonical scale, and accepted-buzz average delays from question opening
-per canonical value, with missing timings excluded and real sample counts), and recent game
-cards with tournament name, stage placeholder, participants, scores, places, the packets used
+per canonical value, with missing timings excluded and real sample counts). These aggregates
+appear in a compact SI statistics section; unavailable values display a dash, while zero scores
+and measured zero-second delays remain visible. The rating graph labels rating and date axes
+and spaces results by elapsed time. Recent game
+cards show tournament name, stage placeholder, participants, scores, places, the packets used
 in the game (`packets`; names visible only to administrators, managers of that tournament,
 game participants, and viewers of library-released versions — withheld names stay `null`,
 `null` lists mean unavailable), and settlement rating snapshots per participant
 (`global_rating_after` from the ruleset ledger; `tournament_rating_after` from the tournament
-ledger, included only for viewers allowed to see that tournament). Private tournament names
+ledger, included only for viewers allowed to see that tournament), displayed below each
+participant's name. These use Telegram theme colors and wrap within narrow Mini App windows.
+Private tournament names
 are replaced with a neutral label
 for viewers without membership, manager, or admin access. Real names and non-public Telegram
 usernames are visible only to the player themself or platform administrators. The
