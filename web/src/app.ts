@@ -957,14 +957,19 @@ export class MiniAppShell {
     route: RouteMatch,
     resource: TournamentPacketsResource,
   ): void {
-    const content = renderTournamentPackets(resource.items, this.i18n, {
-      viewInLibrary: (packet) => this.router.navigate(
-        `/library/${encodeURIComponent(packet.version_id)}`,
-      ),
-      toggleBlock: (packet) => void this.togglePacketBlock(
-        route, resource.tournament_id, packet.packet_id, !packet.blocked,
-      ),
-    });
+    const content = renderTournamentPackets(
+      resource.items, this.i18n,
+      this.filters.read("tournament_packets"),
+      (filters) => this.filters.write("tournament_packets", filters),
+      {
+        viewInLibrary: (packet) => this.router.navigate(
+          `/library/${encodeURIComponent(packet.version_id)}`,
+        ),
+        toggleBlock: (packet) => void this.togglePacketBlock(
+          route, resource.tournament_id, packet.packet_id, !packet.blocked,
+        ),
+      },
+    );
     this.renderFrame(route, content);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }

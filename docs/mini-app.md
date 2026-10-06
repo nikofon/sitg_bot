@@ -62,7 +62,10 @@ The tournament packet window (`/tournaments/{tournament_id}/packets`, opened by 
 player **Packets** button) lists every packet assigned to the tournament that the active
 participant may discover, mirroring the lobby packet cards (metadata, fresh/total themes,
 playability) plus a **View in library** action gated by the library viewing rules and
-**Block/Unblock** controls. Lobby packet cards carry the same block controls. Blocking is
+**Block/Unblock** controls. The window offers the same lobby packet search and filters
+(title, authors, inclusive packet-year and publication-year ranges, fresh-theme sorting
+with zero-fresh last, and reset); they persist per session like other route filters.
+Lobby packet cards carry the same block controls. Blocking is
 player-scoped and global across tournaments: fresh-content computation treats every theme
 and question of a blocked packet as burnt without writing exposure claims, while library
 viewing of a blocked packet still burns content normally. Mutations go through
