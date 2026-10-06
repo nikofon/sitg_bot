@@ -49,6 +49,15 @@ are independent. Back may change navigation without leaving a lobby; Quit tourna
 does not implicitly leave an active lobby. A creator's departure confirms cancellation.
 Unknown tournament action descriptors are ignored and logged.
 
+Lobby creation and joining deliver the same participant/packet summary and a separate
+settings button. Membership, readiness, settings, and packet changes refresh the summary
+through the outbox. **Lobby info** deletes both previous messages and sends a new pair;
+message identities persist on lobby membership so refreshes survive bot restarts.
+Kicking sends the removed member a notice with their current navigation keyboard and
+notifies remaining participants by name. The removed member's lobby context falls back
+to the tournament (or main menu); other contexts are preserved. Delivery reads navigation
+at send time so a queued notice does not restore an outdated keyboard.
+
 ## Implemented interaction surfaces
 
 - Player registration, profile settings (`/set` and buttons), mode switching, tournament

@@ -99,6 +99,7 @@ class ActionCode(StrEnum):
     LOBBY_SETTINGS_UPDATE = "lobbies.settings.update.v1"
     LOBBY_READY_UPDATE = "lobbies.ready.update.v1"
     LOBBY_ROLE_UPDATE = "lobbies.role.update.v1"
+    LOBBY_KICK = "lobbies.kick.v1"
     LOBBY_PACKET_SELECT = "lobbies.packets.select.v1"
     LOBBY_PACKET_SELECT_MANY = "lobbies.packets.select_many.v1"
     LOBBY_PACKET_REMOVE = "lobbies.packets.remove.v1"
@@ -801,6 +802,11 @@ class LobbyRoleUpdateOperation(LobbyVersionedOperation):
     confirm_fresh: bool = False
 
 
+class LobbyKickOperation(LobbyVersionedOperation):
+    action: Literal[ActionCode.LOBBY_KICK]
+    player_id: UUID
+
+
 class LobbyPacketOperation(LobbyVersionedOperation):
     action: Literal[ActionCode.LOBBY_PACKET_SELECT, ActionCode.LOBBY_PACKET_REMOVE]
     packet_id: UUID
@@ -1108,6 +1114,7 @@ GatewayOperation = Annotated[
     | LobbySettingsUpdateOperation
     | LobbyReadyUpdateOperation
     | LobbyRoleUpdateOperation
+    | LobbyKickOperation
     | LobbyPacketOperation
     | LobbyPacketBulkSelectOperation
     | LobbySimpleMutationOperation

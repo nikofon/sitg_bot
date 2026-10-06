@@ -975,6 +975,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
         ("packet-select", ActionCode.LOBBY_PACKET_SELECT),
         ("packet-remove", ActionCode.LOBBY_PACKET_REMOVE),
         ("settings", ActionCode.LOBBY_SETTINGS_UPDATE),
+        ("kick", ActionCode.LOBBY_KICK),
     ],
 )
 async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(command, action):
@@ -995,6 +996,8 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
     body = {"expected_version": 3}
     if command == "settings":
         body["changes"] = {"theme_count": 2}
+    elif command == "kick":
+        body["player_id"] = str(UUID(int=30))
     else:
         body["packet_id"] = str(UUID(int=30))
     request._read_bytes = json.dumps(body).encode()

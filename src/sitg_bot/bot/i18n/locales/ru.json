@@ -505,6 +505,8 @@
   "game.info.packets": "Пакеты: {packets}",
   "game.info.players": "Игроки: {players}",
   "lobby.player_left": "{name} ({role}) покинул лобби.",
+  "lobby.kicked_self": "Вас исключили из лобби.",
+  "lobby.player_kicked": "{name} исключён из лобби.",
   "lobby.cancelled": "Создатель закрыл лобби.",
   "lobby.packet_removed": "Пакет «{packet_name}» убран из лобби. Готовность участников сброшена.",
   "lobby.readiness.closed": "Лобби уже закрыто.",

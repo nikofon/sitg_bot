@@ -338,6 +338,29 @@ class ConsoleApplicationServer:
                 error_code=error_code,
             )
             return {"completed": True}
+        if action == "telegram.navigation.snapshot":
+            self._require_adapter(connection, channel="telegram_bot")
+            return await self.application_gateway.navigation.snapshot(
+                self._integer(params, "telegram_user_id", minimum=1)
+            )
+        if action in {"telegram.lobby.presentation", "telegram.lobby.record"}:
+            self._require_adapter(connection, channel="telegram_bot")
+            chat = self._integer(params, "telegram_user_id", minimum=1)
+            lobby_id = self._uuid(params, "lobby_id")
+            messages = params.get("messages") if action == "telegram.lobby.record" else None
+            if action == "telegram.lobby.record" and not isinstance(messages, dict):
+                raise ValueError("Invalid lobby message record")
+            gateway = self.application_gateway
+            state = await gateway.matchmaking.telegram_presentation(
+                lobby_id, chat, messages=messages,
+            )
+            player_id = state.pop("player_id")
+            if action == "telegram.lobby.presentation" and state["active"]:
+                state["lobby"] = await gateway._lobby_payload(lobby_id, chat)
+                reference = await gateway._lobby_reference(lobby_id, player_id)
+                state["launch_reference"] = reference.value
+                state["expires_at"] = reference.expires_at.isoformat()
+            return state
         if action == "telegram.chat.delivery":
             self._require_adapter(connection, channel="telegram_bot")
             if params["payload"].get("scope") == "tournament_chat":

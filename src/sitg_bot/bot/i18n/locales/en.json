@@ -504,6 +504,8 @@
   "game.info.packets": "Packets: {packets}",
   "game.info.players": "Players: {players}",
   "lobby.player_left": "{name} ({role}) left the lobby.",
+  "lobby.kicked_self": "You were kicked from the lobby.",
+  "lobby.player_kicked": "{name} was kicked from the lobby.",
   "lobby.cancelled": "The creator closed the lobby.",
   "lobby.packet_removed": "Packet “{packet_name}” was removed from the lobby. Readiness has been reset.",
   "lobby.readiness.closed": "The lobby is already closed.",

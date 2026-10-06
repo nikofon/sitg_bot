@@ -43,6 +43,7 @@ from sitg_bot.application.contracts import (
     LobbyEventsOperation,
     LobbyInfoOperation,
     LobbyJoinOperation,
+    LobbyKickOperation,
     LobbyPacketOperation,
     LobbyReadyUpdateOperation,
     LobbyRoleUpdateOperation,
@@ -988,6 +989,7 @@ class MiniAppHttpServer:
         commands = {
             "ready": ActionCode.LOBBY_READY_UPDATE,
             "role": ActionCode.LOBBY_ROLE_UPDATE,
+            "kick": ActionCode.LOBBY_KICK,
             "settings": ActionCode.LOBBY_SETTINGS_UPDATE,
             "packet-select": ActionCode.LOBBY_PACKET_SELECT,
             "packet-remove": ActionCode.LOBBY_PACKET_REMOVE,
@@ -1016,6 +1018,10 @@ class MiniAppHttpServer:
         if action == ActionCode.LOBBY_READY_UPDATE:
             operation: GatewayOperation = LobbyReadyUpdateOperation.model_validate(
                 {**common, "ready": body.get("ready")}
+            )
+        elif action == ActionCode.LOBBY_KICK:
+            operation = LobbyKickOperation.model_validate(
+                {**common, "player_id": body.get("player_id")}
             )
         elif action == ActionCode.LOBBY_ROLE_UPDATE:
             operation = LobbyRoleUpdateOperation.model_validate(

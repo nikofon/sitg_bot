@@ -29,6 +29,7 @@ from sitg_bot.bot.game_delivery import game_delivery_handler
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.library_delivery import library_document_delivery_handler
 from sitg_bot.bot.lobby_delivery import (
+    LobbyDelivery,
     lobby_notice_delivery_handler,
     lobby_open_delivery_handler,
     notification_alert_delivery_handler,
@@ -197,7 +198,13 @@ async def run_polling(settings: Settings) -> None:
                 (await bot.get_me()).username,
             )
             dependencies.backend.game_delivery = game_delivery
+            lobby_delivery = LobbyDelivery(
+                bot, dependencies.localization, protocol, settings.mini_app_base_url,
+                game_delivery.bot_username,
+            )
+            dependencies.backend.lobby_delivery = lobby_delivery
             handlers = {
+                "telegram.lobby.refresh": lobby_delivery,
                 "telegram.library.document": library_document_delivery_handler(bot),
                 "telegram.chat.message": chat_delivery_handler(
                     bot, dependencies.localization, protocol, game_delivery
@@ -206,7 +213,7 @@ async def run_polling(settings: Settings) -> None:
                 "game.event": game_delivery,
                 "telegram.game.cleanup": game_delivery.cleanup,
                 "telegram.lobby.notice": lobby_notice_delivery_handler(
-                    bot, dependencies.localization, game_delivery.bot_username
+                    bot, dependencies.localization, game_delivery.bot_username, protocol=protocol,
                 ),
                 "telegram.notification.alert": notification_alert_delivery_handler(
                     bot, dependencies.localization

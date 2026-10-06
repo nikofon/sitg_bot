@@ -369,6 +369,28 @@ class InvitationMatchmakingService:
             await session.flush()
             return await self._snapshot(session, lobby)
 
+    async def telegram_presentation(self, lobby_id: UUID, telegram_user_id: int, *, messages=None):
+        async with self.database.transaction() as session:
+            lobby = await self._locked_lobby(session, lobby_id)
+            member = await session.scalar(
+                select(PregameLobbyMemberRecord)
+                .join(PlayerRecord, PlayerRecord.id == PregameLobbyMemberRecord.player_id)
+                .where(
+                    PregameLobbyMemberRecord.lobby_id == lobby_id,
+                    PlayerRecord.telegram_user_id == telegram_user_id,
+                )
+            )
+            if member is None:
+                raise PermissionError("Lobby membership required")
+            if messages is not None:
+                member.telegram_messages = messages
+            return {
+                "messages": dict(member.telegram_messages or {}),
+                "active": member.active and lobby.status == "assembling"
+                and lobby.expires_at > datetime.now(UTC),
+                "player_id": member.player_id,
+            }
+
     @staticmethod
     async def _require_not_manager(
         session: AsyncSession, tournament_id: UUID, player_id: UUID
@@ -782,6 +804,36 @@ class InvitationMatchmakingService:
                 "player_left",
                 {"player_id": str(member.player_id), "role": member.role},
             )
+            self._bump(lobby)
+            await session.flush()
+            return await self._snapshot(session, lobby)
+
+    async def kick(
+        self, lobby_id: UUID, telegram_user_id: int, player_id: UUID, *, expected_version: int
+    ) -> LobbySnapshot:
+        async with self.database.transaction() as session:
+            lobby = await self._locked_lobby(session, lobby_id)
+            self._require_version(lobby, expected_version)
+            await self._require_open(session, lobby)
+            await self._require_creator(session, lobby, telegram_user_id)
+            if player_id == lobby.creator_player_id:
+                raise ValueError("The creator cannot kick themselves")
+            member = await session.scalar(
+                select(PregameLobbyMemberRecord).where(
+                    PregameLobbyMemberRecord.lobby_id == lobby_id,
+                    PregameLobbyMemberRecord.player_id == player_id,
+                    PregameLobbyMemberRecord.active.is_(True),
+                )
+            )
+            if member is None:
+                raise LookupError("Active lobby member not found")
+            member.active = False
+            member.ready = False
+            await self._clear_readiness(session, lobby.id)
+            await self._refresh_validation(session, lobby)
+            await self._event(session, lobby.id, "player_left", {
+                "player_id": str(member.player_id), "role": member.role, "kicked": True,
+            })
             self._bump(lobby)
             await session.flush()
             return await self._snapshot(session, lobby)
@@ -2362,6 +2414,39 @@ class InvitationMatchmakingService:
         )
 
         if kind in {
+            "lobby_created", "player_joined", "player_left", "role_changed",
+            "packet_selected", "packet_removed", "settings_changed", "readiness_changed",
+        }:
+            await session.flush()
+            recipients = (await session.execute(
+                select(PlayerRecord)
+                .join(
+                    PregameLobbyMemberRecord, PregameLobbyMemberRecord.player_id == PlayerRecord.id,
+                )
+                .where(
+                    PregameLobbyMemberRecord.lobby_id == lobby_id,
+                    PregameLobbyMemberRecord.active.is_(True),
+                    PlayerRecord.telegram_user_id.is_not(None),
+                )
+            )).scalars()
+            for recipient in recipients:
+                joined = kind == "player_joined" and str(recipient.id) == payload["player_id"]
+                await TransactionalOutbox.enqueue(
+                    session,
+                    topic="telegram.lobby.refresh",
+                    deduplication_key=f"lobby:{lobby_id}:refresh:{event_sequence}:{recipient.id}",
+                    partition_key=f"telegram:chat:{recipient.telegram_user_id}",
+                    aggregate_type="lobby", aggregate_id=lobby_id,
+                    aggregate_sequence=event_sequence,
+                    payload={
+                        "lobby_id": str(lobby_id),
+                        "recipient_telegram_user_id": recipient.telegram_user_id,
+                        "locale": recipient.preferred_locale,
+                        "join_sequence": event_sequence if joined else None,
+                    },
+                )
+
+        if kind in {
             "settings_changed",
             "packet_selected",
             "packet_removed",
@@ -2375,6 +2460,21 @@ class InvitationMatchmakingService:
             if kind in {"player_joined", "player_left"}:
                 player = await session.get(PlayerRecord, UUID(str(payload["player_id"])))
                 notice["player_name"] = player.public_nickname
+                if payload.get("kicked") and player.telegram_user_id is not None:
+                    await TransactionalOutbox.enqueue(
+                        session,
+                        topic="telegram.lobby.notice",
+                        deduplication_key=f"lobby:{lobby_id}:{event_sequence}:{player.id}",
+                        partition_key=f"telegram:chat:{player.telegram_user_id}",
+                        aggregate_type="lobby",
+                        aggregate_id=lobby_id,
+                        aggregate_sequence=event_sequence,
+                        payload={
+                            "recipient_telegram_user_id": player.telegram_user_id,
+                            "locale": player.preferred_locale,
+                            "kind": "kicked_self",
+                        },
+                    )
             recipients = (
                 await session.execute(
                     select(PlayerRecord)

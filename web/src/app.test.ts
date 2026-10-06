@@ -524,6 +524,39 @@ describe("MiniAppShell", () => {
     });
   });
 
+  it.each(["player", "observer"])("lets owners confirm kicking a %s", async (role) => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { root, fetcher } = lobbyShell("overview", {
+      available_actions: ["kick"],
+      viewer: { player_id: "owner", display_name: "Owner", role: "player" },
+      members: [
+        { player_id: "owner", display_name: "Owner", role: "player" },
+        { player_id: "guest", display_name: "Guest", role },
+      ],
+    });
+    await vi.waitFor(() => expect(root.querySelectorAll("li .danger-button")).toHaveLength(1));
+    const kick = root.querySelector<HTMLButtonElement>("li .danger-button")!;
+    expect(kick.parentElement?.textContent).toContain("Guest");
+    kick.click();
+    expect(confirm).toHaveBeenCalledWith("Remove Guest from the lobby?");
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/kick"))).toBe(false);
+    confirm.mockReturnValue(true);
+    kick.click();
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/kick"))).toBe(true));
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/kick"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, player_id: "guest" });
+  });
+
+  it("does not offer kick controls without owner capability", async () => {
+    const { root } = lobbyShell("overview", {
+      available_actions: ["leave"],
+      viewer: { player_id: "guest" },
+      members: [{ player_id: "owner", display_name: "Owner", role: "player" }],
+    });
+    await vi.waitFor(() => expect(root.textContent).toContain("Owner"));
+    expect(root.querySelector("li .danger-button")).toBeNull();
+  });
+
   it("shows lobby membership without an invite-player form", async () => {
     const { root, fetcher } = lobbyShell("overview");
     await vi.waitFor(() => expect(root.textContent).toContain("Alice <b>"));

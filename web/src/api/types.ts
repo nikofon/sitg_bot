@@ -364,6 +364,7 @@ export interface AuthorSearchResource {
 }
 
 export interface LobbyMember {
+  player_id?: string | null;
   telegram_user_id?: number | null;
   display_name: string;
   join_order: number;

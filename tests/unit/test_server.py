@@ -88,6 +88,53 @@ def test_bound_port_requires_a_started_server() -> None:
         _ = server.bound_port
 
 
+async def test_lobby_presentation_requires_adapter_and_projects_active_members():
+    server = ConsoleApplicationServer(object())
+    params = {"telegram_user_id": 42, "lobby_id": str(UUID(int=9))}
+    connection = SimpleNamespace(adapter_session=None)
+    with pytest.raises(PermissionError):
+        await server._dispatch(connection, "telegram.lobby.presentation", params)
+    connection.adapter_session = SimpleNamespace(channel="telegram_bot")
+    gateway = server.application_gateway
+    gateway.matchmaking.telegram_presentation = AsyncMock(return_value={
+        "active": True, "messages": {"summary": 7}, "player_id": UUID(int=1),
+    })
+    gateway._lobby_payload = AsyncMock(return_value={"members": []})
+    gateway._lobby_reference = AsyncMock(return_value=SimpleNamespace(
+        value="reference", expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    ))
+    result = await server._dispatch(connection, "telegram.lobby.presentation", params)
+    assert result["messages"] == {"summary": 7}
+    assert result["lobby"] == {"members": []}
+    assert result["launch_reference"] == "reference"
+    assert "player_id" not in result
+    gateway.matchmaking.telegram_presentation.return_value = {
+        "active": False, "messages": {}, "player_id": UUID(int=1),
+    }
+    result = await server._dispatch(connection, "telegram.lobby.presentation", params)
+    assert not result["active"] and "lobby" not in result
+    gateway._lobby_payload.assert_awaited_once()
+
+
+async def test_telegram_navigation_snapshot_requires_authenticated_bot():
+    server = ConsoleApplicationServer(object())
+    server.application_gateway.navigation.snapshot = AsyncMock(return_value={"context": "menu"})
+    for channel in (None, "mini_app"):
+        connection = SimpleNamespace(
+            adapter_session=SimpleNamespace(channel=channel) if channel else None,
+        )
+        with pytest.raises(PermissionError):
+            await server._dispatch(
+                connection, "telegram.navigation.snapshot", {"telegram_user_id": 42},
+            )
+    connection = SimpleNamespace(adapter_session=SimpleNamespace(channel="telegram_bot"))
+    result = await server._dispatch(
+        connection, "telegram.navigation.snapshot", {"telegram_user_id": 42},
+    )
+    assert result == {"context": "menu"}
+    server.application_gateway.navigation.snapshot.assert_awaited_once_with(42)
+
+
 def test_console_and_application_gateway_share_domain_services() -> None:
     server = ConsoleApplicationServer(object())  # type: ignore[arg-type]
 

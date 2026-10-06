@@ -1587,6 +1587,9 @@ class PregameLobbyMemberRecord(Base, TimestampMixin):
     player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
     join_order: Mapped[int] = mapped_column(Integer, nullable=False)
     ready: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    telegram_messages: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"),
+    )
     validation_violations: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )

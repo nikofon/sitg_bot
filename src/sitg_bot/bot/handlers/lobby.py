@@ -10,7 +10,6 @@ from aiogram.types import CallbackQuery, Message
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.keyboards.common import navigation_keyboard
-from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel, MessageModel
 from sitg_bot.bot.presenters.players import player_name
@@ -52,6 +51,21 @@ def lobby_info_text(
             "lobby.info.title", locale, tournament=lobby.get("tournament_name") or ""
         )
     ]
+    if lobby.get("invitation_code") and bot_username:
+        settings = lobby.get("settings") or {}
+        minimum, maximum = settings.get("minimum_players"), settings.get("maximum_players")
+        capacity = (
+            f"{minimum}–{maximum}" if minimum is not None and maximum is not None
+            else str(lobby["max_players"])
+        )
+        lines.append(localization.text(
+            "lobby.summary", locale, tournament=lobby["tournament_name"],
+            count=sum(m.get("role") == "player" for m in members), capacity=capacity,
+            expires=localization.format_datetime(
+                datetime.fromisoformat(lobby["expires_at"]), locale,
+            ),
+            invitation=f"https://t.me/{bot_username}?start=join_{lobby['invitation_code']}",
+        ))
     players = [member for member in members if member.get("role") == "player"]
     observers = [member for member in members if member.get("role") == "observer"]
     if players:
@@ -86,9 +100,11 @@ def lobby_info_text(
                 )
             )
     packets = lobby.get("selected_packets") or []
+    lines.append(localization.text("lobby.info.packets", locale))
     if packets:
-        lines.append(localization.text("lobby.info.packets", locale))
         lines.extend(f"• {html.escape(str(packet.get('name', '')))}" for packet in packets)
+    else:
+        lines.append("—")
     return "\n".join(lines)
 
 
@@ -136,49 +152,11 @@ async def show_lobby(
 ) -> None:
     if navigation is None or navigation.active_lobby is None:
         return
-    lobby = await backend.lobby_info(claim, lobby_id=navigation.active_lobby.id)
-    bot = await message.bot.get_me()
-    invitation = f"https://t.me/{bot.username}?start=join_{lobby['invitation_code']}"
-    settings = lobby.get("settings") or {}
-    minimum = settings.get("minimum_players")
-    maximum = settings.get("maximum_players")
-    capacity = (
-        f"{minimum}–{maximum}"
-        if minimum is not None and maximum is not None
-        else str(lobby["max_players"])
+    await backend.lobby_delivery.show(
+        message.chat.id, navigation.active_lobby.id, locale,
+        replace=True,
+        keyboard=navigation_keyboard(navigation, localization, locale),
     )
-    text = localization.text(
-        "lobby.summary",
-        locale,
-        tournament=lobby["tournament_name"],
-        count=sum(m["role"] == "player" for m in lobby["members"]),
-        capacity=capacity,
-        expires=localization.format_datetime(datetime.fromisoformat(lobby["expires_at"]), locale),
-        invitation=invitation,
-    )
-    if created:
-        text = localization.text("lobby.created", locale) + "\n\n" + text
-    await send_message_model(
-        message, MessageModel(text, navigation_keyboard(navigation, localization, locale))
-    )
-    if launch_links and not created:
-        reference = await backend.lobby_link(claim, lobby_id=navigation.active_lobby.id)
-        await send_message_model(
-            message,
-            MessageModel(
-                localization.text("lobby.open_prompt", locale),
-                InlineKeyboardModel(
-                    rows=(
-                        (
-                            InlineButtonModel(
-                                localization.text("button.lobby.open", locale),
-                                web_app_url=mini_app_launch_url(launch_links, "lobbies", reference),
-                            ),
-                        ),
-                    )
-                ),
-            ),
-        )
 
 
 class LobbyAction(Filter):
@@ -225,31 +203,9 @@ async def handle_lobby_action(
         return
     lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
     if lobby_action == "lobby.info":
-        info = MessageModel(lobby_info_text(
-            lobby, localization, locale, (await message.bot.get_me()).username
-        ))
-        await send_message_model(message, info)
-        if launch_links:
-            reference = await backend.lobby_link(
-                telegram_update_claim, lobby_id=navigation.active_lobby.id
-            )
-            url = mini_app_launch_url(launch_links, "lobbies", reference) + "&section=settings"
-            await send_message_model(
-                message,
-                MessageModel(
-                    localization.text("lobby.info.settings_prompt", locale),
-                    InlineKeyboardModel(
-                        rows=(
-                            (
-                                InlineButtonModel(
-                                    localization.text("button.lobby.settings", locale),
-                                    web_app_url=url,
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            )
+        await show_lobby(
+            message, backend, telegram_update_claim, navigation, localization, locale, launch_links
+        )
     elif lobby_action == "lobby.start" and not lobby["selected_packets"]:
         packets = automatic_packet_selection(lobby)
         if not packets:

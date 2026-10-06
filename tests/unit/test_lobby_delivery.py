@@ -1,15 +1,119 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.lobby_delivery import (
+    LobbyDelivery,
     lobby_notice_delivery_handler,
     lobby_open_delivery_handler,
     notification_alert_delivery_handler,
     packet_draft_status_delivery_handler,
 )
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("mode,context,action", [
+    ("player", "tournament", "player.tournament.create_lobby"),
+    ("manager", "menu", "manager.tournament.select"),
+    ("player", "lobby", "lobby.info"),
+    ("player", "chat", ""),
+])
+async def test_kick_notice_attaches_current_navigation_keyboard(locale, mode, context, action):
+    localization = LocalizationService()
+    bot = SimpleNamespace(send_message=AsyncMock())
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "account": {
+            "player_id": str(UUID(int=1)), "telegram_user_id": 42,
+            "public_nickname": "Player", "preferred_locale": locale,
+            "registration_status": "active", "registration_completed_at": "2026-01-01",
+            "profile_version": 1,
+        },
+        "available_modes": ["player", "manager"], "active_mode": mode,
+        "context": context, "navigation_version": 3,
+        "selected_player_tournament": None, "selected_manager_tournament": None,
+        "active_lobby": None, "active_game": None, "allowed_actions": [action] if action else [],
+        "active_chat": {
+            "id": str(UUID(int=2)), "tournament_id": str(UUID(int=3)),
+            "tournament_name": "Cup", "round_number": 1, "match_number": 1,
+            "multiple_matches": False,
+        } if context == "chat" else None,
+    }))
+    deliver = lobby_notice_delivery_handler(bot, localization, protocol=protocol)
+    await deliver({"kind": "kicked_self", "recipient_telegram_user_id": 42, "locale": locale})
+    protocol.request.assert_awaited_once_with("telegram.navigation.snapshot", telegram_user_id=42)
+    sent = bot.send_message.await_args
+    assert sent.args == (42, localization.text("lobby.kicked_self", locale))
+    if context == "chat":
+        assert sent.kwargs["reply_markup"].remove_keyboard is True
+        return
+    assert [[button.text for button in row] for row in sent.kwargs["reply_markup"].keyboard] == [
+        [localization.text(f"button.{action}", locale)],
+    ]
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_kick_notice_to_remaining_members_uses_kicked_wording(locale):
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, LocalizationService())
+    await deliver({
+        "kind": "player_left", "kicked": True, "player_name": "<Alice>",
+        "role": "observer", "recipient_telegram_user_id": 42, "locale": locale,
+    })
+    assert bot.send_message.await_args.args[1] == (
+        "&lt;Alice&gt; was kicked from the lobby." if locale == "en"
+        else "&lt;Alice&gt; исключён из лобби."
+    )
+    assert bot.send_message.await_args.kwargs["reply_markup"] is None
+
+
+async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids():
+    state = {
+        "active": True, "messages": {},
+        "lobby": {"tournament_name": "Cup", "members": [], "selected_packets": []},
+        "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
+    }
+
+    async def request(action, **params):
+        if action == "telegram.lobby.record":
+            state["messages"] = dict(params["messages"])
+        return {**state, "messages": dict(state["messages"])}
+
+    bot = SimpleNamespace(
+        send_message=AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in range(1, 5)]),
+        edit_message_text=AsyncMock(), delete_message=AsyncMock(),
+    )
+    protocol = SimpleNamespace(request=AsyncMock(side_effect=request))
+    delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
+    payload = {
+        "recipient_telegram_user_id": 42, "lobby_id": "lobby", "locale": "en",
+        "join_sequence": 1,
+    }
+    await delivery(payload)
+    assert state["messages"] == {"summary": 1, "settings": 2, "join_sequence": 1}
+    state["lobby"]["members"] = [{"name": "Alice", "role": "player"}]
+    state["lobby"]["selected_packets"] = [{"name": "Round 1"}]
+    # A new delivery object represents a restarted bot.
+    delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
+    await delivery(payload)
+    assert bot.send_message.await_count == 2
+    edited = bot.edit_message_text.await_args
+    assert edited.kwargs["message_id"] == 1
+    assert "Alice" in edited.args[0] and "Round 1" in edited.args[0]
+    await delivery.show(42, "lobby", "en", replace=True)
+    assert [call.args for call in bot.delete_message.await_args_list] == [(42, 1), (42, 2)]
+    assert state["messages"] == {"summary": 3, "settings": 4, "join_sequence": 1}
+    state["lobby"]["members"] = []
+    state["lobby"]["selected_packets"] = []
+    await delivery(payload)
+    edited = bot.edit_message_text.await_args
+    assert edited.kwargs["message_id"] == 3
+    assert "Alice" not in edited.args[0] and "Round 1" not in edited.args[0]
+    state["active"] = False
+    await delivery(payload)
+    assert bot.send_message.await_count == 4
 
 
 @pytest.mark.parametrize("ready,count", [(True, 1), (False, 0)])

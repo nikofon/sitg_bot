@@ -49,6 +49,11 @@ The core enforces only rules it can express without interpreting a ruleset:
 Every lobby and packet workflow requires an explicit tournament. There is no implicit
 tournament, automatic enrollment, or unscoped packet access.
 
+The owner can remove any other player or observer from an assembling lobby through the
+Mini App member list. Kicking checks the lobby version and ownership under the lobby lock,
+clears readiness and revalidates membership, and refreshes remaining members' summaries.
+It does not ban the removed participant from joining again.
+
 ## Ruleset planning contract
 
 The shared `GameRuleset` contract parses and validates parameters, validates packet content,

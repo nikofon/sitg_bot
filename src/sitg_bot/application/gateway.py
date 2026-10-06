@@ -56,6 +56,7 @@ from sitg_bot.application.contracts import (
     LobbyInfoOperation,
     LobbyInviteOperation,
     LobbyJoinOperation,
+    LobbyKickOperation,
     LobbyLinkOperation,
     LobbyPacketBulkSelectOperation,
     LobbyPacketOperation,
@@ -145,7 +146,6 @@ from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
 from sitg_bot.services.players import PlayerAccountService, ProfileVersionConflict
 from sitg_bot.services.profiles import PlayerProfileService
-from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.token_requests import (
     TokenPlaintextUnavailable,
     TournamentTokenRequestService,
@@ -408,6 +408,9 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.LOBBY_ROLE_UPDATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.LOBBY_KICK: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.LOBBY_PACKET_SELECT: ActionPolicy(
@@ -1168,22 +1171,6 @@ class ApplicationGateway:
             )
             await self.navigation.set_context(telegram_user_id, "lobby")
             reference = await self._lobby_reference(lobby.id, player_id)
-            async with self.database.transaction() as session:
-                await TransactionalOutbox.enqueue(
-                    session,
-                    topic="telegram.lobby.open",
-                    deduplication_key=f"lobby:{lobby.id}:open:chat:{telegram_user_id}",
-                    partition_key=f"telegram:chat:{telegram_user_id}",
-                    aggregate_type="lobby",
-                    aggregate_id=lobby.id,
-                    aggregate_sequence=1,
-                    payload={
-                        "recipient_telegram_user_id": telegram_user_id,
-                        "locale": account.preferred_locale,
-                        "launch_reference": reference.value,
-                        "expires_at": reference.expires_at.isoformat(),
-                    },
-                )
             return {"lobby": lobby, "launch_reference": reference}
         if isinstance(operation, LobbyLinkOperation):
             await self._require_lobby_member(operation.lobby_id, player_id)
@@ -1229,6 +1216,11 @@ class ApplicationGateway:
                 operation.lobby_id,
                 telegram_user_id,
                 ready=operation.ready,
+                expected_version=operation.expected_version,
+            )
+        if isinstance(operation, LobbyKickOperation):
+            return await self.matchmaking.kick(
+                operation.lobby_id, telegram_user_id, operation.player_id,
                 expected_version=operation.expected_version,
             )
         if isinstance(operation, LobbyRoleUpdateOperation):
@@ -1639,7 +1631,9 @@ class ApplicationGateway:
                 actions.append("unready" if viewer.ready else "ready")
             actions.extend(("invite", "cancel" if is_creator else "leave"))
             if is_creator:
-                actions.extend(("settings_update", "packet_select", "packet_remove", "start"))
+                actions.extend((
+                    "settings_update", "packet_select", "packet_remove", "start", "kick",
+                ))
                 if lobby.hybrid_matchmaking_available:
                     actions.append("search_cancel" if lobby.searching else "search_start")
         payload = {

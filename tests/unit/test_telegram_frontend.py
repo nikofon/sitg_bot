@@ -692,6 +692,8 @@ async def test_player_tournament_upload_submenu_and_permission(allowed) -> None:
 
 
 async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
+    from sitg_bot.bot.lobby_delivery import LobbyDelivery
+
     created = SimpleNamespace(
         value="opaque-lobby",
         telegram_payload="lr_opaque-lobby",
@@ -724,6 +726,15 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
         bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(username="test_bot"))),
     )
     claim = SimpleNamespace()
+    message.chat = SimpleNamespace(id=42)
+    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)))
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "active": True, "messages": {}, "lobby": backend.lobby_info.return_value,
+        "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
+    }))
+    backend.lobby_delivery = LobbyDelivery(
+        bot, LocalizationService(), protocol, "https://mini.example.test/app", "test_bot",
+    )
     selected = {
         "id": str(UUID(int=8)),
         "name": "Player Cup",
@@ -748,12 +759,12 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
     )
 
     backend.create_lobby.assert_awaited_once_with(claim, tournament_id=UUID(int=8))
-    assert message.answer.await_count == 1
-    text = message.answer.await_args.args[0]
+    assert bot.send_message.await_count == 2
+    text = bot.send_message.await_args_list[0].args[1]
     assert "Player Cup" in text and "1/4" in text and "https://t.me/test_bot?start=join_" in text
     labels = [
         button.text
-        for row in message.answer.await_args.kwargs["reply_markup"].keyboard
+        for row in bot.send_message.await_args_list[0].kwargs["reply_markup"].keyboard
         for button in row
     ]
     assert "Ready" in labels and "Lobby info" in labels and "Back" in labels
@@ -1688,6 +1699,7 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
 
 async def test_lobby_info_lists_participants_ratings_packets_and_settings_link() -> None:
     from sitg_bot.bot.handlers.lobby import handle_lobby_action
+    from sitg_bot.bot.lobby_delivery import LobbyDelivery
 
     current = navigation(
         context="lobby",
@@ -1747,6 +1759,15 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
         bot=SimpleNamespace(get_me=AsyncMock(return_value=SimpleNamespace(username="test_bot"))),
     )
     claim = SimpleNamespace()
+    message.chat = SimpleNamespace(id=42)
+    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)))
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "active": True, "messages": {}, "lobby": lobby,
+        "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
+    }))
+    backend.lobby_delivery = LobbyDelivery(
+        bot, LocalizationService(), protocol, "https://mini.example.test/app", "test_bot",
+    )
     await handle_lobby_action(
         message,  # type: ignore[arg-type]
         "lobby.info",
@@ -1759,9 +1780,8 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
         "https://mini.example.test/app",
     )
 
-    backend.lobby_link.assert_awaited_once_with(claim, lobby_id=UUID(int=9))
-    assert message.answer.await_count == 2
-    text = message.answer.await_args_list[0].args[0]
+    assert bot.send_message.await_count == 2
+    text = bot.send_message.await_args_list[0].args[1]
     assert "Player &lt;Cup&gt;" in text
     assert "Players:" in text and "Observers:" in text
     assert "✅ Alice &lt;b&gt; (owner)" in text
@@ -1770,9 +1790,9 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
     assert "⏳ Bob" in text and "global —" in text and "not ready" in text
     assert "👁 Carol" in text and "tournament —" in text
     assert "Selected packets:" in text and "• Round &lt;1&gt;" in text
-    prompt = message.answer.await_args_list[1].args[0]
+    prompt = bot.send_message.await_args_list[1].args[1]
     assert "only the owner can change" in prompt
-    markup = message.answer.await_args_list[1].kwargs["reply_markup"]
+    markup = bot.send_message.await_args_list[1].kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].text == "Lobby settings"
     assert markup.inline_keyboard[0][0].web_app.url == (
         "https://mini.example.test/app/lobbies/opaque-lobby"

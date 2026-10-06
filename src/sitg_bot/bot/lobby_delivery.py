@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 
@@ -12,10 +13,103 @@ from sitg_bot.application.protocol import (
 )
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.miniapps import mini_app_launch_url
+from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel
 from sitg_bot.bot.presenters.players import player_name
 from sitg_bot.bot.presenters.render import DISABLED_LINK_PREVIEW, telegram_keyboard
+from sitg_bot.bot.state.models import NavigationState
 from sitg_bot.services.launch_references import LaunchReference
+
+
+class LobbyDelivery:
+    """Keep one durable summary/settings pair per lobby member."""
+
+    def __init__(self, bot, localization, protocol, base_url, bot_username):
+        self.bot = bot
+        self.localization = localization
+        self.protocol = protocol
+        self.base_url = base_url
+        self.bot_username = bot_username
+        self.locks = defaultdict(asyncio.Lock)
+
+    async def __call__(self, payload):
+        try:
+            await self.show(
+                int(payload["recipient_telegram_user_id"]), payload["lobby_id"],
+                self.localization.locale(str(payload.get("locale", "ru"))),
+                join_sequence=payload.get("join_sequence"),
+            )
+        except TelegramRetryAfter as error:
+            raise RetryableDeliveryError(
+                "Telegram flood wait", retry_after_seconds=int(error.retry_after)
+            ) from error
+        except TelegramForbiddenError as error:
+            raise TerminalDeliveryError("Telegram chat is unavailable") from error
+
+    async def show(
+        self, chat, lobby_id, locale, *, replace=False, keyboard=None, join_sequence=None,
+    ):
+        from sitg_bot.bot.handlers.lobby import lobby_info_text
+
+        async with self.locks[chat]:
+            params = {"telegram_user_id": chat, "lobby_id": str(lobby_id)}
+            state = await self.protocol.request("telegram.lobby.presentation", **params)
+            if not state["active"]:
+                return
+            messages = dict(state["messages"])
+            if join_sequence is not None and messages.get("join_sequence") != join_sequence:
+                replace = True
+
+            async def save():
+                await self.protocol.request("telegram.lobby.record", **params, messages=messages)
+
+            if replace:
+                for key in ("summary", "settings"):
+                    if key not in messages:
+                        continue
+                    try:
+                        await self.bot.delete_message(chat, messages[key])
+                    except TelegramBadRequest as error:
+                        if "message to delete not found" not in str(error).lower():
+                            raise
+                    del messages[key]
+                    await save()
+            text = lobby_info_text(state["lobby"], self.localization, locale, self.bot_username)
+            if "summary" in messages:
+                try:
+                    await self.bot.edit_message_text(
+                        text, chat_id=chat, message_id=messages["summary"],
+                        link_preview_options=DISABLED_LINK_PREVIEW,
+                    )
+                except TelegramBadRequest as error:
+                    reason = str(error).lower()
+                    if "message to edit not found" in reason or "message can't be edited" in reason:
+                        del messages["summary"]
+                    elif "message is not modified" not in reason:
+                        raise
+            if "summary" not in messages:
+                sent = await self.bot.send_message(
+                    chat, text, reply_markup=telegram_keyboard(keyboard),
+                    link_preview_options=DISABLED_LINK_PREVIEW,
+                )
+                messages["summary"] = sent.message_id
+                await save()
+            if self.base_url and "settings" not in messages:
+                reference = LaunchReference(
+                    state["launch_reference"], datetime.fromisoformat(state["expires_at"]),
+                )
+                url = mini_app_launch_url(self.base_url, "lobbies", reference) + "&section=settings"
+                sent = await self.bot.send_message(
+                    chat, self.localization.text("lobby.info.settings_prompt", locale),
+                    reply_markup=telegram_keyboard(InlineKeyboardModel(rows=((InlineButtonModel(
+                        self.localization.text("button.lobby.settings", locale), web_app_url=url,
+                    ),),))),
+                )
+                messages["settings"] = sent.message_id
+                await save()
+            if join_sequence is not None and messages.get("join_sequence") != join_sequence:
+                messages["join_sequence"] = join_sequence
+                await save()
 
 
 def lobby_open_delivery_handler(
@@ -140,7 +234,9 @@ async def run_outbox_consumer(consumer: RemoteOutboxConsumer) -> None:
             await asyncio.sleep(0.1 if delivered else 1)
 
 
-def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService, bot_username=None):
+def lobby_notice_delivery_handler(
+    bot: Bot, localization: LocalizationService, bot_username=None, *, protocol=None,
+):
     async def deliver(payload: dict[str, object]) -> None:
         locale = localization.locale(str(payload.get("locale", "ru")))
         kind = str(payload["kind"])
@@ -213,6 +309,17 @@ def lobby_notice_delivery_handler(bot: Bot, localization: LocalizationService, b
                     )
                     for member in statuses
                 )
+        elif kind == "kicked_self":
+            text = localization.text("lobby.kicked_self", locale)
+            navigation = await protocol.request(
+                "telegram.navigation.snapshot",
+                telegram_user_id=int(payload["recipient_telegram_user_id"]),
+            )
+            keyboard = telegram_keyboard(menu_message(
+                NavigationState.model_validate(navigation), localization, locale,
+            ).keyboard)
+        elif kind == "player_left" and payload.get("kicked"):
+            text = localization.text("lobby.player_kicked", locale, name=payload["player_name"])
         elif kind in {"player_joined", "player_left"}:
             text = localization.text(
                 f"lobby.{kind}",

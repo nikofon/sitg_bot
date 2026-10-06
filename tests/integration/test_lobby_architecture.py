@@ -37,6 +37,7 @@ from sitg_bot.storage.models import (
     PlayerNotificationAlertRecord,
     PlayerNotificationRecord,
     PlayerRecord,
+    PregameLobbyMemberRecord,
     QuestionRevisionRecord,
     RatingLedgerRecord,
     RulesetRatingLedgerRecord,
@@ -1970,6 +1971,93 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         await database.close()
 
 
+@pytest.mark.parametrize("role", ["player", "observer"])
+@pytest.mark.parametrize("context", ["lobby", "tournament", "manager"])
+async def test_owner_can_kick_lobby_members(database_url: str, role: str, context: str) -> None:
+    from sitg_bot.services.navigation import TelegramNavigationService
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=3)
+        service = InvitationMatchmakingService(database)
+        owner, guest, outsider = (item.telegram_user_id for item in fixture.inputs)
+        async with database.transaction() as session:
+            policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id,
+            ))
+            policy.policies = {**policy.policies, "observing": "unlimited"}
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        lobby = await service.join(
+            lobby.invitation_code, fixture.inputs[1], role=role, confirm_fresh=role == "observer",
+        )
+        target = fixture.players[1].id
+        navigation = TelegramNavigationService(database)
+        nav = await navigation.set_context(guest, "lobby")
+        if context == "manager":
+            await navigation.set_mode(guest, "manager", expected_version=nav.navigation_version)
+        elif context == "tournament":
+            await navigation.set_context(guest, "tournament", expected_version=nav.navigation_version)
+        for actor in (guest, outsider):
+            with pytest.raises(PermissionError):
+                await service.kick(lobby.id, actor, target, expected_version=lobby.version)
+        with pytest.raises(ValueError, match="themselves"):
+            await service.kick(
+                lobby.id, owner, fixture.players[0].id, expected_version=lobby.version,
+            )
+        with pytest.raises(StaleWriteError):
+            await service.kick(lobby.id, owner, target, expected_version=lobby.version - 1)
+        with pytest.raises(LookupError):
+            await service.kick(
+                lobby.id, owner, fixture.players[2].id, expected_version=lobby.version,
+            )
+        previous_version = lobby.version
+        async with database.transaction() as session:
+            owner_member = await session.scalar(select(PregameLobbyMemberRecord).where(
+                PregameLobbyMemberRecord.lobby_id == lobby.id,
+                PregameLobbyMemberRecord.player_id == fixture.players[0].id,
+            ))
+            owner_member.ready = True
+        lobby = await service.kick(lobby.id, owner, target, expected_version=lobby.version)
+        assert lobby.version == previous_version + 1
+        assert [member.player_id for member in lobby.members] == [fixture.players[0].id]
+        assert all(not member.ready for member in lobby.members)
+        assert not (await service.telegram_presentation(lobby.id, guest))["active"]
+        nav = await navigation.snapshot(guest)
+        assert nav.active_lobby is None
+        assert (nav.active_mode, nav.context) == (
+            ("manager", "menu") if context == "manager" else ("player", "tournament")
+        )
+        async with database.sessions() as session:
+            refreshes = list(await session.scalars(select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == lobby.id,
+                OutboxEventRecord.topic == "telegram.lobby.refresh",
+            )))
+        latest = max(event.aggregate_sequence for event in refreshes)
+        async with database.sessions() as session:
+            notices = list(await session.scalars(select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == lobby.id,
+                OutboxEventRecord.aggregate_sequence == latest,
+                OutboxEventRecord.topic == "telegram.lobby.notice",
+            )))
+        assert len(notices) == 2
+        by_recipient = {notice.payload["recipient_telegram_user_id"]: notice.payload
+                        for notice in notices}
+        assert by_recipient[guest]["kind"] == "kicked_self"
+        assert by_recipient[owner]["kicked"] is True
+        assert by_recipient[owner]["player_name"] == fixture.players[1].public_nickname
+        assert {
+            event.payload["recipient_telegram_user_id"] for event in refreshes
+            if event.aggregate_sequence == latest
+        } == {owner}
+        # Removal frees membership; it does not create a ban.
+        lobby = await service.join(lobby.invitation_code, fixture.inputs[1])
+        lobby = await service.cancel(lobby.id, owner, expected_version=lobby.version)
+        with pytest.raises(ValueError, match="closed"):
+            await service.kick(lobby.id, owner, target, expected_version=lobby.version)
+    finally:
+        await database.close()
+
+
 async def test_lobby_notices_follow_membership_across_navigation_modes(database_url: str) -> None:
     from sitg_bot.services.navigation import TelegramNavigationService
 
@@ -1988,6 +2076,14 @@ async def test_lobby_notices_follow_membership_across_navigation_modes(database_
             policy.policies = {**policy.policies, "observing": "unlimited"}
         lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
         nav = await navigation.set_context(owner, "lobby")
+        await service.telegram_presentation(
+            lobby.id, owner, messages={"summary": 100, "settings": 101},
+        )
+        persisted = await InvitationMatchmakingService(database).telegram_presentation(
+            lobby.id, owner,
+        )
+        assert persisted["messages"] == {"summary": 100, "settings": 101}
+        assert persisted["active"]
         await navigation.set_context(owner, "tournament", expected_version=nav.navigation_version)
         lobby = await service.join(lobby.invitation_code, fixture.inputs[1])
         nav = await navigation.set_context(guest, "lobby")
@@ -2039,6 +2135,23 @@ async def test_lobby_notices_follow_membership_across_navigation_modes(database_
         assert recipients("player_left", role="observer") == {owner, guest}
         assert recipients("player_left", role="player") == {owner}
         assert recipients("settings_changed", changes={"theme_count": 1}) == {owner}
+        async with database.sessions() as session:
+            refreshes = list(await session.scalars(
+                select(OutboxEventRecord).where(
+                    OutboxEventRecord.aggregate_id == lobby.id,
+                    OutboxEventRecord.topic == "telegram.lobby.refresh",
+                )
+            ))
+        assert refreshes
+        for notice in events:
+            assert any(
+                refresh.aggregate_sequence == notice.aggregate_sequence
+                and refresh.payload["recipient_telegram_user_id"]
+                == notice.payload["recipient_telegram_user_id"]
+                for refresh in refreshes
+            )
+        departed = await service.telegram_presentation(lobby.id, guest)
+        assert not departed["active"]
     finally:
         await database.close()
 

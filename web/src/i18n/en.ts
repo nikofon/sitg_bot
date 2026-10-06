@@ -465,6 +465,8 @@ export const en = {
   "lobby.action.search_cancel": "Stop search",
   "lobby.action.start": "Start game",
   "lobby.action.leave": "Leave lobby",
+  "lobby.action.kick": "Kick",
+  "lobby.kick_confirm": "Remove {name} from the lobby?",
   "lobby.action.cancel": "Cancel lobby",
   "lobby.confirm": "Are you sure?",
   "ongoing.lobbies": "Lobbies",

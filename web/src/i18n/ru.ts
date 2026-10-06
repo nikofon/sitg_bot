@@ -467,6 +467,8 @@ export const ru: Record<MessageKey, string> = {
   "lobby.action.search_cancel": "Остановить поиск",
   "lobby.action.start": "Начать игру",
   "lobby.action.leave": "Покинуть лобби",
+  "lobby.action.kick": "Исключить",
+  "lobby.kick_confirm": "Исключить {name} из лобби?",
   "lobby.action.cancel": "Отменить лобби",
   "lobby.confirm": "Вы уверены?",
   "ongoing.lobbies": "Лобби",

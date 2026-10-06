@@ -1085,6 +1085,15 @@ export class MiniAppShell {
         "ul", { className: "detail-list" },
         ...lobby.members.map((member) => element(
           "li", {}, `${member.display_name} · ${this.i18n.t(member.role === "observer" ? "lobby.observer" : "lobby.player")} · ${member.ready ? this.i18n.t("lobby.ready") : this.i18n.t("lobby.not_ready")}`,
+          can("kick") && member.player_id && member.player_id !== lobby.viewer.player_id
+            ? element("button", {
+              type: "button", className: "danger-button",
+              onclick: (() => {
+                if (window.confirm(this.i18n.t("lobby.kick_confirm").replace("{name}", () => member.display_name))) {
+                  void mutate("kick", { player_id: member.player_id });
+                }
+              }) as EventListener,
+            }, this.i18n.t("lobby.action.kick")) : null,
         )),
       );
       const descriptors = lobby.setting_descriptors ?? Object.entries(lobby.settings).map(([name, value]) => ({
