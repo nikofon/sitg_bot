@@ -511,6 +511,7 @@
   "lobby.readiness.closed": "The lobby is already closed.",
   "lobby.readiness.expired": "The lobby has expired.",
   "lobby.readiness.observer": "Observers cannot become ready. Join as a player first.",
+  "lobby.readiness.observer_confirmation_required": "An observer must re-confirm fresh content exposure before the game can start.",
   "lobby.readiness.packet_required": "Select a packet before becoming ready.",
   "lobby.readiness.packet_not_playable": "A selected packet is unavailable for play. Check tournament packet access.",
   "lobby.readiness.packet_content_incompatible": "The selected packets are incompatible with the game settings. Change packets or settings.",

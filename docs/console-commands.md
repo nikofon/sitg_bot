@@ -100,9 +100,9 @@ blacklist add <numeric-player-id>
 blacklist remove <numeric-player-id>
 ```
 
-Observers do not occupy player seats or become ready. If fresh content needs consent,
-repeat the observer command with `confirm`; seeing it makes it unavailable for later play.
-Packet/settings changes can require renewed consent.
+Observers do not occupy player seats or become ready. Fresh-content consent is given once
+when joining or switching to the observer role with `confirm`; it survives packet and
+settings changes, and seeing content makes it unavailable for later play.
 
 ### Game commands
 

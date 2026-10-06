@@ -142,6 +142,24 @@ def navigation_keyboard(
     return ReplyKeyboardModel(rows=tuple(row for row in rows if row))
 
 
+def joined_lobby_keyboard(
+    role: str, localization: LocalizationService, locale: str
+) -> ReplyKeyboardModel:
+    """Lobby reply controls for a member who joined outside the chat flow.
+
+    A fresh joiner is never the lobby creator (creators must cancel, not leave),
+    so the layout matches the navigation projection for their role.
+    """
+    allowed = {"lobby.info", "lobby.leave", "back"}
+    if role == "player":
+        allowed.add("lobby.ready")
+    rows = tuple(
+        tuple(localization.text(f"button.{action}", locale) for action in row if action in allowed)
+        for row in LOBBY_ACTIONS
+    )
+    return ReplyKeyboardModel(rows=tuple(row for row in rows if row))
+
+
 def mode_keyboard(
     navigation: NavigationState,
     localization: LocalizationService,

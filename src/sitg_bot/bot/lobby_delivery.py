@@ -12,6 +12,7 @@ from sitg_bot.application.protocol import (
     TerminalDeliveryError,
 )
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.keyboards.common import joined_lobby_keyboard
 from sitg_bot.bot.miniapps import mini_app_launch_url
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel
@@ -327,6 +328,18 @@ def lobby_notice_delivery_handler(
                 name=payload["player_name"],
                 role=localization.text(f"lobby.role.{payload['role']}", locale),
             )
+            joining_telegram_user_id = payload.get("player_telegram_user_id")
+            if (
+                kind == "player_joined"
+                and joining_telegram_user_id is not None
+                and int(joining_telegram_user_id) == int(payload["recipient_telegram_user_id"])
+            ):
+                # A member who joined through the "Ongoing games" Mini App view returns
+                # to a chat whose reply keyboard still shows the previous context; the
+                # join notice installs the lobby controls for the new navigation context.
+                keyboard = telegram_keyboard(
+                    joined_lobby_keyboard(str(payload.get("role", "player")), localization, locale)
+                )
         elif kind == "lobby_cancelled":
             text = localization.text("lobby.cancelled", locale)
         elif kind == "packet_removed":

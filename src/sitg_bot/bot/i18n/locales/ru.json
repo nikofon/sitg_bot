@@ -512,6 +512,7 @@
   "lobby.readiness.closed": "Лобби уже закрыто.",
   "lobby.readiness.expired": "Срок действия лобби истёк.",
   "lobby.readiness.observer": "Наблюдатель не может отметить готовность. Сначала станьте игроком.",
+  "lobby.readiness.observer_confirmation_required": "Наблюдатель должен повторно подтвердить раскрытие новых вопросов, прежде чем игра начнётся.",
   "lobby.readiness.packet_required": "Чтобы стать готовым, сначала выберите пакет.",
   "lobby.readiness.packet_not_playable": "Один из выбранных пакетов недоступен для игры. Проверьте доступ к пакетам турнира.",
   "lobby.readiness.packet_content_incompatible": "Выбранные пакеты несовместимы с параметрами игры. Измените пакеты или параметры.",

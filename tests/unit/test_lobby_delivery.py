@@ -326,3 +326,52 @@ async def test_lobby_membership_and_packet_removal_notices_are_localized() -> No
     await deliver({**common, "kind": "packet_removed", "packet_name": "Пакет № 1"})
     assert "Пакет № 1" in bot.send_message.await_args.args[1]
     assert "убран" in bot.send_message.await_args.args[1]
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("role, expected_ready", [("player", True), ("observer", False)])
+async def test_join_notice_to_joiner_installs_lobby_reply_keyboard(
+    locale, role, expected_ready
+) -> None:
+    from sitg_bot.bot.lobby_delivery import lobby_notice_delivery_handler
+
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, LocalizationService())
+    await deliver(
+        {
+            "recipient_telegram_user_id": 42,
+            "player_telegram_user_id": 42,
+            "locale": locale,
+            "kind": "player_joined",
+            "player_name": "Alice",
+            "role": role,
+        }
+    )
+    markup = bot.send_message.await_args.kwargs["reply_markup"]
+    labels = [button.text for row in markup.keyboard for button in row]
+    expected = (
+        ["Ready", "Lobby info", "Leave lobby", "Back"]
+        if locale == "en"
+        else ["Готов", "Информация о лобби", "Покинуть лобби", "Назад"]
+    )
+    if not expected_ready:
+        expected = expected[1:]
+    assert labels == expected
+
+
+async def test_join_notice_to_other_members_keeps_no_reply_keyboard() -> None:
+    from sitg_bot.bot.lobby_delivery import lobby_notice_delivery_handler
+
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, LocalizationService())
+    await deliver(
+        {
+            "recipient_telegram_user_id": 7,
+            "player_telegram_user_id": 42,
+            "locale": "en",
+            "kind": "player_joined",
+            "player_name": "Alice",
+            "role": "player",
+        }
+    )
+    assert bot.send_message.await_args.kwargs["reply_markup"] is None

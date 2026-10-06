@@ -110,6 +110,11 @@ stored settings. Any effective parameter, packet, membership,
 entitlement, or policy change clears readiness. Assigned games retain their captured policy,
 parameters, and plan.
 
+Observer fresh-content consent is given once per lobby membership and survives packet,
+settings, and policy changes. An observer who joined without confirmation still blocks the
+start with the `observer_confirmation_required` readiness reason and can confirm through the
+observer role action, which stays available until consent is given.
+
 Manual readiness changes notify the other active participants with the player's name
 and ready/total player count (observers are excluded from the count). Bulk resets keep
 the existing overall notice. Console clients follow persisted lobby/game versions, so

@@ -2125,6 +2125,17 @@ async def test_lobby_notices_follow_membership_across_navigation_modes(database_
             }
 
         assert recipients("player_joined", role="observer") == {owner, guest, observer}
+        self_join_notices = [
+            event
+            for event in events
+            if event.payload["kind"] == "player_joined"
+            and event.payload.get("player_telegram_user_id")
+            == event.payload["recipient_telegram_user_id"]
+        ]
+        assert {event.payload["recipient_telegram_user_id"] for event in self_join_notices} == {
+            guest,
+            observer,
+        }
         assert recipients("packet_selected") == {owner, guest, observer}
         assert recipients("packet_removed", packet_name=name) == {owner, guest, observer}
         assert recipients("settings_changed", changes={"theme_count": 2}) == {
@@ -2564,5 +2575,112 @@ async def test_managers_bypass_observing_restrictions_in_managed_tournaments(
         assert await matchmaking.ongoing_lobbies(outsider_id) == ()
         with pytest.raises(PermissionError, match="membership"):
             await games.observe(game_id, outsider_telegram_id)
+    finally:
+        await database.close()
+
+
+async def test_observer_consent_persists_across_lobby_changes(database_url: str) -> None:
+    from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal, GatewayRequest
+    from sitg_bot.application.gateway import ApplicationGateway
+    from sitg_bot.bot.i18n import LocalizationService
+    from sitg_bot.services.launch_references import LaunchReferenceService
+    from sitg_bot.services.matchmaking import LobbyReadinessError
+
+    database = Database(database_url)
+    fixture = await tournament_fixture(database, player_count=3)
+    matchmaking = InvitationMatchmakingService(database)
+    games = PersistentGameService(database)
+    tournaments = TournamentService(database)
+    references = LaunchReferenceService(database, signing_key="test-key-" * 8, bot_id=123)
+    gateway = ApplicationGateway(database, launch_references=references)
+    confirmed_observer = ApplicationPrincipal(
+        fixture.players[1].id, fixture.inputs[1].telegram_user_id
+    )
+    unconfirmed_observer = ApplicationPrincipal(
+        fixture.players[2].id, fixture.inputs[2].telegram_user_id
+    )
+
+    def info_request(lobby_id):
+        return GatewayRequest.model_validate(
+            {
+                "metadata": {
+                    "channel": "telegram_bot",
+                    "client_name": "observer-test",
+                    "client_version": "1",
+                    "idempotency_key": secrets.token_hex(16),
+                },
+                "operation": {
+                    "action": ActionCode.LOBBY_INFO,
+                    "lobby_id": str(lobby_id),
+                },
+            }
+        )
+
+    try:
+        async with database.sessions() as session:
+            context = await tournaments.context(session, fixture.tournament_id)
+        await tournaments.update_policy(
+            fixture.tournament_id,
+            fixture.manager.id,
+            default_parameters=context.settings.to_dict(),
+            player_mutable_parameters=context.mutable_parameters,
+            policies={**context.policies, "observing": "unlimited"},
+        )
+        lobby = await matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id
+        )
+        # One observer joins as a player, switches role, and confirms once.
+        await matchmaking.join(lobby.invitation_code, fixture.inputs[1])
+        await matchmaking.set_role(
+            lobby.id, fixture.inputs[1].telegram_user_id, "observer", confirm_fresh=True
+        )
+        # Another observer joins without confirming fresh content.
+        await matchmaking.join(lobby.invitation_code, fixture.inputs[2], role="observer")
+        # Packet selection, removal, and re-selection no longer reset the consent.
+        await matchmaking.select_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        await matchmaking.remove_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        lobby = await matchmaking.select_packet(
+            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id
+        )
+        await matchmaking.set_settings(
+            lobby.id, fixture.inputs[0].telegram_user_id, {"maximum_players": 4}
+        )
+        await matchmaking.set_ready(lobby.id, fixture.inputs[0].telegram_user_id)
+
+        # Confirmed consent survives the packet and settings changes.
+        info = await gateway.execute(confirmed_observer, info_request(lobby.id))
+        assert info.ok, info.error
+        assert info.data["viewer"]["fresh_content_confirmed"] is True
+        assert "role_observer" not in info.data["available_actions"]
+
+        # The unconfirmed observer still blocks the start with a stable reason.
+        with pytest.raises(LobbyReadinessError) as failure:
+            await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
+        assert failure.value.reason == "observer_confirmation_required"
+        error = ApplicationGateway._error(failure.value, action=ActionCode.LOBBY_START)
+        assert error.message_key == "lobby.readiness.observer_confirmation_required"
+        for locale in ("en", "ru"):
+            assert LocalizationService().text(error.message_key, locale)
+
+        # The lobby projection offers the observer role action for confirmation.
+        info = await gateway.execute(unconfirmed_observer, info_request(lobby.id))
+        assert info.ok, info.error
+        assert "role_observer" in info.data["available_actions"]
+
+        # The observer confirms by repeating the observer role command.
+        await matchmaking.set_role(
+            lobby.id, fixture.inputs[2].telegram_user_id, "observer", confirm_fresh=True
+        )
+        info = await gateway.execute(unconfirmed_observer, info_request(lobby.id))
+        assert info.ok, info.error
+        assert "role_observer" not in info.data["available_actions"]
+        assert info.data["viewer"]["fresh_content_confirmed"] is True
+        result = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
+        assert result.game is not None
+        await games.abandon(result.game.id, reason="observer consent regression cleanup")
     finally:
         await database.close()
