@@ -454,7 +454,6 @@ async def handle_game_keyboard(
         "reconnect",
         "score",
         "themes",
-        "players",
         "appeal",
         "pause",
         "resume",
@@ -523,32 +522,6 @@ async def handle_game_command(
             )
         for index, chunk in enumerate(plain_chunks(html.unescape(text))):
             await game_reply(message, backend, view, chunk, suffix=f"themes:{index}")
-        return
-    if command == "players":
-        for index, player in enumerate(view["participants"], 1):
-            status = (
-                "chair"
-                if player.get("is_chair")
-                else "playing"
-                if player.get("active") and player.get("joined")
-                else ("waiting" if player.get("active") else "left")
-            )
-            await game_reply(
-                message,
-                backend,
-                view,
-                localization.text(
-                    "game.player",
-                    locale,
-                    number=index,
-                    name=player_name(player, view.get("bot_username")),
-                    status=localization.text("game.player_status." + status, locale),
-                    link=f"https://t.me/{player['telegram_username']}"
-                    if player.get("telegram_username")
-                    else "",
-                ),
-                suffix=f"player:{index}",
-            )
         return
     if command == "quit" and view["status"] in {"active", "lobby"}:
         await game_reply(message, backend, view, localization.text("game.quit_active", locale))

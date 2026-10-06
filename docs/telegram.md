@@ -150,7 +150,9 @@ including when an early departure cancels the game.
 
 Scores are displayed from highest to lowest. `/themes` lists the game's themes during active
 play, only after the initial theme reveal and only for rulesets that announce themes.
-`/score`, `/players`, and `/results` provide private projections. `/answer` reopens an answer
+`/score` and `/results` provide private projections. Before everyone joins, `/score` shows
+joined players' zero scores and marks players who have not connected yet. During play,
+disconnected players retain their scores with a connection-status note. `/answer` reopens an answer
 prompt. `/pause`, `/resume`, `/appeal`, `/escalate yes|no`, and `/commentary` supplement
 buttons. With multiple eligible answers, appeal selection lists each answer and offers
 buttons to credit the player's rejected answer or reject another credited answer. A single

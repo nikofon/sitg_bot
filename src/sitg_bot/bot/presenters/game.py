@@ -134,6 +134,12 @@ def score_text(view, localization, locale, *, final=False):
     for i, player in enumerate(players, 1):
         # Preserve shared official places (including fractional places).
         rank = player.get("place") if final and player.get("place") is not None else i
+        if not final and not player.get("is_chair") and not player.get("joined", True):
+            lines.append(localization.text(
+                "game.score_not_connected", locale,
+                rank=rank, name=player_name(player, view.get("bot_username")),
+            ))
+            continue
         lines.append(
             localization.text(
                 "flow.score_line",
@@ -144,6 +150,8 @@ def score_text(view, localization, locale, *, final=False):
                 correct=player.get("correct_points", 0),
             )
         )
+        if not final and not player.get("is_chair") and not player.get("active", True):
+            lines[-1] += " — " + localization.text("game.score_disconnected", locale)
         if final:
             for scope in ("ruleset", "tournament"):
                 for change in view.get("rating_changes", []):

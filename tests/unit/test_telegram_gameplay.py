@@ -354,7 +354,7 @@ async def test_commands_remove_game_and_question_and_expose_results_and_report()
     for call in bot.set_my_commands.await_args_list:
         names = {c.command for c in call.args[0]}
         assert {"results", "report", "escalate", "quit"} <= names
-        assert not {"game", "question", "vote"} & names
+        assert not {"game", "question", "vote", "players"} & names
 
 
 def test_quit_is_a_typed_idempotent_game_action():
@@ -737,6 +737,40 @@ async def test_themes_command_requires_revealed_themes(available):
         assert "1) First &lt;theme&gt;\n2) Second" in text
     else:
         assert "First" not in text
+    backend.game_action.assert_not_awaited()
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("status", ["lobby", "active", "finalized"])
+async def test_score_command_shows_only_missing_connections(locale, status):
+    snapshot = view(status=status, actions=[])
+    for player in snapshot["participants"]:
+        player.update(joined=True, active=True, score=0)
+    missing = snapshot["participants"][1]
+    missing.update(joined=status != "lobby", active=status == "lobby")
+    if status != "lobby":
+        missing["score"] = 50
+    backend, message, navigation = handler_fixture(snapshot)
+    message.text = "/score"
+    localization = LocalizationService()
+    await handle_game_command(
+        message, backend, object(), localization, locale, navigation, SimpleNamespace(), None
+    )
+    text = backend.game_delivery.send.await_args.args[3].text
+    connected_line = next(line for line in text.splitlines() if "Me" in line)
+    assert connected_line == localization.text(
+        "flow.score_line", locale, rank=1 if status == "lobby" else 2,
+        name="Me", score=0, correct=20,
+    )
+    missing_line = next(line for line in text.splitlines() if "Other &lt;b&gt;" in line)
+    if status == "lobby":
+        assert missing_line == localization.text(
+            "game.score_not_connected", locale, rank=2, name="Other <b>"
+        )
+    else:
+        assert "50" in missing_line
+        disconnected = localization.text("game.score_disconnected", locale)
+        assert (disconnected in missing_line) == (status == "active")
     backend.game_action.assert_not_awaited()
 
 

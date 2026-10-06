@@ -120,7 +120,6 @@ async def configure_bot_commands(bot: Bot, localization: LocalizationService) ->
         "join",
         "reconnect",
         "score",
-        "players",
         "whisper",
         "answer",
         "appeal",
