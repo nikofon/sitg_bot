@@ -446,7 +446,8 @@ async def save(service, fixture, assignment, editor, changes):
         content=editor["packet"],
         changes=changes,
         field_author_ids={
-            key: UUID(value) if value else None for key, value in editor["field_author_ids"].items()
+            key: [UUID(item) if item else None for item in value] if isinstance(value, list)
+            else UUID(value) if value else None for key, value in editor["field_author_ids"].items()
         },
     )
 
@@ -675,10 +676,10 @@ async def test_author_correction_transfers_attribution_and_preserves_burns(datab
             request = await links.create_request(player.id, target.id)
             await links.decide_request(request.request_id, fixture.manager.id, approve=True)
         editor = await edit(service, fixture, assignment)
-        editor["packet"]["themes"][0]["questions"][0]["author"] = author.display_name
-        editor["field_author_ids"]["themes.0.questions.0.author"] = str(author.id)
+        editor["packet"]["themes"][0]["questions"][0]["authors"] = [author.display_name]
+        editor["field_author_ids"]["themes.0.questions.0.authors"] = [str(author.id)]
         await save(
-            service, fixture, assignment, editor, {"themes.0.questions.0.author": "correction"}
+            service, fixture, assignment, editor, {"themes.0.questions.0.authors": "correction"}
         )
         async with database.sessions() as session:
             old_burns = dict(
@@ -692,10 +693,10 @@ async def test_author_correction_transfers_attribution_and_preserves_burns(datab
             )
             assert len(old_burns) == 6
         editor = await edit(service, fixture, assignment)
-        editor["packet"]["themes"][0]["questions"][0]["author"] = replacement.display_name
-        editor["field_author_ids"]["themes.0.questions.0.author"] = str(replacement.id)
+        editor["packet"]["themes"][0]["questions"][0]["authors"] = [replacement.display_name]
+        editor["field_author_ids"]["themes.0.questions.0.authors"] = [str(replacement.id)]
         await save(
-            service, fixture, assignment, editor, {"themes.0.questions.0.author": "correction"}
+            service, fixture, assignment, editor, {"themes.0.questions.0.authors": "correction"}
         )
         request = await links.create_request(fixture.players[2].id, replacement.id)
         await links.decide_request(request.request_id, fixture.manager.id, approve=True)

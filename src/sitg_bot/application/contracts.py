@@ -133,6 +133,8 @@ class ActionCode(StrEnum):
     ADMIN_TOURNAMENT_RATING_WEIGHT = "platform.admin.tournaments.rating_weight.v1"
     ADMIN_AUTHOR_LINK = "platform.admin.authors.link.v1"
     ADMIN_AUTHOR_MERGE = "platform.admin.authors.merge.v1"
+    ADMIN_AUTHOR_UPDATE = "platform.admin.authors.update.v1"
+    ADMIN_AUTHOR_SPLIT = "platform.admin.authors.split.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
 
 
@@ -523,7 +525,9 @@ class TournamentSubscriptionsUpdateOperation(ContractModel):
     def validate_values(self):
         schema = {"create": SubscriptionCardValues, "assign": SubscriptionAssignValues,
                   "revoke": SubscriptionRevokeValues}[self.command]
-        object.__setattr__(self, "values", schema.model_validate(self.values).model_dump(mode="json"))
+        object.__setattr__(
+            self, "values", schema.model_validate(self.values).model_dump(mode="json")
+        )
         return self
 
 
@@ -652,7 +656,7 @@ class PacketManagementUpdateOperation(ContractModel):
     expected_version: int = Field(ge=1)
     content: dict[str, JsonValue]
     changes: dict[str, Literal["correction", "substitution"]]
-    field_author_ids: dict[str, UUID | None]
+    field_author_ids: dict[str, UUID | list[UUID | None] | None]
 
 
 class PacketManagementActionOperation(ContractModel):
@@ -980,6 +984,25 @@ class AdminAuthorMergeOperation(ContractModel):
     confirm: bool = Field(default=False, strict=True)
 
 
+class AdminAuthorUpdateOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AUTHOR_UPDATE]
+    author_id: UUID
+    expected_version: str = Field(min_length=64, max_length=64)
+    display_name: str = Field(min_length=1, max_length=300)
+    first_name: str | None = Field(default=None, max_length=100)
+    second_name: str | None = Field(default=None, max_length=100)
+    surname: str | None = Field(default=None, max_length=100)
+    telegram_link: str | None = Field(default=None, max_length=200)
+
+
+class AdminAuthorSplitOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AUTHOR_SPLIT]
+    author_id: UUID
+    expected_version: str = Field(min_length=64, max_length=64)
+    recipient_index: int = Field(ge=0, strict=True)
+    confirm: bool = Field(default=False, strict=True)
+
+
 class AdminPacketAccessOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_PACKET_ACCESS]
     version_id: UUID
@@ -1114,6 +1137,8 @@ GatewayOperation = Annotated[
     | AdminTournamentRatingWeightOperation
     | AdminAuthorLinkOperation
     | AdminAuthorMergeOperation
+    | AdminAuthorUpdateOperation
+    | AdminAuthorSplitOperation
     | AdminPacketAccessOperation,
     Field(discriminator="action"),
 ]

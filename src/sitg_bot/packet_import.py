@@ -18,7 +18,8 @@ WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": WORD_NAMESPACE}
 QUESTION_RE = re.compile(r"^(0|10|20|30|40|50)\s*[.)]\s*(?:\[([^]]*)])?\s*(.*)$")
 FIELD_RE = re.compile(
-    r"^(Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:\s*(.*)$",
+    r"^(Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|"
+    r"Авторы?(?: вопроса)?|Authors?)\s*:\s*(.*)$",
     re.I,
 )
 THEME_COMMENTARY_RE = re.compile(
@@ -26,7 +27,8 @@ THEME_COMMENTARY_RE = re.compile(
     re.I,
 )
 INLINE_FIELD_RE = re.compile(
-    r"(?=\s+(?:Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|Автор(?: вопроса)?|Author)\s*:)",
+    r"(?=\s+(?:Ответ|Незач[её]т|Зач[её]т|Комментарий|Источники?|"
+    r"Авторы?(?: вопроса)?|Authors?)\s*:)",
     re.I,
 )
 MAX_DOCUMENT_XML_BYTES = 8 * 1024 * 1024
@@ -212,6 +214,9 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
     question: dict[str, object] | None = None
     active_field = "text"
 
+    def author_names(value: str) -> tuple[str, ...]:
+        return tuple(name.strip() for name in re.split(r"[,;\n]", value) if name.strip())
+
     def append(field: str, value: str) -> None:
         if question is None or not value:
             return
@@ -247,7 +252,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
                 rejected_answers=rejected,
                 form=str(question["form"]).strip(),
                 source=str(question["source"]).strip(),
-                author=str(question["author"]).strip() or theme_author,
+                authors=author_names(str(question["author"])),
             )
         )
         question = None
@@ -257,7 +262,8 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
         finish_question()
         if theme_name and questions:
             themes.append(
-                Theme(theme_name, tuple(questions), theme_author, theme_commentary.strip())
+                Theme(theme_name, tuple(questions), commentary=theme_commentary.strip(),
+                      authors=author_names(theme_author))
             )
         questions = []
         theme_commentary = ""
@@ -266,7 +272,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
     for line in lines:
         text = line.text
         if THEME_RE.match(text):
-            text = re.sub(r"(?<!\s)(?=Автор\s*:)", "\n", text, flags=re.I)
+            text = re.sub(r"(?<!\s)(?=(?:Авторы?|Authors?)\s*:)", "\n", text, flags=re.I)
         for part in text.splitlines():
             normalized.extend(Line(chunk.strip(), line.style)
                               for chunk in INLINE_FIELD_RE.split(part))
@@ -309,8 +315,8 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
         if field_match:
             label, value = field_match.groups()
             label = label.casefold().replace("ё", "е")
-            if (label.startswith("автор") or label == "author") and question is None:
-                theme_author = value.strip()
+            if (label.startswith("автор") or label.startswith("author")) and question is None:
+                theme_author = "\n".join(filter(None, (theme_author, value.strip())))
                 continue
             if question is None:
                 continue
@@ -318,6 +324,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
                 "ответ": "answer", "зачет": "accepted_answers", "незачет": "rejected_answers",
                 "комментарий": "commentary", "источник": "source", "источники": "source",
                 "автор": "author", "автор вопроса": "author", "author": "author",
+                "авторы": "author", "авторы вопроса": "author", "authors": "author",
             }[label]
             append(active_field, value.strip())
             continue
@@ -348,6 +355,15 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
         if not isinstance(value, (list, tuple)):
             raise TypeError(f"{field} must be an array")
         return value
+
+    def authors(raw: Mapping[str, Any]) -> tuple[str, ...]:
+        if "authors" in raw:
+            names = sequence(raw["authors"], "authors")
+            if any(not isinstance(name, str) or not name.strip() for name in names):
+                raise TypeError("authors entries must be non-empty strings")
+            return tuple(names)
+        name = string(raw.get("author", ""), "author")
+        return (name,) if name.strip() else ()
 
     try:
         themes: list[Theme] = []
@@ -403,13 +419,13 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
                         rejected_answers=tuple(rejected),
                         form=string(raw_question.get("form", ""), "question form"),
                         source=string(raw_question.get("source", ""), "question source"),
-                        author=string(raw_question.get("author", ""), "question author"),
+                        authors=authors(raw_question),
                     )
                 )
             themes.append(
                 Theme(
                     name=string(raw_theme["name"], "theme name"),
-                    author=string(raw_theme.get("author", ""), "theme author"),
+                    authors=authors(raw_theme),
                     commentary=string(raw_theme.get("commentary", ""), "theme commentary"),
                     questions=tuple(questions),
                 )

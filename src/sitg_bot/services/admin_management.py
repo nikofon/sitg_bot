@@ -1,5 +1,8 @@
 """Administrator-only catalogue and audited tournament/author actions."""
 
+import hashlib
+import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -10,6 +13,8 @@ from sitg_bot.services.author_exposure import burn_author_content
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.moderation import _require_administrator, _resolve_player
+from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -50,6 +55,17 @@ def fields(record) -> dict:
     return {column.key: getattr(record, column.key) for column in record.__table__.columns}
 
 
+def author_version(author: AuthorRecord) -> str:
+    values = [str(author.id), author.display_name, author.first_name, author.second_name,
+              author.surname, author.telegram_link, author.telegram_username]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
+def split_author_names(name: str) -> list[str]:
+    names = [" ".join(part.split()) for part in name.split(",") if part.strip()]
+    return names if len(names) > 1 else []
+
+
 class AdminManagementService:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -88,12 +104,12 @@ class AdminManagementService:
                             **fields(author),
                             "questions": await session.scalar(
                                 select(func.count(func.distinct(QuestionRevisionRecord.question_id))).where(
-                                    QuestionRevisionRecord.author_id == author.id
+                                    QuestionRevisionRecord.has_author(author.id)
                                 )
                             ),
                             "themes": await session.scalar(
                                 select(func.count(func.distinct(ThemeRevisionRecord.theme_id))).where(
-                                    ThemeRevisionRecord.author_id == author.id
+                                    ThemeRevisionRecord.has_author(author.id)
                                 )
                             ),
                         },
@@ -299,19 +315,7 @@ class AdminManagementService:
                         .select_from(PacketQuestionRecord)
                         .where(PacketQuestionRecord.packet_version_id == record.id)
                     )
-                    author_ids = (
-                        select(ThemeRevisionRecord.author_id)
-                        .where(ThemeRevisionRecord.packet_version_id == record.id)
-                        .union(
-                            select(QuestionRevisionRecord.author_id)
-                            .join(
-                                PacketQuestionRecord,
-                                PacketQuestionRecord.question_revision_id
-                                == QuestionRevisionRecord.id,
-                            )
-                            .where(PacketQuestionRecord.packet_version_id == record.id)
-                        )
-                    )
+                    author_ids = packet_author_ids(record.id)
                     card["authors"] = [
                         fields(a)
                         for a in await session.scalars(
@@ -322,9 +326,11 @@ class AdminManagementService:
                         )
                     ]
                 else:
+                    card["version"] = author_version(record)
+                    card["split_names"] = split_author_names(record.display_name)
                     versions = (
                         select(ThemeRevisionRecord.packet_version_id)
-                        .where(ThemeRevisionRecord.author_id == record.id)
+                        .where(ThemeRevisionRecord.has_author(record.id))
                         .union(
                             select(PacketQuestionRecord.packet_version_id)
                             .join(
@@ -332,7 +338,7 @@ class AdminManagementService:
                                 QuestionRevisionRecord.id
                                 == PacketQuestionRecord.question_revision_id,
                             )
-                            .where(QuestionRevisionRecord.author_id == record.id),
+                            .where(QuestionRevisionRecord.has_author(record.id)),
                             select(PacketVersionRecord.id).where(
                                 PacketVersionRecord.lead_author_id == record.id
                             ),
@@ -347,12 +353,12 @@ class AdminManagementService:
                     card["packet_count"] = len({p.packet_id for p in packets})
                     card["questions"] = await session.scalar(
                         select(func.count(func.distinct(QuestionRevisionRecord.question_id))).where(
-                            QuestionRevisionRecord.author_id == record.id
+                            QuestionRevisionRecord.has_author(record.id)
                         )
                     )
                     card["themes"] = await session.scalar(
                         select(func.count(func.distinct(ThemeRevisionRecord.theme_id))).where(
-                            ThemeRevisionRecord.author_id == record.id
+                            ThemeRevisionRecord.has_author(record.id)
                         )
                     )
                     associated = select(TournamentPacketAssignmentRecord.tournament_id).where(
@@ -564,6 +570,167 @@ class AdminManagementService:
             await session.flush()
             return fields(tournament)
 
+    async def update_author(
+        self, administrator_id: UUID, author_id: UUID, *, expected_version: str,
+        display_name: str, first_name: str | None = None, second_name: str | None = None,
+        surname: str | None = None, telegram_link: str | None = None,
+    ) -> dict:
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            author = await session.get(AuthorRecord, author_id, with_for_update=True)
+            if author is None:
+                raise LookupError("Author not found")
+            if author_version(author) != expected_version:
+                raise StaleWriteError("Author data has changed")
+            name = " ".join(display_name.split())
+            if not name or len(name) > 300:
+                raise ValueError("Author display name must contain 1–300 characters")
+            components = {
+                key: TournamentService._normalize_author_component(value, key)
+                if value and value.strip() else None
+                for key, value in {"first_name": first_name, "second_name": second_name,
+                                   "surname": surname}.items()
+            }
+            link, username = TournamentService._normalize_telegram_link(telegram_link)
+            author.display_name = name
+            for key, value in components.items():
+                setattr(author, key, value)
+            author.telegram_link, author.telegram_username = link, username
+            await session.flush()
+            return {**fields(author), "version": author_version(author)}
+
+    async def split_author(
+        self, administrator_id: UUID, author_id: UUID, *, expected_version: str,
+        recipient_index: int, confirm: bool,
+    ) -> dict:
+        """Replace a combined identity with new coauthors in one transaction."""
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            original = await session.get(AuthorRecord, author_id, with_for_update=True)
+            if original is None:
+                raise LookupError("Author not found")
+            if author_version(original) != expected_version:
+                raise StaleWriteError("Author data has changed")
+            names = split_author_names(original.display_name)
+            if not confirm or not names or not 0 <= recipient_index < len(names):
+                raise ValueError("Confirm the split and select the recipient of existing links")
+            await burn_author_content(session, author_id=author_id)
+            authors = [AuthorRecord(display_name=name) for name in names]
+            session.add_all(authors)
+            await session.flush()
+            recipient = authors[recipient_index]
+            recipient.telegram_link = original.telegram_link
+            recipient.telegram_username = original.telegram_username
+            ids = tuple(author.id for author in authors)
+            for model in (ThemeRecord, ThemeRevisionRecord, LogicalQuestionRecord,
+                          QuestionRevisionRecord):
+                for record in await session.scalars(
+                    select(model).where(model.has_author(author_id))
+                ):
+                    record.author_ids = tuple(dict.fromkeys(
+                        replacement for value in record.author_ids
+                        for replacement in (ids if value == author_id else (value,))
+                    ))
+            await session.execute(update(PacketVersionRecord).where(
+                PacketVersionRecord.lead_author_id == author_id,
+            ).values(lead_author_id=recipient.id))
+            await session.execute(update(LogicalPacketRecord).where(
+                LogicalPacketRecord.statistical_author_id == author_id,
+            ).values(statistical_author_id=recipient.id))
+            for draft in await session.scalars(select(PacketDraftRecord).with_for_update()):
+                self._split_draft_author(draft, original, authors, recipient)
+            for model in (PlayerAuthorLinkRecord, PlayerAuthorLinkRequestRecord):
+                await session.execute(update(model).where(model.author_id == author_id).values(
+                    author_id=recipient.id,
+                ))
+            for membership in await session.scalars(select(TournamentAuthorRecord).where(
+                TournamentAuthorRecord.author_id == author_id,
+            )):
+                session.add_all([TournamentAuthorRecord(
+                    tournament_id=membership.tournament_id, author_id=value,
+                    added_by_id=administrator_id,
+                ) for value in ids])
+                tournament = await session.get(TournamentRecord, membership.tournament_id)
+                tournament.settings_version += 1
+                await session.delete(membership)
+            await session.flush()
+            await burn_author_content(session, author_id=recipient.id)
+            await session.delete(original)
+            await session.flush()
+            return {"split": True, "original_author_id": str(author_id),
+                    "recipient_author_id": str(recipient.id),
+                    "authors": [{"id": str(author.id), "display_name": author.display_name}
+                                for author in authors]}
+
+    @staticmethod
+    def _split_draft_author(draft, original, authors, recipient) -> None:
+        content = deepcopy(draft.content)
+        bindings = dict(draft.author_bindings)
+        original_id = str(original.id)
+
+        def matches(name):
+            if not isinstance(name, str):
+                return False
+            bound = bindings.get(name)
+            return bound == original_id if bound else (
+                " ".join(name.split()).casefold()
+                == " ".join(original.display_name.split()).casefold()
+            )
+
+        def source_names(item):
+            names = item.get("authors", [item.get("author", "")])
+            return [name for name in names if isinstance(name, str)] if isinstance(
+                names, (list, tuple)
+            ) else []
+
+        containers = []
+        themes = content.get("themes", [])
+        for theme in themes if isinstance(themes, (list, tuple)) else ():
+            if isinstance(theme, dict):
+                containers.append(theme)
+                questions = theme.get("questions", [])
+                if isinstance(questions, (list, tuple)):
+                    containers.extend(q for q in questions if isinstance(q, dict))
+        existing_names = {
+            name for item in containers
+            for name in source_names(item)
+            if isinstance(name, str) and not matches(name)
+        } | set(bindings)
+        aliases = []
+        for index, author in enumerate(authors, 1):
+            alias = author.display_name
+            suffix = index
+            # Preserve unrelated bindings when a new author has the same source spelling.
+            while alias in existing_names:
+                alias = f"{author.display_name[:270]} (coauthor {suffix})"
+                suffix += 1
+            aliases.append(alias)
+            existing_names.add(alias)
+        changed = False
+        for item in containers:
+            names = source_names(item)
+            if not any(matches(name) for name in names):
+                continue
+            item["authors"] = [part for name in names
+                               for part in (aliases if matches(name) else [name]) if part]
+            item["author"] = ", ".join(item["authors"])
+            changed = True
+        if draft.lead_author_id == original.id or (
+            draft.lead_author_id is None and matches(content.get("lead_author", ""))
+        ):
+            content["lead_author"] = aliases[authors.index(recipient)]
+            draft.lead_author_id = recipient.id
+            changed = True
+        if original_id in bindings.values():
+            bindings = {name: value for name, value in bindings.items() if value != original_id}
+            changed = True
+        if changed:
+            bindings.update({
+                name: str(author.id) for name, author in zip(aliases, authors, strict=True)
+            })
+            draft.content, draft.author_bindings = content, bindings
+            draft.version += 1
+
     async def link_author(self, administrator_id: UUID, author_id: UUID, target: str) -> dict:
         # Use the same pair lock and approval records as player-requested links.
         async with self.database.transaction() as session:
@@ -642,12 +809,12 @@ class AdminManagementService:
             summary = {
                 "questions": await session.scalar(
                     select(func.count()).select_from(QuestionRevisionRecord).where(
-                        QuestionRevisionRecord.author_id == merge_author_id
+                        QuestionRevisionRecord.has_author(merge_author_id)
                     )
                 ),
                 "themes": await session.scalar(
                     select(func.count()).select_from(ThemeRevisionRecord).where(
-                        ThemeRevisionRecord.author_id == merge_author_id
+                        ThemeRevisionRecord.has_author(merge_author_id)
                     )
                 ),
                 "packets": await session.scalar(
@@ -681,26 +848,16 @@ class AdminManagementService:
                 .where(LogicalPacketRecord.statistical_author_id == merge_author_id)
                 .values(statistical_author_id=author_id)
             )
-            await session.execute(
-                update(ThemeRecord)
-                .where(ThemeRecord.statistical_author_id == merge_author_id)
-                .values(statistical_author_id=author_id)
-            )
-            await session.execute(
-                update(ThemeRevisionRecord)
-                .where(ThemeRevisionRecord.author_id == merge_author_id)
-                .values(author_id=author_id)
-            )
-            await session.execute(
-                update(LogicalQuestionRecord)
-                .where(LogicalQuestionRecord.statistical_author_id == merge_author_id)
-                .values(statistical_author_id=author_id)
-            )
-            await session.execute(
-                update(QuestionRevisionRecord)
-                .where(QuestionRevisionRecord.author_id == merge_author_id)
-                .values(author_id=author_id)
-            )
+            for model in (ThemeRecord, ThemeRevisionRecord, LogicalQuestionRecord,
+                          QuestionRevisionRecord):
+                for record in await session.scalars(select(model).where(
+                    model.has_author(merge_author_id)
+                )):
+                    record.author_ids = tuple(dict.fromkeys(
+                        author_id if value == merge_author_id else value
+                        for value in record.author_ids
+                    ))
+            await session.flush()
             # Draft Telegram author bindings map display names to author IDs.
             secondary_text = str(merge_author_id)
             for draft in await session.scalars(

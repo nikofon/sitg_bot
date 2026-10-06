@@ -127,7 +127,9 @@ export function renderLibraryReader(
     if (!page) return;
     select.value = String(index);
     content.replaceChildren(element("h2", { className: "library-theme-title", tabindex: "-1" }, `${i18n.t("library.theme")}: ${page.title}`));
-    if (page.author) content.append(authorField("library.author", page.author, page.author_id));
+    if (page.authors) page.authors.forEach((name, index) =>
+      content.append(authorField("library.author", name, page.author_ids?.[index])));
+    else if (page.author) content.append(authorField("library.author", page.author, page.author_id));
     if (page.commentary) content.append(element("p", {}, `${i18n.t("library.commentary")}: ${page.commentary}`));
     for (const question of page.questions) {
       const block = element("article", { className: "library-question" },
@@ -143,7 +145,9 @@ export function renderLibraryReader(
         const value = question[field];
         if (value?.length) block.append(element("p", {}, `${i18n.t(label)}: ${Array.isArray(value) ? value.join(", ") : value}`));
       }
-      if (question.author) block.append(authorField("library.author", question.author, question.author_id));
+      if (question.authors) question.authors.forEach((name, index) =>
+        block.append(authorField("library.author", name, question.author_ids?.[index])));
+      else if (question.author) block.append(authorField("library.author", question.author, question.author_id));
       if (statistics !== undefined && question.id) {
         const stats = statistics[question.id];
         if (stats) block.append(questionStatistics(stats));

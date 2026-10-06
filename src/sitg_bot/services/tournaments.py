@@ -29,6 +29,7 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.subscriptions import SubscriptionService, subscription_snapshot
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -36,7 +37,6 @@ from sitg_bot.storage.models import (
     GameRecord,
     GameRulesetVersionRecord,
     LogicalPacketRecord,
-    PacketQuestionRecord,
     PacketVersionRecord,
     PlatformAdministratorRecord,
     PlayerExposureClaimRecord,
@@ -46,8 +46,6 @@ from sitg_bot.storage.models import (
     PregameLobbyEventRecord,
     PregameLobbyMemberRecord,
     PregameLobbyRecord,
-    QuestionRevisionRecord,
-    ThemeRevisionRecord,
     TournamentAuthorRecord,
     TournamentCreationTokenDeliveryRecord,
     TournamentCreationTokenRecord,
@@ -2282,35 +2280,7 @@ class TournamentService:
             author_ids: set[UUID] = set()
             if version.lead_author_id is not None:
                 author_ids.add(version.lead_author_id)
-            author_ids.update(
-                item
-                for item in (
-                    await session.execute(
-                        select(ThemeRevisionRecord.author_id).where(
-                            ThemeRevisionRecord.packet_version_id == version.id,
-                            ThemeRevisionRecord.author_id.is_not(None),
-                        )
-                    )
-                ).scalars()
-                if item is not None
-            )
-            author_ids.update(
-                item
-                for item in (
-                    await session.execute(
-                        select(QuestionRevisionRecord.author_id)
-                        .join(
-                            PacketQuestionRecord,
-                            PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
-                        )
-                        .where(
-                            PacketQuestionRecord.packet_version_id == version.id,
-                            QuestionRevisionRecord.author_id.is_not(None),
-                        )
-                    )
-                ).scalars()
-                if item is not None
-            )
+            author_ids.update(await session.scalars(packet_author_ids(version.id)))
             if author_ids:
                 names.update(
                     (
@@ -2722,13 +2692,7 @@ class TournamentService:
                     ))) if version else None,
                     authors=tuple((await session.scalars(
                         select(AuthorRecord.display_name).where(AuthorRecord.id.in_(
-                            select(QuestionRevisionRecord.author_id)
-                            .join(PacketQuestionRecord, PacketQuestionRecord.question_revision_id
-                                  == QuestionRevisionRecord.id)
-                            .where(PacketQuestionRecord.packet_version_id == version.id)
-                            .union(select(ThemeRevisionRecord.author_id).where(
-                                ThemeRevisionRecord.packet_version_id == version.id
-                            ))
+                            packet_author_ids(version.id)
                         )).distinct().order_by(AuthorRecord.display_name)
                     )).all()) if version else (),
                     released=bool(version and version.library_released_at),

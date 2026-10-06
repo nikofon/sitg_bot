@@ -1263,6 +1263,18 @@ class PersistentGameService:
                 )
             ))
             appellant = await self._participant(session, game.id, telegram_user_id)
+            if game.appeal_selection_deadline is not None:
+                if datetime.now(UTC) >= game.appeal_selection_deadline:
+                    if game.appeal_selection_player_id is None:
+                        return Transition(False, (), await self._snapshot(session, game))
+                    event = await self._expire_appeal_selection(session, game)
+                    self._bump(game)
+                    await session.flush()
+                    return Transition(False, (event,), await self._snapshot(session, game))
+                self._require(
+                    game.appeal_selection_player_id == appellant.player_id,
+                    "Another player is choosing an appeal target",
+                )
             attempts = list(
                 (
                     await session.execute(
@@ -1286,17 +1298,6 @@ class PersistentGameService:
                 )
             ]
             self._require(eligible, "There is no answer this player may appeal")
-            if target_attempt_id is None:
-                self._require(
-                    len(eligible) == 1,
-                    "target_attempt_id is required when more than one answer can be appealed",
-                )
-                target = eligible[0]
-            else:
-                target = next((item for item in eligible if item.id == target_attempt_id), None)
-                self._require(target is not None, "This player may not appeal that answer")
-            assert target is not None and target.submitted_answer is not None
-
             electorate_rows = (
                 await session.execute(
                     select(GameParticipantRecord, PlayerRecord.telegram_user_id)
@@ -1313,6 +1314,41 @@ class PersistentGameService:
                 "The appellant must be connected when voting starts",
             )
             policy = await self._appeal_policy(session, game)
+            if target_attempt_id is None and len(eligible) > 1:
+                if game.appeal_selection_deadline is not None:
+                    return Transition(True, (), await self._snapshot(session, game))
+                now = datetime.now(UTC)
+                game.appeal_selection_deadline = now + policy.vote_timeout
+                game.appeal_selection_player_id = appellant.player_id
+                game.appeal_selection_was_paused = game.paused
+                if not game.paused:
+                    game.paused_at = now
+                game.paused = True
+                game.pause_abandonment_deadline = None
+                game.progression_deadline = None
+                event = await self._event(
+                    session, game.id, "appeal_selection_started",
+                    {
+                        "participant_id": str(appellant.id),
+                        "round_id": str(game.current_round_id),
+                        "vote_deadline": game.appeal_selection_deadline,
+                    },
+                )
+                self._bump(game)
+                await session.flush()
+                return Transition(True, (event,), await self._snapshot(session, game))
+            if target_attempt_id is None:
+                target = eligible[0]
+            else:
+                target = next((item for item in eligible if item.id == target_attempt_id), None)
+                self._require(target is not None, "This player may not appeal that answer")
+            assert target is not None and target.submitted_answer is not None
+
+            game_was_paused = game.paused
+            vote_deadline = game.appeal_selection_deadline
+            if vote_deadline is not None:
+                game_was_paused = game.appeal_selection_was_paused
+                self._clear_appeal_selection(game)
             escalation_enabled = policy.escalation_enabled
             now = datetime.now(UTC)
             appeal = AppealRecord(
@@ -1324,9 +1360,9 @@ class PersistentGameService:
                 kind="reject_correct" if target.original_correct else "accept_incorrect",
                 voting_rule=policy.voting_rule,
                 electorate_size=len(electorate_rows),
-                vote_deadline=now + policy.vote_timeout,
+                vote_deadline=vote_deadline or now + policy.vote_timeout,
                 escalation_enabled=escalation_enabled,
-                game_was_paused=game.paused,
+                game_was_paused=game_was_paused,
             )
             session.add(appeal)
             await session.flush()
@@ -1565,6 +1601,13 @@ class PersistentGameService:
     async def progress_due_appeals(self, *, limit: int = 100) -> tuple[UUID, ...]:
         now = datetime.now(UTC)
         async with self.database.sessions() as session:
+            selection_game_ids = tuple(await session.scalars(
+                select(GameRecord.id).where(
+                    GameRecord.status == "active",
+                    GameRecord.appeal_selection_player_id.is_not(None),
+                    GameRecord.appeal_selection_deadline <= now,
+                ).limit(limit)
+            ))
             appeal_ids = tuple(
                 (
                     await session.execute(
@@ -1595,6 +1638,19 @@ class PersistentGameService:
                 ).scalars()
             )
         progressed: list[UUID] = []
+        for game_id in selection_game_ids:
+            async with self.database.transaction() as session:
+                game = await self._locked_game(session, game_id)
+                if (
+                    game.status == "active"
+                    and game.appeal_selection_player_id is not None
+                    and game.appeal_selection_deadline is not None
+                    and game.appeal_selection_deadline <= datetime.now(UTC)
+                ):
+                    await self._expire_appeal_selection(session, game)
+                    self._bump(game)
+                    await session.flush()
+                    progressed.append(game.id)
         for appeal_id in appeal_ids:
             async with self.database.transaction() as session:
                 appeal = await session.get(AppealRecord, appeal_id)
@@ -1633,6 +1689,24 @@ class PersistentGameService:
                 await session.flush()
                 progressed.append(game.id)
         return tuple(progressed)
+
+    @staticmethod
+    def _clear_appeal_selection(game: GameRecord) -> None:
+        game.appeal_selection_deadline = None
+        game.appeal_selection_player_id = None
+        game.appeal_selection_was_paused = False
+
+    async def _expire_appeal_selection(self, session: AsyncSession, game: GameRecord) -> dict:
+        if not game.appeal_selection_was_paused:
+            game.paused = False
+            game.paused_at = None
+            game.pause_abandonment_deadline = None
+            game.progression_deadline = datetime.now(UTC) + self._settings(game).message_delta
+        # Keep the expired deadline until the next question completes, so stale
+        # choices cannot start a fresh ballot after the timeout worker runs.
+        game.appeal_selection_player_id = None
+        game.appeal_selection_was_paused = False
+        return await self._event(session, game.id, "appeal_selection_expired", {})
 
     async def expire(self, game_id: UUID) -> Transition:
         """Apply a stored deadline after a restart or from the future job worker."""
@@ -2035,6 +2109,10 @@ class PersistentGameService:
             game = await self._locked_game(session, game_id)
             participant = await self._participant(session, game.id, telegram_user_id)
             self._require(game.paused, "Game is not paused")
+            self._require(
+                game.appeal_selection_player_id is None,
+                "Game cannot resume during appeal selection",
+            )
             blocking_appeal = await session.scalar(
                 select(AppealRecord.id)
                 .where(
@@ -2176,6 +2254,16 @@ class PersistentGameService:
             game.phase = "intermission"
             game.progression_stage = "theme_start"
             game.progression_deadline = now + self._settings(game).game_start_to_first_theme_delta
+            author_names = dict((await session.execute(
+                select(AuthorRecord.id, AuthorRecord.display_name).where(AuthorRecord.id.in_(
+                    {author_id for _, theme, _, _ in theme_rows for author_id in theme.author_ids}
+                ))
+            )).all())
+            theme_rows = [
+                (game_theme, theme, ", ".join(author_names[value] for value in theme.author_ids)
+                 or None, version)
+                for game_theme, theme, _, version in theme_rows
+            ]
             return [
                 await self._event(session, game.id, "game_started", {}),
                 await self._event(
@@ -2201,10 +2289,13 @@ class PersistentGameService:
                 session, game.id, theme.id
             )
             author = None
-            if theme.author_id is not None:
-                author = await session.scalar(
-                    select(AuthorRecord.display_name).where(AuthorRecord.id == theme.author_id)
-                )
+            if theme.author_ids:
+                names = dict((await session.execute(
+                    select(AuthorRecord.id, AuthorRecord.display_name).where(
+                        AuthorRecord.id.in_(theme.author_ids)
+                    )
+                )).all())
+                author = ", ".join(names[value] for value in theme.author_ids)
             settings = self._settings(game)
             if theme.commentary.strip():
                 game.progression_stage = "theme_commentary"
@@ -2713,6 +2804,7 @@ class PersistentGameService:
     async def _close_round(
         self, session: AsyncSession, game: GameRecord, reason: str
     ) -> dict[str, Any]:
+        self._clear_appeal_selection(game)
         assert game.current_round_id is not None
         round_record = await session.get(QuestionRoundRecord, game.current_round_id)
         assert round_record is not None

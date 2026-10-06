@@ -12,15 +12,13 @@ from sitg_bot.services.ruleset_content import (
     PacketSelection,
 )
 from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
     LogicalPacketRecord,
-    PacketQuestionRecord,
     PacketVersionRecord,
     PlayerPacketBlockRecord,
-    QuestionRevisionRecord,
-    ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
@@ -184,16 +182,7 @@ class PacketBlockService:
     async def _authors(
         session: AsyncSession, version: PacketVersionRecord
     ) -> list[dict[str, object]]:
-        author_ids = select(ThemeRevisionRecord.author_id).where(
-            ThemeRevisionRecord.packet_version_id == version.id
-        ).union(
-            select(QuestionRevisionRecord.author_id)
-            .join(
-                PacketQuestionRecord,
-                PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
-            )
-            .where(PacketQuestionRecord.packet_version_id == version.id)
-        )
+        author_ids = packet_author_ids(version.id)
         rows = list(
             await session.scalars(
                 select(AuthorRecord).where(
@@ -202,4 +191,3 @@ class PacketBlockService:
             )
         )
         return [{"id": author.id, "display_name": author.display_name} for author in rows]
-

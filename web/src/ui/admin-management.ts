@@ -72,7 +72,10 @@ export function renderAdminManagement(
         && typeof (item.player as { id?: unknown }).id === "string"
         ? link(`/players/${(item.player as { id: string }).id}`, label("profile")) : null;
       if (item.status === "pending") { add("approve"); add("reject"); }
-    } else if (resource.section === "authors") { add("link"); add("merge"); }
+    } else if (resource.section === "authors") {
+      add("edit_author"); add("link"); add("merge");
+      if (Array.isArray(item.split_names) && item.split_names.length > 1) add("split");
+    }
     else if (resource.section === "ongoing_games") {
       profile = typeof item.tournament === "object" && item.tournament !== null
         && !Array.isArray(item.tournament)
@@ -116,7 +119,8 @@ export function renderAdminManagement(
       ongoing_games: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "last_activity_at"],
     }[resource.section];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
-    const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)));
+    const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)
+      && !(resource.section === "authors" && ["version", "split_names"].includes(key))));
     return element("article", { className: "resource-card admin-card", "data-resource-id": item.id },
       element("h2", {}, name(item)), profile, metadata(essential), weightControl,
       element("details", {}, element("summary", {}, label("details")), metadata(remaining)), buttons);

@@ -205,7 +205,7 @@ class SIGameRuleset:
             "schema": "si.packet.v1",
             "page_collection": "themes",
             "packet_fields": ("name", "language", "lead_author", "year"),
-            "theme_fields": ("name", "author", "commentary"),
+            "theme_fields": ("name", "authors", "commentary"),
             "question_fields": (
                 "value",
                 "form",
@@ -215,7 +215,7 @@ class SIGameRuleset:
                 "rejected_answers",
                 "commentary",
                 "source",
-                "author",
+                "authors",
             ),
             "question_values": settings.question_values,
         }

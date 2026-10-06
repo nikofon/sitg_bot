@@ -233,6 +233,28 @@ def fixture(snapshot=None):
     return bot, protocol, delivery
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("mine", [False, True])
+@pytest.mark.parametrize("kind", ["player_abandoned", "game_cancelled"])
+async def test_player_leave_notice_identifies_player_for_others_once(locale, mine, kind):
+    bot, protocol, delivery = fixture(view(locale=locale))
+    protocol.events = [event(
+        1, kind, name="Player <One>", mine=mine,
+        reason="player_abandoned_before_theme_reveal",
+    )]
+    await delivery.sync(42, GAME)
+    texts = [call.args[1] for call in bot.send_message.await_args_list]
+    notice = LocalizationService().text("flow.player_left", locale, name="Player <One>")
+    assert (notice in texts) is not mine
+    if not mine:
+        assert "&lt;One&gt;" in texts[0]
+    if kind == "game_cancelled":
+        assert LocalizationService().text("game.notice.game_cancelled", locale) in texts
+    restarted = GameDelivery(bot, LocalizationService(), protocol, None)
+    await restarted.sync(42, GAME)
+    assert bot.send_message.await_count == len(texts)
+
+
 @pytest.mark.parametrize("kind", ["appeal_resolved", "appeal_escalated"])
 @pytest.mark.parametrize(
     "next_kind", ["question_cost_announced", "theme_completed", "game_finalized"]
@@ -575,10 +597,17 @@ def appeal_choice_view():
 async def test_appeal_offers_explicit_choices_for_own_wrong_and_other_correct_answer():
     snapshot = appeal_choice_view()
     backend, message, _ = handler_fixture(snapshot)
+    claim = object()
+
+    async def send_choices(*args, **kwargs):
+        backend.game_action.assert_awaited_once_with(
+            claim, game_id=UUID(GAME), command="appeal", round_id=ROUND,
+        )
+
+    backend.game_delivery.send.side_effect = send_choices
     assert not await request_appeal(
-        message, backend, object(), snapshot, LocalizationService(), "ru"
+        message, backend, claim, snapshot, LocalizationService(), "ru"
     )
-    backend.game_action.assert_not_awaited()
     call = backend.game_delivery.send.await_args
     model = call.args[3]
     assert "My wrong answer" in model.text and "Credited answer" in model.text
@@ -588,6 +617,18 @@ async def test_appeal_offers_explicit_choices_for_own_wrong_and_other_correct_an
         f"appealpick:{UUID(a['id']).hex}" for a in snapshot["appeal_targets"]
     ]
     assert call.kwargs["round_id"] == ROUND
+
+
+async def test_appeal_choices_are_not_shown_when_selection_is_rejected():
+    snapshot = appeal_choice_view()
+    backend, message, _ = handler_fixture(snapshot)
+    backend.game_action.return_value = {"accepted": False, "reason": "question_changed"}
+    assert not await request_appeal(
+        message, backend, object(), snapshot, LocalizationService(), "en"
+    )
+    call = backend.game_delivery.send.await_args
+    assert call.args[3].text == LocalizationService().text("game.denied.question_changed", "en")
+    assert call.kwargs.get("kind") != "appeal"
 
 
 @pytest.mark.parametrize("target_index", [0, 1])

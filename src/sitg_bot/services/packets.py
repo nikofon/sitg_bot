@@ -174,7 +174,9 @@ class PacketAdminService:
                 session.add(assignment)
                 if existing is None:
                     await session.flush()
-                    await SubscriptionService.apply_to_new_assignment(session, assignment, context.type_key)
+                    await SubscriptionService.apply_to_new_assignment(
+                        session, assignment, context.type_key
+                    )
                 await burn_author_content(
                     session, version_id=version.id,
                     player_ids=await tournament_manager_ids(session, [tournament_id]),
@@ -201,7 +203,7 @@ class PacketAdminService:
         authors = {"lead_author": version.lead_author_id}
         rows = []
         for i, theme in enumerate(themes):
-            authors[f"themes.{i}.author"] = theme.author_id
+            authors[f"themes.{i}.authors"] = theme.author_ids
             questions = (
                 await session.execute(
                     select(PacketQuestionRecord, QuestionRevisionRecord)
@@ -214,7 +216,9 @@ class PacketAdminService:
                 )
             ).all()
             for j, (_, question) in enumerate(questions):
-                authors[f"themes.{i}.questions.{j}.author"] = question.author_id
+                authors[f"themes.{i}.questions.{j}.authors"] = (
+                    () if question.inherits_theme_authors else question.author_ids
+                )
             rows.append((theme, questions))
         return authors, rows
 
@@ -234,7 +238,11 @@ class PacketAdminService:
             associated = (
                 await session.scalars(
                     select(AuthorRecord).where(
-                        AuthorRecord.id.in_({value for value in authors.values() if value})
+                        AuthorRecord.id.in_({
+                            author_id for value in authors.values()
+                            for author_id in (value if isinstance(value, tuple) else (value,))
+                            if author_id
+                        })
                     )
                 )
             ).all()
@@ -251,7 +259,8 @@ class PacketAdminService:
                 "can_publish": False,
                 "can_reject": False,
                 "field_author_ids": {
-                    key: str(value) if value else None for key, value in authors.items()
+                    key: [str(item) for item in value] if isinstance(value, tuple)
+                    else str(value) if value else None for key, value in authors.items()
                 },
                 "associated_authors": [
                     {"author_id": str(a.id), "display_name": a.display_name} for a in associated
@@ -284,11 +293,13 @@ class PacketAdminService:
         fields = {key: value for key, value in content.items() if key != "themes"}
         for i, theme in enumerate(content["themes"]):
             fields.update(
-                {f"themes.{i}.{key}": value for key, value in theme.items() if key != "questions"}
+                {f"themes.{i}.{key}": value for key, value in theme.items()
+                 if key not in {"questions", "author"}}
             )
             for j, question in enumerate(theme["questions"]):
                 fields.update(
-                    {f"themes.{i}.questions.{j}.{key}": value for key, value in question.items()}
+                    {f"themes.{i}.questions.{j}.{key}": value for key, value in question.items()
+                     if key != "author"}
                 )
         return fields
 
@@ -323,10 +334,14 @@ class PacketAdminService:
         expected_version: int,
         content: dict[str, object],
         changes: dict[str, str],
-        field_author_ids: dict[str, UUID | None],
+        field_author_ids: dict[str, UUID | list[UUID | None] | tuple[UUID | None, ...] | None],
     ) -> None:
         self._require_reasonable_content_size(content)
         packet = packet_from_data(content)
+        field_author_ids = {
+            path: tuple(value) if isinstance(value, list) else value
+            for path, value in field_author_ids.items()
+        }
         async with self.database.transaction() as session:
             assignment, old = await self._management_records(
                 session, tournament_id, assignment_id, actor_id
@@ -382,16 +397,30 @@ class PacketAdminService:
             fields = self._flat_fields(asdict(packet))
             resolved: dict[str, AuthorRecord] = {}
             author_ids = dict(field_author_ids)
-            for path, author_id in author_ids.items():
-                name = str(fields[path]).strip()
-                if author_id:
-                    author = await session.get(AuthorRecord, author_id)
-                    if author is None or name != author.display_name:
-                        raise ValueError("Author field must match its selected registered author")
-                    resolved[str(author.id)] = author
-                elif name:
-                    author = await self._author(session, name, resolved)
-                    author_ids[path] = author.id
+            for path, selected in author_ids.items():
+                multiple = path.endswith(".authors")
+                if not multiple and isinstance(selected, tuple):
+                    raise ValueError("The lead author must be a single identity")
+                names = fields[path] if multiple else (str(fields[path]).strip(),)
+                ids = selected if multiple else (selected,)
+                if not isinstance(ids, tuple) or len(ids) != len(names):
+                    raise ValueError("Each author name requires a matching identity slot")
+                matched = []
+                for name, author_id in zip(names, ids, strict=True):
+                    if author_id:
+                        author = await session.get(AuthorRecord, author_id)
+                        if author is None or name != author.display_name:
+                            raise ValueError(
+                                "Author field must match its selected registered author"
+                            )
+                        resolved[str(author.id)] = author
+                    else:
+                        author = await self._author(session, name, resolved)
+                    if author:
+                        matched.append(author.id)
+                author_ids[path] = tuple(dict.fromkeys(matched)) if multiple else (
+                    matched[0] if matched else None
+                )
             now = datetime.now(UTC)
             draft = PacketDraftRecord(
                 status="published",
@@ -443,9 +472,9 @@ class PacketAdminService:
                     if replace_theme
                     else await session.get(ThemeRecord, old_theme.theme_id)
                 )
-                theme_author_id = author_ids[f"{prefix}.author"]
-                if replace_theme or f"{prefix}.author" in changes:
-                    logical_theme.statistical_author_id = theme_author_id
+                theme_author_ids = author_ids[f"{prefix}.authors"]
+                if replace_theme or f"{prefix}.authors" in changes:
+                    logical_theme.author_ids = theme_author_ids
                 session.add(logical_theme)
                 await session.flush()
                 revision_number = await session.scalar(
@@ -459,7 +488,7 @@ class PacketAdminService:
                     revision_number=(revision_number or 0) + 1,
                     position=i + 1,
                     name=theme.name,
-                    author_id=theme_author_id,
+                    author_ids=theme_author_ids,
                     commentary=theme.commentary,
                 )
                 session.add(theme_revision)
@@ -471,20 +500,15 @@ class PacketAdminService:
                         changes.get(f"{path}.{field}") == "substitution"
                         for field in ("text", "answer", "accepted_answers", "rejected_answers")
                     )
-                    question_author_id = author_ids[f"{path}.author"]
-                    if (
-                        f"{prefix}.author" in changes
-                        and f"{path}.author" not in changes
-                        and old_question.author_id == old_theme.author_id
-                    ):
-                        question_author_id = theme_author_id
+                    explicit_ids = author_ids[f"{path}.authors"]
+                    question_author_ids = explicit_ids or theme_author_ids
                     logical_question = (
                         LogicalQuestionRecord(packet_id=old.packet_id)
                         if replace_question
                         else await session.get(LogicalQuestionRecord, old_question.question_id)
                     )
-                    if replace_question or question_author_id != old_question.author_id:
-                        logical_question.statistical_author_id = question_author_id
+                    if replace_question or question_author_ids != old_question.author_ids:
+                        logical_question.author_ids = question_author_ids
                     session.add(logical_question)
                     await session.flush()
                     revision_number = await session.scalar(
@@ -502,7 +526,8 @@ class PacketAdminService:
                         commentary=question.commentary,
                         form=question.form,
                         source=question.source,
-                        author_id=question_author_id,
+                        author_ids=question_author_ids,
+                        inherits_theme_authors=not explicit_ids,
                     )
                     session.add(revision)
                     await session.flush()
@@ -1102,10 +1127,12 @@ class PacketAdminService:
             await session.flush()
 
             for theme_position, theme in enumerate(packet.themes, 1):
-                theme_author = await self._author(session, theme.author, operation_authors)
+                theme_authors = [await self._author(session, name, operation_authors)
+                                 for name in theme.authors]
+                theme_author_ids = tuple(dict.fromkeys(author.id for author in theme_authors))
                 logical_theme = ThemeRecord(
                     packet_id=logical_packet.id,
-                    statistical_author_id=theme_author.id if theme_author else None,
+                    author_ids=theme_author_ids,
                 )
                 session.add(logical_theme)
                 await session.flush()
@@ -1115,18 +1142,20 @@ class PacketAdminService:
                     revision_number=1,
                     position=theme_position,
                     name=theme.name,
-                    author_id=theme_author.id if theme_author else None,
+                    author_ids=theme_author_ids,
                     commentary=theme.commentary,
                 )
                 session.add(theme_revision)
                 await session.flush()
                 for question_position, question in enumerate(theme.questions, 1):
-                    question_author = await self._author(
-                        session, question.author or theme.author, operation_authors
-                    )
+                    question_authors = [await self._author(session, name, operation_authors)
+                                        for name in question.authors]
+                    question_author_ids = tuple(dict.fromkeys(
+                        author.id for author in question_authors
+                    )) or theme_author_ids
                     logical_question = LogicalQuestionRecord(
                         packet_id=logical_packet.id,
-                        statistical_author_id=question_author.id if question_author else None,
+                        author_ids=question_author_ids,
                     )
                     session.add(logical_question)
                     await session.flush()
@@ -1140,7 +1169,8 @@ class PacketAdminService:
                         commentary=question.commentary,
                         form=question.form,
                         source=question.source,
-                        author_id=question_author.id if question_author else None,
+                        author_ids=question_author_ids,
+                        inherits_theme_authors=not question.authors,
                     )
                     session.add(revision)
                     await session.flush()
@@ -1194,7 +1224,9 @@ class PacketAdminService:
                 )
                 session.add(assignment)
                 await session.flush()
-                await SubscriptionService.apply_to_new_assignment(session, assignment, context.type_key)
+                await SubscriptionService.apply_to_new_assignment(
+                    session, assignment, context.type_key
+                )
             # The uploader and every manager of each destination tournament have
             # seen this content and must never be able to play it.
             seen_players = await tournament_manager_ids(session, intended_tournaments)
@@ -1310,8 +1342,8 @@ class PacketAdminService:
     def _detected_authors(packet: Packet) -> tuple[str, ...]:
         names = [packet.lead_author]
         for theme in packet.themes:
-            names.append(theme.author)
-            names.extend(question.author for question in theme.questions)
+            names.extend(theme.authors)
+            names.extend(name for question in theme.questions for name in question.authors)
         return tuple(
             dict.fromkeys(" ".join(name.split()) for name in names if name.strip())
         )
@@ -1391,7 +1423,7 @@ class PacketAdminService:
                 errors.append(f"Theme {theme_index} name is longer than 500 characters")
             if not theme.author.strip():
                 warnings.append(f"Theme {theme_index} has no author")
-            elif len(theme.author) > 300:
+            elif any(len(name) > 300 for name in theme.authors):
                 errors.append(f"Theme {theme_index} author is longer than 300 characters")
             for question in theme.questions:
                 if not question.text.strip() or not question.answer.strip():
@@ -1400,7 +1432,7 @@ class PacketAdminService:
                     )
                 if not (question.author or theme.author).strip():
                     warnings.append(f"Theme {theme_index}, question {question.value} has no author")
-                elif len(question.author or theme.author) > 300:
+                elif any(len(name) > 300 for name in question.authors or theme.authors):
                     errors.append(
                         f"Theme {theme_index}, question {question.value} author is longer "
                         "than 300 characters"

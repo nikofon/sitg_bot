@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, func, select
 
+from sitg_bot.storage.authorship import authorship_rows
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AnswerAttemptRecord,
@@ -22,10 +23,11 @@ from sitg_bot.storage.models import (
 
 
 def _author_cards():
+    attribution = authorship_rows(LogicalQuestionRecord)
     questions = select(
-        LogicalQuestionRecord.statistical_author_id.label("author_id"),
+        attribution.c.author_id,
         func.count().label("count"),
-    ).group_by(LogicalQuestionRecord.statistical_author_id).subquery()
+    ).group_by(attribution.c.author_id).subquery()
     tournaments = select(
         TournamentAuthorRecord.author_id, func.count().label("count"),
     ).group_by(TournamentAuthorRecord.author_id).subquery()
@@ -95,7 +97,7 @@ class AuthorProfileService:
                 GameThemeRecord.theme_revision_id == PacketQuestionRecord.theme_revision_id,
                 GameThemeRecord.source_packet_version_id == PacketQuestionRecord.packet_version_id,
             )).where(
-                LogicalQuestionRecord.statistical_author_id == author_id,
+                LogicalQuestionRecord.has_author(author_id),
                 GameRulesetVersionRecord.key == "si",
                 GameRecord.status == "finalized",
                 QuestionRoundRecord.status == "completed",

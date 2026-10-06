@@ -59,3 +59,15 @@ def test_structure_changes_cannot_bypass_field_classification():
     new["themes"] = ()
     with pytest.raises(ValueError, match="structure"):
         PacketAdminService._validate_changes(old, new, {}, {}, {})
+
+
+def test_coauthor_identity_changes_require_correction_even_for_namesakes():
+    packet = content()
+    path = "themes.0.authors"
+    old_ids = {path: (uuid4(), uuid4())}
+    new_ids = {path: (old_ids[path][0], uuid4())}
+    PacketAdminService._validate_changes(packet, packet, old_ids, new_ids, {path: "correction"})
+    with pytest.raises(ValueError, match="Substitution is only"):
+        PacketAdminService._validate_changes(
+            packet, packet, old_ids, new_ids, {path: "substitution"},
+        )

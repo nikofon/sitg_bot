@@ -125,10 +125,17 @@ The current source records retain:
 - the themes directly credited to them;
 - the questions credited to them.
 
-A question with no explicit author is credited to its theme's author when one exists;
-otherwise it remains uncredited. Author question counts and performance statistics use
-this resolved credit, while theme counts include only themes directly credited to the
-author.
+A question without explicit authors inherits all theme authors; explicit question authors replace
+them. Each coauthor receives full question counts and performance statistics, once per identity.
+Theme counts include only directly credited themes.
+
+Administrators can edit author names, name components, and Telegram details in
+**Management → Authors** without changing the identity or its credit. **Split authors** appears
+for comma-separated names and creates new identities, even when matching authors already exist.
+All receive the original theme/question attribution. The administrator chooses which new author
+receives existing player links, link requests, lead-author roles, and Telegram details. Splitting
+updates draft associations, preserves exposure burns, and removes the combined identity atomically.
+Both actions reject stale author data.
 
 Logical packets, themes, and questions retain their current statistical author separately from
 immutable revision credits. Authorship corrections transfer that logical attribution; played

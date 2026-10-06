@@ -34,10 +34,11 @@ Community uploads are opt-in; original-file retention remains [planned work](fut
 ## Input formats
 
 JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, and `language`
-(default `und`). Each theme has `name`, optional `author` and `commentary`, and `questions`.
+(default `und`). Each theme has `name`, optional `authors` (name list) and `commentary`, and `questions`.
 Each question requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
 (string list), `rejected_answers` (string list of unaccepted answers), `form`, `commentary`,
-`source`, and `author`. Use
+`source`, and `authors`. Missing or empty question authors inherit all theme authors; explicit
+lists replace them. Legacy `author` strings denote one person; `authors` takes precedence. Use
 `packet_to_json`/`packet_from_data` in the importer as the serialization contract.
 Uploads also accept an array of packet objects. JSON remains supported internally but is
 not advertised in Telegram's upload prompt.
@@ -48,7 +49,9 @@ Zero-point questions play normally but never affect scores or tiebreakers.
 
 The DOCX converter uses Heading 1 for each packet name and Heading 2 for theme names
 (including Russian style names), question lines such as `10. [answer form] Question text`,
-and fields labeled `Ответ:`, `Зачёт:`, `Незачёт:`, `Комментарий:`, `Источник:`, and `Автор:`/`Author:`.
+and fields labeled `Ответ:`, `Зачёт:`, `Незачёт:`, `Комментарий:`, `Источник:`, and
+`Автор:`/`Авторы:`/`Author:`/`Authors:`. Separate document authors with commas, semicolons,
+or repeated author lines; enter one per line in the editor.
 A theme-level commentary line starts with `Комментарий к теме:` (or `Theme commentary:`)
 after the theme heading or author line; following plain lines continue it.
 Accepted alternatives in `Зачёт:` are comma-separated; `Незачёт:` entries are comma-separated
@@ -172,10 +175,13 @@ When an authorized tournament editor confirms a correction:
 Statistics may still be inspected per revision for auditing, but ordinary question
 statistics aggregate all correction revisions under the logical question ID.
 
-Authorship corrections update the logical packet/theme/question's statistical author, transferring
+Authorship corrections update the logical packet/theme/question's statistical authors, transferring
 attribution without rewriting played revisions or result facts. Existing authorship counts use
-logical identities, including retained historical content. Theme-author corrections also transfer
-questions attributed to that theme author unless their own author fields were separately changed.
+logical identities, including retained historical content. Each coauthor receives full credit once
+per identity. Theme-author corrections transfer inherited question attribution; explicit question
+authors remain independent, even when identical to the theme authors. Clearing question authors
+restores inheritance.
+Legacy document imports that copied theme authors into question fields may need those fields cleared.
 All themes containing a linked author's work (and every question in those themes) are permanently
 burnt for that player. Changing authorship never removes or resets the former author's burns.
 

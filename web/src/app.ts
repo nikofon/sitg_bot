@@ -381,7 +381,9 @@ export class MiniAppShell {
       : `/api/miniapp/manager/packets/${encodeURIComponent(route.params.launch_ref ?? "")}/authors`;
     let themeIndex = 0;
     const form = element("form", { className: "settings-form packet-editor" }) as HTMLFormElement;
-    const label = (field: string): string => this.i18n.t(`packet_editor.${field}` as MessageKey);
+    const label = (field: string): string => this.i18n.t(`packet_editor.${field === "authors" ? "coauthors" : field}` as MessageKey);
+    const authorNames = (value: string): string[] => value.split(/\n/)
+      .map((name) => name.trim().replace(/\s+/g, " ")).filter(Boolean);
     const valueAt = (source: unknown, path: string): unknown => path.split(".").reduce<unknown>(
       (value, key) => (value as Record<string, unknown>)[key], source,
     );
@@ -405,7 +407,7 @@ export class MiniAppShell {
         if (field === "author" || field === "lead_author") {
           authorPicker = element("fieldset", { disabled: !changes[path], className: "packet-field-author" },
             this.registeredAuthorPicker(route, authorsPath,
-              associatedAuthors.get(fieldAuthors[path] ?? ""), (author) => {
+              associatedAuthors.get(typeof fieldAuthors[path] === "string" ? fieldAuthors[path] : ""), (author) => {
                 fieldAuthors[path] = author?.author_id ?? null;
                 if (author) {
                   associatedAuthors.set(author.author_id, author);
@@ -415,6 +417,47 @@ export class MiniAppShell {
               }),
           );
           input.addEventListener("input", () => { fieldAuthors[path] = null; });
+        }
+        if (field === "authors") {
+          authorPicker = element("fieldset", { disabled: !changes[path], className: "packet-field-author" });
+          let previousNames = authorNames(input.value);
+          const renderPickers = (): void => {
+            const names = authorNames(input.value);
+            previousNames = names;
+            const selected = fieldAuthors[path];
+            const ids = Array.isArray(selected) ? selected : names.map(() => null);
+            replaceChildren(authorPicker!, ...names.map((name, index) => element("div", {},
+              element("strong", {}, name),
+              this.registeredAuthorPicker(route, authorsPath,
+                associatedAuthors.get(ids[index] ?? ""), (author) => {
+                  const currentNames = authorNames(input.value);
+                  const currentIds = fieldAuthors[path];
+                  const nextIds = Array.isArray(currentIds) ? [...currentIds] : currentNames.map(() => null);
+                  nextIds[index] = author?.author_id ?? null;
+                  if (author) {
+                    associatedAuthors.set(author.author_id, author);
+                    currentNames[index] = author.display_name;
+                  }
+                  fieldAuthors[path] = nextIds;
+                  input.value = currentNames.join("\n");
+                  input.dispatchEvent(new Event("change", { bubbles: true }));
+                  renderPickers();
+                }),
+            )));
+          };
+          input.addEventListener("input", () => {
+            const ids = fieldAuthors[path];
+            const unused = previousNames.map((name, index) => ({ name,
+              id: Array.isArray(ids) ? ids[index] ?? null : null }));
+            const names = authorNames(input.value);
+            fieldAuthors[path] = names.map((name) => {
+              const index = unused.findIndex((item) => item.name === name);
+              return index < 0 ? null : unused.splice(index, 1)[0]!.id;
+            });
+            previousNames = names;
+          });
+          input.addEventListener("change", renderPickers);
+          renderPickers();
         }
         const buttons = element("span", { className: "packet-change-actions" });
         const substitution = (path.startsWith("themes.") && field === "name")
@@ -428,13 +471,14 @@ export class MiniAppShell {
           }, kind === "correction" ? "✎" : "↪");
           button.addEventListener("click", () => {
             if (changes[path] === kind) {
-              const current = field === "accepted_answers" || field === "rejected_answers"
+              const current = field === "authors" ? authorNames(input.value)
+                : field === "accepted_answers" || field === "rejected_answers"
                 ? input.value.split(/\n/).map((answer) => answer.trim()).filter(Boolean)
                 : field === "year" ? (input.value ? Number(input.value) : null)
                 : field === "value" ? Number(input.value) : input.value;
               if (!input.validity.valid
                 || JSON.stringify(current) !== JSON.stringify(valueAt(resource.packet, path))
-                || fieldAuthors[path] !== resource.field_author_ids?.[path]) return;
+                || JSON.stringify(fieldAuthors[path]) !== JSON.stringify(resource.field_author_ids?.[path])) return;
               // Capture a restored value before locking the field, including after page navigation.
               input.dispatchEvent(new Event("change", { bubbles: true }));
               delete changes[path];
@@ -473,7 +517,10 @@ export class MiniAppShell {
     const normalizeAuthor = (name: string): string => name.trim().replace(/\s+/g, " ");
     const packetAuthors = (): string[] => [...new Set([
       packet.lead_author,
-      ...packet.themes.flatMap((theme) => [theme.author, ...theme.questions.map((question) => question.author)]),
+      ...packet.themes.flatMap((theme) => [
+        ...(theme.authors ?? [theme.author]),
+        ...theme.questions.flatMap((question) => question.authors ?? [question.author]),
+      ]),
     ].map(normalizeAuthor).filter(Boolean))];
     const authorList = element("div", { className: "packet-author-list" });
     const authorRows = new Map<string, HTMLElement>();
@@ -560,14 +607,20 @@ export class MiniAppShell {
       if (!theme) return;
       for (const input of page.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("[data-theme-field]")) {
         if (modifying && input.disabled) continue;
-        theme[input.dataset.themeField as "name" | "author" | "commentary"] = input.value;
+        if (input.dataset.themeField === "authors") {
+          theme.authors = authorNames(input.value);
+          theme.author = theme.authors.join(", ");
+        } else theme[input.dataset.themeField as "name" | "author" | "commentary"] = input.value;
       }
       for (const input of page.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("[data-question-field]")) {
         if (modifying && input.disabled) continue;
         const question = theme.questions[Number(input.dataset.questionIndex)];
         if (!question) continue;
         const field = input.dataset.questionField as keyof typeof question;
-        if (field === "value") question.value = Number(input.value);
+        if (field === "authors") {
+          question.authors = authorNames(input.value);
+          question.author = question.authors.join(", ");
+        } else if (field === "value") question.value = Number(input.value);
         else if (field === "accepted_answers" || field === "rejected_answers") {
           (question[field as "accepted_answers" | "rejected_answers"]) = input.value.split(modifying ? /\n/ : /\n|,/)
             .map((item) => item.trim()).filter(Boolean);
@@ -590,7 +643,9 @@ export class MiniAppShell {
       next.addEventListener("click", () => { capturePage(); themeIndex += 1; renderPage(); });
       const themeFields = element("fieldset", {}, element("legend", {}, `${this.i18n.t("packet_editor.theme")} ${themeIndex + 1} / ${packet.themes.length}`));
       for (const field of resource.editor.theme_fields) {
-        const item = control(field, theme[field as "name" | "author" | "commentary"] ?? "", field === "commentary", `themes.${themeIndex}.${field}`);
+        const current = field === "authors" ? (theme.authors ?? (theme.author ? [theme.author] : [])).join("\n")
+          : theme[field as "name" | "author" | "commentary"] ?? "";
+        const item = control(field, current, field === "commentary" || field === "authors", `themes.${themeIndex}.${field}`);
         const input = item.querySelector<HTMLInputElement>("[data-field]");
         if (input) { input.dataset.themeField = field; delete input.dataset.field; }
         themeFields.append(item);
@@ -599,10 +654,11 @@ export class MiniAppShell {
       theme.questions.forEach((question, questionIndex) => {
         const fields = element("fieldset", {}, element("legend", {}, `${this.i18n.t("packet_editor.question")} ${questionIndex + 1}`));
         for (const field of resource.editor.question_fields) {
-          const current = field === "accepted_answers" ? question.accepted_answers.join("\n")
+          const current = field === "authors" ? (question.authors ?? (question.author ? [question.author] : [])).join("\n")
+            : field === "accepted_answers" ? question.accepted_answers.join("\n")
             : field === "rejected_answers" ? (question.rejected_answers ?? []).join("\n")
             : question[field as keyof typeof question];
-          const item = control(field, current as string | number, ["text", "answer", "accepted_answers", "rejected_answers", "commentary", "source"].includes(field), `themes.${themeIndex}.questions.${questionIndex}.${field}`);
+          const item = control(field, current as string | number, ["text", "answer", "accepted_answers", "rejected_answers", "commentary", "source", "authors"].includes(field), `themes.${themeIndex}.questions.${questionIndex}.${field}`);
           const input = item.querySelector<HTMLInputElement | HTMLTextAreaElement>("[data-field]");
           if (input) {
             input.dataset.questionField = field;
@@ -649,7 +705,7 @@ export class MiniAppShell {
         if (modifying) {
           const unchanged = Object.keys(changes).some((path) =>
             JSON.stringify(valueAt(resource.packet, path)) === JSON.stringify(valueAt(packet, path))
-            && fieldAuthors[path] === resource.field_author_ids?.[path]);
+            && JSON.stringify(fieldAuthors[path]) === JSON.stringify(resource.field_author_ids?.[path]));
           if (!Object.keys(changes).length || unchanged) {
             this.showTextDialog(this.i18n.t("packet_management.changes_required"), []);
             return;
@@ -2932,6 +2988,10 @@ export class MiniAppShell {
 
   private async adminManagementAction(route: RouteMatch, resource: AdminManagementResource,
     card: AdminCard, command: string, button: HTMLButtonElement): Promise<void> {
+    if (command === "edit_author" || command === "split") {
+      this.promptAuthorChange(route, card, command === "split");
+      return;
+    }
     if (command === "view" || command === "download") {
       await this.accessLibrary(route, card.id, command, button);
       return;
@@ -3069,6 +3129,86 @@ export class MiniAppShell {
       form,
       element("h2", {}, this.i18n.t("authors_link.my_requests")),
       requests));
+  }
+
+  private promptAuthorChange(route: RouteMatch, card: AdminCard, split: boolean): void {
+    const title = this.i18n.t(split ? "admin_management.split_title" : "admin_management.edit_author");
+    const errorText = element("p", { className: "field-help", role: "status" });
+    const form = element("form", { className: "settings-form" });
+    const inputs = new Map<string, HTMLInputElement>();
+    let recipient: HTMLSelectElement | undefined;
+    if (split) {
+      const names = Array.isArray(card.split_names) ? card.split_names.map(String) : [];
+      recipient = element("select", { name: "recipient_index", required: true },
+        element("option", { value: "" }, this.i18n.t("admin_management.split_choose")),
+        ...names.map((name, index) => element("option", { value: String(index) }, name)));
+      form.append(
+        element("p", {}, this.i18n.t("admin_management.split_help")),
+        element("ul", {}, ...names.map((name) => element("li", {}, name))),
+        element("label", {}, this.i18n.t("admin_management.split_recipient"), recipient),
+      );
+    } else {
+      for (const [key, label] of [
+        ["display_name", "admin_management.display_name"],
+        ["first_name", "manager_settings.author_first_name"],
+        ["second_name", "manager_settings.author_second_name"],
+        ["surname", "manager_settings.author_surname"],
+        ["telegram_link", "manager_settings.author_telegram"],
+      ] as const) {
+        const value = key === "telegram_link"
+          ? card.telegram_link ?? (card.telegram_username ? `@${card.telegram_username}` : "")
+          : card[key];
+        const input = element("input", { name: key, type: "text", value: String(value ?? ""),
+          required: key === "display_name", maxlength: key === "display_name" ? "300"
+            : key === "telegram_link" ? "200" : "100" });
+        inputs.set(key, input);
+        form.append(element("label", {}, this.i18n.t(label), input));
+      }
+      for (const key of ["first_name", "second_name", "surname"]) {
+        inputs.get(key)!.addEventListener("input", () => {
+          const name = ["first_name", "second_name", "surname"]
+            .map((field) => inputs.get(field)!.value.trim()).filter(Boolean).join(" ");
+          if (name) inputs.get("display_name")!.value = name;
+        });
+      }
+    }
+    const submit = element("button", { type: "submit", className: "primary-button" },
+      this.i18n.t(split ? "admin_management.split" : "admin_management.save_author"));
+    form.append(errorText, submit);
+    const close = element("button", { type: "button", className: "icon-button",
+      "aria-label": this.i18n.t("common.close") }, "×");
+    const dialog = element("dialog", { className: "tournament-dialog", "aria-labelledby": "author-change-title" },
+      element("div", { className: "dialog-heading" }, element("h2", { id: "author-change-title" }, title), close), form);
+    close.addEventListener("click", () => dialog.close());
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (split && !recipient?.value) return;
+      submit.disabled = true;
+      const body = split ? { expected_version: card.version, confirm: true,
+        recipient_index: Number(recipient!.value) } : { expected_version: card.version,
+        ...Object.fromEntries([...inputs].map(([key, input]) => [key, input.value.trim() || null])) };
+      try {
+        await this.api.request(
+          `/api/miniapp/admin/management/authors/${encodeURIComponent(card.id)}/${split ? "split" : "update"}`,
+          { method: "POST", body, signal: this.request?.signal },
+        );
+        dialog.close();
+        this.platform.notifySuccess();
+        await this.load(route);
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        errorText.textContent = this.i18n.t(`error.${code}` as MessageKey);
+        if (code === "stale_write") {
+          submit.disabled = true;
+          await this.load(route);
+          return;
+        }
+      }
+      submit.disabled = false;
+    });
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
   }
 
   private promptAuthorMerge(route: RouteMatch, card: AdminCard): void {

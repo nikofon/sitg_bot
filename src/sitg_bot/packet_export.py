@@ -29,7 +29,9 @@ def library_docx(name: str, pages: list[dict[str, object]]) -> bytes:
     paragraph(name, 1)
     for page in pages:
         paragraph(page["title"], 2)
-        if page.get("author"):
+        if page.get("authors"):
+            paragraph(f"Authors: {'; '.join(page['authors'])}")
+        elif page.get("author"):
             paragraph(f"Author: {page['author']}")
         for question in page["questions"]:
             paragraph(f"{question['value']}) {question['text']}")
@@ -41,6 +43,10 @@ def library_docx(name: str, pages: list[dict[str, object]]) -> bytes:
                 ("author", "Authors"), ("form", "Form"), ("source", "Source"),
             ):
                 value = question.get(field)
+                if field == "author":
+                    if question.get("inherits_theme_authors"):
+                        continue
+                    value = "; ".join(question.get("authors", ())) or value
                 if value:
                     rendered = ", ".join(value) if isinstance(value, (list, tuple)) else value
                     paragraph(f"{label}: {rendered}")

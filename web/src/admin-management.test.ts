@@ -132,4 +132,53 @@ describe("management shell", () => {
     });
     expect(JSON.parse(String(mergeCall[1]?.body))).toEqual({ merge_author_id: "a2", confirm: true });
   });
+
+  it("edits author data and updates the display name from the name fields", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({}));
+    const version = "a".repeat(64);
+    const root = start("authors", [{ id: "a1", display_name: "Ada Byron", first_name: "Ada",
+      surname: "Byron", second_name: null, telegram_link: null, version }], fetcher);
+    await vi.waitFor(() => expect(root.textContent).toContain("Edit author"));
+    [...root.querySelectorAll<HTMLButtonElement>("article button")]
+      .find(button => button.textContent === "Edit author")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    Object.defineProperty(dialog, "close", { value: () => dialog.dispatchEvent(new Event("close")) });
+    const surname = dialog.querySelector<HTMLInputElement>("[name=surname]")!;
+    surname.value = "Lovelace";
+    surname.dispatchEvent(new Event("input"));
+    expect(dialog.querySelector<HTMLInputElement>("[name=display_name]")!.value).toBe("Ada Lovelace");
+    dialog.querySelector<HTMLInputElement>("[name=telegram_link]")!.value = "@ada";
+    dialog.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(String(fetcher.mock.calls[0]![0])).toContain("/authors/a1/update");
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({
+      expected_version: version, display_name: "Ada Lovelace", first_name: "Ada",
+      surname: "Lovelace", second_name: null, telegram_link: "@ada",
+    });
+    await vi.waitFor(() => expect(document.querySelector("dialog")).toBeNull());
+  });
+
+  it("previews split names and requires an explicit recipient before splitting", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response({ split: true }));
+    const version = "b".repeat(64);
+    const root = start("authors", [{ id: "combined", display_name: "Alice, Bob",
+      split_names: ["Alice", "Bob"], version }], fetcher);
+    await vi.waitFor(() => expect(root.textContent).toContain("Split authors"));
+    [...root.querySelectorAll<HTMLButtonElement>("article button")]
+      .find(button => button.textContent === "Split authors")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    Object.defineProperty(dialog, "close", { value: () => dialog.dispatchEvent(new Event("close")) });
+    expect([...dialog.querySelectorAll("li")].map(item => item.textContent)).toEqual(["Alice", "Bob"]);
+    const form = dialog.querySelector<HTMLFormElement>("form")!;
+    form.requestSubmit();
+    expect(fetcher).not.toHaveBeenCalled();
+    dialog.querySelector<HTMLSelectElement>("[name=recipient_index]")!.value = "1";
+    form.requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+    expect(String(fetcher.mock.calls[0]![0])).toContain("/authors/combined/split");
+    expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({
+      expected_version: version, confirm: true, recipient_index: 1,
+    });
+    await vi.waitFor(() => expect(document.querySelector("dialog")).toBeNull());
+  });
 });

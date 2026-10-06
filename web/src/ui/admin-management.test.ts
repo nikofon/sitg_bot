@@ -100,8 +100,22 @@ describe("admin management", () => {
     const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "authors", items: [
       { id: "a1", display_name: "Ada Lovelace", questions: 5, themes: 1, packet_count: 1 },
     ] }, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
-    expect([...view.querySelectorAll("article button")].map(b => b.textContent)).toEqual(["Link", "Join"]);
+    expect([...view.querySelectorAll("article button")].map(b => b.textContent))
+      .toEqual(["Edit author", "Link", "Join"]);
     expect(view.querySelector("article button.danger-button")?.textContent).toBe("Join");
+  });
+
+  it("offers splitting only for combined authors", () => {
+    const action = vi.fn();
+    const combined = { id: "joined", display_name: "Alice, Bob", split_names: ["Alice", "Bob"] };
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "authors", items: [
+      combined, { id: "single", display_name: "Carol", split_names: [] },
+    ] }, new I18n("en"), {}, vi.fn(), vi.fn(), action);
+    const buttons = [...view.querySelectorAll<HTMLButtonElement>("article button")]
+      .filter(button => button.textContent === "Split authors");
+    expect(buttons).toHaveLength(1);
+    buttons[0]!.click();
+    expect(action).toHaveBeenCalledWith(combined, "split", buttons[0]);
   });
 
   it("lists ongoing games with a count, links, and no actions", () => {

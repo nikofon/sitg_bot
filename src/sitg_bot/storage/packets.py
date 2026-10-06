@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.packet import Packet, Question, Theme
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.models import (
     AuthorRecord,
     PacketQuestionRecord,
@@ -37,28 +38,31 @@ class PostgresPacketRepository:
         if version is None:
             return None
 
+        names = dict((await session.execute(
+            select(AuthorRecord.id, AuthorRecord.display_name).where(
+                AuthorRecord.id.in_(packet_author_ids(version.id))
+            )
+        )).all())
+
         theme_rows = (
             await session.execute(
-                select(ThemeRevisionRecord, AuthorRecord.display_name)
-                .outerjoin(AuthorRecord, AuthorRecord.id == ThemeRevisionRecord.author_id)
+                select(ThemeRevisionRecord)
                 .where(ThemeRevisionRecord.packet_version_id == version.id)
                 .order_by(ThemeRevisionRecord.position)
             )
-        ).all()
+        ).scalars().all()
         themes: list[Theme] = []
-        for theme_record, theme_author in theme_rows:
+        for theme_record in theme_rows:
             question_rows = (
                 await session.execute(
                     select(
                         PacketQuestionRecord,
                         QuestionRevisionRecord,
-                        AuthorRecord.display_name,
                     )
                     .join(
                         QuestionRevisionRecord,
                         QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
                     )
-                    .outerjoin(AuthorRecord, AuthorRecord.id == QuestionRevisionRecord.author_id)
                     .where(
                         PacketQuestionRecord.packet_version_id == version.id,
                         PacketQuestionRecord.theme_revision_id == theme_record.id,
@@ -76,15 +80,17 @@ class PostgresPacketRepository:
                     rejected_answers=tuple(revision.rejected_answers),
                     form=revision.form,
                     source=revision.source,
-                    author=question_author or theme_author or "",
+                    authors=() if revision.inherits_theme_authors else tuple(
+                        names[author_id] for author_id in revision.author_ids
+                    ),
                 )
-                for placement, revision, question_author in question_rows
+                for placement, revision in question_rows
             )
             themes.append(
                 Theme(
                     name=theme_record.name,
                     questions=questions,
-                    author=theme_author or "",
+                    authors=tuple(names[author_id] for author_id in theme_record.author_ids),
                     commentary=theme_record.commentary,
                 )
             )

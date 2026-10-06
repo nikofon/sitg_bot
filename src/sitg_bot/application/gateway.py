@@ -17,6 +17,8 @@ from sitg_bot.application.contracts import (
     AdminAuthenticateOperation,
     AdminAuthorLinkOperation,
     AdminAuthorMergeOperation,
+    AdminAuthorSplitOperation,
+    AdminAuthorUpdateOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
@@ -118,7 +120,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
-    TournamentSubscriptionsUpdateOperation,
+    TournamentPacketListOperation,
     TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
@@ -126,7 +128,7 @@ from sitg_bot.application.contracts import (
     TournamentRegistrationLinkOperation,
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
-    TournamentPacketListOperation,
+    TournamentSubscriptionsUpdateOperation,
 )
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.admin_management import AdminManagementService
@@ -376,6 +378,12 @@ ACTION_POLICIES.update(
         ),
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_AUTHOR_UPDATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+        ),
+        ActionCode.ADMIN_AUTHOR_SPLIT: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+        ),
         ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -1372,6 +1380,18 @@ class ApplicationGateway:
                 operation.author_id,
                 operation.merge_author_id,
                 confirm=operation.confirm,
+            )
+        if isinstance(operation, AdminAuthorUpdateOperation):
+            return await AdminManagementService(self.database).update_author(
+                player_id, operation.author_id, expected_version=operation.expected_version,
+                display_name=operation.display_name, first_name=operation.first_name,
+                second_name=operation.second_name, surname=operation.surname,
+                telegram_link=operation.telegram_link,
+            )
+        if isinstance(operation, AdminAuthorSplitOperation):
+            return await AdminManagementService(self.database).split_author(
+                player_id, operation.author_id, expected_version=operation.expected_version,
+                recipient_index=operation.recipient_index, confirm=operation.confirm,
             )
         if isinstance(operation, AdminPacketAccessOperation):
             return await self.library.access(

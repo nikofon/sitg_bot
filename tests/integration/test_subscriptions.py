@@ -295,7 +295,8 @@ async def test_existing_packet_addition_preview_and_reactivation(database_url):
             content=editor["packet"],
             changes={"name": "correction"},
             field_author_ids={
-                key: UUID(value) if value else None
+                key: [UUID(item) if item else None for item in value] if isinstance(value, list)
+                else UUID(value) if value else None
                 for key, value in editor["field_author_ids"].items()
             },
         )

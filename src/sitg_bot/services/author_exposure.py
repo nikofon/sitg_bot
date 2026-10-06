@@ -73,7 +73,8 @@ async def burn_author_content(
                 .where(PacketQuestionRecord.theme_revision_id == theme.id)
             )
         ).all()
-        authors = {lead_id, theme.author_id, *(question.author_id for question in questions)}
+        authors = {lead_id, *theme.author_ids,
+                   *(author_id for question in questions for author_id in question.author_ids)}
         players = {player for author in authors for player in links.get(author, ())}
         players.update(player_ids or ())
         claims = {("theme", theme.theme_id), *(("question", q.question_id) for q in questions)}

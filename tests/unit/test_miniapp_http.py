@@ -1230,3 +1230,31 @@ async def test_admin_author_merge_maps_confirmed_write_operation() -> None:
     assert operation.merge_author_id == merge_author_id
     assert operation.confirm is True
     assert gateway.requests[0].metadata.idempotency_key == "author-merge-test"
+
+
+@pytest.mark.parametrize("command,action,values", [
+    ("update", ActionCode.ADMIN_AUTHOR_UPDATE, {
+        "display_name": "Ada Lovelace", "first_name": "Ada", "surname": "Lovelace",
+    }),
+    ("split", ActionCode.ADMIN_AUTHOR_SPLIT, {"recipient_index": 1, "confirm": True}),
+])
+async def test_admin_author_edit_and_split_map_versioned_operations(command, action, values):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    author_id = UUID(int=40)
+    request = make_mocked_request(
+        "POST", f"/api/miniapp/admin/management/authors/{author_id}/{command}",
+        headers={"Origin": "https://mini.example.test",
+                 "Cookie": "__Host-sitg_session=test-session",
+                 "Content-Type": "application/json", "X-CSRF-Token": "csrf",
+                 "X-Idempotency-Key": f"author-{command}"},
+        match_info={"section": "authors", "resource_id": str(author_id), "command": command},
+    )
+    request._read_bytes = json.dumps({**values, "expected_version": "a" * 64}).encode()
+    response = await http._admin_management_action(request)
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == action and operation.author_id == author_id
+    assert operation.expected_version == "a" * 64
+    for name, value in values.items():
+        assert getattr(operation, name) == value

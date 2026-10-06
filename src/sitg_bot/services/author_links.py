@@ -640,7 +640,7 @@ class AuthorLinkService:
                 )
                 .where(
                     ThemeRevisionRecord.theme_id == ThemeRecord.id,
-                    ThemeRecord.statistical_author_id == author.id,
+                    ThemeRecord.has_author(author.id),
                 )
             )
         ).all()
@@ -662,7 +662,7 @@ class AuthorLinkService:
                 )
                 .where(
                     QuestionRevisionRecord.question_id == LogicalQuestionRecord.id,
-                    LogicalQuestionRecord.statistical_author_id == author.id,
+                    LogicalQuestionRecord.has_author(author.id),
                 )
             )
         ).all()

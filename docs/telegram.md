@@ -133,14 +133,21 @@ Gameplay uses Telegram messages and controls; there is no game Mini App.
    before/after values and a signed change. Pending settlement is indicated; finalization
    updates the same results message with the recorded ratings.
 
+When a player leaves, the other participants receive a notice naming that player,
+including when an early departure cancels the game.
+
 Scores are displayed from highest to lowest. `/themes` lists the game's themes during active
 play, only after the initial theme reveal and only for rulesets that announce themes.
 `/score`, `/players`, and `/results` provide private projections. `/answer` reopens an answer
 prompt. `/pause`, `/resume`, `/appeal`, `/escalate yes|no`, and `/commentary` supplement
 buttons. With multiple eligible answers, appeal selection lists each answer and offers
 buttons to credit the player's rejected answer or reject another credited answer. A single
-eligible target is submitted automatically. Choice buttons retain their original question
-and answer identities across restarts; stale choices are refused. Inline vote messages
+eligible target is submitted automatically. The server pauses before showing choices, even
+when manual pausing is disabled. Selection and voting share the voting deadline; choosing
+an answer does not reset it. Manual resume is blocked during selection. If selection expires,
+no ballot starts and late choices are refused. Play resumes unless it was already paused.
+Choice buttons retain their original question and answer identities across restarts;
+stale choices are refused. Inline vote messages
 update totals against a fixed electorate. Manager Appeals and `/appeals` show anonymous tickets.
 
 The service rechecks membership, pinned SI capabilities, and question/appeal identity under

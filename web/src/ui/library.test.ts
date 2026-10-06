@@ -11,6 +11,20 @@ const packet: LibraryPacket = {
 };
 
 describe("library", () => {
+  it("links every theme and question coauthor separately, including namesakes", () => {
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
+      commentary: "", source: "", form: "", author: "Same Name, Same Name",
+      authors: ["Same Name", "Same Name"], author_ids: ["first", "second"] };
+    const root = renderLibraryReader("Packet", [{ title: "Theme", author: "Alice, Bob",
+      authors: ["Alice", "Bob"], author_ids: ["alice", "bob"], questions: [question] }], new I18n("en"));
+    expect(Array.from(root.querySelectorAll(".library-page a"), (link) => [
+      link.textContent, link.getAttribute("href"),
+    ])).toEqual([
+      ["Alice", "/authors/alice"], ["Bob", "/authors/bob"],
+      ["Same Name", "/authors/first"], ["Same Name", "/authors/second"],
+    ]);
+  });
+
   it("sorts by fresh themes ascending by default and shows fresh counts on cards", () => {
     const read: LibraryPacket = { ...packet, version_id: "read", name: "Read packet", fresh_play_unit_count: 0 };
     const fresh: LibraryPacket = { ...packet, version_id: "fresh", name: "Fresh packet", fresh_play_unit_count: 8 };

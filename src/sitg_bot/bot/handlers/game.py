@@ -271,6 +271,11 @@ async def request_appeal(message, backend, claim, view, localization, locale):
             target_id=targets[0]["id"],
             round_id=view["question"]["round_id"],
         )
+    if not await perform(
+        message, backend, claim, view, localization, locale,
+        "appeal", round_id=view["question"]["round_id"],
+    ):
+        return False
     lines = [localization.text("flow.appeal_choose", locale)]
     buttons = []
     for index, attempt in enumerate(targets, 1):

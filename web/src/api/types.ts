@@ -492,6 +492,8 @@ export interface PacketQuestion {
   commentary: string;
   source: string;
   author: string;
+  authors?: string[];
+  author_ids?: string[];
   id?: string | null;
   author_id?: string | null;
 }
@@ -499,6 +501,7 @@ export interface PacketQuestion {
 export interface PacketTheme {
   name: string;
   author: string;
+  authors?: string[];
   commentary?: string;
   questions: PacketQuestion[];
 }
@@ -539,7 +542,7 @@ export interface PacketDraftResource {
   lead_author_id: string | null;
   associated_authors: RegisteredAuthor[];
   assignment_id?: string;
-  field_author_ids?: Record<string, string | null>;
+  field_author_ids?: Record<string, string | Array<string | null> | null>;
 }
 
 export interface RegisteredAuthor {
@@ -650,6 +653,8 @@ export interface LibraryResource {
 export interface LibraryPage {
   title: string;
   author: string;
+  authors?: string[];
+  author_ids?: string[];
   commentary?: string;
   author_id?: string | null;
   questions: PacketQuestion[];

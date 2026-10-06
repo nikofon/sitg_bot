@@ -20,6 +20,8 @@ from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthorLinkOperation,
     AdminAuthorMergeOperation,
+    AdminAuthorSplitOperation,
+    AdminAuthorUpdateOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminSuspicionClearOperation,
@@ -76,12 +78,12 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsUpdateOperation,
     TournamentPacketAccessUpdateOperation,
     TournamentPacketListOperation,
-    TournamentSubscriptionsUpdateOperation,
     TournamentProfileOperation,
     TournamentRegisterOperation,
     TournamentRegistrationDecideOperation,
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
+    TournamentSubscriptionsUpdateOperation,
 )
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.services.launch_references import LaunchReferenceService
@@ -1598,6 +1600,15 @@ class MiniAppHttpServer:
         elif section == "authors" and command == "merge":
             operation = AdminAuthorMergeOperation.model_validate({
                 **body, "action": ActionCode.ADMIN_AUTHOR_MERGE, "author_id": resource_id,
+            })
+        elif section == "authors" and command in {"update", "split"}:
+            contract, action = (
+                (AdminAuthorUpdateOperation, ActionCode.ADMIN_AUTHOR_UPDATE)
+                if command == "update"
+                else (AdminAuthorSplitOperation, ActionCode.ADMIN_AUTHOR_SPLIT)
+            )
+            operation = contract.model_validate({
+                **body, "action": action, "author_id": resource_id,
             })
         elif section == "link_requests" and command in {"approve", "reject"}:
             operation = AuthorLinkAdminDecideOperation.model_validate({

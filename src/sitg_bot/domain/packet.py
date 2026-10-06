@@ -30,6 +30,10 @@ class Question:
     form: str = ""
     source: str = ""
     author: str = ""
+    authors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _normalize_authors(self)
 
     @property
     def all_answers(self) -> tuple[str, ...]:
@@ -69,8 +73,10 @@ class Theme:
     questions: tuple[Question, ...]
     author: str = ""
     commentary: str = ""
+    authors: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        _normalize_authors(self)
         values = tuple(question.value for question in self.questions)
         if (
             not values
@@ -81,6 +87,18 @@ class Theme:
             raise ValueError(
                 "Theme question values must be unique increasing non-negative integers"
             )
+
+
+def _normalize_authors(content: Question | Theme) -> None:
+    names = content.authors or ((content.author,) if content.author.strip() else ())
+    if isinstance(names, str) or any(
+        not isinstance(name, str) or not name.strip() for name in names
+    ):
+        raise ValueError("Authors must be non-empty names")
+    # Namesakes remain distinct until registered identities are resolved.
+    names = tuple(" ".join(name.split()) for name in names)
+    object.__setattr__(content, "authors", names)
+    object.__setattr__(content, "author", ", ".join(names))
 
 
 @dataclass(frozen=True, slots=True)

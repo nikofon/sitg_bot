@@ -206,6 +206,17 @@ class GameDelivery:
         )
         key = f"event:{event['sequence']}"
         round_id = params.get("round_id")
+        if not params.get("mine") and (
+            kind == "player_abandoned"
+            or (
+                kind == "game_cancelled"
+                and params.get("reason") == "player_abandoned_before_theme_reveal"
+            )
+        ):
+            await self._send(
+                chat, game, messages, key + ":left",
+                MessageModel(t("flow.player_left", name=params["name"])),
+            )
         if params.get("ballot"):
             await self._send(
                 chat,
@@ -354,6 +365,8 @@ class GameDelivery:
                             f"rate:{i}",
                             rating_message(view, i, self.localization, locale),
                         )
+        elif kind in {"appeal_selection_started", "appeal_selection_expired"}:
+            await self._send(chat, game, messages, key, MessageModel(t("flow." + kind)))
         elif kind in {"game_paused", "game_resumed"}:
             keyboard = game_keyboard() if any(p["self"] for p in view["participants"]) else None
             await self._send(chat, game, messages, key, MessageModel(t("flow." + kind), keyboard))

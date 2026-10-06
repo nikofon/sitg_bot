@@ -23,7 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -1021,16 +1021,45 @@ class PacketVersionRecord(Base):
     )
 
 
-class ThemeRecord(Base, TimestampMixin):
+class AuthorshipMixin:
+    """Keep the existing single-author column and store additional equal coauthors."""
+
+    @property
+    def author_ids(self) -> tuple[UUID, ...]:
+        first = getattr(self, self._author_column)
+        return tuple(dict.fromkeys(
+            ([first] if first else []) + [row.author_id for row in self.coauthors]
+        ))
+
+    @author_ids.setter
+    def author_ids(self, ids) -> None:
+        ids = tuple(dict.fromkeys(ids))
+        setattr(self, self._author_column, ids[0] if ids else None)
+        row_type = self.__mapper__.relationships["coauthors"].mapper.class_
+        self.coauthors = [row_type(author_id=value, position=i) for i, value in enumerate(ids[1:])]
+
+    @classmethod
+    def has_author(cls, author_id):
+        row_type = cls.__mapper__.relationships["coauthors"].mapper.class_
+        return (getattr(cls, cls._author_column) == author_id) | cls.coauthors.any(
+            row_type.author_id == author_id
+        )
+
+
+class ThemeRecord(AuthorshipMixin, Base, TimestampMixin):
     __tablename__ = "themes"
 
     id: Mapped[UUID] = uuid_column()
     packet_id: Mapped[UUID] = mapped_column(ForeignKey("logical_packets.id"), nullable=False)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     statistical_author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+    _author_column = "statistical_author_id"
+    coauthors: Mapped[list["ThemeCoauthorRecord"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin", order_by="ThemeCoauthorRecord.position"
+    )
 
 
-class ThemeRevisionRecord(Base):
+class ThemeRevisionRecord(AuthorshipMixin, Base):
     __tablename__ = "theme_revisions"
 
     id: Mapped[UUID] = uuid_column()
@@ -1043,6 +1072,11 @@ class ThemeRevisionRecord(Base):
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
     commentary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    _author_column = "author_id"
+    coauthors: Mapped[list["ThemeRevisionCoauthorRecord"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin",
+        order_by="ThemeRevisionCoauthorRecord.position",
+    )
 
     __table_args__ = (
         UniqueConstraint("theme_id", "revision_number"),
@@ -1050,16 +1084,20 @@ class ThemeRevisionRecord(Base):
     )
 
 
-class LogicalQuestionRecord(Base, TimestampMixin):
+class LogicalQuestionRecord(AuthorshipMixin, Base, TimestampMixin):
     __tablename__ = "logical_questions"
 
     id: Mapped[UUID] = uuid_column()
     packet_id: Mapped[UUID] = mapped_column(ForeignKey("logical_packets.id"), nullable=False)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     statistical_author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+    _author_column = "statistical_author_id"
+    coauthors: Mapped[list["QuestionCoauthorRecord"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin", order_by="QuestionCoauthorRecord.position"
+    )
 
 
-class QuestionRevisionRecord(Base):
+class QuestionRevisionRecord(AuthorshipMixin, Base):
     __tablename__ = "question_revisions"
 
     id: Mapped[UUID] = uuid_column()
@@ -1075,8 +1113,44 @@ class QuestionRevisionRecord(Base):
     form: Mapped[str] = mapped_column(Text, nullable=False, default="")
     source: Mapped[str] = mapped_column(Text, nullable=False, default="")
     author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+    inherits_theme_authors: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    _author_column = "author_id"
+    coauthors: Mapped[list["QuestionRevisionCoauthorRecord"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin",
+        order_by="QuestionRevisionCoauthorRecord.position",
+    )
 
     __table_args__ = (UniqueConstraint("question_id", "revision_number"),)
+
+
+class ThemeCoauthorRecord(Base):
+    __tablename__ = "theme_coauthors"
+    content_id: Mapped[UUID] = mapped_column(ForeignKey("themes.id"), primary_key=True)
+    author_id: Mapped[UUID] = mapped_column(ForeignKey("authors.id"), primary_key=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ThemeRevisionCoauthorRecord(Base):
+    __tablename__ = "theme_revision_coauthors"
+    content_id: Mapped[UUID] = mapped_column(ForeignKey("theme_revisions.id"), primary_key=True)
+    author_id: Mapped[UUID] = mapped_column(ForeignKey("authors.id"), primary_key=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class QuestionCoauthorRecord(Base):
+    __tablename__ = "question_coauthors"
+    content_id: Mapped[UUID] = mapped_column(ForeignKey("logical_questions.id"), primary_key=True)
+    author_id: Mapped[UUID] = mapped_column(ForeignKey("authors.id"), primary_key=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class QuestionRevisionCoauthorRecord(Base):
+    __tablename__ = "question_revision_coauthors"
+    content_id: Mapped[UUID] = mapped_column(ForeignKey("question_revisions.id"), primary_key=True)
+    author_id: Mapped[UUID] = mapped_column(ForeignKey("authors.id"), primary_key=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class PacketQuestionRecord(Base):
@@ -1140,6 +1214,11 @@ class GameRecord(Base, TimestampMixin):
     question_token_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    appeal_selection_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    appeal_selection_player_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    appeal_selection_was_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

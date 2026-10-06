@@ -1175,17 +1175,17 @@ describe("MiniAppShell", () => {
     });
     confirmDialog.querySelector<HTMLButtonElement>("button[type=button]")!.click();
     const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
-      commentary: "", source: "", form: "", author: "Ada" };
+      commentary: "", source: "", form: "", author: "", authors: [] };
     fetcher.mockResolvedValueOnce(response({
       assignment_id: "assignment-1", version: 2, errors: [], warnings: [],
-      field_author_ids: { lead_author: "ada", "themes.0.author": "ada", "themes.0.questions.0.author": "ada",
-        "themes.1.author": "ada", "themes.1.questions.0.author": "ada" },
+      field_author_ids: { lead_author: "ada", "themes.0.authors": ["ada"], "themes.0.questions.0.authors": [],
+        "themes.1.authors": ["ada"], "themes.1.questions.0.authors": [] },
       associated_authors: [{ author_id: "ada", display_name: "Ada" }],
       packet: { name: "Final packet", language: "en", year: 2026, lead_author: "Ada",
-        themes: [{ name: "First", author: "Ada", questions: [question] },
-          { name: "Second", author: "Ada", questions: [question] }] },
+        themes: [{ name: "First", author: "Ada", authors: ["Ada"], questions: [question] },
+          { name: "Second", author: "Ada", authors: ["Ada"], questions: [question] }] },
       editor: { packet_fields: ["name", "year", "language", "lead_author"],
-        theme_fields: ["name", "author"], question_fields: ["value", "text", "answer", "accepted_answers", "author"] },
+        theme_fields: ["name", "authors"], question_fields: ["value", "text", "answer", "accepted_answers", "authors"] },
     }));
     Array.from(root.querySelectorAll<HTMLButtonElement>(".lobby-packet-card button"))
       .find((button) => button.textContent === "Modify")!.click();
@@ -1199,6 +1199,19 @@ describe("MiniAppShell", () => {
     expect(answer.disabled).toBe(false);
     expect(answer.parentElement!.querySelector(".is-substitution")!.getAttribute("aria-pressed")).toBe("true");
     answer.value = "Replacement answer";
+    const themeAuthors = root.querySelector<HTMLTextAreaElement>("[data-theme-field=authors]")!;
+    expect(themeAuthors.disabled).toBe(true);
+    themeAuthors.parentElement!.querySelector<HTMLButtonElement>(".is-correction")!.click();
+    themeAuthors.value = "Ada\nGrace";
+    themeAuthors.dispatchEvent(new Event("input", { bubbles: true }));
+    themeAuthors.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(themeAuthors.parentElement!.querySelectorAll(".packet-author-picker")).toHaveLength(2);
+    const questionAuthors = root.querySelector<HTMLTextAreaElement>("[data-question-field=authors]")!;
+    expect(questionAuthors.value).toBe("");
+    questionAuthors.parentElement!.querySelector<HTMLButtonElement>(".is-correction")!.click();
+    questionAuthors.value = "Independent Writer";
+    questionAuthors.dispatchEvent(new Event("input", { bubbles: true }));
+    questionAuthors.dispatchEvent(new Event("change", { bubbles: true }));
     Array.from(root.querySelectorAll<HTMLButtonElement>(".packet-page-nav button"))
       .find((button) => button.textContent === "Next")!.click();
     Array.from(root.querySelectorAll<HTMLButtonElement>(".packet-page-nav button"))
@@ -1211,9 +1224,14 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(7));
     expect(fetcher.mock.calls[6]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
     const saved = JSON.parse(String(fetcher.mock.calls[6]?.[1]?.body));
-    expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution" });
+    expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution",
+      "themes.0.authors": "correction", "themes.0.questions.0.authors": "correction" });
     expect(saved.content.themes[0].questions[0].answer).toBe("Replacement answer");
-    expect(saved.field_author_ids["themes.0.questions.0.author"]).toBe("ada");
+    expect(saved.content.themes[0].authors).toEqual(["Ada", "Grace"]);
+    expect(saved.content.themes[0].questions[0].authors).toEqual(["Independent Writer"]);
+    expect(saved.content.themes[1].questions[0].authors).toEqual([]);
+    expect(saved.field_author_ids["themes.0.authors"]).toEqual(["ada", null]);
+    expect(saved.field_author_ids["themes.0.questions.0.authors"]).toEqual([null]);
   });
 
   it("saves manager-selected Swiss round count, game size, and scoring", async () => {
@@ -1417,6 +1435,7 @@ describe("MiniAppShell", () => {
       commentary: "",
       source: "",
       author: "Ada",
+      authors: ["Ada"],
     });
     const resource = {
       kind: "packet_draft",
@@ -1437,16 +1456,16 @@ describe("MiniAppShell", () => {
         lead_author: "Ada",
         year: 2026,
         themes: [
-          { name: "Theme one", author: "Ada", questions: [question("First")] },
-          { name: "Theme two", author: "Grace", questions: [question("Second")] },
+          { name: "Theme one", author: "Ada, Grace", authors: ["Ada", "Grace"], questions: [question("First")] },
+          { name: "Theme two", author: "Grace", authors: ["Grace"], questions: [question("Second")] },
         ],
       },
       editor: {
         schema: "si.packet.v1",
         page_collection: "themes",
         packet_fields: ["name", "language", "lead_author", "year"],
-        theme_fields: ["name", "author"],
-        question_fields: ["value", "text", "answer", "accepted_answers", "rejected_answers", "commentary", "source", "author"],
+        theme_fields: ["name", "authors"],
+        question_fields: ["value", "text", "answer", "accepted_answers", "rejected_answers", "commentary", "source", "authors"],
         question_values: [10],
       },
     } as const;
@@ -1504,6 +1523,8 @@ describe("MiniAppShell", () => {
     expect(submitted.expected_version).toBe(2);
     expect(submitted.content.themes[0].questions[0].answer).toBe("New answer");
     expect(submitted.content.themes[0].questions[0].rejected_answers).toEqual(["Near miss"]);
+    expect(submitted.content.themes[0].authors).toEqual(["Ada", "Grace"]);
+    expect(submitted.content.themes[0].questions[0].authors).toEqual(["Ada"]);
     expect(submitted.content.themes[1].name).toBe("Theme two");
     expect(submitted.author_bindings).toEqual({ Ada: "registered-ada" });
     expect(submitted.lead_author_id).toBe("new-lead");

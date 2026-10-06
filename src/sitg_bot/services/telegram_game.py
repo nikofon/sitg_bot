@@ -215,9 +215,9 @@ class TelegramGameService:
                         )
                     ).scalars()
                 )
-                await games.submit_appeal(
+                accepted = (await games.submit_appeal(
                     game.id, telegram_user_id, connected, target_attempt_id=operation.target_id
-                )
+                )).accepted
             elif command in {"vote", "escalate"}:
                 if operation.approve is None:
                     raise ValueError("A decision is required")
@@ -387,11 +387,16 @@ class TelegramGameService:
                         answer=attempt.submitted_answer,
                         mine=public.id == player.id,
                     )
-                if event.kind == "player_reconnected":
+                if event.kind in {"player_reconnected", "player_abandoned"} or (
+                    event.kind == "game_cancelled"
+                    and params.get("reason") == "player_abandoned_before_theme_reveal"
+                ):
                     participant = await session.get(
                         GameParticipantRecord, UUID(params["participant_id"])
                     )
                     params["mine"] = participant.player_id == player.id
+                    public = await session.get(PlayerRecord, participant.player_id)
+                    params["name"] = public.public_nickname
                 if event.kind in {
                     "appeal_voting_started",
                     "appeal_vote_cast",
@@ -755,11 +760,11 @@ class TelegramGameService:
                     and str(player.id) not in question["attempted_player_ids"]
                 ):
                     actions.append("buzz")
-            blocking = appeal and appeal["status"] in {
-                "voting",
-                "awaiting_escalation",
-                "awaiting_commentary",
-            }
+            blocking = game.appeal_selection_player_id is not None or (
+                appeal and appeal["status"] in {
+                    "voting", "awaiting_escalation", "awaiting_commentary",
+                }
+            )
             if snapshot.paused and not blocking:
                 actions.append("resume")
             elif (
@@ -778,7 +783,10 @@ class TelegramGameService:
                         AppealRecord.status != "rejected",
                     )
                 )
-                if existing is None:
+                if existing is None and (
+                    game.appeal_selection_deadline is None
+                    or game.appeal_selection_player_id == player.id
+                ):
                     appealed_attempts = {
                         str(attempt_id) for attempt_id in await session.scalars(
                             select(AppealRecord.target_attempt_id).where(
@@ -866,6 +874,7 @@ class TelegramGameService:
             "status": game.status,
             "phase": game.phase,
             "paused": game.paused,
+            "appeal_selecting": game.appeal_selection_player_id is not None,
             "pausing_allowed": snapshot.settings.pausing_allowed,
             "ruleset": snapshot.game_ruleset,
             "ruleset_version": snapshot.game_ruleset_version,

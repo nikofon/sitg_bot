@@ -183,6 +183,49 @@ def test_optional_packet_metadata_round_trips() -> None:
     assert packet.themes[0].commentary == "Theme commentary"
 
 
+def test_coauthors_round_trip_without_materializing_inherited_authors() -> None:
+    packet = Packet("Coauthors", (Theme("Theme", (
+        Question("Inherited", "A", "", 10),
+        Question("Explicit", "B", "", 20, authors=("Carol", "Dana")),
+        Question("Legacy", "C", "", 30, author="Smith, John"),
+    ), authors=(" Alice ", "Bob")),))
+    restored = packet_from_data(json.loads(packet_to_json(packet)))
+    assert restored == packet
+    assert restored.themes[0].authors == ("Alice", "Bob")
+    assert restored.themes[0].questions[0].authors == ()
+    assert restored.themes[0].questions[1].authors == ("Carol", "Dana")
+    assert restored.themes[0].questions[2].authors == ("Smith, John",)
+
+
+@pytest.mark.parametrize("authors", ["Alice", [None], [""], ["  "], [42]])
+def test_invalid_coauthor_lists_are_rejected(authors) -> None:
+    with pytest.raises(ValueError, match="authors"):
+        packet_from_data({"name": "Packet", "themes": [{
+            "name": "Theme", "authors": authors,
+            "questions": [{"value": 10, "text": "Q", "answer": "A"}],
+        }]})
+
+
+@pytest.mark.parametrize("extension", [".docx", ".pdf"])
+def test_document_coauthors_and_explicit_overrides(monkeypatch, extension) -> None:
+    lines = ["Тема: Theme", "Авторы: Alice; Bob", "10. Inherited", "Ответ: A",
+             "20. Explicit", "Ответ: B", "Authors: Carol, Dana", "Author: Eve"]
+    if extension == ".docx":
+        source = docx_bytes([("Normal", line) for line in lines])
+    else:
+        page = SimpleNamespace(get_contents=lambda: SimpleNamespace(get_data=lambda: b"text"),
+                               extract_text=lambda **_: "\n".join(lines))
+        monkeypatch.setattr("sitg_bot.packet_import.PdfReader", lambda _: SimpleNamespace(
+            pages=[page], is_encrypted=False,
+        ))
+        source = b"pdf"
+    packet, = packets_from_document_bytes(source, f"coauthors{extension}")
+    theme, = packet.themes
+    assert theme.authors == ("Alice", "Bob")
+    assert theme.questions[0].authors == ()
+    assert theme.questions[1].authors == ("Carol", "Dana", "Eve")
+
+
 def test_packet_rejects_invalid_language_tag() -> None:
     theme = Theme("Theme", (Question("Question", "Answer", "", 10),))
 
@@ -355,7 +398,8 @@ def test_document_sections_and_wrapped_fields(monkeypatch, extension) -> None:
         assert first.questions[0].source == "https://example.org"
         assert first.questions[1].text.endswith("30. This continues the question")
         assert second.name == "Second"
-        assert second.questions[0].author == "Bob"
+        assert second.authors == ("Bob",)
+        assert second.questions[0].authors == ()  # Keep inheritance distinct from explicit authors.
         assert second.questions[0].accepted_answers == ("D", "E")
     if extension == ".pdf":
         page.extract_text.assert_called_once_with(

@@ -155,7 +155,11 @@ async def test_abandon_dismisses_only_leaving_players_and_survives_restart(datab
         await act(service, fixture.inputs[0], game_id, "abandon")
         restarted = TelegramGameService(database)
         assert (await restarted.delivery(fixture.inputs[0].telegram_user_id, game_id))["skip"]
-        assert not (await restarted.delivery(fixture.inputs[1].telegram_user_id, game_id))["skip"]
+        remaining = await restarted.delivery(fixture.inputs[1].telegram_user_id, game_id)
+        assert not remaining["skip"]
+        departure = next(e for e in remaining["events"] if e["kind"] == "player_abandoned")
+        assert departure["parameters"]["name"] == fixture.players[0].public_nickname
+        assert departure["parameters"]["mine"] is False
         with pytest.raises(LookupError):
             await restarted.view(fixture.inputs[0].telegram_user_id)
         with pytest.raises(PermissionError):
@@ -191,6 +195,23 @@ async def test_abandon_dismisses_only_leaving_players_and_survives_restart(datab
                 target_id=fixture.players[1].id,
                 approve=True,
             )
+    finally:
+        await database.close()
+
+
+async def test_early_departure_delivery_names_player(database_url):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 2)
+        service = TelegramGameService(database)
+        assert (await act(service, fixture.inputs[0], game_id, "abandon"))["accepted"]
+        delivery = await service.delivery(fixture.inputs[1].telegram_user_id, game_id)
+        assert not delivery["skip"]
+        event = next(e for e in delivery["events"] if e["kind"] == "game_cancelled")
+        assert event["parameters"]["reason"] == "player_abandoned_before_theme_reveal"
+        assert event["parameters"]["name"] == fixture.players[0].public_nickname
+        assert event["parameters"]["mine"] is False
+        assert (await service.delivery(fixture.inputs[0].telegram_user_id, game_id))["skip"]
     finally:
         await database.close()
 
@@ -266,8 +287,11 @@ async def test_ladder_default_rating_settlement(database_url, rating_enabled):
 
 
 @pytest.mark.parametrize("target_index", [0, 3])
+@pytest.mark.parametrize("selection_mode", [
+    "direct", "running", "paused", "disabled", "expired_worker", "expired_submit", "paused_expired",
+])
 async def test_appeal_choice_after_several_wrong_answers_then_correct_answer(
-    database_url, target_index
+    database_url, target_index, selection_mode,
 ):
     database = Database(database_url)
     try:
@@ -294,19 +318,86 @@ async def test_appeal_choice_after_several_wrong_answers_then_correct_answer(
         view = await service.view(fixture.inputs[0].telegram_user_id, game_id)
         target = next(a for a in view["appeal_targets"]
                       if a["player_id"] == str(fixture.players[target_index].id))
+        if selection_mode in {"paused", "paused_expired"}:
+            await act(service, fixture.inputs[0], game_id, "pause", round_id=round_id)
+        elif selection_mode == "disabled":
+            async with database.transaction() as session:
+                game = await session.get(GameRecord, game_id)
+                game.assignment_plan = {
+                    **game.assignment_plan,
+                    "parameters": {**game.assignment_plan["parameters"], "pausing_allowed": False},
+                }
+        if selection_mode != "direct":
+            selection_deadline = None
+            for _ in range(2):
+                result = await act(
+                    service, fixture.inputs[0], game_id, "appeal", round_id=round_id,
+                )
+                assert result["accepted"]
+                async with database.sessions() as session:
+                    game = await session.get(GameRecord, game_id)
+                    if selection_deadline is None:
+                        selection_deadline = game.appeal_selection_deadline
+                    assert game.appeal_selection_deadline == selection_deadline
+            async with database.transaction() as session:
+                game = await session.get(GameRecord, game_id)
+                assert game.paused and game.progression_deadline is None
+                # A previously scheduled progression must not close the choice window.
+                game.progression_deadline = datetime.now(UTC) - timedelta(seconds=1)
+            assert not (await PersistentGameService(database).progress_due(game_id)).accepted
+            service = TelegramGameService(database)
+            choosing = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+            assert choosing["paused"] and choosing["appeal"] is None
+            assert choosing["question"]["round_id"] == round_id
+            assert choosing["appeal_targets"] == view["appeal_targets"]
+            for player in fixture.inputs:
+                assert not (await act(service, player, game_id, "resume", round_id=round_id))[
+                    "accepted"
+                ]
+                with pytest.raises(ValueError, match="appeal selection"):
+                    await PersistentGameService(database).resume(game_id, player.telegram_user_id)
+            assert "appeal" not in (
+                await service.view(fixture.inputs[1].telegram_user_id, game_id)
+            )["actions"]
+            if "expired" in selection_mode:
+                async with database.transaction() as session:
+                    game = await session.get(GameRecord, game_id)
+                    game.appeal_selection_deadline = datetime.now(UTC) - timedelta(seconds=1)
+                games = PersistentGameService(database)
+                if selection_mode != "expired_submit":
+                    assert game_id in await games.progress_due_appeals()
+                assert not (await act(
+                    service, fixture.inputs[0], game_id, "appeal",
+                    round_id=round_id, target_id=target["id"],
+                ))["accepted"]
+                expired = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+                assert expired["appeal"] is None
+                assert not expired["appeal_selecting"]
+                assert "appeal" not in expired["actions"]
+                assert expired["paused"] == (selection_mode == "paused_expired")
+                assert game_id not in await games.progress_due_appeals()
+                return
         await act(
             service, fixture.inputs[0], game_id, "appeal",
             round_id=round_id, target_id=target["id"],
         )
         view = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+        if selection_mode != "direct":
+            assert view["appeal"]["vote_deadline"] == selection_deadline
         assert view["appeal"]["kind"] == (
             "accept_incorrect" if target_index == 0 else "reject_correct"
         )
+        voting_started = datetime.now(UTC)
         for player in fixture.inputs[:3]:
             await act(
                 service, player, game_id, "vote", appeal_id=view["appeal"]["id"], approve=True
             )
         result = await service.view(fixture.inputs[0].telegram_user_id, game_id)
+        assert result["paused"] == (selection_mode == "paused")
+        if not result["paused"]:
+            async with database.sessions() as session:
+                game = await session.get(GameRecord, game_id)
+                assert game.progression_deadline >= voting_started
         scores = {p["id"]: p["score"] for p in result["participants"]}
         assert [scores[str(p.id)] for p in fixture.players] == (
             [10, 0, 0, 0] if target_index == 0 else [-10, -10, -10, -10]

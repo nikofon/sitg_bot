@@ -20,6 +20,8 @@ def game_action_reason(view: dict, command: str) -> str:
     if status == "lobby":
         return "not_started"
     appeal = view.get("appeal") or {}
+    if view.get("appeal_selecting") and command in {"pause", "resume", "appeal"}:
+        return "appeal_pending"
     if command in {"pause", "resume"} and appeal.get("status") in {
         "voting", "awaiting_escalation", "awaiting_commentary",
     }:

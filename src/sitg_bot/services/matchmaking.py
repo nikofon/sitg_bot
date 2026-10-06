@@ -34,6 +34,7 @@ from sitg_bot.services.tournaments import (
     TournamentContext,
     TournamentService,
 )
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -43,7 +44,6 @@ from sitg_bot.storage.models import (
     GameRecord,
     GameThemeRecord,
     LogicalPacketRecord,
-    PacketQuestionRecord,
     PacketVersionRecord,
     PlayerBlacklistRecord,
     PlayerExposureClaimRecord,
@@ -53,9 +53,7 @@ from sitg_bot.storage.models import (
     PregameLobbyMemberRecord,
     PregameLobbyPacketRecord,
     PregameLobbyRecord,
-    QuestionRevisionRecord,
     QuestionRoundRecord,
-    ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
@@ -2021,16 +2019,7 @@ class InvitationMatchmakingService:
         fresh: int,
         violations: tuple[dict[str, object], ...] = (),
     ) -> PacketSuggestion:
-        author_ids = select(ThemeRevisionRecord.author_id).where(
-            ThemeRevisionRecord.packet_version_id == version.id
-        ).union(
-            select(QuestionRevisionRecord.author_id)
-            .join(
-                PacketQuestionRecord,
-                PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
-            )
-            .where(PacketQuestionRecord.packet_version_id == version.id)
-        )
+        author_ids = packet_author_ids(version.id)
         authors = list(await session.scalars(
             select(AuthorRecord).where(or_(
                 AuthorRecord.id.in_(author_ids),

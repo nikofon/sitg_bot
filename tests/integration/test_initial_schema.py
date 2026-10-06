@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0016_zero_points_packet_blocks"
+                "0018_appeal_selection_timer"
             )
             types = (
                 await connection.execute(
@@ -291,6 +291,64 @@ def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):
     asyncio.run(assert_schema(url, empty=True))
     command.upgrade(config, "head")
     asyncio.run(assert_schema(url))
+
+
+def test_coauthorship_migration_recovers_inheritance_and_guards_downgrade(baseline_database):
+    from dataclasses import replace
+
+    from test_lobby_architecture import packet, tournament_fixture
+
+    from sitg_bot.services.packets import PacketAdminService
+    from sitg_bot.storage.models import AuthorRecord, PacketVersionRecord, QuestionRevisionRecord
+
+    url, config = baseline_database
+    command.upgrade(config, "head")
+
+    async def seed():
+        database = Database(url)
+        try:
+            fixture = await tournament_fixture(database, player_count=0)
+            source = packet()
+            questions = list(source.themes[0].questions)
+            questions[1] = replace(questions[1], author="Legacy Author")
+            source = replace(source, themes=(replace(
+                source.themes[0], author="Legacy Author", questions=tuple(questions),
+            ),))
+            service = PacketAdminService(database)
+            draft = await service.create_draft(
+                source, source_filename="legacy.json", uploader_id=fixture.manager.id,
+                tournament_id=fixture.tournament_id,
+            )
+            stored = await service.publish(draft, administrator_id=fixture.manager.id)
+            return stored.version_id
+        finally:
+            await database.close()
+
+    version_id = asyncio.run(seed())
+    command.downgrade(config, "0016_zero_points_packet_blocks")
+    command.upgrade(config, "head")
+
+    async def verify_and_add_coauthor():
+        database = Database(url)
+        try:
+            async with database.transaction() as session:
+                version = await session.get(PacketVersionRecord, version_id)
+                _, rows = await PacketAdminService._version_fields(session, version)
+                inherited, explicit = (row[1] for row in rows[0][1][:2])
+                assert inherited.inherits_theme_authors
+                assert not explicit.inherits_theme_authors
+                assert inherited.author_ids == explicit.author_ids
+                second = AuthorRecord(display_name="New Coauthor")
+                session.add(second)
+                await session.flush()
+                question = await session.get(QuestionRevisionRecord, explicit.id)
+                question.author_ids = (*question.author_ids, second.id)
+        finally:
+            await database.close()
+
+    asyncio.run(verify_and_add_coauthor())
+    with pytest.raises(RuntimeError, match="coauthored content"):
+        command.downgrade(config, "0016_zero_points_packet_blocks")
 
 
 def test_player_limits_migration_initializes_existing_tournaments(baseline_database):

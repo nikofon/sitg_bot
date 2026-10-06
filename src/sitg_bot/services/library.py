@@ -14,6 +14,7 @@ from sitg_bot.services.ruleset_content import (
     SIContentAdapter,
 )
 from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AnswerAttemptRecord,
@@ -26,9 +27,7 @@ from sitg_bot.storage.models import (
     PlayerExposureClaimRecord,
     PlayerQuestionStateRecord,
     PlayerRecord,
-    QuestionRevisionRecord,
     QuestionRoundRecord,
-    ThemeRevisionRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
@@ -108,14 +107,7 @@ class PacketLibraryService:
             cards = {}
             for assignment, version in await self._assignments(session, player_id):
                 if version.id not in cards:
-                    author_ids = select(ThemeRevisionRecord.author_id).where(
-                        ThemeRevisionRecord.packet_version_id == version.id
-                    ).union(
-                        select(QuestionRevisionRecord.author_id).join(
-                            PacketQuestionRecord,
-                            PacketQuestionRecord.question_revision_id == QuestionRevisionRecord.id,
-                        ).where(PacketQuestionRecord.packet_version_id == version.id)
-                    )
+                    author_ids = packet_author_ids(version.id)
                     authors = list(await session.scalars(
                         select(AuthorRecord.display_name).where(
                             AuthorRecord.id.in_(author_ids)
