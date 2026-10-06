@@ -581,8 +581,6 @@ class InvitationMatchmakingService:
         members = await self._all_active_members(session, lobby.id)
         for member in members:
             member.ready = False
-            if member.role == "observer":
-                member.fresh_content_confirmed = False
         await session.flush()
         await self._refresh_validation(session, lobby)
         await self._event(
@@ -693,8 +691,6 @@ class InvitationMatchmakingService:
             members = await self._all_active_members(session, lobby.id)
             for member in members:
                 member.ready = False
-                if member.role == "observer":
-                    member.fresh_content_confirmed = False
             await self._event(session, lobby.id, "settings_changed", changed)
             await self._refresh_validation(session, lobby)
             self._bump(lobby)
@@ -1557,7 +1553,7 @@ class InvitationMatchmakingService:
                         "Burnt-only observing does not allow this observer to see fresh content"
                     )
                 if fresh and not observer.fresh_content_confirmed:
-                    raise PermissionError("Observer must explicitly confirm burning fresh content")
+                    raise LobbyReadinessError("observer_confirmation_required")
 
             now = datetime.now(UTC)
             game = GameRecord(
@@ -2155,8 +2151,6 @@ class InvitationMatchmakingService:
         members = await InvitationMatchmakingService._all_active_members(session, lobby_id)
         for member in members:
             member.ready = False
-            if member.role == "observer":
-                member.fresh_content_confirmed = False
 
     @staticmethod
     async def _registered_player(
@@ -2386,6 +2380,8 @@ class InvitationMatchmakingService:
             if kind in {"player_joined", "player_left"}:
                 player = await session.get(PlayerRecord, UUID(str(payload["player_id"])))
                 notice["player_name"] = player.public_nickname
+                if player.telegram_user_id is not None:
+                    notice["player_telegram_user_id"] = player.telegram_user_id
             recipients = (
                 await session.execute(
                     select(PlayerRecord)

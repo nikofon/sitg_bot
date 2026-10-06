@@ -2900,8 +2900,6 @@ class TournamentService:
                 ).scalars()
                 for member in members:
                     member.ready = False
-                    if member.role == "observer":
-                        member.fresh_content_confirmed = False
                 sequence = (
                     await session.scalar(
                         select(func.max(PregameLobbyEventRecord.sequence)).where(

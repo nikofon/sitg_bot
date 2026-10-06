@@ -1613,7 +1613,9 @@ class ApplicationGateway:
         if lobby.status == "assembling":
             if viewer.role != "player":
                 actions.append("role_player")
-            if viewer.role != "observer" and context.observing_policy != "forbidden":
+            if context.observing_policy != "forbidden" and (
+                viewer.role != "observer" or not viewer.fresh_content_confirmed
+            ):
                 actions.append("role_observer")
             if viewer.role == "player":
                 actions.append("unready" if viewer.ready else "ready")
@@ -1797,6 +1799,7 @@ class ApplicationGateway:
                 "closed",
                 "expired",
                 "observer",
+                "observer_confirmation_required",
                 "packet_required",
                 "packet_not_playable",
                 "packet_content_incompatible",

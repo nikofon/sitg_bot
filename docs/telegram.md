@@ -79,7 +79,10 @@ Unknown tournament action descriptors are ignored and logged.
   except opening their packet library, which stays available in both the bot and the Mini App.
 - Mini App buttons for tournament lists, ongoing games/lobbies ("Ongoing games"), the player profile ("My profile"), lobby
   packet/settings views, management, packet draft/editing flows,
-  and administrator management (Tournaments, Authors, Players, Packets).
+  and administrator management (Tournaments, Authors, Players, Packets). Joining a lobby from
+  the "Ongoing games" view (as player or observer) updates the navigation context, and the durable
+  join notice installs the lobby reply keyboard (readiness for players, lobby info, leave, back)
+  in the returning member's chat.
 
 The player tournament context opens the tournament profile Mini App window through the
 **Info** button (**Leaders** deep-links the same window on its leaders section), and the
