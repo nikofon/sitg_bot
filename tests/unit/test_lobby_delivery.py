@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import EditMessageText
+from aiogram.types import ReplyKeyboardMarkup
 
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.lobby_delivery import (
@@ -12,6 +15,40 @@ from sitg_bot.bot.lobby_delivery import (
     notification_alert_delivery_handler,
     packet_draft_status_delivery_handler,
 )
+from sitg_bot.bot.presenters.models import ReplyKeyboardModel
+
+
+async def test_uneditable_legacy_summary_is_deleted_before_replacement():
+    state = {
+        "active": True, "messages": {"summary": 7, "settings": 8},
+        "lobby": {"tournament_name": "Cup", "members": [], "selected_packets": []},
+    }
+
+    async def request(action, **params):
+        if action == "telegram.lobby.record":
+            state["messages"] = dict(params["messages"])
+        return {**state, "messages": dict(state["messages"])}
+
+    bot = SimpleNamespace(
+        send_message=AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in (9, 10)]),
+        edit_message_text=AsyncMock(side_effect=TelegramBadRequest(
+            method=EditMessageText(chat_id=42, message_id=7, text="Summary"),
+            message="Bad Request: message can't be edited",
+        )),
+        delete_message=AsyncMock(),
+    )
+    delivery = LobbyDelivery(
+        bot, LocalizationService(), SimpleNamespace(request=AsyncMock(side_effect=request)),
+        "https://mini.test", "bot",
+    )
+    await delivery.show(42, "lobby", "en", keyboard=ReplyKeyboardModel(rows=(("Lobby info",),)))
+    bot.delete_message.assert_awaited_once_with(42, 7)
+    assert state["messages"]["summary"] == 10
+    assert state["messages"]["settings"] == 8
+    assert bot.send_message.await_args.kwargs.get("reply_markup") is None
+    await delivery.show(42, "lobby", "en")
+    assert bot.send_message.await_count == 2
+    assert bot.edit_message_text.await_count == 1
 
 
 @pytest.mark.parametrize("locale", ["en", "ru"])
@@ -94,9 +131,23 @@ async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids(
             state["messages"] = dict(params["messages"])
         return {**state, "messages": dict(state["messages"])}
 
+    sent = {}
+
+    async def send(chat, text, **kwargs):
+        message_id = len(sent) + 1
+        sent[message_id] = kwargs
+        return SimpleNamespace(message_id=message_id)
+
+    async def edit(text, *, chat_id, message_id, **kwargs):
+        if isinstance(sent[message_id].get("reply_markup"), ReplyKeyboardMarkup):
+            raise TelegramBadRequest(
+                method=EditMessageText(chat_id=chat_id, message_id=message_id, text=text),
+                message="Bad Request: message can't be edited",
+            )
+
     bot = SimpleNamespace(
-        send_message=AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in range(1, 5)]),
-        edit_message_text=AsyncMock(), delete_message=AsyncMock(),
+        send_message=AsyncMock(side_effect=send),
+        edit_message_text=AsyncMock(side_effect=edit), delete_message=AsyncMock(),
     )
     protocol = SimpleNamespace(request=AsyncMock(side_effect=request))
     delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
@@ -105,28 +156,34 @@ async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids(
         "join_sequence": 1,
     }
     await delivery(payload)
-    assert state["messages"] == {"summary": 1, "settings": 2, "join_sequence": 1}
+    assert state["messages"]["summary"] == 2
+    assert state["messages"]["settings"] == 3
+    assert state["messages"]["navigation"] == 1
+    await delivery(payload)
+    bot.edit_message_text.assert_not_awaited()
     state["lobby"]["members"] = [{"name": "Alice", "role": "player"}]
     state["lobby"]["selected_packets"] = [{"name": "Round 1"}]
     # A new delivery object represents a restarted bot.
     delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
     await delivery(payload)
-    assert bot.send_message.await_count == 2
+    assert bot.send_message.await_count == 3
     edited = bot.edit_message_text.await_args
-    assert edited.kwargs["message_id"] == 1
+    assert edited.kwargs["message_id"] == 2
     assert "Alice" in edited.args[0] and "Round 1" in edited.args[0]
     await delivery.show(42, "lobby", "en", replace=True)
-    assert [call.args for call in bot.delete_message.await_args_list] == [(42, 1), (42, 2)]
-    assert state["messages"] == {"summary": 3, "settings": 4, "join_sequence": 1}
+    assert [call.args for call in bot.delete_message.await_args_list] == [(42, 1), (42, 2), (42, 3)]
+    assert state["messages"]["summary"] == 5
+    assert state["messages"]["settings"] == 6
+    assert state["messages"]["join_sequence"] == 1
     state["lobby"]["members"] = []
     state["lobby"]["selected_packets"] = []
     await delivery(payload)
     edited = bot.edit_message_text.await_args
-    assert edited.kwargs["message_id"] == 3
+    assert edited.kwargs["message_id"] == 5
     assert "Alice" not in edited.args[0] and "Round 1" not in edited.args[0]
     state["active"] = False
     await delivery(payload)
-    assert bot.send_message.await_count == 4
+    assert bot.send_message.await_count == 6
 
 
 @pytest.mark.parametrize("ready,count", [(True, 1), (False, 0)])

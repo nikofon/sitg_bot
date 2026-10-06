@@ -64,19 +64,22 @@ class LobbyDelivery:
             async def save():
                 await self.protocol.request("telegram.lobby.record", **params, messages=messages)
 
+            async def delete(key):
+                try:
+                    await self.bot.delete_message(chat, messages[key])
+                except TelegramBadRequest as error:
+                    if "message to delete not found" not in str(error).lower():
+                        raise
+                del messages[key]
+                await save()
+
             if replace:
-                for key in ("summary", "settings"):
+                for key in ("navigation", "summary", "settings"):
                     if key not in messages:
                         continue
-                    try:
-                        await self.bot.delete_message(chat, messages[key])
-                    except TelegramBadRequest as error:
-                        if "message to delete not found" not in str(error).lower():
-                            raise
-                    del messages[key]
-                    await save()
+                    await delete(key)
             text = lobby_info_text(state["lobby"], self.localization, locale, self.bot_username)
-            if "summary" in messages:
+            if "summary" in messages and messages.get("summary_text") != text:
                 try:
                     await self.bot.edit_message_text(
                         text, chat_id=chat, message_id=messages["summary"],
@@ -84,23 +87,37 @@ class LobbyDelivery:
                     )
                 except TelegramBadRequest as error:
                     reason = str(error).lower()
-                    if "message to edit not found" in reason or "message can't be edited" in reason:
+                    if "message can't be edited" in reason:
+                        await delete("summary")
+                    elif "message to edit not found" in reason:
                         del messages["summary"]
+                        await save()
                     elif "message is not modified" not in reason:
                         raise
             if "summary" not in messages:
-                if keyboard is None:
-                    navigation = await self.protocol.request(
-                        "telegram.navigation.snapshot", telegram_user_id=chat,
+                if "navigation" not in messages:
+                    if keyboard is None:
+                        navigation = await self.protocol.request(
+                            "telegram.navigation.snapshot", telegram_user_id=chat,
+                        )
+                        keyboard = menu_message(
+                            NavigationState.model_validate(navigation), self.localization, locale,
+                        ).keyboard
+                    # Telegram cannot edit a message carrying a reply keyboard.
+                    sent = await self.bot.send_message(
+                        chat, self.localization.text("lobby.menu", locale),
+                        reply_markup=telegram_keyboard(keyboard),
                     )
-                    keyboard = menu_message(
-                        NavigationState.model_validate(navigation), self.localization, locale,
-                    ).keyboard
+                    messages["navigation"] = sent.message_id
+                    await save()
                 sent = await self.bot.send_message(
-                    chat, text, reply_markup=telegram_keyboard(keyboard),
+                    chat, text,
                     link_preview_options=DISABLED_LINK_PREVIEW,
                 )
                 messages["summary"] = sent.message_id
+                await save()
+            if messages.get("summary_text") != text:
+                messages["summary_text"] = text
                 await save()
             if self.base_url and "settings" not in messages:
                 reference = LaunchReference(

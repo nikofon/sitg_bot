@@ -49,9 +49,10 @@ are independent. Back may change navigation without leaving a lobby; Quit tourna
 does not implicitly leave an active lobby. A creator's departure confirms cancellation.
 Unknown tournament action descriptors are ignored and logged.
 
-Lobby creation and joining deliver the same participant/packet summary and a separate
-settings button. Membership, readiness, settings, and packet changes refresh the summary
-through the outbox. **Lobby info** deletes both previous messages and sends a new pair;
+Lobby creation and joining deliver a short menu message carrying the reply keyboard,
+the participant/packet summary, and a separate settings button. The summary has no reply
+keyboard so Telegram permits editing it. Membership, readiness, settings, and packet changes
+refresh the summary through the outbox. **Lobby info** replaces these messages;
 message identities persist on lobby membership so refreshes survive bot restarts.
 Kicking sends the removed member a notice with their current navigation keyboard and
 notifies remaining participants by name. The removed member's lobby context falls back
