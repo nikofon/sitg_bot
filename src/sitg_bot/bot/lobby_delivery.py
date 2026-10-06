@@ -89,6 +89,13 @@ class LobbyDelivery:
                     elif "message is not modified" not in reason:
                         raise
             if "summary" not in messages:
+                if keyboard is None:
+                    navigation = await self.protocol.request(
+                        "telegram.navigation.snapshot", telegram_user_id=chat,
+                    )
+                    keyboard = menu_message(
+                        NavigationState.model_validate(navigation), self.localization, locale,
+                    ).keyboard
                 sent = await self.bot.send_message(
                     chat, text, reply_markup=telegram_keyboard(keyboard),
                     link_preview_options=DISABLED_LINK_PREVIEW,

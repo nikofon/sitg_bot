@@ -154,7 +154,7 @@ async def show_lobby(
         return
     await backend.lobby_delivery.show(
         message.chat.id, navigation.active_lobby.id, locale,
-        replace=True,
+        replace=not created,
         keyboard=navigation_keyboard(navigation, localization, locale),
     )
 

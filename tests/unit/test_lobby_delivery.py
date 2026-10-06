@@ -77,6 +77,19 @@ async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids(
     }
 
     async def request(action, **params):
+        if action == "telegram.navigation.snapshot":
+            return {
+                "account": {
+                    "player_id": str(UUID(int=1)), "telegram_user_id": 42,
+                    "public_nickname": "Alice", "preferred_locale": "en",
+                    "registration_status": "active", "registration_completed_at": "2026-01-01",
+                    "profile_version": 1,
+                },
+                "available_modes": ["player"], "active_mode": "player",
+                "context": "lobby", "navigation_version": 1,
+                "selected_player_tournament": None, "selected_manager_tournament": None,
+                "active_lobby": None, "active_game": None, "allowed_actions": ["lobby.info"],
+            }
         if action == "telegram.lobby.record":
             state["messages"] = dict(params["messages"])
         return {**state, "messages": dict(state["messages"])}

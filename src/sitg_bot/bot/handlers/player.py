@@ -577,8 +577,10 @@ async def handle_player_menu_action(
             )
             return
         if player_action == "player.tournament.create_lobby":
-            await backend.create_lobby(telegram_update_claim, tournament_id=selected.id)
-            updated = await backend.navigation(telegram_update_claim)
+            # Keep queued creation delivery behind the navigation transition.
+            async with backend.lobby_delivery.locks[message.chat.id]:
+                await backend.create_lobby(telegram_update_claim, tournament_id=selected.id)
+                updated = await backend.navigation(telegram_update_claim)
             from sitg_bot.bot.handlers.lobby import show_lobby
 
             await show_lobby(

@@ -1,3 +1,4 @@
+import asyncio
 import io
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -691,7 +692,8 @@ async def test_player_tournament_upload_submenu_and_permission(allowed) -> None:
         assert "unavailable" in message.answer.await_args.args[0]
 
 
-async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
+@pytest.mark.parametrize("queued_first", [False, True])
+async def test_player_lobby_creation_uses_the_selected_tournament(queued_first) -> None:
     from sitg_bot.bot.lobby_delivery import LobbyDelivery
 
     created = SimpleNamespace(
@@ -727,14 +729,38 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
     )
     claim = SimpleNamespace()
     message.chat = SimpleNamespace(id=42)
-    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)))
-    protocol = SimpleNamespace(request=AsyncMock(return_value={
+    bot = SimpleNamespace(
+        send_message=AsyncMock(side_effect=[SimpleNamespace(message_id=i) for i in (10, 11)]),
+        edit_message_text=AsyncMock(), delete_message=AsyncMock(),
+    )
+    presentation = {
         "active": True, "messages": {}, "lobby": backend.lobby_info.return_value,
         "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
-    }))
+    }
+
+    async def request(action, **params):
+        if action == "telegram.navigation.snapshot":
+            return lobby_nav.model_dump(mode="json")
+        if action == "telegram.lobby.record":
+            presentation["messages"] = dict(params["messages"])
+        return {**presentation, "messages": dict(presentation["messages"])}
+
+    protocol = SimpleNamespace(request=AsyncMock(side_effect=request))
     backend.lobby_delivery = LobbyDelivery(
         bot, LocalizationService(), protocol, "https://mini.example.test/app", "test_bot",
     )
+    payload = {"recipient_telegram_user_id": 42, "lobby_id": str(UUID(int=9)), "locale": "en"}
+    queued_task = None
+
+    async def current_navigation(*args):
+        nonlocal queued_task
+        if queued_first:
+            queued_task = asyncio.create_task(backend.lobby_delivery(payload))
+            await asyncio.sleep(0)
+            bot.send_message.assert_not_awaited()
+        return lobby_nav
+
+    backend.navigation.side_effect = current_navigation
     selected = {
         "id": str(UUID(int=8)),
         "name": "Player Cup",
@@ -759,6 +785,11 @@ async def test_player_lobby_creation_uses_the_selected_tournament() -> None:
     )
 
     backend.create_lobby.assert_awaited_once_with(claim, tournament_id=UUID(int=8))
+    if queued_task is not None:
+        await queued_task
+    else:
+        await backend.lobby_delivery(payload)
+    bot.delete_message.assert_not_awaited()
     assert bot.send_message.await_count == 2
     text = bot.send_message.await_args_list[0].args[1]
     assert "Player Cup" in text and "1/4" in text and "https://t.me/test_bot?start=join_" in text
