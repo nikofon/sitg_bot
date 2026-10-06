@@ -1606,7 +1606,7 @@ export class MiniAppShell {
       type: "button", className: "primary-button",
       onclick: (() => this.showExistingPacketDialog(route)) as EventListener,
     }, this.i18n.t("packet_management.add_existing")));
-    for (const packet of resource.packets) {
+    const packetCard = (packet: ManagementPacket): HTMLElement => {
       const card = element("article", { className: "resource-card lobby-packet-card", "data-packet-id": packet.packet_id },
         element("h3", {}, packet.name),
         element("dl", { className: "lobby-packet-details" },
@@ -1663,9 +1663,77 @@ export class MiniAppShell {
         actions.append(button);
       }
       card.append(actions);
-      managedPackets.append(card);
+      return card;
+    };
+    if (!resource.packets.length) {
+      managedPackets.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
+    } else {
+      const packetFilters = this.filters.read("manager_management_packets");
+      const savePacketFilters = (filters: Record<string, string>): void =>
+        this.filters.write("manager_management_packets", filters);
+      const packetList = element("div", { className: "lobby-packets", "aria-live": "polite" });
+      const packetControls = element("div", { className: "lobby-packet-filters", role: "search", "aria-label": this.i18n.t("lobby.packet_filters") });
+      const normalize = (value: string): string => value.trim().toLocaleLowerCase(this.i18n.locale);
+      const inRange = (year: number | null, from?: string, to?: string): boolean =>
+        (!from && !to) || (year !== null && (!from || year >= Number(from)) && (!to || year <= Number(to)));
+      const packetMatches = (packet: ManagementPacket): boolean =>
+        normalize(packet.name).includes(normalize(packetFilters.name ?? ""))
+        && normalize([packet.lead_author, ...(packet.authors ?? [])].filter(Boolean).join(" "))
+          .includes(normalize(packetFilters.author ?? ""))
+        && inRange(packet.year ?? null, packetFilters.year_from, packetFilters.year_to)
+        && inRange(packet.published_at ? Number(packet.published_at.slice(0, 4)) : null, packetFilters.publication_from, packetFilters.publication_to);
+      let packetSort: "default" | "name" = "default";
+      const renderPacketList = (): void => {
+        const visible = resource.packets.filter(packetMatches);
+        if (packetSort === "name") visible.sort((a, b) => a.name.localeCompare(b.name, this.i18n.locale));
+        packetList.replaceChildren(...visible.map(packetCard));
+        if (!visible.length) {
+          packetList.append(this.statusCard("empty", this.i18n.t("lobby.packet_no_matches")));
+        }
+      };
+      const packetInput = (name: string, label: MessageKey, numeric = false): HTMLElement => element("label", {},
+        this.i18n.t(label), element("input", {
+          name, type: numeric ? "number" : "search", value: packetFilters[name] ?? "",
+          min: numeric ? "1000" : undefined, max: numeric ? "9999" : undefined,
+          step: numeric ? "1" : undefined,
+          oninput: ((event: Event) => {
+            packetFilters[name] = (event.currentTarget as HTMLInputElement).value;
+            savePacketFilters(packetFilters);
+            renderPacketList();
+          }) as EventListener,
+        }));
+      packetControls.append(packetInput("name", "lobby.packet_search"), packetInput("author", "lobby.packet_authors"));
+      const packetSortSelect = element("select", {
+        "aria-label": this.i18n.t("lobby.packet_sort"),
+        onchange: (() => {
+          packetSort = packetSortSelect.value === "name" ? "name" : "default";
+          renderPacketList();
+        }) as EventListener,
+      });
+      packetSortSelect.append(
+        element("option", { value: "default", selected: true }, this.i18n.t("lobby.packet_sort_default")),
+        element("option", { value: "name" }, this.i18n.t("filters.name_asc")),
+      );
+      packetControls.append(packetSortSelect);
+      for (const [label, from, to] of [
+        ["lobby.packet_year", "year_from", "year_to"],
+        ["lobby.packet_publication_year", "publication_from", "publication_to"],
+      ] as const) {
+        packetControls.append(element("fieldset", { className: "lobby-packet-year-range" },
+          element("legend", {}, this.i18n.t(label)), packetInput(from, "lobby.packet_from", true), packetInput(to, "lobby.packet_to", true)));
+      }
+      packetControls.append(element("button", {
+        type: "button", className: "secondary-button",
+        onclick: (() => {
+          for (const key of Object.keys(packetFilters)) delete packetFilters[key];
+          for (const field of packetControls.querySelectorAll("input")) field.value = "";
+          savePacketFilters(packetFilters);
+          renderPacketList();
+        }) as EventListener,
+      }, this.i18n.t("lobby.packet_reset")));
+      managedPackets.append(packetControls, packetList);
+      renderPacketList();
     }
-    if (!resource.packets.length) managedPackets.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
     section("packet_management", managedPackets);
 
     const sectionNavigation = element(

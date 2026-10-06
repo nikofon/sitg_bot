@@ -157,7 +157,10 @@ Settings and the Management General section provide buttons to switch between th
 **Tournament management:** General, Registrations, Packet accessibility, and Packet management,
 with sections derived from the tournament type. Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
-all-player packet rights. Packet management provides a **Library viewing rule** dropdown:
+all-player packet rights. Packet management cards offer the same lobby packet search and
+filters (title, authors, inclusive packet-year and publication-year ranges, name sorting,
+and reset), persisted per session like other route filters. Packet management provides a
+**Library viewing rule** dropdown:
 No library viewing, After playing, or Before or after playing. These conditions apply only
 to viewing readable, released packets and never affect playability. The policy default
 applies only to future uploads.

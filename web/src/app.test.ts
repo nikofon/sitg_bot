@@ -1267,6 +1267,115 @@ describe("MiniAppShell", () => {
     expect(saved.field_author_ids["themes.0.questions.0.authors"]).toEqual([null]);
   });
 
+  it("filters and sorts manager packet management cards and persists filters", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          locale: "en",
+          authorization: { allowed: true },
+          resource: {
+            kind: "manager_management",
+            state: "ready",
+            sections: ["general", "packet_management"],
+            settings_version: 1,
+            finalized_at: null,
+            registration_scheduled_open: false,
+            registration_open: false,
+            registration_open_override: null,
+            registration_count: 0,
+            approved_count: 0,
+            participant_count: 0,
+            packet_count: 3,
+            available_actions: ["packet_management"],
+            registrations: [],
+            packets: [
+              { assignment_id: "a-1", packet_id: "p-1", name: "Zulu packet", version: 1, year: 2019,
+                published_at: "2023-05-01T00:00:00Z", lead_author: "Anna", authors: ["Anna"], player_access: [] },
+              { assignment_id: "a-2", packet_id: "p-2", name: "Alpha packet", version: 1, year: 2021,
+                published_at: "2024-05-01T00:00:00Z", lead_author: "Boris", authors: ["Boris"], player_access: [] },
+              { assignment_id: "a-3", packet_id: "p-3", name: "Mike packet", version: 1, year: 2020,
+                published_at: "2025-05-01T00:00:00Z", lead_author: "Carol", authors: ["Carol"], player_access: [] },
+            ],
+            tournament: {
+              id: "tournament-1",
+              name: "Managed Cup",
+              slug: "managed-cup",
+              status: "active",
+              phase: "ongoing",
+              visibility: "private",
+              language: "en",
+              payment_type: "free",
+              pricing_plans: [],
+              registration_open: false,
+              authors: [],
+              type_key: "ladder",
+              type_version: 1,
+              ruleset_key: "si",
+              ruleset_version: 1,
+              managed: true,
+              policy_version: 1,
+              available_actions: [],
+            },
+          },
+        }),
+      );
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+
+    await vi.waitFor(() => expect(root.querySelector("[data-section=general]")).not.toBeNull());
+    const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Packet management")!;
+    managementButton.click();
+    const section = root.querySelector<HTMLElement>("[data-section=packet_management]")!;
+    const names = (): string[] => Array.from(
+      section.querySelectorAll(".lobby-packet-card h3"), (title) => title.textContent ?? "");
+    expect(names()).toEqual(["Zulu packet", "Alpha packet", "Mike packet"]);
+    const type = (name: string, value: string): void => {
+      const field = section.querySelector<HTMLInputElement>(`input[name="${name}"]`)!;
+      field.value = value;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    type("name", "alpha");
+    expect(names()).toEqual(["Alpha packet"]);
+    expect(JSON.parse(sessionStorage.getItem("sitg:miniapp:filters:manager_management_packets") ?? "{}").name).toBe("alpha");
+    type("name", "");
+
+    type("author", "carol");
+    expect(names()).toEqual(["Mike packet"]);
+    type("author", "");
+
+    type("year_from", "2021");
+    expect(names()).toEqual(["Alpha packet"]);
+    type("year_from", "");
+
+    type("publication_from", "2025");
+    expect(names()).toEqual(["Mike packet"]);
+    type("publication_from", "");
+
+    const sort = section.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']")!;
+    sort.value = "name";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet"]);
+
+    type("name", "nothing");
+    expect(names()).toEqual([]);
+    expect(section.textContent).toContain("No packets match these filters.");
+
+    Array.from(section.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Reset filters")!.click();
+    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet"]);
+    expect(section.querySelector<HTMLInputElement>('input[name="name"]')!.value).toBe("");
+  });
+
   it("saves manager-selected Swiss round count, game size, and scoring", async () => {
     window.history.replaceState({}, "", "/manager/tournaments/ref/settings");
     const resource = {
