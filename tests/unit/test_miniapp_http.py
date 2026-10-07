@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -14,7 +15,56 @@ from sitg_bot.application.contracts import (
     GatewayResponse,
 )
 from sitg_bot.miniapp_http import MiniAppHttpServer
-from sitg_bot.services.miniapp_auth import MiniAppSecurityPolicy, MiniAppSessionContext
+from sitg_bot.services.miniapp_auth import (
+    MiniAppSecurityPolicy,
+    MiniAppSessionContext,
+    MiniAppSessionCredentials,
+)
+
+
+@pytest.mark.parametrize("origin,refresh,same_site", [
+    ("https://mini.example.test", False, "None"),
+    ("https://mini.example.test", True, "None"),
+    ("https://website.example.test", True, "Strict"),
+])
+async def test_session_cookie_policy_on_creation_and_refresh(origin, refresh, same_site) -> None:
+    credentials = MiniAppSessionCredentials(
+        "test-session", "test-csrf", datetime.now(UTC) + timedelta(minutes=15), "en"
+    )
+    auth = FakeAuth()
+    auth.security_policy = MiniAppSecurityPolicy(frozenset({
+        "https://mini.example.test", "https://website.example.test",
+    }))
+    auth.create_session = AsyncMock(return_value=credentials)
+    auth.refresh_session = AsyncMock(return_value=credentials)
+    http = MiniAppHttpServer(
+        auth, FakeGateway(), website_origins={"https://website.example.test"}
+    )
+    http._json_body = AsyncMock(return_value={"init_data": "signed-init-data"})
+    path = "/api/miniapp/session/refresh" if refresh else "/api/miniapp/session"
+    request = make_mocked_request("POST", path, headers={
+        "Origin": origin, "Content-Type": "application/json",
+        "Cookie": "__Host-sitg_session=test-session",
+        "X-CSRF-Token": "test-csrf", "X-Idempotency-Key": "test-refresh",
+    })
+
+    response = await http._headers(
+        request, http._refresh_session if refresh else http._create_session
+    )
+
+    assert response.status == 200
+    cookie = response.cookies["__Host-sitg_session"]
+    assert cookie["samesite"] == same_site
+    assert cookie["secure"] and cookie["httponly"]
+    assert cookie["path"] == "/" and not cookie["domain"]
+    assert "session_token" not in json.loads(response.text)
+    if refresh:
+        auth.refresh_session.assert_awaited_once_with(
+            "test-session", origin=origin, csrf_token="test-csrf",
+            idempotency_key="test-refresh", content_type="application/json",
+        )
+    else:
+        auth.create_session.assert_awaited_once_with("signed-init-data", origin=origin)
 
 
 @pytest.mark.parametrize("path", [

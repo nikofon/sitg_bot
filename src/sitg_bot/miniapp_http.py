@@ -439,7 +439,7 @@ class MiniAppHttpServer:
         response = web.Response(status=303, headers={
             "Location": "/tournaments", "Cache-Control": "no-store"
         })
-        self._set_session_cookie(response, credentials)
+        self._set_session_cookie(response, credentials, origin=origin)
         response.del_cookie(
             "__Host-sitg_login", path="/", secure=True, httponly=True, samesite="Lax"
         )
@@ -454,7 +454,7 @@ class MiniAppHttpServer:
             raise ValueError("init_data is required")
         credentials = await self.auth.create_session(init_data, origin=self._origin(request))
         response = web.json_response(self._session_payload(credentials))
-        self._set_session_cookie(response, credentials)
+        self._set_session_cookie(response, credentials, origin=self._origin(request))
         return response
 
     async def _refresh_session(self, request: web.Request) -> web.Response:
@@ -466,7 +466,7 @@ class MiniAppHttpServer:
             content_type=request.content_type,
         )
         response = web.json_response(self._session_payload(credentials))
-        self._set_session_cookie(response, credentials)
+        self._set_session_cookie(response, credentials, origin=self._origin(request))
         return response
 
     async def _resolve_route(self, request: web.Request) -> web.Response:
@@ -1798,15 +1798,22 @@ class MiniAppHttpServer:
             "locale": credentials.locale,
         }
 
-    @staticmethod
-    def _set_session_cookie(response: web.Response, credentials: MiniAppSessionCredentials) -> None:
+    def _set_session_cookie(
+        self, response: web.Response, credentials: MiniAppSessionCredentials, *, origin: str
+    ) -> None:
+        # Telegram's Linux shell embeds Mini Apps in a cross-site iframe.
+        same_site = (
+            credentials.cookie_same_site
+            if MiniAppAuthService.normalize_origin(origin) in self.website_origins
+            else "None"
+        )
         response.set_cookie(
             credentials.cookie_name,
             credentials.session_token,
             path=credentials.cookie_path,
             secure=credentials.cookie_secure,
             httponly=credentials.cookie_http_only,
-            samesite=credentials.cookie_same_site,
+            samesite=same_site,
             max_age=max(
                 1,
                 int((credentials.expires_at - datetime.now(UTC)).total_seconds()),

@@ -112,7 +112,9 @@ rebuilding directly into the live directory: Vite cleans the output directory by
 1. Telegram supplies signed `initData`. `POST /api/miniapp/session` validates signature,
    age, bot environment, and exact origin, then creates an opaque short-lived session.
 2. The server sets an HTTP-only session cookie and returns `csrf_token`, `expires_at`,
-   and `locale`. Browser code never reads the cookie.
+   and `locale`. Mini App cookies use `SameSite=None; Secure` on creation and refresh
+   to support Telegram's cross-site Linux shell; website cookies retain `SameSite=Strict`.
+   Browser code never reads the cookie. Clients that block third-party cookies may still fail.
 3. Route resolution reloads the caller and reauthorizes the requested resource. Opaque
    launch references bind sensitive lobby/manager/draft routes to their actor and expiry;
    possessing a route string is insufficient authorization.
