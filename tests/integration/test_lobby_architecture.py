@@ -2058,6 +2058,79 @@ async def test_owner_can_kick_lobby_members(database_url: str, role: str, contex
         await database.close()
 
 
+async def test_lobby_summary_skips_catalogue_and_already_delivered_versions(
+    database_url: str,
+) -> None:
+    from sqlalchemy import event
+
+    from sitg_bot.bot.handlers.lobby import lobby_info_text
+    from sitg_bot.bot.i18n import LocalizationService
+    from sitg_bot.server import json_value
+
+    database = Database(database_url)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    try:
+        fixture = await tournament_fixture(database, player_count=3)
+        service = InvitationMatchmakingService(database)
+        owner = fixture.inputs[0].telegram_user_id
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        lobby = await service.join(lobby.invitation_code, fixture.inputs[1])
+        lobby = await service.select_packet(
+            lobby.id, owner, fixture.packet_id, expected_version=lobby.version,
+        )
+        async with database.transaction() as session:
+            session.add(RulesetRatingRecord(
+                ruleset_key="si", player_id=fixture.players[0].id, rating=Decimal("1016.5"),
+            ))
+        # The lightweight projection must preserve every visible field of the old payload.
+        full = await ConsoleApplicationServer(database).application_gateway._lobby_payload(
+            lobby.id, owner,
+        )
+        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+        state = await service.telegram_presentation(lobby.id, owner)
+        assert len(statements) == 6
+        assert not any(table in sql for sql in statements for table in (
+            "player_exposure_claims", "theme_revisions", "packet_questions", "question_revisions",
+            "tournament_packet_assignments",
+        ))
+        localization = LocalizationService()
+        text = lobby_info_text(json_value(state["lobby"]), localization, "en", "test_bot")
+        assert text == lobby_info_text(json_value(full), localization, "en", "test_bot")
+        assert "1016.5" in text
+        messages = {
+            "navigation": 100, "summary": 101, "settings": 102,
+            "summary_text": text, "summary_version": state["version"],
+        }
+        await service.telegram_presentation(lobby.id, owner, messages=messages)
+        statements.clear()
+        # A restarted service can discard duplicate/older queued refreshes with two reads.
+        state = await InvitationMatchmakingService(database).telegram_presentation(lobby.id, owner)
+        assert state["active"] and "lobby" not in state
+        assert len(statements) == 2
+        forced = await service.telegram_presentation(lobby.id, owner, force=True)
+        assert "lobby" in forced
+
+        lobby = await service.set_ready(lobby.id, owner, ready=True, expected_version=lobby.version)
+        # Saving an older delivered version must not hide a concurrent lobby change.
+        await service.telegram_presentation(lobby.id, owner, messages=messages)
+        changed = await service.telegram_presentation(lobby.id, owner)
+        assert changed["version"] == lobby.version > messages["summary_version"]
+        assert changed["lobby"]["members"][0]["ready"]
+        with pytest.raises(PermissionError):
+            await service.telegram_presentation(lobby.id, fixture.inputs[2].telegram_user_id)
+        await service.cancel(lobby.id, owner, expected_version=lobby.version)
+        closed = await service.telegram_presentation(lobby.id, owner)
+        assert not closed["active"] and "lobby" not in closed
+    finally:
+        if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
+            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        await database.close()
+
+
 async def test_lobby_notices_follow_membership_across_navigation_modes(database_url: str) -> None:
     from sitg_bot.services.navigation import TelegramNavigationService
 

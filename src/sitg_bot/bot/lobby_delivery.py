@@ -54,7 +54,10 @@ class LobbyDelivery:
 
         async with self.locks[chat]:
             params = {"telegram_user_id": chat, "lobby_id": str(lobby_id)}
-            state = await self.protocol.request("telegram.lobby.presentation", **params)
+            state = await self.protocol.request(
+                "telegram.lobby.presentation", **params,
+                force=replace or join_sequence is not None,
+            )
             if not state["active"]:
                 return
             messages = dict(state["messages"])
@@ -78,7 +81,10 @@ class LobbyDelivery:
                     if key not in messages:
                         continue
                     await delete(key)
-            text = lobby_info_text(state["lobby"], self.localization, locale, self.bot_username)
+            text = (
+                lobby_info_text(state["lobby"], self.localization, locale, self.bot_username)
+                if "lobby" in state else messages["summary_text"]
+            )
             if "summary" in messages and messages.get("summary_text") != text:
                 try:
                     await self.bot.edit_message_text(
@@ -134,6 +140,9 @@ class LobbyDelivery:
                 await save()
             if join_sequence is not None and messages.get("join_sequence") != join_sequence:
                 messages["join_sequence"] = join_sequence
+                await save()
+            if messages.get("summary_version") != state["version"]:
+                messages["summary_version"] = state["version"]
                 await save()
 
 

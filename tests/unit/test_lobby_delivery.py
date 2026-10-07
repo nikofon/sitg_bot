@@ -20,7 +20,7 @@ from sitg_bot.bot.presenters.models import ReplyKeyboardModel
 
 async def test_uneditable_legacy_summary_is_deleted_before_replacement():
     state = {
-        "active": True, "messages": {"summary": 7, "settings": 8},
+        "active": True, "version": 1, "messages": {"summary": 7, "settings": 8},
         "lobby": {"tournament_name": "Cup", "members": [], "selected_packets": []},
     }
 
@@ -108,7 +108,7 @@ async def test_kick_notice_to_remaining_members_uses_kicked_wording(locale):
 
 async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids():
     state = {
-        "active": True, "messages": {},
+        "active": True, "version": 1, "messages": {},
         "lobby": {"tournament_name": "Cup", "members": [], "selected_packets": []},
         "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
     }
@@ -159,6 +159,7 @@ async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids(
     assert state["messages"]["summary"] == 2
     assert state["messages"]["settings"] == 3
     assert state["messages"]["navigation"] == 1
+    assert state["messages"]["summary_version"] == 1
     await delivery(payload)
     bot.edit_message_text.assert_not_awaited()
     state["lobby"]["members"] = [{"name": "Alice", "role": "player"}]
@@ -184,6 +185,46 @@ async def test_summary_refresh_replacement_and_restart_follow_saved_message_ids(
     state["active"] = False
     await delivery(payload)
     assert bot.send_message.await_count == 6
+
+
+async def test_already_presented_version_needs_no_telegram_calls_or_writes_after_restart():
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "active": True, "version": 3,
+        "messages": {
+            "navigation": 1, "summary": 2, "settings": 3,
+            "summary_text": "Saved summary", "summary_version": 3,
+        },
+    }))
+    bot = SimpleNamespace(
+        send_message=AsyncMock(), edit_message_text=AsyncMock(), delete_message=AsyncMock(),
+    )
+    for _ in range(2):
+        delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
+        await delivery({"recipient_telegram_user_id": 42, "lobby_id": "lobby", "locale": "en"})
+    assert protocol.request.await_count == 2
+    assert all(call.args == ("telegram.lobby.presentation",)
+               for call in protocol.request.await_args_list)
+    bot.send_message.assert_not_awaited()
+    bot.edit_message_text.assert_not_awaited()
+    bot.delete_message.assert_not_awaited()
+
+
+async def test_failed_summary_edit_does_not_mark_new_version_delivered():
+    from aiogram.exceptions import TelegramRetryAfter
+
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "active": True, "version": 2,
+        "messages": {"summary": 2, "summary_text": "Old", "summary_version": 1},
+        "lobby": {"tournament_name": "Cup", "members": [], "selected_packets": []},
+    }))
+    bot = SimpleNamespace(edit_message_text=AsyncMock(side_effect=TelegramRetryAfter(
+        method=EditMessageText(chat_id=42, message_id=2, text="New"),
+        message="Too many requests", retry_after=5,
+    )))
+    delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
+    with pytest.raises(TelegramRetryAfter):
+        await delivery.show(42, "lobby", "en")
+    assert protocol.request.await_count == 1
 
 
 @pytest.mark.parametrize("ready,count", [(True, 1), (False, 0)])

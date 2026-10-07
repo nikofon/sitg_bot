@@ -736,7 +736,7 @@ async def test_player_lobby_creation_uses_the_selected_tournament(queued_first) 
         edit_message_text=AsyncMock(), delete_message=AsyncMock(),
     )
     presentation = {
-        "active": True, "messages": {}, "lobby": backend.lobby_info.return_value,
+        "active": True, "version": 1, "messages": {}, "lobby": backend.lobby_info.return_value,
         "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
     }
 
@@ -1798,7 +1798,7 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
     message.chat = SimpleNamespace(id=42)
     bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)))
     protocol = SimpleNamespace(request=AsyncMock(return_value={
-        "active": True, "messages": {}, "lobby": lobby,
+        "active": True, "version": 1, "messages": {}, "lobby": lobby,
         "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
     }))
     backend.lobby_delivery = LobbyDelivery(
@@ -1817,6 +1817,7 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
     )
 
     assert bot.send_message.await_count == 3
+    backend.lobby_info.assert_not_awaited()
     text = bot.send_message.await_args_list[1].args[1]
     assert "Player &lt;Cup&gt;" in text
     assert "Players:" in text and "Observers:" in text

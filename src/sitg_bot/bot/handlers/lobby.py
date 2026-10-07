@@ -201,12 +201,13 @@ async def handle_lobby_action(
         )
         await send_message_model(message, menu_message(updated, localization, locale))
         return
-    lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
     if lobby_action == "lobby.info":
         await show_lobby(
             message, backend, telegram_update_claim, navigation, localization, locale, launch_links
         )
-    elif lobby_action == "lobby.start" and not lobby["selected_packets"]:
+        return
+    lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
+    if lobby_action == "lobby.start" and not lobby["selected_packets"]:
         packets = automatic_packet_selection(lobby)
         if not packets:
             await send_message_model(
