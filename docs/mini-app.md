@@ -37,6 +37,11 @@ Profiles add aggregate SI performance and per-value statistics, without contact 
 linked players, tournament names, or question content. The read-only gateway operations are
 `authors.catalogue.v1` and `authors.profile.v1`; the existing author-link picker is unchanged.
 Metric definitions are in [statistics](data-and-statistics.md).
+Per-value tables scroll horizontally on mobile and omit metric explanations.
+
+**Other... → Players** opens `/players`, using the same directory endpoint as the website.
+It offers name search, ruleset selection, name/rating/game-count sorting, pagination, and
+links to player profiles. Search, sort, and ruleset filters persist when returning to the list.
 
 The tournament profile window (`/tournaments/{tournament_id}`, opened by the catalogue's
 info action, the bot's player **Info** and manager **Tournament profile** buttons, and the
@@ -155,9 +160,14 @@ Authors can be searched, selected, removed, or registered. Typed editors
 replace raw JSON inputs. Ruleset rating weight is omitted and protected server-side.
 Stale saves reload current state; setup finalization requires confirmation.
 Settings and the Management General section provide buttons to switch between these views.
+Editors requiring an explicit save show a prominent localized reminder above their controls,
+including lobby/tournament settings, packet editors, Classic rounds/seeding, chat scheduling,
+and admin edits.
 
 **Tournament management:** General, Registrations, Packet accessibility, and Packet management,
-with sections derived from the tournament type. Supports setup finalization, manual
+with sections derived from the tournament type. Packet accessibility retains the selected
+packet after rights updates, falling back to the first packet if it is removed.
+Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights. Packet management cards offer the same lobby packet search and
 filters (title, authors, inclusive packet-year and publication-year ranges, name sorting,

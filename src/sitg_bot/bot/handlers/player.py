@@ -676,7 +676,8 @@ async def handle_player_menu_action(
         )
         return
     if player_action in {
-        "player.tournaments", "player.library", "player.ongoing", "player.authors"
+        "player.tournaments", "player.library", "player.ongoing", "player.authors",
+        "player.players",
     }:
         if launch_links is None:
             await send_message_model(
@@ -694,18 +695,20 @@ async def handle_player_menu_action(
             "player.library": "library",
             "player.ongoing": "ongoing",
             "player.authors": "authors",
+            "player.players": "players",
         }.get(player_action, "tournaments")
         query = {"role": "player"} if route == "tournaments" else None
         url = mini_app_route_url(launch_links, route, query=query)
+        message_key = "players_list" if route == "players" else route
         await send_message_model(
             message,
             MessageModel(
-                localization.text(f"miniapp.{route}.prompt", locale),
+                localization.text(f"miniapp.{message_key}.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
-                                localization.text(f"miniapp.{route}.open", locale),
+                                localization.text(f"miniapp.{message_key}.open", locale),
                                 web_app_url=url,
                             ),
                         ),

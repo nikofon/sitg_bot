@@ -34,6 +34,17 @@ export interface RouteAuthorization {
   reason_code?: StableErrorCode;
 }
 
+export interface PlayersResource {
+  kind: "players";
+  state: "ready";
+  rulesets: Array<{ key: string; name: string }>;
+  ruleset_key: string | null;
+  items: Array<{ id: string; label: string; rating: number; games: number }>;
+  total: number;
+  next_offset: number | null;
+  supported_orders?: Array<"name_asc" | "name_desc" | "rating_asc" | "rating_desc" | "games_asc" | "games_desc">;
+}
+
 export interface RouteResource {
   state: "ready" | "empty";
   summary?: string;
@@ -877,6 +888,7 @@ export interface RoutePayload {
     | PacketDraftResource
     | LibraryResource
     | PlayerProfileResource
+    | PlayersResource
     | PlayerGameResource
     | AdminSuspicionLedgerResource
     | AdminManagementResource

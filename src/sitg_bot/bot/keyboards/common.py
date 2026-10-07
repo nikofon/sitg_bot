@@ -22,7 +22,7 @@ PLAYER_MENU_ACTIONS = (
 OTHER_MENU_ACTIONS = (
     ("player.settings",),
     ("player.setting.set",),
-    ("player.authors",),
+    ("player.authors", "player.players"),
     ("player.author_link",),
 )
 

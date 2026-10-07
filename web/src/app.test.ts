@@ -107,6 +107,37 @@ describe("MiniAppShell", () => {
     return { root, fetcher };
   }
 
+  it("loads the player directory and restores filters when returning from a profile", async () => {
+    window.history.replaceState({}, "", "/players");
+    const playerId = "11111111-1111-1111-1111-111111111111";
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      return response({ locale: "en", authorization: { allowed: true }, resource: {
+        kind: "players", state: "ready", rulesets: [{ key: "si", name: "SI" }], ruleset_key: "si",
+        items: [{ id: playerId, label: "Ada", rating: 1200, games: 3 }], total: 1, next_offset: null,
+      } });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    const router = new Router();
+    const platform = new FakePlatform();
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), router, platform, false);
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("#players-search")).not.toBeNull());
+    expect(root.querySelector("h1")?.textContent).toBe("Players");
+    expect(platform.setBackHandler).toHaveBeenLastCalledWith(undefined);
+    root.querySelector<HTMLInputElement>("#players-search")!.value = "Ada";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(root.querySelector("a")).not.toBeNull());
+    root.querySelector("a")!.click();
+    expect(window.location.pathname).toBe(`/players/${playerId}`);
+    expect(window.location.search).toBe("?ruleset=si");
+    router.navigate("/players");
+    await vi.waitFor(() => expect(root.querySelector<HTMLInputElement>("#players-search")?.value).toBe("Ada"));
+    expect(window.location.search).toBe("?search=Ada");
+    expect(fetcher.mock.calls.some(([url]) => decodeURIComponent(String(url)).endsWith("path=/players?search=Ada"))).toBe(true);
+  });
+
   it("submits an author link request from the searchable window", async () => {
     window.history.replaceState({}, "", "/authors/link");
     const authorship = { packet_count: 1, theme_count: 2, question_count: 10,
@@ -404,6 +435,7 @@ describe("MiniAppShell", () => {
   it("shows all settings and edits only granted fields with typed controls", async () => {
     const { root, fetcher } = lobbyShell("settings");
     await vi.waitFor(() => expect(root.querySelector('input[name="setting:theme_count"]')).not.toBeNull());
+    expect(root.querySelector(".save-reminder")?.textContent).toBe("Don't forget to save changes before exiting!");
     const input = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
     expect(input.type).toBe("number");
     expect(root.querySelector('input[name="setting:ready_delay"]')).toBeNull();
@@ -1065,13 +1097,7 @@ describe("MiniAppShell", () => {
 
   it.each(["classic", "ladder"])("renders %s tournament management sections and packet access", async (typeKey) => {
     window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }),
-      )
-      .mockResolvedValueOnce(
-        response({
+    const payload = {
           locale: "en",
           authorization: { allowed: true },
           resource: {
@@ -1108,6 +1134,10 @@ describe("MiniAppShell", () => {
                 discoverable: false,
                 readable: false,
               }],
+            }, {
+              assignment_id: "assignment-2", packet_id: "packet-2", name: "Second packet", version: 1,
+              player_access: [{ player_id: "player-3", display_name: "Second player",
+                playable: false, discoverable: false, readable: false }],
             }],
             tournament: {
               id: "tournament-1",
@@ -1130,8 +1160,10 @@ describe("MiniAppShell", () => {
               available_actions: [],
             },
           },
-        }),
-      );
+        };
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }))
+      .mockResolvedValueOnce(response(payload));
     const root = document.createElement("div");
     document.body.append(root);
     shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
@@ -1167,11 +1199,28 @@ describe("MiniAppShell", () => {
     expect(root.textContent).toContain("Set for all");
     expect(root.querySelectorAll(".packet-access-table input[type=checkbox]")).toHaveLength(typeKey === "classic" ? 2 : 6);
 
+    const picker = root.querySelector<HTMLSelectElement>(".packet-accessibility select")!;
+    picker.value = "assignment-2";
+    picker.dispatchEvent(new Event("change"));
+    for (const right of typeKey === "classic" ? ["readable"] : ["playable", "readable"]) {
+      const previousPicker = root.querySelector(".packet-accessibility select");
+      const player = payload.resource.packets[1]!.player_access[0]!;
+      Object.assign(player, { [right]: true });
+      fetcher.mockResolvedValueOnce(response(payload.resource));
+      root.querySelector<HTMLInputElement>(`.packet-access-table tbody tr:last-child input[aria-label="${right === "playable" ? "Playable" : "Readable"}"]`)!.click();
+      await vi.waitFor(() => expect(root.querySelector(".packet-accessibility select")).not.toBe(previousPicker));
+      await vi.waitFor(() => expect(JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+        assignment_id: "assignment-2", right, enabled: true,
+      }));
+      expect(root.querySelector<HTMLSelectElement>(".packet-accessibility select")!.value).toBe("assignment-2");
+      expect(root.querySelector(".packet-access-table")?.textContent).toContain("Second player");
+    }
+
     const managementButton = Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
       .find((button) => button.textContent === "Packet management");
     managementButton?.click();
     expect(root.querySelector(".lobby-packet-card h3")?.textContent).toBe("Final packet");
-    expect(Array.from(root.querySelectorAll(".lobby-packet-card button")).map((button) => button.textContent))
+    expect(Array.from(root.querySelectorAll(".lobby-packet-card:first-child button")).map((button) => button.textContent))
       .toEqual(["Modify", "Release", "Delete"]);
     expect(root.querySelector(".lobby-packet-card")?.textContent).toContain("packet-1");
     const addExisting = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
@@ -1252,11 +1301,12 @@ describe("MiniAppShell", () => {
     expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]")!.value).toBe("Replacement answer");
     expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=answer]")!.disabled).toBe(false);
     expect(root.querySelector<HTMLTextAreaElement>("[data-question-field=text]")!.disabled).toBe(true);
+    const callsBeforeSave = fetcher.mock.calls.length;
     fetcher.mockResolvedValueOnce(response({ error: { code: "validation_failed" } }, 422));
     root.querySelector<HTMLFormElement>("form.packet-editor")!.requestSubmit();
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(7));
-    expect(fetcher.mock.calls[6]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
-    const saved = JSON.parse(String(fetcher.mock.calls[6]?.[1]?.body));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(callsBeforeSave + 1));
+    expect(fetcher.mock.calls.at(-1)?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/assignment-1/save");
+    const saved = JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body));
     expect(saved.changes).toEqual({ "themes.0.questions.0.answer": "substitution",
       "themes.0.authors": "correction", "themes.0.questions.0.authors": "correction" });
     expect(saved.content.themes[0].questions[0].answer).toBe("Replacement answer");

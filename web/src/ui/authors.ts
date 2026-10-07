@@ -83,7 +83,9 @@ export function renderAuthorProfile(
     element("article", { className: "resource-card" },
       element("h2", {}, resource.author.display_name), authorCounts(resource.author, i18n)),
     element("article", { className: "resource-card" },
-      element("h2", {}, label("statistics")), element("p", {}, label("help")),
+      element("h2", {}, label("statistics")),
       stats.presentations ? summary : element("p", {}, label("no_statistics")),
-      stats.presentations ? element("div", { className: "author-statistics-table" }, table) : null));
+      stats.presentations ? element("div", {
+        className: "author-statistics-table", tabindex: "0", role: "region", "aria-label": label("by_value"),
+      }, table) : null));
 }

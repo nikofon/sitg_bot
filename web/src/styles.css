@@ -115,6 +115,7 @@ h1:focus-visible {
 }
 
 .shell-main {
+  min-width: 0;
   width: min(100%, 52rem);
   margin-inline: auto;
   padding: 1rem max(1rem, 4vw) 2rem;
@@ -1104,6 +1105,16 @@ p {
   background: #dcfce7;
 }
 
+.save-reminder {
+  padding: 1rem 1.25rem;
+  border: 2px solid #b45309;
+  border-radius: 1rem;
+  background: #fef3c7;
+  color: #78350f;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
 .lobby-packet-access.is-unplayable,
 .lobby-warnings {
   color: #991b1b;
@@ -1688,7 +1699,10 @@ p {
   font-variant-numeric: tabular-nums;
 }
 /* Author statistics remain readable on narrow Telegram viewports. */
-.author-statistics-table { overflow-x: auto; }
+.author-statistics-table { max-width: 100%; overflow-x: auto; }
 .author-statistics-table table { width: 100%; border-collapse: collapse; }
-.author-statistics-table th, .author-statistics-table td { padding: 0.5rem; text-align: right; }
+.author-statistics-table th, .author-statistics-table td { padding: 0.5rem; text-align: right; white-space: nowrap; overflow-wrap: normal; }
 .author-statistics-table caption { text-align: left; margin-block: 0.75rem; }
+
+.player-directory-link { display: grid; gap: 0.5rem; color: var(--tg-theme-link-color); text-decoration: none; }
+.player-directory-link span { color: var(--tg-theme-hint-color); }

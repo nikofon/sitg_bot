@@ -71,6 +71,7 @@ const routeFilters: Partial<Record<RouteId, FilterDefinition[]>> = {
 };
 
 export function filterNames(routeId: RouteId): string[] {
+  if (routeId === "players") return ["search", "order", "ruleset"];
   const names = routeFilters[routeId]?.map((filter) => filter.name) ?? [];
   return routeId === "tournaments" ? [...names, "search"] : names;
 }
