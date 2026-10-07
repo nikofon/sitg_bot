@@ -1731,6 +1731,72 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
     buttons = markup.inline_keyboard[0]
     assert buttons[0].callback_data == f"lobbystart:yes:{UUID(int=9).hex}"
     assert buttons[1].callback_data == f"lobbystart:no:{UUID(int=9).hex}"
+    assert [call.kwargs.get("include_packet_suggestions", False)
+            for call in backend.lobby_info.await_args_list] == [False, True]
+
+
+@pytest.mark.parametrize("action", ["ready", "unready", "search", "search_cancel", "cancel"])
+async def test_lobby_mutation_uses_navigation_version_without_fetching_packet_catalogue(action):
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)), "tournament_id": str(UUID(int=8)),
+            "version": 3, "status": "assembling",
+        },
+        allowed_actions=[f"lobby.{action}"],
+    )
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(side_effect=AssertionError("Mutation must not fetch the catalogue")),
+        lobby_action=AsyncMock(), navigation=AsyncMock(return_value=current),
+    )
+    message = SimpleNamespace(answer=AsyncMock())
+    claim = SimpleNamespace()
+    await handle_lobby_action(
+        message, f"lobby.{action}", backend, claim, LocalizationService(), "en", current,
+        SimpleNamespace(clear=AsyncMock()), None,
+    )
+    backend.lobby_info.assert_not_awaited()
+    backend.lobby_action.assert_awaited_once_with(
+        claim, lobby_id=UUID(int=9), action=action, expected_version=3,
+    )
+    backend.navigation.assert_awaited_once_with(claim)
+
+
+@pytest.mark.parametrize("action,is_owner", [("start", True), ("leave", True), ("leave", False)])
+async def test_start_selected_packet_and_leave_do_not_request_catalogue(action, is_owner):
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)), "tournament_id": str(UUID(int=8)),
+            "version": 3, "status": "assembling",
+        },
+        allowed_actions=[f"lobby.{action}"],
+    )
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value={
+            "version": 3, "selected_packets": [{"name": "Selected"}],
+            "packet_suggestions": [], "available_actions": ["cancel" if is_owner else "leave"],
+        }),
+        lobby_action=AsyncMock(), navigation=AsyncMock(return_value=current),
+    )
+    claim = SimpleNamespace()
+    message = SimpleNamespace(answer=AsyncMock())
+    await handle_lobby_action(
+        message, f"lobby.{action}", backend, claim, LocalizationService(), "en", current,
+        SimpleNamespace(clear=AsyncMock()), None,
+    )
+    backend.lobby_info.assert_awaited_once_with(claim, lobby_id=UUID(int=9))
+    if action == "leave" and is_owner:
+        backend.lobby_action.assert_not_awaited()
+        assert message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    else:
+        backend.lobby_action.assert_awaited_once_with(
+            claim, lobby_id=UUID(int=9), action=action, expected_version=3,
+        )
 
 
 async def test_lobby_info_lists_participants_ratings_packets_and_settings_link() -> None:
@@ -1889,7 +1955,8 @@ async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
     assert "does not contain a valid packet" in message.answer.await_args.args[0]
 
 
-async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
+@pytest.mark.parametrize("already_selected", [False, True])
+async def test_lobby_start_confirmation_selects_packets_and_starts(already_selected) -> None:
     from sitg_bot.bot.handlers.lobby import handle_start_confirmation_callback
 
     current = navigation(
@@ -1921,6 +1988,9 @@ async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
             },
         ],
     }
+    if already_selected:
+        lobby["selected_packets"] = [{"packet_id": str(UUID(int=32)), "name": "Selected"}]
+        lobby["packet_suggestions"] = []
     backend = SimpleNamespace(
         lobby_info=AsyncMock(return_value=lobby),
         select_lobby_packets=AsyncMock(return_value={"version": 5}),
@@ -1947,15 +2017,21 @@ async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
     )
 
     callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
-    backend.select_lobby_packets.assert_awaited_once_with(
-        SimpleNamespace(),
-        lobby_id=UUID(int=9),
-        packet_ids=(str(UUID(int=32)), str(UUID(int=31))),
-        expected_version=3,
-    )
+    if already_selected:
+        backend.select_lobby_packets.assert_not_awaited()
+        backend.lobby_info.assert_awaited_once_with(SimpleNamespace(), lobby_id=UUID(int=9))
+    else:
+        backend.select_lobby_packets.assert_awaited_once_with(
+            SimpleNamespace(),
+            lobby_id=UUID(int=9),
+            packet_ids=(str(UUID(int=32)), str(UUID(int=31))),
+            expected_version=3,
+        )
+        assert [call.kwargs.get("include_packet_suggestions", False)
+                for call in backend.lobby_info.await_args_list] == [False, True]
     start = backend.lobby_action.await_args.kwargs
     assert start["action"] == "start"
-    assert start["expected_version"] == 5
+    assert start["expected_version"] == (3 if already_selected else 5)
 
 
 async def test_lobby_start_confirmation_decline_keeps_the_lobby_unchanged() -> None:

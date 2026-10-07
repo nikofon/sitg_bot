@@ -772,6 +772,7 @@ class LobbyLinkOperation(ContractModel):
 class LobbyInfoOperation(ContractModel):
     action: Literal[ActionCode.LOBBY_INFO]
     lobby_id: UUID
+    include_packet_suggestions: bool = False
 
 
 class LobbyEventsOperation(ContractModel):

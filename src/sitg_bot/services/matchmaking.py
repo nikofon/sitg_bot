@@ -2555,8 +2555,6 @@ class InvitationMatchmakingService:
                 )
             ).scalars()
             for recipient in recipients:
-                if kind == "readiness_changed" and str(recipient.id) == payload["player_id"]:
-                    continue
                 await TransactionalOutbox.enqueue(
                     session,
                     topic="telegram.lobby.notice",

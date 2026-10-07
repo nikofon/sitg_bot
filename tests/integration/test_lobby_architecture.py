@@ -1911,6 +1911,8 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         fixture = await tournament_fixture(database, player_count=2)
         references = LaunchReferenceService(database, signing_key="test-key-" * 8, bot_id=123)
         gateway = ApplicationGateway(database, launch_references=references)
+        catalogue = AsyncMock(wraps=gateway.matchmaking.suggest_packets)
+        gateway.matchmaking.suggest_packets = catalogue
         owner = ApplicationPrincipal(fixture.players[0].id, fixture.inputs[0].telegram_user_id)
         guest = ApplicationPrincipal(fixture.players[1].id, fixture.inputs[1].telegram_user_id)
 
@@ -1957,12 +1959,30 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         assert len(info.data["members"]) == 2
         assert "cancel" in info.data["available_actions"]
         assert "leave" not in info.data["available_actions"]
+        assert info.data["packet_suggestions"] == []
+        catalogue.assert_not_awaited()
+        picker = await gateway.execute(owner, request(
+            "lobbies.info.v1", lobby_id=lobby_id, include_packet_suggestions=True,
+        ))
+        assert picker.ok, picker.error
+        assert len(picker.data["packet_suggestions"]) == 1
+        catalogue.assert_awaited_once()
+        selected = await gateway.execute(owner, request(
+            "lobbies.packets.select.v1", lobby_id=lobby_id,
+            packet_id=str(fixture.packet_id), expected_version=info.data["version"],
+        ))
+        assert selected.ok, selected.error
+        overview = await gateway.execute(owner, request("lobbies.info.v1", lobby_id=lobby_id))
+        assert overview.ok, overview.error
+        assert len(overview.data["selected_packets"]) == 1
+        assert overview.data["packet_suggestions"] == []
+        catalogue.assert_awaited_once()
         forbidden = await gateway.execute(
             guest,
             request(
                 "lobbies.settings.update.v1",
                 lobby_id=lobby_id,
-                expected_version=info.data["version"],
+                expected_version=overview.data["version"],
                 changes={"theme_count": 2},
             ),
         )
@@ -2391,7 +2411,9 @@ async def test_gateway_start_reaches_console_players_and_all_can_join(database_u
         await database.close()
 
 
-async def test_manual_readiness_notifies_others_but_bulk_reset_does_not(database_url: str) -> None:
+async def test_manual_readiness_notifies_all_telegram_members_but_bulk_reset_does_not(
+    database_url: str,
+) -> None:
     database = Database(database_url)
     try:
         fixture = await tournament_fixture(database, player_count=5)
@@ -2442,8 +2464,13 @@ async def test_manual_readiness_notifies_others_but_bulk_reset_does_not(database
                 OutboxEventRecord.topic == "telegram.lobby.notice",
             )))
         readiness = [n.payload for n in notices if n.payload["kind"] == "readiness_changed"]
-        assert len(readiness) == 8
-        assert all(n["recipient_telegram_user_id"] != owner for n in readiness)
+        assert len(readiness) == 10
+        for participant in fixture.inputs:
+            own_notices = [n for n in readiness
+                           if n["recipient_telegram_user_id"] == participant.telegram_user_id]
+            assert len(own_notices) == 2
+            assert {n["ready"] for n in own_notices} == {True, False}
+            assert all(len(n["members"]) == 4 for n in own_notices)
         assert all(n["player_name"] == fixture.players[0].public_nickname for n in readiness)
         assert {n["ready_count"] for n in readiness} == {0, 1}
         assert all(n["player_count"] == 4 for n in readiness)

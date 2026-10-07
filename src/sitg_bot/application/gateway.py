@@ -1177,7 +1177,10 @@ class ApplicationGateway:
             return await self._lobby_reference(operation.lobby_id, player_id)
         if isinstance(operation, LobbyInfoOperation):
             await self._require_lobby_member(operation.lobby_id, player_id)
-            return await self._lobby_payload(operation.lobby_id, telegram_user_id)
+            return await self._lobby_payload(
+                operation.lobby_id, telegram_user_id,
+                include_packet_suggestions=operation.include_packet_suggestions,
+            )
         if isinstance(operation, LobbyEventsOperation):
             await self._require_lobby_member(operation.lobby_id, player_id)
             async with self.database.sessions() as session:
@@ -1520,11 +1523,13 @@ class ApplicationGateway:
             one_time=False,
         )
 
-    async def _lobby_payload(self, lobby_id: UUID, telegram_user_id: int) -> dict[str, object]:
+    async def _lobby_payload(
+        self, lobby_id: UUID, telegram_user_id: int, *, include_packet_suggestions: bool = False,
+    ) -> dict[str, object]:
         lobby = await self.matchmaking.get(lobby_id)
         suggestions = await self.matchmaking.suggest_packets(
             lobby_id, telegram_user_id=telegram_user_id
-        )
+        ) if include_packet_suggestions else ()
         viewer = next(
             (member for member in lobby.members if member.telegram_user_id == telegram_user_id),
             None,

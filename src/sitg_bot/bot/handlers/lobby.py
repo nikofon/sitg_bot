@@ -1,6 +1,7 @@
 import html
 import re
 from datetime import datetime
+from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.filters import Filter
@@ -159,6 +160,15 @@ async def show_lobby(
     )
 
 
+async def _lobby_for_start(backend: BotBackend, claim: TelegramUpdateClaim, lobby_id: UUID) -> dict:
+    lobby = await backend.lobby_info(claim, lobby_id=lobby_id)
+    if not lobby["selected_packets"]:
+        lobby = await backend.lobby_info(
+            claim, lobby_id=lobby_id, include_packet_suggestions=True,
+        )
+    return lobby
+
+
 class LobbyAction(Filter):
     async def __call__(
         self,
@@ -206,7 +216,12 @@ async def handle_lobby_action(
             message, backend, telegram_update_claim, navigation, localization, locale, launch_links
         )
         return
-    lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
+    # Most mutations only need the version already provided by navigation.
+    lobby = {"version": navigation.active_lobby.version}
+    if lobby_action == "lobby.start":
+        lobby = await _lobby_for_start(backend, telegram_update_claim, navigation.active_lobby.id)
+    elif lobby_action == "lobby.leave":
+        lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
     if lobby_action == "lobby.start" and not lobby["selected_packets"]:
         packets = automatic_packet_selection(lobby)
         if not packets:
@@ -387,16 +402,16 @@ async def handle_start_confirmation_callback(
         return
     if navigation.active_lobby.id != lobby_id:
         return
-    lobby = await backend.lobby_info(telegram_update_claim, lobby_id=lobby_id)
-    packets = automatic_packet_selection(lobby)
-    if not packets:
-        await send_message_model(
-            callback.message,
-            MessageModel(localization.text("lobby.start.no_valid_packet", locale)),
-        )
-        return
+    lobby = await _lobby_for_start(backend, telegram_update_claim, lobby_id)
     version = int(lobby["version"])
     if not lobby.get("selected_packets"):
+        packets = automatic_packet_selection(lobby)
+        if not packets:
+            await send_message_model(
+                callback.message,
+                MessageModel(localization.text("lobby.start.no_valid_packet", locale)),
+            )
+            return
         selection = await backend.select_lobby_packets(
             telegram_update_claim,
             lobby_id=lobby_id,

@@ -115,10 +115,16 @@ settings, and policy changes. An observer who joined without confirmation still 
 start with the `observer_confirmation_required` readiness reason and can confirm through the
 observer role action, which stays available until consent is given.
 
-Manual readiness changes notify the other active participants with the player's name
-and ready/total player count (observers are excluded from the count). Bulk resets keep
-the existing overall notice. Console clients follow persisted lobby/game versions, so
+Manual readiness changes send the player readiness list to every active Telegram
+participant, including the player who changed readiness. Observers receive the notice
+but are excluded from the ready/total player count. Bulk resets keep the existing
+overall notice. Console clients follow persisted lobby/game versions, so
 starts and readiness changes made through Telegram or HTTP also reach their sessions.
+
+Lobby information omits packet suggestions unless `include_packet_suggestions` is true.
+The Mini App requests them only in the packet picker; Telegram requests them only for
+automatic selection when starting without selected packets. Other actions and overview
+or settings refreshes may validate selected content but do not scan the packet catalogue.
 
 Rating is derived only from the snapshotted tournament-type rules, tournament policy, and
 tournament ordering.

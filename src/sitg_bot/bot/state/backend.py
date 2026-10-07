@@ -576,9 +576,15 @@ class BotBackend:
             }
         )
 
-    async def lobby_info(self, claim: TelegramUpdateClaim, *, lobby_id: UUID) -> dict:
+    async def lobby_info(
+        self, claim: TelegramUpdateClaim, *, lobby_id: UUID,
+        include_packet_suggestions: bool = False,
+    ) -> dict:
         response = await self._execute(
-            claim, LobbyInfoOperation(action=ActionCode.LOBBY_INFO, lobby_id=lobby_id)
+            claim, LobbyInfoOperation(
+                action=ActionCode.LOBBY_INFO, lobby_id=lobby_id,
+                include_packet_suggestions=include_packet_suggestions,
+            )
         )
         return cast(dict, response.data)
 

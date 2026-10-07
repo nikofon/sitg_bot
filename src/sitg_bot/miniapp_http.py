@@ -774,7 +774,12 @@ class MiniAppHttpServer:
             )
             result = await self.gateway.execute(
                 session,
-                LobbyInfoOperation(action=ActionCode.LOBBY_INFO, lobby_id=lobby_id),
+                LobbyInfoOperation(
+                    action=ActionCode.LOBBY_INFO, lobby_id=lobby_id,
+                    include_packet_suggestions=(
+                        parse_qs(parsed.query).get("section", ["overview"])[-1] == "packets"
+                    ),
+                ),
                 correlation_id=self._correlation_id(request),
             )
             if not result.ok:

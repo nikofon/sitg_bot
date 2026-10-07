@@ -994,7 +994,8 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
     assert operation.tournament_id == UUID(int=10)
 
 
-async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities() -> None:
+@pytest.mark.parametrize("section", [None, "overview", "settings", "packets"])
+async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(section) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
@@ -1003,7 +1004,8 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
     )
     request = make_mocked_request(
         "GET",
-        "/api/miniapp/routes/resolve?path=/lobbies/opaque-lobby",
+        "/api/miniapp/routes/resolve?path=/lobbies/opaque-lobby"
+        + (f"%3Fsection%3D{section}" if section else ""),
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
@@ -1017,6 +1019,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
     assert payload["resource"]["kind"] == "lobby"
     assert payload["resource"]["available_actions"] == ["ready", "leave"]
     assert gateway.requests[0].operation.action == ActionCode.LOBBY_INFO
+    assert gateway.requests[0].operation.include_packet_suggestions is (section == "packets")
 
 
 @pytest.mark.parametrize(
@@ -1026,6 +1029,13 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
         ("packet-remove", ActionCode.LOBBY_PACKET_REMOVE),
         ("settings", ActionCode.LOBBY_SETTINGS_UPDATE),
         ("kick", ActionCode.LOBBY_KICK),
+        ("ready", ActionCode.LOBBY_READY_UPDATE),
+        ("role", ActionCode.LOBBY_ROLE_UPDATE),
+        ("leave", ActionCode.LOBBY_LEAVE),
+        ("cancel", ActionCode.LOBBY_CANCEL),
+        ("start", ActionCode.LOBBY_START),
+        ("search-start", ActionCode.LOBBY_SEARCH_START),
+        ("search-cancel", ActionCode.LOBBY_SEARCH_CANCEL),
     ],
 )
 async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(command, action):
@@ -1048,8 +1058,12 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
         body["changes"] = {"theme_count": 2}
     elif command == "kick":
         body["player_id"] = str(UUID(int=30))
-    else:
+    elif command in {"packet-select", "packet-remove"}:
         body["packet_id"] = str(UUID(int=30))
+    elif command == "ready":
+        body["ready"] = True
+    elif command == "role":
+        body["role"] = "observer"
     request._read_bytes = json.dumps(body).encode()
     result = await http._mutate_lobby(request)
     assert result.status == 200
