@@ -14,6 +14,7 @@ export type RouteId =
   | "author_profile"
   | "lobby"
   | "player_profile"
+  | "players"
   | "player_game"
   | "report"
   | "admin_suspicion"
@@ -44,6 +45,13 @@ interface RouteDefinition {
 }
 
 const routes: RouteDefinition[] = [
+  {
+    id: "players",
+    pattern: /^\/players\/?$/,
+    titleKey: "players.title",
+    emptyKey: "players.empty",
+    isRoot: true,
+  },
   {
     id: "authors",
     pattern: /^\/authors\/?$/,

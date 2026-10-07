@@ -37,6 +37,11 @@ Profiles add aggregate SI performance and per-value statistics, without contact 
 linked players, tournament names, or question content. The read-only gateway operations are
 `authors.catalogue.v1` and `authors.profile.v1`; the existing author-link picker is unchanged.
 Metric definitions are in [statistics](data-and-statistics.md).
+Per-value tables scroll horizontally on mobile and omit metric explanations.
+
+**Other... → Players** opens `/players`, using the same directory endpoint as the website.
+It offers name search, ruleset selection, name/rating/game-count sorting, pagination, and
+links to player profiles. Search, sort, and ruleset filters persist when returning to the list.
 
 The tournament profile window (`/tournaments/{tournament_id}`, opened by the catalogue's
 info action, the bot's player **Info** and manager **Tournament profile** buttons, and the

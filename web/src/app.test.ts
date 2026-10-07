@@ -107,6 +107,37 @@ describe("MiniAppShell", () => {
     return { root, fetcher };
   }
 
+  it("loads the player directory and restores filters when returning from a profile", async () => {
+    window.history.replaceState({}, "", "/players");
+    const playerId = "11111111-1111-1111-1111-111111111111";
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      return response({ locale: "en", authorization: { allowed: true }, resource: {
+        kind: "players", state: "ready", rulesets: [{ key: "si", name: "SI" }], ruleset_key: "si",
+        items: [{ id: playerId, label: "Ada", rating: 1200, games: 3 }], total: 1, next_offset: null,
+      } });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    const router = new Router();
+    const platform = new FakePlatform();
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), router, platform, false);
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("#players-search")).not.toBeNull());
+    expect(root.querySelector("h1")?.textContent).toBe("Players");
+    expect(platform.setBackHandler).toHaveBeenLastCalledWith(undefined);
+    root.querySelector<HTMLInputElement>("#players-search")!.value = "Ada";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(root.querySelector("a")).not.toBeNull());
+    root.querySelector("a")!.click();
+    expect(window.location.pathname).toBe(`/players/${playerId}`);
+    expect(window.location.search).toBe("?ruleset=si");
+    router.navigate("/players");
+    await vi.waitFor(() => expect(root.querySelector<HTMLInputElement>("#players-search")?.value).toBe("Ada"));
+    expect(window.location.search).toBe("?search=Ada");
+    expect(fetcher.mock.calls.some(([url]) => decodeURIComponent(String(url)).endsWith("path=/players?search=Ada"))).toBe(true);
+  });
+
   it("submits an author link request from the searchable window", async () => {
     window.history.replaceState({}, "", "/authors/link");
     const authorship = { packet_count: 1, theme_count: 2, question_count: 10,

@@ -524,6 +524,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
             "player.settings",
             "player.setting.set",
             "player.authors",
+            "player.players",
             "player.author_link",
             "player.rating",
             "player.history",
@@ -538,6 +539,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
         "Settings",
         "Set setting",
         "Authors",
+        "Players",
         "Link to author",
         "Back",
     )
@@ -846,22 +848,23 @@ async def test_player_profile_action_without_launch_links_keeps_placeholder() ->
     assert message.answer.await_args.kwargs["reply_markup"] is None
 
 
-async def test_player_authors_action_opens_public_author_list() -> None:
+@pytest.mark.parametrize("route, label", [("authors", "Authors"), ("players", "Players")])
+async def test_player_directory_action_opens_mini_app(route: str, label: str) -> None:
     message = SimpleNamespace(answer=AsyncMock())
     await handle_player_menu_action(
         message,
-        player_action="player.authors",
+        player_action=f"player.{route}",
         backend=SimpleNamespace(),
         telegram_update_claim=SimpleNamespace(),
         localization=LocalizationService(),
         locale="en",
-        navigation=navigation(allowed_actions=["player.authors"]),
+        navigation=navigation(allowed_actions=[f"player.{route}"]),
         state=SimpleNamespace(),
         launch_links="https://mini.example.test/app",
     )
     button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
-    assert button.text == "Authors"
-    assert button.web_app.url == "https://mini.example.test/app/authors?_launch=1"
+    assert button.text == label
+    assert button.web_app.url == f"https://mini.example.test/app/{route}?_launch=1"
 
 
 async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:

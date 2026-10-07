@@ -55,6 +55,7 @@ import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
 import { renderSubscriptions } from "./ui/subscriptions";
 import { renderAuthorProfile, renderAuthors } from "./ui/authors";
+import { renderPlayers } from "./ui/players";
 
 export class MiniAppShell {
   private readonly i18n = new I18n("ru");
@@ -185,6 +186,13 @@ export class MiniAppShell {
   }
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
+    if (route.id === "players" && "kind" in payload.resource && payload.resource.kind === "players") {
+      this.renderFrame(route, renderPlayers(
+        payload.resource, this.i18n, route.query, (path) => this.router.navigate(path),
+        (filters) => this.filters.write("players", filters),
+      ));
+      return;
+    }
     if ("kind" in payload.resource && payload.resource.kind === "admin_management") {
       this.renderAdminManagementRoute(route, payload.resource);
       return;
