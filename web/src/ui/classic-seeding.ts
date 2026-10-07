@@ -1,6 +1,7 @@
 import type { ClassicStage, ClassicTournament } from "../api/types";
 import type { I18n } from "../i18n";
 import { element, replaceChildren } from "./dom";
+import { saveReminder } from "./save-reminder";
 import { exportSeedingCsv, importSeedingCsv, validateSeeding, type SeedSection } from "./seeding-csv";
 
 export function renderClassicSeeding(
@@ -29,6 +30,7 @@ export function renderClassicSeeding(
     const players = classic.players;
     const names = new Map(players.map((player) => [player.id, player.name]));
     const locked = !!stage.started_at || !active || !players.length;
+    if (!locked) content.append(saveReminder(i18n));
     const human = (id: string | null | undefined): string | null => id && !id.startsWith("chair:") ? id : null;
     const opening = scheme?.opening_games ?? [];
     let sections = drafts.get(stage.kind);

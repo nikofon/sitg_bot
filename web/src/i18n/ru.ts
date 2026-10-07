@@ -1,6 +1,7 @@
 import type { MessageKey } from "./en";
 
 export const ru: Record<MessageKey, string> = {
+  "common.save_reminder": "Не забудьте сохранить изменения перед выходом!",
   "manager_management.subscriptions": "Абонементы",
   "subscriptions.create": "Создать абонемент",
   "subscriptions.new": "Новый абонемент",

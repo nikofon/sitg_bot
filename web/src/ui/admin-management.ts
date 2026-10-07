@@ -2,6 +2,7 @@ import type { AdminCard, AdminManagementResource, AdminValue } from "../api/type
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
+import { saveReminder } from "./save-reminder";
 
 export function renderAdminManagement(
   resource: AdminManagementResource, i18n: I18n, filters: Record<string, string>,
@@ -164,6 +165,7 @@ export function renderAdminManagement(
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
   render();
   return element("section", { className: "route-content" }, tabs,
+    resource.section === "tournaments" ? saveReminder(i18n) : null,
     element("div", { className: "lobby-packet-filters", role: "search" },
       element("label", {}, label("search"), search), element("label", {}, label("sort"), sort)), list);
 }

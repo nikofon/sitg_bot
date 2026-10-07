@@ -42,6 +42,7 @@ import { Router } from "./routing/router";
 import { playerLaunchPath, routeRequestPath, type RouteMatch } from "./routing/routes";
 import { FilterStore } from "./state/filter-store";
 import { element, replaceChildren } from "./ui/dom";
+import { saveReminder } from "./ui/save-reminder";
 import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
 import { preserveListPosition } from "./ui/scroll";
@@ -64,6 +65,7 @@ export class MiniAppShell {
   private pollTimer?: number;
   private eventTimer?: number;
   private readonly lobbyPacketFilters = new Map<string, LobbyPacketFilters>();
+  private readonly managerPacketSelections = new Map<string, string>();
   private managerSection?: {
     tournamentRef?: string;
     name: TournamentManagerManagementResource["sections"][number];
@@ -685,6 +687,7 @@ export class MiniAppShell {
       );
     };
     form.append(
+      saveReminder(this.i18n),
       diagnostics("packet_editor.errors", resource.errors, "errors"),
       diagnostics("packet_editor.warnings", resource.warnings, "warnings"),
       metadata,
@@ -1120,6 +1123,7 @@ export class MiniAppShell {
       settings.addEventListener("input", () => { dirty = true; });
       settings.addEventListener("change", () => { dirty = true; });
       if (editable.length) {
+        settings.append(saveReminder(this.i18n));
         settings.append(element("h3", {}, this.i18n.t("lobby.settings_editable")));
         settings.append(this.renderCategorizedSettings(editable, "setting"));
         settings.append(element("button", { type: "submit", className: "primary-button" }, this.i18n.t("lobby.settings_save")));
@@ -1578,12 +1582,16 @@ export class MiniAppShell {
     if (!resource.packets.length) {
       packetAccessibility.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
     } else {
+      const tournamentRef = route.params.launch_ref ?? "";
+      const selectedPacket = resource.packets.find((packet) =>
+        packet.assignment_id === this.managerPacketSelections.get(tournamentRef)) ?? resource.packets[0]!;
+      this.managerPacketSelections.set(tournamentRef, selectedPacket.assignment_id);
       const picker = element(
         "select",
         { "aria-label": this.i18n.t("manager_management.packet_select") },
         ...resource.packets.map((packet) => element(
           "option",
-          { value: packet.assignment_id },
+          { value: packet.assignment_id, selected: packet.assignment_id === selectedPacket.assignment_id },
           packet.version ? `${packet.name} · v${packet.version}` : packet.name,
         )),
       );
@@ -1593,14 +1601,17 @@ export class MiniAppShell {
       };
       picker.addEventListener("change", () => {
         const selected = resource.packets.find((packet) => packet.assignment_id === picker.value);
-        if (selected) renderPacket(selected);
+        if (selected) {
+          this.managerPacketSelections.set(tournamentRef, selected.assignment_id);
+          renderPacket(selected);
+        }
       });
       packetAccessibility.append(
         element("label", { className: "packet-picker-label" }, this.i18n.t("manager_management.packet_select"), picker),
         tableContainer,
         element("p", { className: "field-help" }, this.i18n.t("manager_management.readable_help")),
       );
-      renderPacket(resource.packets[0]!);
+      renderPacket(selectedPacket);
     }
     section("packet_accessibility", packetAccessibility);
     if (resource.tournament.type_key === "ladder" && resource.subscriptions) {
@@ -2080,6 +2091,7 @@ export class MiniAppShell {
     addRequirement.addEventListener("click", () => appendRequirement());
 
     form.append(
+      saveReminder(this.i18n),
       this.managerNavigationButton(route, "management"),
       ...(resource.classic ? [this.classicSettings(route, resource.settings_version, resource.classic)] : []),
       element(
@@ -2243,6 +2255,7 @@ export class MiniAppShell {
       return container;
     }
     const stageStarted = !!stage.started_at;
+    if (stage.rounds.length && resource.tournament.status === "active") container.append(saveReminder(this.i18n));
     if (!stageStarted) container.append(element("p", { className: "packet-warnings", role: "status" },
       this.i18n.t("classic.packet_access_requires_start")));
     for (const round of stage.rounds) {
@@ -3225,6 +3238,7 @@ export class MiniAppShell {
     const title = this.i18n.t(split ? "admin_management.split_title" : "admin_management.edit_author");
     const errorText = element("p", { className: "field-help", role: "status" });
     const form = element("form", { className: "settings-form" });
+    if (!split) form.append(saveReminder(this.i18n));
     const inputs = new Map<string, HTMLInputElement>();
     let recipient: HTMLSelectElement | undefined;
     if (split) {

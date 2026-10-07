@@ -1105,6 +1105,16 @@ p {
   background: #dcfce7;
 }
 
+.save-reminder {
+  padding: 1rem 1.25rem;
+  border: 2px solid #b45309;
+  border-radius: 1rem;
+  background: #fef3c7;
+  color: #78350f;
+  font-weight: 700;
+  margin-bottom: 1rem;
+}
+
 .lobby-packet-access.is-unplayable,
 .lobby-warnings {
   color: #991b1b;

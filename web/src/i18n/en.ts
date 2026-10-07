@@ -1,4 +1,5 @@
 export const en = {
+  "common.save_reminder": "Don't forget to save changes before exiting!",
   "manager_management.subscriptions": "Subscription cards",
   "subscriptions.create": "Create subscription card",
   "subscriptions.new": "New subscription card",

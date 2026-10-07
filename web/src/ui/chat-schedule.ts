@@ -1,6 +1,7 @@
 import type { TournamentChatResource } from "../api/types";
 import type { I18n } from "../i18n";
 import { element } from "./dom";
+import { saveReminder } from "./save-reminder";
 
 export interface ChatScheduleHandlers {
   set: (plannedAt: string | null) => void;
@@ -79,6 +80,7 @@ export function renderChatSchedule(
   return element(
     "section",
     { className: "route-content chat-schedule" },
+    saveReminder(i18n),
     element(
       "header",
       { className: "tournament-heading" },
