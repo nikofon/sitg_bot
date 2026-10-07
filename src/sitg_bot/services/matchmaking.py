@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.game_deadlines import INITIAL_PLAYER_JOIN_TIMEOUT
@@ -42,6 +42,7 @@ from sitg_bot.storage.models import (
     GamePacketVersionRecord,
     GameParticipantRecord,
     GameRecord,
+    GameRulesetVersionRecord,
     GameThemeRecord,
     LogicalPacketRecord,
     PacketVersionRecord,
@@ -54,6 +55,7 @@ from sitg_bot.storage.models import (
     PregameLobbyPacketRecord,
     PregameLobbyRecord,
     QuestionRoundRecord,
+    RulesetRatingRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
@@ -369,7 +371,9 @@ class InvitationMatchmakingService:
             await session.flush()
             return await self._snapshot(session, lobby)
 
-    async def telegram_presentation(self, lobby_id: UUID, telegram_user_id: int, *, messages=None):
+    async def telegram_presentation(
+        self, lobby_id: UUID, telegram_user_id: int, *, messages=None, force=False,
+    ):
         async with self.database.transaction() as session:
             lobby = await self._locked_lobby(session, lobby_id)
             member = await session.scalar(
@@ -384,12 +388,77 @@ class InvitationMatchmakingService:
                 raise PermissionError("Lobby membership required")
             if messages is not None:
                 member.telegram_messages = messages
-            return {
+            state = {
                 "messages": dict(member.telegram_messages or {}),
                 "active": member.active and lobby.status == "assembling"
                 and lobby.expires_at > datetime.now(UTC),
                 "player_id": member.player_id,
+                "version": lobby.version,
             }
+            saved = state["messages"]
+            if messages is None and state["active"] and (
+                force or saved.get("summary_version") != lobby.version
+                or "summary" not in saved or "summary_text" not in saved
+            ):
+                state["lobby"] = await self._telegram_summary(session, lobby)
+            return state
+
+    @staticmethod
+    async def _telegram_summary(session: AsyncSession, lobby: PregameLobbyRecord) -> dict:
+        """Read only displayed fields, never packet suggestions or exposure history."""
+        tournament_name = await session.scalar(
+            select(TournamentRecord.name).where(TournamentRecord.id == lobby.tournament_id)
+        )
+        creator_telegram_id = await session.scalar(
+            select(PlayerRecord.telegram_user_id).where(PlayerRecord.id == lobby.creator_player_id)
+        )
+        rows = (await session.execute(
+            select(
+                PlayerRecord.id.label("player_id"),
+                PlayerRecord.telegram_user_id,
+                PlayerRecord.public_nickname.label("display_name"),
+                PregameLobbyMemberRecord.role,
+                PregameLobbyMemberRecord.ready,
+                TournamentMembershipRecord.rating.label("tournament_rating"),
+                RulesetRatingRecord.rating.label("global_rating"),
+            )
+            .select_from(PregameLobbyMemberRecord)
+            .join(PlayerRecord, PlayerRecord.id == PregameLobbyMemberRecord.player_id)
+            .join(
+                GameRulesetVersionRecord,
+                GameRulesetVersionRecord.id == lobby.game_ruleset_version_id,
+            )
+            .outerjoin(TournamentMembershipRecord, and_(
+                TournamentMembershipRecord.tournament_id == lobby.tournament_id,
+                TournamentMembershipRecord.player_id == PlayerRecord.id,
+            ))
+            .outerjoin(RulesetRatingRecord, and_(
+                RulesetRatingRecord.ruleset_key == GameRulesetVersionRecord.key,
+                RulesetRatingRecord.player_id == PlayerRecord.id,
+            ))
+            .where(
+                PregameLobbyMemberRecord.lobby_id == lobby.id,
+                PregameLobbyMemberRecord.active.is_(True),
+            )
+            .order_by(PregameLobbyMemberRecord.join_order)
+        )).mappings().all()
+        packet_names = await session.scalars(
+            select(PacketVersionRecord.name)
+            .join(PregameLobbyPacketRecord,
+                  PregameLobbyPacketRecord.packet_version_id == PacketVersionRecord.id)
+            .where(PregameLobbyPacketRecord.lobby_id == lobby.id)
+            .order_by(PregameLobbyPacketRecord.selection_order)
+        )
+        return {
+            "tournament_name": tournament_name,
+            "creator_telegram_user_id": creator_telegram_id,
+            "invitation_code": lobby.invitation_code,
+            "expires_at": lobby.expires_at.isoformat(),
+            "max_players": lobby.max_players,
+            "settings": dict(lobby.settings),
+            "members": [dict(row) for row in rows],
+            "selected_packets": [{"name": name} for name in packet_names],
+        }
 
     @staticmethod
     async def _require_not_manager(

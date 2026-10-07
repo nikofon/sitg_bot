@@ -350,13 +350,18 @@ class ConsoleApplicationServer:
             messages = params.get("messages") if action == "telegram.lobby.record" else None
             if action == "telegram.lobby.record" and not isinstance(messages, dict):
                 raise ValueError("Invalid lobby message record")
+            force = params.get("force", False)
+            if not isinstance(force, bool):
+                raise ValueError("Invalid lobby presentation force flag")
             gateway = self.application_gateway
             state = await gateway.matchmaking.telegram_presentation(
-                lobby_id, chat, messages=messages,
+                lobby_id, chat, messages=messages, force=force,
             )
             player_id = state.pop("player_id")
-            if action == "telegram.lobby.presentation" and state["active"]:
-                state["lobby"] = await gateway._lobby_payload(lobby_id, chat)
+            if (
+                action == "telegram.lobby.presentation" and state["active"]
+                and (force or "settings" not in state["messages"])
+            ):
                 reference = await gateway._lobby_reference(lobby_id, player_id)
                 state["launch_reference"] = reference.value
                 state["expires_at"] = reference.expires_at.isoformat()

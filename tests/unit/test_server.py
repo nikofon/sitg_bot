@@ -98,6 +98,7 @@ async def test_lobby_presentation_requires_adapter_and_projects_active_members()
     gateway = server.application_gateway
     gateway.matchmaking.telegram_presentation = AsyncMock(return_value={
         "active": True, "messages": {"summary": 7}, "player_id": UUID(int=1),
+        "version": 1, "lobby": {"members": []},
     })
     gateway._lobby_payload = AsyncMock(return_value={"members": []})
     gateway._lobby_reference = AsyncMock(return_value=SimpleNamespace(
@@ -113,7 +114,24 @@ async def test_lobby_presentation_requires_adapter_and_projects_active_members()
     }
     result = await server._dispatch(connection, "telegram.lobby.presentation", params)
     assert not result["active"] and "lobby" not in result
-    gateway._lobby_payload.assert_awaited_once()
+    gateway._lobby_payload.assert_not_awaited()
+    gateway._lobby_reference.assert_awaited_once()
+
+    gateway.matchmaking.telegram_presentation.return_value = {
+        "active": True, "version": 1, "player_id": UUID(int=1),
+        "messages": {"summary": 7, "settings": 8, "summary_version": 1},
+    }
+    result = await server._dispatch(connection, "telegram.lobby.presentation", params)
+    assert "lobby" not in result and "launch_reference" not in result
+    gateway._lobby_reference.assert_awaited_once()
+    gateway.matchmaking.telegram_presentation.return_value = {
+        **result, "player_id": UUID(int=1), "lobby": {"members": []},
+    }
+    await server._dispatch(connection, "telegram.lobby.presentation", {**params, "force": True})
+    assert gateway._lobby_reference.await_count == 2
+    gateway.matchmaking.telegram_presentation.assert_awaited_with(
+        UUID(int=9), 42, messages=None, force=True,
+    )
 
 
 async def test_telegram_navigation_snapshot_requires_authenticated_bot():
