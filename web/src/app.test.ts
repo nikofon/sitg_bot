@@ -1572,6 +1572,8 @@ describe("MiniAppShell", () => {
         if (String(url).endsWith("/start")) {
           resource.tournament.actual_starts_at = "2026-09-12";
           resource.available_actions = resource.available_actions.filter((a) => a !== "start_tournament");
+        } else if (body.scope === "default") {
+          resource.packets[0]!.default_access[body.right as "playable" | "discoverable" | "readable"] = body.enabled;
         } else if (body.right === "library_viewing_rule") resource.packets[0]!.library_viewing_rule = body.library_viewing_rule;
         else resource.registration_open = body.registration_open;
         return response(resource);
@@ -1602,10 +1604,27 @@ describe("MiniAppShell", () => {
     defaults.forEach((input) => expect(input.checked).toBe(true));
     expect(root.querySelector(".packet-access-table-classic") !== null).toBe(typeKey === "classic");
     button("Packet management")!.click();
+    expect(root.querySelector("[data-packet-id] select")?.parentElement?.textContent)
+      .toContain("Library viewing rule");
+    const defaultBoxes = root.querySelectorAll<HTMLInputElement>(".packet-default-access input");
+    expect(defaultBoxes).toHaveLength(typeKey === "classic" ? 1 : 3);
+    defaultBoxes.forEach((input) => expect(input.checked).toBe(true));
+    expect(root.querySelector(".packet-default-access")?.previousElementSibling?.textContent)
+      .toContain("Default member access");
+    const readableDefault = root.querySelector<HTMLInputElement>(
+      ".packet-default-access input[aria-label='Readable by default']")!;
+    readableDefault.checked = false;
+    readableDefault.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(resource.packets[0]!.default_access.readable).toBe(false));
+    expect(mutations.at(-1)?.body).toMatchObject({
+      assignment_id: "packet-1", right: "readable", enabled: false, scope: "default",
+    });
+    await vi.waitFor(() => expect(
+      root.querySelector<HTMLInputElement>(".packet-default-access input[aria-label='Readable by default']")!.checked,
+    ).toBe(false));
     const rule = root.querySelector<HTMLSelectElement>("[data-packet-id] select")!;
     expect(rule.value).toBe("after-play");
     expect(Array.from(rule.options, (option) => option.value)).toEqual(["never", "after-play", "anytime"]);
-    expect(rule.parentElement?.textContent).toContain("Library viewing rule");
     rule.value = "anytime";
     rule.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(resource.packets[0]!.library_viewing_rule).toBe("anytime"));

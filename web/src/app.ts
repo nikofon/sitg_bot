@@ -1652,6 +1652,35 @@ export class MiniAppShell {
       }));
       card.append(element("label", {}, this.i18n.t("packet_management.library_viewing_rule"), viewingRule));
       card.append(element("p", { className: "field-help" }, this.i18n.t("packet_management.library_viewing_help")));
+      if (can("packet_access")) {
+        const defaultRights: Array<"playable" | "discoverable" | "readable"> =
+          resource.tournament.type_key === "classic" ? ["readable"] : ["playable", "discoverable", "readable"];
+        const defaultAccess = element("div", { className: "packet-default-access" });
+        for (const right of defaultRights) {
+          const checkbox = element("input", {
+            type: "checkbox",
+            checked: packet.default_access?.[right] ?? false,
+            "aria-label": this.i18n.t(`manager_management.default_${right}`),
+          });
+          checkbox.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
+            assignment_id: packet.assignment_id,
+            right,
+            enabled: checkbox.checked,
+            scope: "default",
+          }));
+          defaultAccess.append(element(
+            "label",
+            { className: "packet-default-access-item" },
+            checkbox,
+            this.i18n.t(`manager_management.default_${right}`),
+          ));
+        }
+        card.append(
+          element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_title")),
+          defaultAccess,
+          element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_help")),
+        );
+      }
       if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
         const button = element("button", {
           type: "button", className: command === "delete" ? "danger-button" : "secondary-button",

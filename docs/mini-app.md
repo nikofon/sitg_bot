@@ -175,7 +175,10 @@ and reset), persisted per session like other route filters. Packet management pr
 **Library viewing rule** dropdown:
 No library viewing, After playing, or Before or after playing. These conditions apply only
 to viewing readable, released packets and never affect playability. The policy default
-applies only to future uploads.
+applies only to future uploads. Each card also carries default discoverability, playability,
+and readability checkboxes (readability only for Classic) that override the tournament
+defaults for that assignment: enabling grants the right to current and future participants,
+disabling keeps existing grants and affects future participants only.
 General includes **Start tournament** for Ladder; Classic stage-start buttons start the
 tournament internally. Planned start dates send managers a reminder instead of starting play.
 Classic adds stage start buttons, first-stage/play-off round cards with packet switches and

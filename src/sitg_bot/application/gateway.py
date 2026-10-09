@@ -955,6 +955,7 @@ class ApplicationGateway:
                 player_id=operation.player_id,
                 library_viewing_rule=operation.library_viewing_rule,
                 expected_version=operation.expected_version,
+                scope=operation.scope,
             )
         if isinstance(operation, TournamentCompleteOperation):
             tournament_id = await self._manager_tournament_id(

@@ -33,6 +33,8 @@ from sitg_bot.storage.authorship import packet_author_ids
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
+    ClassicRoundRecord,
+    ClassicStageRecord,
     GameParticipantRecord,
     GameRecord,
     GameRulesetVersionRecord,
@@ -2147,17 +2149,26 @@ class TournamentService:
         player_id: UUID | None,
         library_viewing_rule: str | None = None,
         expected_version: int | None = None,
+        scope: str = "players",
     ) -> TournamentManagement:
         right_map = {
             "playable": ("playable", "playable_by_members"),
             "discoverable": ("discoverable", "discoverable_by_members"),
             "readable": ("content_visible", "content_visible_by_members"),
         }
+        if scope not in {"players", "default"}:
+            raise ValueError("Unknown packet access scope")
         if right == "library_viewing_rule":
-            if library_viewing_rule not in LIBRARY_VIEWING_RULES or player_id is not None:
+            if (
+                scope != "players"
+                or library_viewing_rule not in LIBRARY_VIEWING_RULES
+                or player_id is not None
+            ):
                 raise ValueError("A valid packet-wide library viewing rule is required")
         elif right not in right_map or not isinstance(enabled, bool):
             raise ValueError("Unknown managed packet right")
+        if scope == "default" and player_id is not None:
+            raise ValueError("Default packet rights apply to the whole assignment")
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
             tournament = await self.require_modifiable(session, tournament_id)
@@ -2180,6 +2191,19 @@ class TournamentService:
                 await session.flush()
                 return await self._manager_management_snapshot(session, tournament_id, manager_id)
             entitlement_field, assignment_field = right_map[right]
+            if scope == "default":
+                await self._set_assignment_default_access(
+                    session,
+                    assignment,
+                    manager_id,
+                    right=right,
+                    entitlement_field=entitlement_field,
+                    assignment_field=assignment_field,
+                    enabled=enabled,
+                )
+                await self._invalidate_assembling_lobbies(session, tournament_id)
+                await session.flush()
+                return await self._manager_management_snapshot(session, tournament_id, manager_id)
             participants = tuple(
                 (
                     await session.execute(
@@ -2235,6 +2259,113 @@ class TournamentService:
             await self._invalidate_assembling_lobbies(session, tournament_id)
             await session.flush()
             return await self._manager_management_snapshot(session, tournament_id, manager_id)
+
+    async def _set_assignment_default_access(
+        self,
+        session: AsyncSession,
+        assignment: TournamentPacketAssignmentRecord,
+        manager_id: UUID,
+        *,
+        right: str,
+        entitlement_field: str,
+        assignment_field: str,
+        enabled: bool,
+    ) -> None:
+        """Change the assignment-wide default right, copied from policy on upload.
+
+        Enabling is retroactive: every active participant receives the right.
+        Disabling is not: current effective access is first frozen as explicit
+        entitlements (classic rounds for playability and discoverability), then
+        the default changes for future participants only.
+        """
+        type_key = await session.scalar(
+            select(TournamentTypeVersionRecord.key)
+            .join(
+                TournamentRecord,
+                TournamentRecord.type_version_id == TournamentTypeVersionRecord.id,
+            )
+            .where(TournamentRecord.id == assignment.tournament_id)
+        )
+        classic_round_scoped = type_key == "classic" and right in {"playable", "discoverable"}
+        current = bool(getattr(assignment, assignment_field))
+
+        def grant(entitlement: TournamentPacketEntitlementRecord, value: bool) -> None:
+            setattr(entitlement, entitlement_field, value)
+            if right in {"discoverable", "readable"}:
+                setattr(entitlement, f"{right}_override", value)
+            entitlement.granted_by_id = manager_id
+            entitlement.revoked_at = None
+
+        if enabled and not current and not classic_round_scoped:
+            for membership in await self._active_memberships(session, assignment.tournament_id):
+                entitlement = await session.get(
+                    TournamentPacketEntitlementRecord,
+                    (assignment.id, membership.player_id),
+                )
+                if entitlement is None:
+                    entitlement = TournamentPacketEntitlementRecord(
+                        assignment_id=assignment.id,
+                        player_id=membership.player_id,
+                        granted_by_id=manager_id,
+                    )
+                    session.add(entitlement)
+                grant(entitlement, True)
+        elif not enabled and current:
+            if classic_round_scoped:
+                rounds = tuple(
+                    (
+                        await session.execute(
+                            select(ClassicRoundRecord)
+                            .join(
+                                ClassicStageRecord,
+                                ClassicStageRecord.id == ClassicRoundRecord.stage_id,
+                            )
+                            .where(
+                                ClassicRoundRecord.assignment_id == assignment.id,
+                                ClassicStageRecord.started_at.is_not(None),
+                                getattr(ClassicRoundRecord, right).is_(None),
+                            )
+                        )
+                    ).scalars()
+                )
+                for round_record in rounds:
+                    setattr(round_record, right, True)
+            else:
+                for membership in await self._active_memberships(session, assignment.tournament_id):
+                    if not await self.has_assignment_access(
+                        session, assignment, membership.player_id, entitlement_field
+                    ):
+                        continue
+                    entitlement = await session.get(
+                        TournamentPacketEntitlementRecord,
+                        (assignment.id, membership.player_id),
+                    )
+                    if entitlement is None:
+                        entitlement = TournamentPacketEntitlementRecord(
+                            assignment_id=assignment.id,
+                            player_id=membership.player_id,
+                            granted_by_id=manager_id,
+                        )
+                        session.add(entitlement)
+                    grant(entitlement, True)
+        setattr(assignment, assignment_field, enabled)
+
+    @staticmethod
+    async def _active_memberships(
+        session: AsyncSession, tournament_id: UUID
+    ) -> tuple[TournamentMembershipRecord, ...]:
+        return tuple(
+            (
+                await session.execute(
+                    select(TournamentMembershipRecord)
+                    .where(
+                        TournamentMembershipRecord.tournament_id == tournament_id,
+                        TournamentMembershipRecord.status == "active",
+                    )
+                    .order_by(TournamentMembershipRecord.player_id)
+                )
+            ).scalars()
+        )
 
     async def tournament_authors(
         self, session: AsyncSession, tournament_id: UUID

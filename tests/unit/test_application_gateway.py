@@ -145,6 +145,21 @@ def test_packet_rule_contract_requires_version_and_packet_scope():
             _request({**operation, **changes}, idempotency_key="packet-rule")
 
 
+def test_packet_default_access_contract_is_assignment_wide():
+    operation = {
+        "action": ActionCode.TOURNAMENT_PACKET_ACCESS_UPDATE,
+        "assignment_id": str(UUID(int=1)), "right": "playable",
+        "enabled": True, "scope": "default",
+    }
+    request = _request(operation, idempotency_key="packet-default")
+    assert request.operation.scope == "default"  # type: ignore[union-attr]
+    assert request.operation.player_id is None  # type: ignore[union-attr]
+    for changes in ({"player_id": str(UUID(int=2))}, {"scope": "invalid"},
+                    {"right": "library_viewing_rule"}):
+        with pytest.raises(ValidationError):
+            _request({**operation, **changes}, idempotency_key="packet-default")
+
+
 def test_contract_rejects_unknown_fields_and_missing_stale_write_version() -> None:
     with pytest.raises(ValidationError):
         _request(
