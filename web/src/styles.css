@@ -529,6 +529,19 @@ p {
   gap: 0.5rem;
 }
 
+.packet-default-access {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+}
+
+.packet-default-access-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+}
+
 .descriptor-panel {
   display: grid;
   gap: 0.55rem;

@@ -1,3 +1,4 @@
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,8 +15,10 @@ from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlayerNotificationRecord,
+    PlayerRecord,
     PregameLobbyMemberRecord,
     PregameLobbyRecord,
+    TournamentMembershipRecord,
     TournamentPacketAssignmentRecord,
     TournamentRecord,
 )
@@ -341,5 +344,95 @@ async def test_classic_notification_includes_opponents_and_deadline(database_url
             assert len(notices) == 4
             assert all(n.payload["start_deadline"] == deadline.isoformat() for n in notices)
             assert all(len(n.payload["opponents"]) == 3 for n in notices)
+    finally:
+        await database.close()
+
+
+async def test_default_packet_access_enables_retroactively_and_disables_for_future_only(
+    database_url,
+):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        service = TournamentService(database)
+        view = await service.manager_management(fixture.tournament_id, fixture.manager.id)
+        assignment_id = view.packets[0].assignment_id
+
+        # A positive default change is retroactive for current participants.
+        view = await service.set_management_packet_access(
+            fixture.tournament_id, assignment_id, fixture.manager.id,
+            right="readable", enabled=True, player_id=None, scope="default",
+        )
+        assert view.packets[0].default_access == {
+            "discoverable": True, "playable": True, "readable": True,
+        }
+
+        # A negative default change is not retroactive: current access is frozen.
+        view = await service.set_management_packet_access(
+            fixture.tournament_id, assignment_id, fixture.manager.id,
+            right="discoverable", enabled=False, player_id=None, scope="default",
+        )
+        assert view.packets[0].default_access["discoverable"] is False
+        # An explicit denial survives until a retroactive default change overrides it.
+        await service.set_management_packet_access(
+            fixture.tournament_id, assignment_id, fixture.manager.id,
+            right="discoverable", enabled=False, player_id=fixture.players[0].id,
+        )
+        view = await service.set_management_packet_access(
+            fixture.tournament_id, assignment_id, fixture.manager.id,
+            right="discoverable", enabled=True, player_id=None, scope="default",
+        )
+        assert view.packets[0].default_access["discoverable"] is True
+
+        await service.set_management_packet_access(
+            fixture.tournament_id, assignment_id, fixture.manager.id,
+            right="playable", enabled=False, player_id=None, scope="default",
+        )
+
+        future = PlayerRecord(
+            telegram_user_id=secrets.randbits(31),
+            real_name="Future Player",
+            public_nickname="Future Player",
+            registration_step="complete",
+            registration_completed_at=datetime.now(UTC),
+            status="active",
+        )
+        async with database.transaction() as session:
+            session.add(future)
+            await session.flush()
+            session.add(TournamentMembershipRecord(
+                tournament_id=fixture.tournament_id,
+                player_id=future.id,
+                enrolled_by_id=fixture.manager.id,
+            ))
+
+        async with database.sessions() as session:
+            assignment = await session.get(TournamentPacketAssignmentRecord, assignment_id)
+            for player in (*fixture.players, future):
+                assert await service.has_assignment_access(
+                    session, assignment, player.id, "discoverable"
+                )
+                assert await service.has_assignment_access(
+                    session, assignment, player.id, "content_visible"
+                )
+            for player in fixture.players:
+                assert await service.has_assignment_access(
+                    session, assignment, player.id, "playable"
+                )
+            assert not await service.has_assignment_access(
+                session, assignment, future.id, "playable"
+            )
+
+        # Shared packets keep independent defaults per tournament assignment.
+        second = await tournament_fixture(database, player_count=1)
+        other_assignment_id = await service.assign_packet(
+            second.tournament_id, fixture.packet_id, second.manager.id,
+            discoverable=True, playable=True,
+        )
+        async with database.sessions() as session:
+            other = await session.get(TournamentPacketAssignmentRecord, other_assignment_id)
+            assert other.playable_by_members is True
+            first = await session.get(TournamentPacketAssignmentRecord, assignment_id)
+            assert first.playable_by_members is False
     finally:
         await database.close()

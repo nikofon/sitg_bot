@@ -294,6 +294,13 @@ The runtime currently interprets policies for:
   participants. Existing tournaments with no explicit values use these defaults. Policy edits
   do not change existing assignments or per-player grants; readable does not enable playable,
   and content release rules still apply;
+- per-assignment default overrides: each packet card in tournament management exposes default
+  discoverability, playability, and readability checkboxes (readability only for Classic)
+  initialized from the copied policy values. Enabling a default is retroactive — every active
+  participant receives the right, including explicit denials — while disabling preserves
+  existing access and applies to future participants only. Shared packets keep independent
+  overrides per tournament assignment; Classic play/discovery defaults feed the round gates
+  and are frozen as round overrides when disabled;
 - a positive `ruleset_rating_weight`, defaulting to `1`, which scales this tournament's
   contribution to ruleset-wide rating without changing tournament rating or confidence;
 - `observing`, defaulting to `forbidden`: `unlimited` permits observing fresh or burnt
@@ -388,6 +395,12 @@ within that tournament-packet assignment. At minimum, the model distinguishes:
 The access decision composes active membership, manager role, assignment-wide member flags,
 and explicit per-player grants. Classic play/discovery rights instead come from the round
 and its prescribed participants; general grants cannot bypass the schedule.
+
+Assignment-wide member flags double as the per-assignment defaults copied from policy on
+upload; managers override them per packet. Enabling a default grants the right to every
+active participant, while disabling it freezes current access as explicit entitlements
+(round overrides for Classic play/discovery) and changes the default for future
+participants only.
 
 Authorization is checked whenever content is listed, previewed, downloaded, selected,
 assigned, or administered; hiding a command in the interface is not sufficient.

@@ -553,6 +553,7 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
     player_id: UUID | None = None
     right: Literal["playable", "discoverable", "readable", "library_viewing_rule"]
     enabled: bool | None = None
+    scope: Literal["players", "default"] = "players"
     library_viewing_rule: Literal["never", "after-play", "anytime"] | None = None
     expected_version: int | None = Field(default=None, ge=1)
 
@@ -561,13 +562,15 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
         if self.right == "library_viewing_rule":
             if (
                 self.library_viewing_rule is None or self.expected_version is None
-                or self.player_id is not None
+                or self.player_id is not None or self.scope != "players"
             ):
                 raise ValueError(
                     "Library viewing rules require a rule, settings version, and no player"
                 )
         elif self.enabled is None or self.library_viewing_rule is not None:
             raise ValueError("Packet rights require an enabled flag")
+        if self.scope == "default" and self.player_id is not None:
+            raise ValueError("Default packet rights apply to the whole assignment")
         return self
 
 
