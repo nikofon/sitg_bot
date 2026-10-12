@@ -134,6 +134,19 @@ def test_si_fuzzy_matching_includes_alternatives_and_optional_words() -> None:
     assert SIGameRuleset().judge_answer("Пампиду", question.all_answers)
 
 
+def test_si_matches_unexpanded_patterns_and_exact_rejections() -> None:
+    ruleset = SIGameRuleset()
+    accepted = ("Museum", "(Центр) Помпиду")
+    assert ruleset.judge_answer("Пампиду", accepted)
+    assert not ruleset.judge_answer(
+        "Помпиду", accepted, rejected_answers=("(Центр) Помпиду",),
+    )
+    assert ruleset.judge_answer(
+        "Пампиду", accepted, rejected_answers=("(Центр) Помпиду",),
+    )
+    assert not ruleset.judge_answer("Museum Помпиду", accepted)
+
+
 @pytest.mark.parametrize(
     ("submitted", "accepted", "rejected", "expected"),
     [

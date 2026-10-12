@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
-from sitg_bot.domain.answers import matches_accepted_answer, normalize_answer
+from sitg_bot.domain.answers import matches_answer_pattern, normalize_answer
 from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.domain.packet import Packet
 
@@ -247,12 +247,11 @@ class SIGameRuleset:
         rejected_answers: Sequence[str] = (),
     ) -> bool:
         normalized = normalize_answer(submitted)
-        if rejected_answers and normalized in {
-            normalize_answer(answer) for answer in rejected_answers
-        }:
+        if any(matches_answer_pattern(normalized, answer, exact=True)
+               for answer in rejected_answers):
             return False
         return any(
-            matches_accepted_answer(normalized, normalize_answer(answer))
+            matches_answer_pattern(normalized, answer)
             for answer in accepted_answers
         )
 

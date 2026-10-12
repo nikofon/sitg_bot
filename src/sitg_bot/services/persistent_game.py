@@ -2708,8 +2708,8 @@ class PersistentGameService:
         ruleset = await self._ruleset(session, game)
         correct = submitted_answer is not None and ruleset.judge_answer(
             submitted_answer,
-            question.all_answers,
-            rejected_answers=question.all_rejected_answers,
+            (question.answer, *question.accepted_answers),
+            rejected_answers=question.rejected_answers,
         )
         attempt_number = (
             await session.scalar(
