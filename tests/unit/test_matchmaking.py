@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, call
 from uuid import UUID
 
 import pytest
 
+from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.tournaments import (
     TournamentContext,
@@ -11,6 +13,34 @@ from sitg_bot.services.tournaments import (
     hybrid_matchmaking_supported,
     normalize_tournament_policies,
 )
+
+
+@pytest.mark.parametrize(
+    ("theme_count", "packet_counts", "expected"),
+    [("max", (), 1), ("max", (3, 5), 8), (6, (), 6)],
+)
+async def test_lobby_theme_count_resolves_maximum(theme_count, packet_counts, expected) -> None:
+    service = object.__new__(InvitationMatchmakingService)
+    service._packet_play_unit_count = AsyncMock(side_effect=packet_counts)
+    session = object()
+    context = object()
+    lobby = SimpleNamespace(settings={
+        "theme_count": theme_count, "minimum_players": 2, "maximum_players": 4,
+    })
+    selected = [
+        SimpleNamespace(packet_version_id=UUID(int=index))
+        for index in range(1, len(packet_counts) + 1)
+    ]
+
+    settings = await service._lobby_parameters(
+        session, lobby, selected, context, DEFAULT_RULESETS.get("si", 1),
+    )
+
+    assert settings.to_dict()["theme_count"] == expected
+    assert lobby.settings["theme_count"] == theme_count
+    assert service._packet_play_unit_count.await_args_list == [
+        call(session, item.packet_version_id, context) for item in selected
+    ]
 
 
 def test_matchmaking_tolerance_widens_in_steps_and_honors_optional_cap() -> None:

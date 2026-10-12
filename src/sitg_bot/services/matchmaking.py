@@ -2180,10 +2180,10 @@ class InvitationMatchmakingService:
         """Build ruleset parameters, resolving the maximum-themes sentinel."""
         raw = dict(lobby.settings)
         if raw.get("theme_count") == MAX_THEME_COUNT:
-            total = sum(
+            total = sum([
                 await self._packet_play_unit_count(session, item.packet_version_id, context)
                 for item in selected
-            )
+            ])
             raw["theme_count"] = max(1, total)
         return ruleset.parameters(raw)
 

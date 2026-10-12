@@ -552,7 +552,7 @@ class BotBackend:
         claim: TelegramUpdateClaim,
         *,
         tournament_id: UUID,
-        max_players: int = 4,
+        max_players: int | None = None,
     ) -> LobbyCreatedState:
         response = await self._execute(
             claim,

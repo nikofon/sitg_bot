@@ -694,6 +694,38 @@ async def test_player_tournament_upload_submenu_and_permission(allowed) -> None:
         assert "unavailable" in message.answer.await_args.args[0]
 
 
+@pytest.mark.parametrize("max_players", [None, 6])
+async def test_bot_lobby_creation_defers_capacity_to_tournament_unless_explicit(
+    max_players,
+) -> None:
+    gateway = SimpleNamespace(execute_update=AsyncMock(return_value=SimpleNamespace(
+        ok=True,
+        data={
+            "lobby": {
+                "id": str(UUID(int=9)), "version": 1,
+                "tournament_id": str(UUID(int=8)), "status": "assembling",
+            },
+            "launch_reference": {
+                "value": "opaque-lobby", "expires_at": "2099-01-01",
+            },
+        },
+    )))
+    claim = object()
+    kwargs = {} if max_players is None else {"max_players": max_players}
+
+    created = await BotBackend(gateway).create_lobby(
+        claim, tournament_id=UUID(int=8), **kwargs,
+    )
+
+    gateway.execute_update.assert_awaited_once()
+    sent_claim, operation = gateway.execute_update.await_args.args
+    assert sent_claim is claim
+    assert operation.action == ActionCode.LOBBY_CREATE
+    assert operation.tournament_id == UUID(int=8)
+    assert operation.max_players == max_players
+    assert created.lobby_id == UUID(int=9)
+
+
 @pytest.mark.parametrize("queued_first", [False, True])
 async def test_player_lobby_creation_uses_the_selected_tournament(queued_first) -> None:
     from sitg_bot.bot.lobby_delivery import LobbyDelivery
