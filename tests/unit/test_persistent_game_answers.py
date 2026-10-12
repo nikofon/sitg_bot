@@ -11,13 +11,15 @@ from sitg_bot.domain.packet import Question
 from sitg_bot.services.persistent_game import PersistentGameService
 
 
-@pytest.mark.parametrize(("submitted", "rejected", "correct"), [
-    ("Newtn", (), True),
-    ("Newton", ("(Sir) Newton",), False),
-    (None, (), False),
+@pytest.mark.parametrize(("answer", "submitted", "rejected", "correct"), [
+    ("Museum", "Newtn", (), True),
+    ("Museum", "Newton", ("(Sir) Newton",), False),
+    ("Museum", None, (), False),
+    ("[Ян] Вермеер.", "вермеер", (), True),
+    ("[Ян] Вермеер.", "Верме\u0301ер,", ("[Ян] Вермеер.",), False),
 ])
 async def test_attempt_judges_patterns_without_expanding_answers(
-    monkeypatch, submitted, rejected, correct,
+    monkeypatch, answer, submitted, rejected, correct,
 ) -> None:
     def expansion_forbidden(_):
         raise AssertionError("Gameplay must not enumerate answer combinations")
@@ -26,7 +28,7 @@ async def test_attempt_judges_patterns_without_expanding_answers(
     monkeypatch.setattr(Question, "all_rejected_answers", property(expansion_forbidden))
     round_record = SimpleNamespace(id=uuid4(), question_revision_id=uuid4())
     revision = SimpleNamespace(
-        text="Question", answer="Museum", commentary="", form="", source="",
+        text="Question", answer=answer, commentary="", form="", source="",
         accepted_answers=("(Sir) " * 80 + "Newton",), rejected_answers=rejected,
     )
     state = SimpleNamespace(attempted=False, eligible=True)

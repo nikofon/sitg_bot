@@ -123,7 +123,8 @@ conflict for any participant.
 
 Automated answer judgment compares normalized text against the primary and accepted answers:
 Unicode NFKC normalization, case folding, accent removal (preserving Russian `й` and `ё`),
-punctuation-to-space replacement, and collapsed whitespace. Accepted answers allow one
+punctuation-to-space replacement, and collapsed whitespace. Text in balanced parentheses
+or square brackets is optional, including nested groups. Accepted answers allow one
 insertion, deletion, or substitution per four normalized expected characters, capped at
 three edits. Both texts must have at least five characters for fuzzy matching, and digit
 sequences must match exactly. Thus `центл Памптду` matches `Центр Помпиду`. When an accepted

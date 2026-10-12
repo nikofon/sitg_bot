@@ -113,6 +113,10 @@ def test_ruleset_registry_rejects_unknown_versions() -> None:
         ("Apollo 11", "Apollo 12", False),
         ("Apollo 11", "Apolo 11", True),
         ("Café", "CAFE", True),
+        ("[Ян] Вермеер.", "вермеер", True),
+        ("[Ян] Вермеер.", "Ян Верме\u0301ер,", True),
+        ("[Ян] Вермеер.", "Ян", False),
+        ("Верме\u0301ер.", "вермеер,", True),
         ("Pushkin", "Пу\u0301шкин", True),
         ("Chaykovskiy", "Чайковский", True),
         ("Borshch", "Борщ", True),
@@ -156,6 +160,8 @@ def test_si_matches_unexpanded_patterns_and_exact_rejections() -> None:
         ("CAFE", "Café", "Café", False),
         ("Пушкин", "Pushkin", "Пу\u0301шкин", False),
         ("Пушкин", "Pushkin", "Pushkin", True),
+        ("Верме\u0301ер,", "[Ян] Вермеер.", "[Ян] Вермеер.", False),
+        ("Вермее", "[Ян] Вермеер.", "[Ян] Вермеер.", True),
     ],
 )
 def test_si_rejected_matching_stays_exact(

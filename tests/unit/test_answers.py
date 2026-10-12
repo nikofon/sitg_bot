@@ -74,6 +74,35 @@ def test_optional_matching_keeps_order_typo_budget_and_numbers(
     assert matches_answer_pattern(normalize_answer(submitted), pattern) is expected
 
 
+@pytest.mark.parametrize(("submitted", "pattern", "expected"), [
+    ("вермеер", "[Ян] Вермеер.", True),
+    ("Ян Вермеер", "[Ян] Вермеер.", True),
+    ("  ВЕРМЕ\u0301ЕР,  ", "[Ян], Верме\u0301ер.", True),
+    ("Ян", "[Ян] Вермеер.", False),
+    ("New", "New [York City].", True),
+    ("New York City", "New [York City].", True),
+    ("New City", "New [York City].", False),
+    ("Newton", "[Sir (Isaac)] Newton.", True),
+    ("Sir Newton", "[Sir (Isaac)] Newton.", True),
+    ("Isaac Newton", "[Sir (Isaac)] Newton.", False),
+    ("Sir Isaac Newton", "(Sir [Isaac]) Newton.", True),
+    ("Isaac Newton", "(Sir [Isaac]) Newton.", False),
+    ("Apollo 11", "[The] Apollo 11.", True),
+    ("Apollo 12", "[The] Apollo 11.", False),
+])
+def test_square_brackets_are_optional_with_punctuation_and_accents(
+    submitted: str, pattern: str, expected: bool,
+) -> None:
+    assert matches_answer_pattern(normalize_answer(submitted), pattern, exact=True) is expected
+
+
+def test_many_square_bracket_groups_do_not_generate_combinations() -> None:
+    pattern = "[Ян] " * 80 + "Вермеер."
+    assert matches_answer_pattern("вермеер", pattern)
+    assert matches_answer_pattern("ян " * 40 + "вермеер", pattern)
+    assert not matches_answer_pattern("другой художник", pattern)
+
+
 def test_many_optional_groups_do_not_generate_combinations() -> None:
     pattern = " ".join(f"(word{index})" for index in range(80)) + " Newton"
     assert matches_answer_pattern("newton", pattern)

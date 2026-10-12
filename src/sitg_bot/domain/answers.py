@@ -45,13 +45,14 @@ def _pattern_characters(value: str):
 
 
 def _optional_pattern(answer: str) -> tuple[list[str | None], dict[int, int]]:
-    """Compile literal characters and forward jumps over balanced optional groups."""
+    """Compile literal characters and jumps over balanced () and [] optional groups."""
     stack: list[int] = []
     pairs: dict[int, int] = {}
+    opening = {")": "(", "]": "["}
     for index, char in enumerate(answer):
-        if char == "(":
+        if char in "([":
             stack.append(index)
-        elif char == ")" and stack:
+        elif char in opening and stack and answer[stack[-1]] == opening[char]:
             pairs[stack.pop()] = index
     if not pairs:
         return [], {}
