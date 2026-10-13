@@ -136,6 +136,11 @@ export function renderAdminManagement(
     const value = (item: AdminCard): string | number => key === "name" ? name(item) :
       typeof item[key!] === "number" ? item[key!] as number : String(item[key!] ?? "");
     items.sort((a, b) => {
+      if (key === "year") {
+        const aUnknown = a.year == null;
+        const bUnknown = b.year == null;
+        if (aUnknown !== bUnknown) return aUnknown ? 1 : -1;
+      }
       const first = value(a), second = value(b);
       const comparison = typeof first === "number" && typeof second === "number"
         ? first - second : String(first).localeCompare(String(second), i18n.locale, { numeric: true });

@@ -16,7 +16,7 @@ export function renderTournamentPackets(
   const controls = element("div", { className: "lobby-packet-filters", role: "search", "aria-label": i18n.t("lobby.packet_filters") });
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
-  let sortMode: "default" | "fresh" | "fresh_zeroes_last" = "fresh_zeroes_last";
+  let sortMode: "default" | "fresh_zeroes_last" | "fresh" | "fresh_asc" | "name_asc" | "name_desc" | "year_asc" | "year_desc" = "fresh_zeroes_last";
   const inRange = (year: number | null, from: string, to: string): boolean =>
     (!filters[from] && !filters[to]) || (year !== null
       && (!filters[from] || year >= Number(filters[from]))
@@ -64,17 +64,36 @@ export function renderTournamentPackets(
   };
   const render = (): void => {
     const visible = packets.filter(matches);
+    const byName = (a: TournamentPacket, b: TournamentPacket): number => a.name.localeCompare(b.name, i18n.locale);
+    const byYear = (a: TournamentPacket, b: TournamentPacket, direction: 1 | -1): number => {
+      if (a.year == null && b.year == null) return 0;
+      if (a.year == null) return 1;
+      if (b.year == null) return -1;
+      return (a.year - b.year) * direction;
+    };
     if (sortMode === "fresh") {
       visible.sort((a, b) =>
         (b.fresh_play_unit_count ?? 0) - (a.fresh_play_unit_count ?? 0)
-        || a.name.localeCompare(b.name, i18n.locale));
+        || byName(a, b));
+    } else if (sortMode === "fresh_asc") {
+      visible.sort((a, b) =>
+        (a.fresh_play_unit_count ?? 0) - (b.fresh_play_unit_count ?? 0)
+        || byName(a, b));
     } else if (sortMode === "fresh_zeroes_last") {
       const zeroFreshLast = (packet: TournamentPacket): number =>
         (packet.fresh_play_unit_count ?? 0) === 0 ? 1 : 0;
       visible.sort((a, b) =>
         zeroFreshLast(a) - zeroFreshLast(b)
         || (a.fresh_play_unit_count ?? 0) - (b.fresh_play_unit_count ?? 0)
-        || a.name.localeCompare(b.name, i18n.locale));
+        || byName(a, b));
+    } else if (sortMode === "name_asc") {
+      visible.sort(byName);
+    } else if (sortMode === "name_desc") {
+      visible.sort((a, b) => byName(b, a));
+    } else if (sortMode === "year_asc") {
+      visible.sort((a, b) => byYear(a, b, 1) || byName(a, b));
+    } else if (sortMode === "year_desc") {
+      visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
     }
     list.replaceChildren(...visible.map(card));
     if (!visible.length) {
@@ -104,6 +123,11 @@ export function renderTournamentPackets(
     element("option", { value: "default" }, i18n.t("lobby.packet_sort_default")),
     element("option", { value: "fresh_zeroes_last", selected: true }, i18n.t("lobby.packet_sort_fresh_zeroes_last")),
     element("option", { value: "fresh" }, i18n.t("lobby.packet_sort_fresh")),
+    element("option", { value: "fresh_asc" }, i18n.t("lobby.packet_sort_fresh_asc")),
+    element("option", { value: "name_asc" }, i18n.t("filters.name_asc")),
+    element("option", { value: "name_desc" }, i18n.t("filters.name_desc")),
+    element("option", { value: "year_asc" }, i18n.t("lobby.packet_sort_year_asc")),
+    element("option", { value: "year_desc" }, i18n.t("lobby.packet_sort_year_desc")),
   );
   controls.append(sort);
   for (const [label, from, to] of [

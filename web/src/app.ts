@@ -1730,10 +1730,21 @@ export class MiniAppShell {
           .includes(normalize(packetFilters.author ?? ""))
         && inRange(packet.year ?? null, packetFilters.year_from, packetFilters.year_to)
         && inRange(packet.published_at ? Number(packet.published_at.slice(0, 4)) : null, packetFilters.publication_from, packetFilters.publication_to);
-      let packetSort: "default" | "name" = "default";
+      let packetSort: "default" | "name" | "name_desc" | "year_asc" | "year_desc" = "default";
       const renderPacketList = (): void => {
         const visible = resource.packets.filter(packetMatches);
-        if (packetSort === "name") visible.sort((a, b) => a.name.localeCompare(b.name, this.i18n.locale));
+        const byName = (a: ManagementPacket, b: ManagementPacket): number =>
+          a.name.localeCompare(b.name, this.i18n.locale);
+        const byYear = (a: ManagementPacket, b: ManagementPacket, direction: 1 | -1): number => {
+          if (a.year == null && b.year == null) return 0;
+          if (a.year == null) return 1;
+          if (b.year == null) return -1;
+          return (a.year - b.year) * direction;
+        };
+        if (packetSort === "name") visible.sort(byName);
+        else if (packetSort === "name_desc") visible.sort((a, b) => byName(b, a));
+        else if (packetSort === "year_asc") visible.sort((a, b) => byYear(a, b, 1) || byName(a, b));
+        else if (packetSort === "year_desc") visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
         packetList.replaceChildren(...visible.map(packetCard));
         if (!visible.length) {
           packetList.append(this.statusCard("empty", this.i18n.t("lobby.packet_no_matches")));
@@ -1754,13 +1765,18 @@ export class MiniAppShell {
       const packetSortSelect = element("select", {
         "aria-label": this.i18n.t("lobby.packet_sort"),
         onchange: (() => {
-          packetSort = packetSortSelect.value === "name" ? "name" : "default";
+          const value = packetSortSelect.value;
+          packetSort = value === "name" || value === "name_desc" || value === "year_asc" || value === "year_desc"
+            ? value : "default";
           renderPacketList();
         }) as EventListener,
       });
       packetSortSelect.append(
         element("option", { value: "default", selected: true }, this.i18n.t("lobby.packet_sort_default")),
         element("option", { value: "name" }, this.i18n.t("filters.name_asc")),
+        element("option", { value: "name_desc" }, this.i18n.t("filters.name_desc")),
+        element("option", { value: "year_asc" }, this.i18n.t("lobby.packet_sort_year_asc")),
+        element("option", { value: "year_desc" }, this.i18n.t("lobby.packet_sort_year_desc")),
       );
       packetControls.append(packetSortSelect);
       for (const [label, from, to] of [

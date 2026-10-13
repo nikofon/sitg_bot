@@ -26,19 +26,41 @@ describe("library", () => {
   });
 
   it("sorts by fresh themes ascending by default and shows fresh counts on cards", () => {
-    const read: LibraryPacket = { ...packet, version_id: "read", name: "Read packet", fresh_play_unit_count: 0 };
-    const fresh: LibraryPacket = { ...packet, version_id: "fresh", name: "Fresh packet", fresh_play_unit_count: 8 };
-    const root = renderLibrary([fresh, packet, read], new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    const read: LibraryPacket = { ...packet, version_id: "read", name: "Read packet", year: 2018, fresh_play_unit_count: 0 };
+    const fresh: LibraryPacket = { ...packet, version_id: "fresh", name: "Fresh packet", year: 2022, fresh_play_unit_count: 8 };
+    const unknown: LibraryPacket = { ...packet, version_id: "unknown", name: "Unknown packet", year: null, fresh_play_unit_count: 1 };
+    const root = renderLibrary([fresh, packet, read, unknown], new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
     const ids = (): string[] => Array.from(root.querySelectorAll("article"), (card) => card.getAttribute("data-packet-id") ?? "");
-    expect(ids()).toEqual(["read", "version", "fresh"]);
+    expect(ids()).toEqual(["read", "unknown", "version", "fresh"]);
     expect(root.querySelector("article")!.textContent).toContain("0 / 5");
 
     const sort = root.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']");
     expect(sort).not.toBeNull();
     expect(sort!.value).toBe("fresh");
+
+    sort!.value = "fresh_desc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["fresh", "version", "unknown", "read"]);
+
+    sort!.value = "name_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["version", "fresh", "read", "unknown"]);
+
+    sort!.value = "name_desc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["unknown", "read", "fresh", "version"]);
+
+    sort!.value = "year_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["read", "version", "fresh", "unknown"]);
+
+    sort!.value = "year_desc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["fresh", "version", "read", "unknown"]);
+
     sort!.value = "default";
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(ids()).toEqual(["fresh", "version", "read"]);
+    expect(ids()).toEqual(["fresh", "version", "read", "unknown"]);
   });
 
   it("filters by tournament name/slug, authors and inclusive years, and resets", () => {

@@ -1350,6 +1350,8 @@ describe("MiniAppShell", () => {
                 published_at: "2024-05-01T00:00:00Z", lead_author: "Boris", authors: ["Boris"], player_access: [] },
               { assignment_id: "a-3", packet_id: "p-3", name: "Mike packet", version: 1, year: 2020,
                 published_at: "2025-05-01T00:00:00Z", lead_author: "Carol", authors: ["Carol"], player_access: [] },
+              { assignment_id: "a-4", packet_id: "p-4", name: "No year packet", version: 1, year: null,
+                published_at: "2023-05-01T00:00:00Z", lead_author: "Dana", authors: ["Dana"], player_access: [] },
             ],
             tournament: {
               id: "tournament-1",
@@ -1387,7 +1389,7 @@ describe("MiniAppShell", () => {
     const section = root.querySelector<HTMLElement>("[data-section=packet_management]")!;
     const names = (): string[] => Array.from(
       section.querySelectorAll(".lobby-packet-card h3"), (title) => title.textContent ?? "");
-    expect(names()).toEqual(["Zulu packet", "Alpha packet", "Mike packet"]);
+    expect(names()).toEqual(["Zulu packet", "Alpha packet", "Mike packet", "No year packet"]);
     const type = (name: string, value: string): void => {
       const field = section.querySelector<HTMLInputElement>(`input[name="${name}"]`)!;
       field.value = value;
@@ -1414,7 +1416,16 @@ describe("MiniAppShell", () => {
     const sort = section.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']")!;
     sort.value = "name";
     sort.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet"]);
+    expect(names()).toEqual(["Alpha packet", "Mike packet", "No year packet", "Zulu packet"]);
+    sort.value = "name_desc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(names()).toEqual(["Zulu packet", "No year packet", "Mike packet", "Alpha packet"]);
+    sort.value = "year_asc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(names()).toEqual(["Zulu packet", "Mike packet", "Alpha packet", "No year packet"]);
+    sort.value = "year_desc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet", "No year packet"]);
 
     type("name", "nothing");
     expect(names()).toEqual([]);
@@ -1422,7 +1433,7 @@ describe("MiniAppShell", () => {
 
     Array.from(section.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent === "Reset filters")!.click();
-    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet"]);
+    expect(names()).toEqual(["Alpha packet", "Mike packet", "Zulu packet", "No year packet"]);
     expect(section.querySelector<HTMLInputElement>('input[name="name"]')!.value).toBe("");
   });
 

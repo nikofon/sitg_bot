@@ -22,6 +22,11 @@ const packets: TournamentPacket[] = [
     published_at: "2025-02-01T00:00:00Z", lead_author: "Carol", authors: ["Carol"],
     fresh_play_unit_count: 7,
   },
+  {
+    ...packet, packet_id: "unknown", name: "Unknown", year: null,
+    published_at: "2026-01-01T00:00:00Z", lead_author: "Uma", authors: ["Uma"],
+    fresh_play_unit_count: 1,
+  },
 ];
 
 describe("renderTournamentPackets", () => {
@@ -38,7 +43,7 @@ describe("renderTournamentPackets", () => {
       root.querySelectorAll("[data-packet-id]"),
       (node) => (node as HTMLElement).dataset.packetId ?? "",
     );
-    expect(ids()).toEqual(["alpha", "charlie", "bravo"]);
+    expect(ids()).toEqual(["unknown", "alpha", "charlie", "bravo"]);
 
     const sort = root.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']");
     expect(sort).not.toBeNull();
@@ -46,11 +51,31 @@ describe("renderTournamentPackets", () => {
 
     sort!.value = "fresh";
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(ids()).toEqual(["charlie", "alpha", "bravo"]);
+    expect(ids()).toEqual(["charlie", "alpha", "unknown", "bravo"]);
+
+    sort!.value = "fresh_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["bravo", "unknown", "alpha", "charlie"]);
+
+    sort!.value = "name_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["alpha", "bravo", "charlie", "unknown"]);
+
+    sort!.value = "name_desc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["unknown", "charlie", "bravo", "alpha"]);
+
+    sort!.value = "year_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["bravo", "alpha", "charlie", "unknown"]);
+
+    sort!.value = "year_desc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["charlie", "alpha", "bravo", "unknown"]);
 
     sort!.value = "default";
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(ids()).toEqual(["alpha", "bravo", "charlie"]);
+    expect(ids()).toEqual(["alpha", "bravo", "charlie", "unknown"]);
   });
 
   it("filters by title, authors and inclusive years, and resets", () => {
@@ -85,12 +110,12 @@ describe("renderTournamentPackets", () => {
     input("year_to", "");
 
     input("publication_from", "2025");
-    expect(ids()).toEqual(["charlie", "bravo"]);
+    expect(ids()).toEqual(["unknown", "charlie", "bravo"]);
     input("publication_from", "");
     input("publication_to", "2024");
     expect(ids()).toEqual(["alpha"]);
     input("publication_to", "");
-    expect(ids()).toEqual(["alpha", "charlie", "bravo"]);
+    expect(ids()).toEqual(["unknown", "alpha", "charlie", "bravo"]);
     expect(save).toHaveBeenCalled();
 
     root.querySelector<HTMLButtonElement>("button")!.click();

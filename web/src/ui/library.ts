@@ -12,7 +12,7 @@ export function renderLibrary(
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
   const controls = element("div", { className: "lobby-packet-filters", role: "search" });
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
-  let sortMode: "default" | "fresh" = "fresh";
+  let sortMode: "default" | "fresh" | "fresh_desc" | "name_asc" | "name_desc" | "year_asc" | "year_desc" = "fresh";
   const inRange = (year: number | null, from: string, to: string): boolean =>
     (!filters[from] && !filters[to]) || (year !== null
       && (!filters[from] || year >= Number(filters[from]))
@@ -24,10 +24,29 @@ export function renderLibrary(
       && normalize([packet.lead_author, ...packet.authors].join(" ")).includes(normalize(filters.author ?? ""))
       && inRange(packet.year, "year_from", "year_to")
       && inRange(Number(packet.published_at.slice(0, 4)), "publication_from", "publication_to"));
+    const byName = (a: LibraryPacket, b: LibraryPacket): number => a.name.localeCompare(b.name, i18n.locale);
+    const byYear = (a: LibraryPacket, b: LibraryPacket, direction: 1 | -1): number => {
+      if (a.year == null && b.year == null) return 0;
+      if (a.year == null) return 1;
+      if (b.year == null) return -1;
+      return (a.year - b.year) * direction;
+    };
     if (sortMode === "fresh") {
       visible.sort((a, b) =>
         (a.fresh_play_unit_count ?? 0) - (b.fresh_play_unit_count ?? 0)
-        || a.name.localeCompare(b.name, i18n.locale));
+        || byName(a, b));
+    } else if (sortMode === "fresh_desc") {
+      visible.sort((a, b) =>
+        (b.fresh_play_unit_count ?? 0) - (a.fresh_play_unit_count ?? 0)
+        || byName(a, b));
+    } else if (sortMode === "name_asc") {
+      visible.sort(byName);
+    } else if (sortMode === "name_desc") {
+      visible.sort((a, b) => byName(b, a));
+    } else if (sortMode === "year_asc") {
+      visible.sort((a, b) => byYear(a, b, 1) || byName(a, b));
+    } else if (sortMode === "year_desc") {
+      visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
     }
     list.replaceChildren(...visible.map((packet) => {
       const button = (command: "view" | "download"): HTMLButtonElement => element("button", {
@@ -73,6 +92,11 @@ export function renderLibrary(
   });
   sort.append(
     element("option", { value: "fresh", selected: true }, i18n.t("lobby.packet_sort_fresh_asc")),
+    element("option", { value: "fresh_desc" }, i18n.t("lobby.packet_sort_fresh_desc")),
+    element("option", { value: "name_asc" }, i18n.t("filters.name_asc")),
+    element("option", { value: "name_desc" }, i18n.t("filters.name_desc")),
+    element("option", { value: "year_asc" }, i18n.t("lobby.packet_sort_year_asc")),
+    element("option", { value: "year_desc" }, i18n.t("lobby.packet_sort_year_desc")),
     element("option", { value: "default" }, i18n.t("lobby.packet_sort_default")),
   );
   controls.append(sort);

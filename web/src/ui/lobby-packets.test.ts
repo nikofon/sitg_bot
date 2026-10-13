@@ -52,9 +52,57 @@ describe("renderLobbyPackets sorting", () => {
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(ids()).toEqual(["charlie", "bravo", "alpha", "delta"]);
 
+    sort!.value = "fresh_asc";
+    sort!.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["delta", "alpha", "bravo", "charlie"]);
+
     sort!.value = "default";
     sort!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(ids()).toEqual(["alpha", "delta", "bravo", "charlie"]);
+  });
+
+  it("sorts alphabetically and by year with unknown years last", () => {
+    const mixed = {
+      selected_packets: [],
+      packet_suggestions: [
+        { packet_id: "delta", name: "Delta", year: 2019, published_at: "2023-01-01T00:00:00Z",
+          lead_author: "Diana", authors: ["Diana"], fresh_play_unit_count: 0,
+          total_play_unit_count: 4, playable_for_all: true },
+        { packet_id: "bravo", name: "Bravo", year: 2021, published_at: "2025-01-01T00:00:00Z",
+          lead_author: "Boris", authors: ["Boris"], fresh_play_unit_count: 4,
+          total_play_unit_count: 6, playable_for_all: true },
+        { packet_id: "unknown", name: "Unknown", year: null, published_at: "2026-01-01T00:00:00Z",
+          lead_author: "Uma", authors: ["Uma"], fresh_play_unit_count: 1,
+          total_play_unit_count: 3, playable_for_all: true },
+        { packet_id: "alpha", name: "Alpha", year: 2020, published_at: "2024-12-31T23:00:00Z",
+          lead_author: "Anna", authors: ["Anna"], fresh_play_unit_count: 2,
+          total_play_unit_count: 5, playable_for_all: true },
+      ],
+      available_actions: ["packet_select"],
+    } as unknown as LobbyResource;
+    const root = renderLobbyPackets(mixed, new I18n("en"), {}, true, vi.fn()).element;
+    const ids = (): string[] => Array.from(
+      root.querySelectorAll("[data-packet-id]"),
+      (node) => (node as HTMLElement).dataset.packetId ?? "",
+    );
+    const sort = root.querySelector<HTMLSelectElement>("select[aria-label='Sort packets']")!;
+    expect(sort).not.toBeNull();
+
+    sort.value = "name_asc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["alpha", "bravo", "delta", "unknown"]);
+
+    sort.value = "name_desc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["unknown", "delta", "bravo", "alpha"]);
+
+    sort.value = "year_asc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["delta", "alpha", "bravo", "unknown"]);
+
+    sort.value = "year_desc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(ids()).toEqual(["bravo", "alpha", "delta", "unknown"]);
   });
 
   it("updates and reorders existing cards while retaining focus and the visible packet's position", () => {

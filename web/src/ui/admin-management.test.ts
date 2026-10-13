@@ -77,6 +77,22 @@ describe("admin management", () => {
     expect([...view.querySelectorAll("button")].filter(b => b.textContent === "Clear suspicion")).toHaveLength(2);
   });
 
+  it("sorts packets by year with unknown years last in both directions", () => {
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "packets", items: [
+      { id: "p1", name: "Beta packet", year: 2021 },
+      { id: "p2", name: "Alpha packet", year: 2019 },
+      { id: "p3", name: "Gamma packet", year: null },
+    ] }, new I18n("en"), {}, vi.fn(), vi.fn(), vi.fn());
+    const ids = (): string[] => Array.from(view.querySelectorAll("article"), (card) => card.getAttribute("data-resource-id") ?? "");
+    const sort = view.querySelector("select")!;
+    sort.value = "year:asc";
+    sort.dispatchEvent(new Event("change"));
+    expect(ids()).toEqual(["p2", "p1", "p3"]);
+    sort.value = "year:desc";
+    sort.dispatchEvent(new Event("change"));
+    expect(ids()).toEqual(["p1", "p2", "p3"]);
+  });
+
   it("lists link requests with decisions only while pending and links to the player", () => {
     const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "link_requests", items: [
       { id: "r1", name: "Ada Lovelace", status: "pending", request_note: "I am this author",

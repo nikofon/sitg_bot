@@ -68,8 +68,9 @@ player **Packets** button) lists every packet assigned to the tournament that th
 participant may discover, mirroring the lobby packet cards (metadata, fresh/total themes,
 playability) plus a **View in library** action gated by the library viewing rules and
 **Block/Unblock** controls. The window offers the same lobby packet search and filters
-(title, authors, inclusive packet-year and publication-year ranges, fresh-theme sorting
-with zero-fresh last, and reset); they persist per session like other route filters.
+(title, authors, inclusive packet-year and publication-year ranges, sorting by fresh-theme
+count, name, or packet year — with unknown years last — and reset); they persist per session
+like other route filters.
 Lobby packet cards carry the same block controls. Blocking is
 player-scoped and global across tournaments: fresh-content computation treats every theme
 and question of a blocked packet as burnt without writing exposure claims, while library
@@ -143,8 +144,8 @@ and validation warnings, with permission-aware Remove buttons for selected packe
 Packet cards show author/year metadata, shared fresh-theme counts,
 and playability for all players; observers do not affect freshness/playability. Selected cards
 come first. Text and inclusive packet/publication year filters survive refresh, and a sort
-control reorders cards by fresh-theme count; the default mode sorts fresh-theme counts
-ascending with zero-fresh packets last, and plain descending/default modes remain available.
+control reorders cards by fresh-theme count (both directions, plus zero-fresh last), name,
+or packet year (unknown years last).
 Mutations use current capabilities and versions. Actions, ordered lobby events, and periodic
 reconciliation refresh data in the background. Packet cards update in place, preserving
 filters, sorting, focus, and the visible packet's scroll position where possible. Membership,
@@ -170,8 +171,9 @@ packet after rights updates, falling back to the first packet if it is removed.
 Supports setup finalization, manual
 registration availability, completion, pending-registration decisions, and per-player or
 all-player packet rights. Packet management cards offer the same lobby packet search and
-filters (title, authors, inclusive packet-year and publication-year ranges, name sorting,
-and reset), persisted per session like other route filters. Packet management provides a
+filters (title, authors, inclusive packet-year and publication-year ranges, sorting by name
+or packet year — unknown years last — and reset), persisted per session like other route
+filters. Packet management provides a
 **Library viewing rule** dropdown:
 No library viewing, After playing, or Before or after playing. These conditions apply only
 to viewing readable, released packets and never affect playability. The policy default
@@ -234,7 +236,8 @@ See [packet administration](packet-administration.md) for identity and propagati
 Opened from the player menu only; managed tournament packets remain available in player mode.
 Cards link visible tournament profiles, show viewer-specific fresh/total theme counts, and
 filter by packet/tournament name or slug, author, and packet/publication years; a sort control
-orders cards by fresh-theme count ascending by default or by the default order. View opens
+orders cards by fresh-theme count (ascending by default), name, or packet year (unknown years
+last), or by the default order. View opens
 ruleset-defined pages (SI themes), with a dropdown
 and numbered navigation whose current page button is visually distinct. Pages show theme
 commentary when present; theme and question author names link to public author profiles.
