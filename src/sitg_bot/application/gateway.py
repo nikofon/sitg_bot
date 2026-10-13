@@ -1525,12 +1525,13 @@ class ApplicationGateway:
         )
 
     async def _lobby_payload(
-        self, lobby_id: UUID, telegram_user_id: int, *, include_packet_suggestions: bool = False,
+        self, lobby_id: UUID, telegram_user_id: int, *, include_packet_suggestions: bool = True
     ) -> dict[str, object]:
         lobby = await self.matchmaking.get(lobby_id)
-        suggestions = await self.matchmaking.suggest_packets(
-            lobby_id, telegram_user_id=telegram_user_id
-        ) if include_packet_suggestions else ()
+        suggestions = (
+            await self.matchmaking.suggest_packets(lobby_id, telegram_user_id=telegram_user_id)
+            if include_packet_suggestions else ()
+        )
         viewer = next(
             (member for member in lobby.members if member.telegram_user_id == telegram_user_id),
             None,

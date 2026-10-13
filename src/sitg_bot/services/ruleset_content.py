@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.game_rulesets import ExposureClaim, PlayUnit
@@ -139,7 +139,13 @@ class SIContentAdapter:
         }
         theme_rows = (
             await session.execute(
-                select(ThemeRevisionRecord, PacketVersionRecord.packet_id)
+                select(
+                    ThemeRevisionRecord.id,
+                    ThemeRevisionRecord.theme_id,
+                    ThemeRevisionRecord.packet_version_id,
+                    ThemeRevisionRecord.position,
+                    PacketVersionRecord.packet_id,
+                )
                 .join(
                     PacketVersionRecord,
                     PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id,
@@ -151,8 +157,8 @@ class SIContentAdapter:
                 )
             )
         ).all()
-        themes = [theme for theme, _ in theme_rows]
-        version_packets = {theme.packet_version_id: packet_id for theme, packet_id in theme_rows}
+        if not theme_rows:
+            return []
         blocked: set[tuple[str, UUID]] = set()
         blocked_packets: set[UUID] = set()
         if player_ids:
@@ -165,6 +171,25 @@ class SIContentAdapter:
                         ).where(
                             PlayerExposureClaimRecord.player_id.in_(player_ids),
                             PlayerExposureClaimRecord.state.in_(("reserved", "burnt")),
+                            # Match logical identities across corrections, not claim provenance.
+                            or_(
+                                (PlayerExposureClaimRecord.claim_namespace == "theme")
+                                & PlayerExposureClaimRecord.claim_id.in_(
+                                    select(ThemeRevisionRecord.theme_id).where(
+                                        ThemeRevisionRecord.packet_version_id.in_(packet_order)
+                                    )
+                                ),
+                                (PlayerExposureClaimRecord.claim_namespace == "question")
+                                & PlayerExposureClaimRecord.claim_id.in_(
+                                    select(QuestionRevisionRecord.question_id)
+                                    .join(
+                                        PacketQuestionRecord,
+                                        PacketQuestionRecord.question_revision_id
+                                        == QuestionRevisionRecord.id,
+                                    )
+                                    .where(PacketQuestionRecord.packet_version_id.in_(packet_order))
+                                ),
+                            ),
                         )
                     )
                 ).tuples()
@@ -175,33 +200,46 @@ class SIContentAdapter:
                 (
                     await session.execute(
                         select(PlayerPacketBlockRecord.packet_id).where(
-                            PlayerPacketBlockRecord.player_id.in_(player_ids)
+                            PlayerPacketBlockRecord.player_id.in_(player_ids),
+                            PlayerPacketBlockRecord.packet_id.in_(
+                                {theme.packet_id for theme in theme_rows}
+                            ),
                         )
                     )
                 ).scalars()
             )
+        themes = [
+            theme for theme in theme_rows
+            if theme.packet_id not in blocked_packets and ("theme", theme.theme_id) not in blocked
+        ]
+        if not themes:
+            return []
+        question_rows = (
+            await session.execute(
+                select(
+                    PacketQuestionRecord.theme_revision_id,
+                    PacketQuestionRecord.question_revision_id,
+                    PacketQuestionRecord.value,
+                    QuestionRevisionRecord.question_id,
+                )
+                .join(
+                    QuestionRevisionRecord,
+                    QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
+                )
+                .where(PacketQuestionRecord.packet_version_id.in_(
+                    {theme.packet_version_id for theme in themes}
+                ))
+                .order_by(PacketQuestionRecord.theme_revision_id, PacketQuestionRecord.position)
+            )
+        ).all()
+        questions_by_theme: dict[UUID, list[tuple[UUID, int, UUID]]] = {}
+        for theme_id, revision_id, value, question_id in question_rows:
+            questions_by_theme.setdefault(theme_id, []).append((revision_id, value, question_id))
         units: list[PlayUnit] = []
         for theme in themes:
-            if version_packets.get(theme.packet_version_id) in blocked_packets:
-                continue
-            questions = list(
-                (
-                    await session.execute(
-                        select(PacketQuestionRecord, QuestionRevisionRecord.question_id)
-                        .join(
-                            QuestionRevisionRecord,
-                            QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
-                        )
-                        .where(
-                            PacketQuestionRecord.packet_version_id == theme.packet_version_id,
-                            PacketQuestionRecord.theme_revision_id == theme.id,
-                        )
-                        .order_by(PacketQuestionRecord.position)
-                    )
-                ).all()
-            )
+            questions = questions_by_theme.get(theme.id, [])
             claims = (ExposureClaim("theme", theme.theme_id),) + tuple(
-                ExposureClaim("question", question_id) for _, question_id in questions
+                ExposureClaim("question", question_id) for _, _, question_id in questions
             )
             if any((claim.namespace, claim.identity) in blocked for claim in claims):
                 continue
@@ -214,10 +252,10 @@ class SIContentAdapter:
                     packet_order=packet_order[theme.packet_version_id],
                     position=theme.position,
                     question_revision_ids=tuple(
-                        placement.question_revision_id for placement, _ in questions
+                        revision_id for revision_id, _, _ in questions
                     ),
                     claims=claims,
-                    metadata={"question_values": [placement.value for placement, _ in questions]},
+                    metadata={"question_values": [value for _, value, _ in questions]},
                 )
             )
         return units

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
@@ -5,13 +6,19 @@ from uuid import UUID
 
 import pytest
 
-from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
+from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS, PlayUnit
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.tournaments import (
     TournamentContext,
     TournamentService,
     hybrid_matchmaking_supported,
     normalize_tournament_policies,
+)
+from sitg_bot.storage.models import (
+    PacketVersionRecord,
+    PlayerPacketBlockRecord,
+    PregameLobbyPacketRecord,
+    PregameLobbyRecord,
 )
 
 
@@ -188,3 +195,132 @@ def test_context_reports_effective_hybrid_matchmaking_availability() -> None:
 
     assert context.type_supports_hybrid_matchmaking
     assert context.hybrid_matchmaking_enabled
+
+
+def _packet_listing_service(*, type_key="ladder", theme_count=1):
+    lobby = SimpleNamespace(
+        id=UUID(int=1), tournament_id=UUID(int=2), creator_player_id=UUID(int=3),
+        settings={"theme_count": theme_count}, version=1, invitation_code="invite",
+        status="assembling", max_players=4, expires_at=datetime.now(UTC) + timedelta(hours=1),
+        game_id=None, searching=False, search_started_at=None, merged_into_lobby_id=None,
+        validation=[],
+    )
+    context = SimpleNamespace(
+        ruleset_key="si", ruleset_version=1, type_key=type_key, hybrid_matchmaking_enabled=False,
+    )
+    versions = [SimpleNamespace(
+        id=UUID(int=10 + index), name=name, lead_author_id=None, year=None, published_at=None,
+    ) for index, name in enumerate(("Zulu", "Alpha", "Hidden"))]
+    assignments = [SimpleNamespace(
+        id=UUID(int=20 + index), adopted_version_id=version.id,
+    ) for index, version in enumerate(versions)]
+    selections = [PregameLobbyPacketRecord(
+        lobby_id=lobby.id, packet_id=UUID(int=30 + index), packet_version_id=version.id,
+        assignment_id=assignment.id, selection_order=index + 1,
+    ) for index, (version, assignment) in enumerate(zip(versions, assignments, strict=True))]
+    members = [SimpleNamespace(
+        player_id=UUID(int=3 + index), join_order=index + 1, ready=False,
+        validation_violations=[], role="player", fresh_content_confirmed=False,
+    ) for index in range(2)]
+    units = [PlayUnit(
+        kind="si_theme", logical_id=UUID(int=100 + index), revision_id=UUID(int=200 + index),
+        packet_version_id=versions[0 if index < 2 else 1].id, packet_order=1, position=index + 1,
+        question_revision_ids=(), claims=(), metadata={"question_values": [10, 20, 30, 40, 50]},
+    ) for index in range(3)]
+
+    async def get(model, identity):
+        if model is PregameLobbyRecord:
+            return lobby
+        records = versions if model is PacketVersionRecord else assignments
+        return next(record for record in records if record.id == identity)
+
+    async def access(session, assignment, player_id, right):
+        if right == "discoverable":
+            return assignment.id != assignments[2].id
+        return not (assignment.id == assignments[1].id and player_id == members[1].player_id)
+
+    async def scalars(query):
+        return [selections[1].packet_id] if (
+            query.column_descriptions[0]["entity"] is PlayerPacketBlockRecord
+        ) else []
+
+    session = SimpleNamespace(
+        get=AsyncMock(side_effect=get), scalar=AsyncMock(return_value=0),
+        execute=AsyncMock(), scalars=AsyncMock(side_effect=scalars),
+    )
+
+    @asynccontextmanager
+    async def sessions():
+        yield session
+
+    service = object.__new__(InvitationMatchmakingService)
+    service.database = SimpleNamespace(sessions=sessions)
+    service.tournaments = SimpleNamespace(
+        context=AsyncMock(return_value=context), rulesets=DEFAULT_RULESETS,
+        has_assignment_access=AsyncMock(side_effect=access),
+    )
+    service._active_members = AsyncMock(return_value=members)
+    service._member = AsyncMock(return_value=members[1])
+    service._available_play_units = AsyncMock(return_value=units)
+    service._packet_play_unit_count = AsyncMock(side_effect=[3, 2, 3, 2])
+    return service, session, lobby, context, selections, versions, members
+
+
+@pytest.mark.parametrize("type_key", ["ladder", "classic"])
+@pytest.mark.parametrize("theme_count", [1, "max"])
+async def test_suggestions_batch_discoverable_packets_and_preserve_individual_cards(
+    type_key, theme_count,
+):
+    service, session, lobby, context, selections, versions, members = _packet_listing_service(
+        type_key=type_key, theme_count=theme_count,
+    )
+    session.execute.return_value = SimpleNamespace(all=lambda: [
+        (SimpleNamespace(id=selection.packet_id), assignment)
+        for selection, assignment in zip(selections, [
+            SimpleNamespace(id=item.assignment_id, adopted_version_id=item.packet_version_id)
+            for item in selections
+        ], strict=True)
+    ])
+
+    suggestions = await service.suggest_packets(lobby.id, telegram_user_id=42)
+
+    assert [item.name for item in suggestions] == ["Alpha", "Zulu"]
+    alpha, zulu = suggestions
+    assert (alpha.total_play_unit_count, alpha.fresh_play_unit_count) == (2, 1)
+    assert (zulu.total_play_unit_count, zulu.fresh_play_unit_count) == (3, 2)
+    assert alpha.blocked and not alpha.playable_for_all
+    assert not zulu.blocked and zulu.playable_for_all
+    required = 3 if theme_count == "max" or type_key == "classic" else 1
+    assert zulu.validation_violations == (
+        ({"code": "insufficient_fresh_content", "details": {"required": 3, "available": 2}},)
+        if required == 3 else ()
+    )
+    service._available_play_units.assert_awaited_once()
+    args = service._available_play_units.await_args.args
+    assert [item.packet_version_id for item in args[1]] == [item.id for item in versions[:2]]
+    assert args[2:] == (members, context)
+    assert not any(call.args == (PacketVersionRecord, versions[2].id)
+                   for call in session.get.await_args_list)
+
+
+@pytest.mark.parametrize("theme_count", [1, "max"])
+async def test_snapshot_reuses_availability_and_excludes_observers(theme_count):
+    service, session, lobby, context, selections, _, members = _packet_listing_service(
+        theme_count=theme_count,
+    )
+    observer = SimpleNamespace(**{**vars(members[0]), "role": "observer", "join_order": 3})
+    rows = [(member, SimpleNamespace(
+        id=member.player_id, public_nickname="Player", telegram_user_id=42 + index,
+    )) for index, member in enumerate([*members, observer])]
+    session.execute.return_value = SimpleNamespace(all=lambda: rows)
+    service._selected_packets = AsyncMock(return_value=selections[:2])
+
+    snapshot = await service._snapshot(session, lobby)
+
+    assert [packet.fresh_play_unit_count for packet in snapshot.selected_packets] == [2, 1]
+    assert snapshot.available_play_unit_count == 3
+    assert snapshot.settings.theme_count == (5 if theme_count == "max" else 1)
+    service._available_play_units.assert_awaited_once_with(
+        session, selections[:2], members, context,
+    )
+    assert snapshot.members[-1].role == "observer"

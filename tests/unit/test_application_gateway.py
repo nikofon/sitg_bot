@@ -1,4 +1,7 @@
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,17 +11,26 @@ from sitg_bot.application.adapters import TelegramGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthenticateOperation,
+    ApplicationPrincipal,
     CapabilitiesOperation,
     ErrorCode,
     GatewayRequest,
     GatewayResponse,
+    LobbyInfoOperation,
     NotificationReadOperation,
     PacketDraftTelegramBindOperation,
 )
 from sitg_bot.application.gateway import ACTION_POLICIES, ApplicationGateway
+from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
+from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.concurrency import StaleWriteError
-from sitg_bot.services.matchmaking import InvitationMatchmakingService
+from sitg_bot.services.matchmaking import (
+    InvitationMatchmakingService,
+    LobbyMemberSnapshot,
+    LobbySnapshot,
+    PacketSuggestion,
+)
 from sitg_bot.services.telegram_auth import TelegramUpdateClaim
 
 
@@ -118,6 +130,89 @@ def test_lobby_creation_contract_is_scoped_and_idempotent() -> None:
     assert request.operation.action == ActionCode.LOBBY_CREATE
     assert request.operation.max_players == 6  # type: ignore[union-attr]
     assert ACTION_POLICIES[ActionCode.LOBBY_CREATE].idempotency_required
+
+
+def test_lobby_info_keeps_suggestions_enabled_for_existing_callers() -> None:
+    operation = LobbyInfoOperation(action=ActionCode.LOBBY_INFO, lobby_id=UUID(int=1))
+    assert operation.include_packet_suggestions is True
+
+
+@pytest.mark.parametrize("include_suggestions", [True, False])
+async def test_lobby_info_dispatch_preserves_membership_check_and_suggestion_flag(
+    include_suggestions,
+):
+    gateway = object.__new__(ApplicationGateway)
+    gateway._require_active_principal = AsyncMock(return_value=UUID(int=2))
+    gateway._reject_banned_player = AsyncMock()
+    gateway._require_lobby_member = AsyncMock()
+    gateway._lobby_payload = AsyncMock(return_value={})
+    request = _request({
+        "action": ActionCode.LOBBY_INFO, "lobby_id": str(UUID(int=1)),
+        "include_packet_suggestions": include_suggestions,
+    })
+
+    await gateway._dispatch(ApplicationPrincipal(telegram_user_id=42), request)
+
+    gateway._require_lobby_member.assert_awaited_once_with(UUID(int=1), UUID(int=2))
+    gateway._lobby_payload.assert_awaited_once_with(
+        UUID(int=1), 42, include_packet_suggestions=include_suggestions,
+    )
+
+
+@pytest.mark.parametrize("include_suggestions", [True, False])
+async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets(
+    include_suggestions,
+):
+    member = LobbyMemberSnapshot(42, "Owner", 1, False, ())
+    selected = PacketSuggestion(UUID(int=3), UUID(int=4), "Selected", fresh_play_unit_count=2)
+    lobby = LobbySnapshot(
+        id=UUID(int=1), version=7, tournament_id=UUID(int=2), invitation_code="invite",
+        status="assembling", max_players=4, expires_at=datetime.now(UTC) + timedelta(hours=1),
+        game_id=None, searching=False, hybrid_matchmaking_available=False, search_started_at=None,
+        merged_into_lobby_id=None, other_searching_lobby_count=0, other_searching_player_count=0,
+        settings=GameSettings(), selected_packets=(selected,), validation_violations=(),
+        available_play_unit_count=2, members=(member,),
+    )
+    record = SimpleNamespace(
+        creator_player_id=UUID(int=6), tournament_policy_version_id=UUID(int=5),
+        settings={"theme_count": 8},
+    )
+    policy = SimpleNamespace(player_mutable_parameters=["theme_count"])
+    session = SimpleNamespace(
+        get=AsyncMock(side_effect=[record, policy, SimpleNamespace(name="Tournament")]),
+        scalar=AsyncMock(side_effect=[42, 3, "Owner"]),
+        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+    )
+
+    @asynccontextmanager
+    async def sessions():
+        yield session
+
+    gateway = object.__new__(ApplicationGateway)
+    gateway.database = SimpleNamespace(sessions=sessions)
+    gateway.matchmaking = SimpleNamespace(
+        get=AsyncMock(return_value=lobby), suggest_packets=AsyncMock(return_value=(selected,)),
+    )
+    gateway.tournaments = SimpleNamespace(
+        context=AsyncMock(return_value=SimpleNamespace(
+            ruleset_key="si", ruleset_version=1, observing_policy="forbidden",
+        )), rulesets=DEFAULT_RULESETS,
+    )
+
+    payload = await gateway._lobby_payload(
+        lobby.id, 42, include_packet_suggestions=include_suggestions,
+    )
+
+    assert payload["selected_packets"][0]["fresh_play_unit_count"] == 2
+    assert payload["settings"]["theme_count"] == 8
+    assert "packet_select" in payload["available_actions"]
+    assert payload["last_event_sequence"] == 3
+    if include_suggestions:
+        gateway.matchmaking.suggest_packets.assert_awaited_once_with(lobby.id, telegram_user_id=42)
+        assert payload["packet_suggestions"] == (selected,)
+    else:
+        gateway.matchmaking.suggest_packets.assert_not_awaited()
+        assert gateway._json_value(payload)["packet_suggestions"] == []
 
 
 def test_manager_tournament_settings_mutations_are_versioned_and_idempotent() -> None:

@@ -994,8 +994,12 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
     assert operation.tournament_id == UUID(int=10)
 
 
-@pytest.mark.parametrize("section", [None, "overview", "settings", "packets"])
-async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(section) -> None:
+@pytest.mark.parametrize(("section", "include_suggestions"), [
+    (None, False), ("", False), ("overview", False), ("settings", False), ("packets", True),
+])
+async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(
+    section: str | None, include_suggestions: bool,
+) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
@@ -1005,7 +1009,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(s
     request = make_mocked_request(
         "GET",
         "/api/miniapp/routes/resolve?path=/lobbies/opaque-lobby"
-        + (f"%3Fsection%3D{section}" if section else ""),
+        + (f"%3Fsection%3D{section}" if section is not None else ""),
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
@@ -1019,7 +1023,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(s
     assert payload["resource"]["kind"] == "lobby"
     assert payload["resource"]["available_actions"] == ["ready", "leave"]
     assert gateway.requests[0].operation.action == ActionCode.LOBBY_INFO
-    assert gateway.requests[0].operation.include_packet_suggestions is (section == "packets")
+    assert gateway.requests[0].operation.include_packet_suggestions is include_suggestions
 
 
 @pytest.mark.parametrize(
