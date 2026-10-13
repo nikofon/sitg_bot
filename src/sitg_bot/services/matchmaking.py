@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -1544,7 +1545,7 @@ class InvitationMatchmakingService:
                     )
                 )
             )
-            suggestions: list[PacketSuggestion] = []
+            candidates: list[tuple[PregameLobbyPacketRecord, PacketVersionRecord]] = []
             for packet, assignment in packet_rows:
                 if not await self.tournaments.has_assignment_access(
                     session, assignment, viewer_id, "discoverable"
@@ -1571,37 +1572,43 @@ class InvitationMatchmakingService:
                         assignment_id=assignment.id,
                         selection_order=1,
                     )
-                    available = await self._available_play_units(
-                        session, [candidate], members, context
+                    candidates.append((candidate, version))
+            available_by_version: dict[UUID, list[PlayUnit]] = defaultdict(list)
+            for unit in await self._available_play_units(
+                session, [candidate for candidate, _ in candidates], members, context
+            ):
+                available_by_version[unit.packet_version_id].append(unit)
+            suggestions: list[PacketSuggestion] = []
+            for candidate, version in candidates:
+                available = available_by_version[version.id]
+                total = await self._packet_play_unit_count(session, version.id, context)
+                raw_settings = dict(lobby.settings)
+                if raw_settings.get("theme_count") == MAX_THEME_COUNT:
+                    raw_settings["theme_count"] = max(1, total)
+                settings = ruleset.parameters(raw_settings)
+                if context.type_key == "classic" and context.ruleset_key == "si":
+                    settings = settings.updated({"theme_count": max(1, total)})
+                violations = tuple(
+                    {
+                        "code": violation.code,
+                        "details": dict(violation.details),
+                    }
+                    for violation in ruleset.validate_lobby(
+                        player_count=len(members),
+                        packet_count=1,
+                        available_play_units=available,
+                        parameters=settings,
                     )
-                    total = await self._packet_play_unit_count(session, version.id, context)
-                    raw_settings = dict(lobby.settings)
-                    if raw_settings.get("theme_count") == MAX_THEME_COUNT:
-                        raw_settings["theme_count"] = max(1, total)
-                    settings = ruleset.parameters(raw_settings)
-                    if context.type_key == "classic" and context.ruleset_key == "si":
-                        settings = settings.updated({"theme_count": max(1, total)})
-                    violations = tuple(
-                        {
-                            "code": violation.code,
-                            "details": dict(violation.details),
-                        }
-                        for violation in ruleset.validate_lobby(
-                            player_count=len(members),
-                            packet_count=1,
-                            available_play_units=available,
-                            parameters=settings,
-                        )
+                )
+                suggestions.append(
+                    replace(
+                        await self._describe_packet(
+                            session, candidate, version, members,
+                            total=total, fresh=len(available), violations=violations,
+                        ),
+                        blocked=candidate.packet_id in viewer_blocked,
                     )
-                    suggestions.append(
-                        replace(
-                            await self._describe_packet(
-                                session, candidate, version, members,
-                                total=total, fresh=len(available), violations=violations,
-                            ),
-                            blocked=packet.id in viewer_blocked,
-                        )
-                    )
+                )
             return tuple(sorted(suggestions, key=lambda item: item.name.casefold()))
 
     async def start(
@@ -2034,17 +2041,18 @@ class InvitationMatchmakingService:
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
         selected_snapshots: list[PacketSuggestion] = []
         members = [member for member, _ in rows if member.role == "player"]
+        all_available = await self._available_play_units(session, selected, members, context)
+        fresh_by_version = Counter(unit.packet_version_id for unit in all_available)
         for item in selected:
             version = await session.get(PacketVersionRecord, item.packet_version_id)
             assert version is not None
             total = await self._packet_play_unit_count(session, version.id, context)
-            available = await self._available_play_units(session, [item], members, context)
             selected_snapshots.append(
                 await self._describe_packet(
-                    session, item, version, members, total=total, fresh=len(available),
+                    session, item, version, members,
+                    total=total, fresh=fresh_by_version[version.id],
                 )
             )
-        all_available = await self._available_play_units(session, selected, members, context)
         other_searching_lobby_count = int(
             await session.scalar(
                 select(func.count())
@@ -2180,10 +2188,10 @@ class InvitationMatchmakingService:
         """Build ruleset parameters, resolving the maximum-themes sentinel."""
         raw = dict(lobby.settings)
         if raw.get("theme_count") == MAX_THEME_COUNT:
-            total = sum(
+            total = sum([
                 await self._packet_play_unit_count(session, item.packet_version_id, context)
                 for item in selected
-            )
+            ])
             raw["theme_count"] = max(1, total)
         return ruleset.parameters(raw)
 

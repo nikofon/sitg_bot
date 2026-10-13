@@ -944,7 +944,12 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
     assert operation.tournament_id == UUID(int=10)
 
 
-async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities() -> None:
+@pytest.mark.parametrize(("section", "include_suggestions"), [
+    ("", False), ("overview", False), ("settings", False), ("packets", True),
+])
+async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(
+    section: str, include_suggestions: bool,
+) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
@@ -953,7 +958,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
     )
     request = make_mocked_request(
         "GET",
-        "/api/miniapp/routes/resolve?path=/lobbies/opaque-lobby",
+        f"/api/miniapp/routes/resolve?path=/lobbies/opaque-lobby%3Fsection%3D{section}",
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
@@ -967,6 +972,7 @@ async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities()
     assert payload["resource"]["kind"] == "lobby"
     assert payload["resource"]["available_actions"] == ["ready", "leave"]
     assert gateway.requests[0].operation.action == ActionCode.LOBBY_INFO
+    assert gateway.requests[0].operation.include_packet_suggestions is include_suggestions
 
 
 @pytest.mark.parametrize(

@@ -1674,7 +1674,9 @@ async def test_lobby_back_changes_context_without_leaving_membership() -> None:
     backend.lobby_action.assert_not_awaited()
 
 
-async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
+@pytest.mark.parametrize("action", ("start", "search"))
+@pytest.mark.parametrize("locale", ("en", "ru"))
+async def test_lobby_action_without_packets_offers_automatic_selection(action, locale) -> None:
     from sitg_bot.bot.handlers.lobby import handle_lobby_action
 
     current = navigation(
@@ -1685,7 +1687,7 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
             "version": 1,
             "status": "assembling",
         },
-        allowed_actions=["lobby.start"],
+        allowed_actions=[f"lobby.{action}"],
     )
     lobby = {
         "version": 3,
@@ -1713,11 +1715,11 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
     claim = SimpleNamespace()
     await handle_lobby_action(
         message,  # type: ignore[arg-type]
-        "lobby.start",
+        f"lobby.{action}",
         backend,  # type: ignore[arg-type]
         claim,  # type: ignore[arg-type]
         LocalizationService(),
-        "en",
+        locale,
         current,
         SimpleNamespace(clear=AsyncMock()),  # type: ignore[arg-type]
         None,
@@ -1727,10 +1729,54 @@ async def test_lobby_start_without_packets_offers_automatic_selection() -> None:
     text = message.answer.await_args.args[0]
     markup = message.answer.await_args.kwargs["reply_markup"]
     assert "Small packet" in text and "Large packet" not in text
-    assert "automatically assigned" in text
+    if locale == "en":
+        assert ("automatically assigned" if action == "start" else "start searching") in text
+    else:
+        assert ("автоматически назначен" if action == "start" else "начать поиск") in text
     buttons = markup.inline_keyboard[0]
-    assert buttons[0].callback_data == f"lobbystart:yes:{UUID(int=9).hex}"
-    assert buttons[1].callback_data == f"lobbystart:no:{UUID(int=9).hex}"
+    assert buttons[0].callback_data == f"lobby{action}:yes:{UUID(int=9).hex}"
+    assert buttons[1].callback_data == f"lobby{action}:no:{UUID(int=9).hex}"
+
+
+async def test_lobby_search_with_selected_packets_starts_without_confirmation() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)),
+            "tournament_id": str(UUID(int=8)),
+            "version": 1,
+            "status": "assembling",
+        },
+        allowed_actions=["lobby.search"],
+    )
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value={
+            "version": 3, "selected_packets": [{"packet_id": str(UUID(int=31))}],
+        }),
+        select_lobby_packets=AsyncMock(),
+        lobby_action=AsyncMock(),
+        navigation=AsyncMock(return_value=current),
+    )
+    claim = SimpleNamespace()
+
+    await handle_lobby_action(
+        SimpleNamespace(answer=AsyncMock()),
+        "lobby.search",
+        backend,
+        claim,
+        LocalizationService(),
+        "en",
+        current,
+        SimpleNamespace(clear=AsyncMock()),
+        None,
+    )
+
+    backend.lobby_action.assert_awaited_once_with(
+        claim, lobby_id=UUID(int=9), action="search", expected_version=3
+    )
+    backend.select_lobby_packets.assert_not_awaited()
 
 
 async def test_lobby_info_lists_participants_ratings_packets_and_settings_link() -> None:
@@ -1837,7 +1883,8 @@ async def test_lobby_info_lists_participants_ratings_packets_and_settings_link()
     )
 
 
-async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
+@pytest.mark.parametrize("action", ("start", "search"))
+async def test_lobby_action_without_a_valid_packet_reports_an_error(action) -> None:
     from sitg_bot.bot.handlers.lobby import handle_lobby_action
 
     current = navigation(
@@ -1848,7 +1895,7 @@ async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
             "version": 1,
             "status": "assembling",
         },
-        allowed_actions=["lobby.start"],
+        allowed_actions=[f"lobby.{action}"],
     )
     lobby = {
         "version": 3,
@@ -1875,7 +1922,7 @@ async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
     message = SimpleNamespace(answer=AsyncMock())
     await handle_lobby_action(
         message,  # type: ignore[arg-type]
-        "lobby.start",
+        f"lobby.{action}",
         backend,  # type: ignore[arg-type]
         SimpleNamespace(),  # type: ignore[arg-type]
         LocalizationService(),
@@ -1889,7 +1936,8 @@ async def test_lobby_start_without_a_valid_packet_reports_an_error() -> None:
     assert "does not contain a valid packet" in message.answer.await_args.args[0]
 
 
-async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
+@pytest.mark.parametrize("action", ("start", "search"))
+async def test_lobby_confirmation_selects_packets_before_action(action) -> None:
     from sitg_bot.bot.handlers.lobby import handle_start_confirmation_callback
 
     current = navigation(
@@ -1900,7 +1948,7 @@ async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
             "version": 1,
             "status": "assembling",
         },
-        allowed_actions=["lobby.start"],
+        allowed_actions=[f"lobby.{action}"],
     )
     lobby = {
         "version": 3,
@@ -1926,14 +1974,17 @@ async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
         select_lobby_packets=AsyncMock(return_value={"version": 5}),
         lobby_action=AsyncMock(return_value={"started": True}),
         navigation=AsyncMock(
-            return_value=current.model_copy(update={"context": "tournament"})
+            return_value=(
+                current.model_copy(update={"context": "tournament"})
+                if action == "start" else current
+            )
         ),
     )
     message = AsyncMock(spec=Message)
     message.answer = AsyncMock()
     message.edit_reply_markup = AsyncMock()
     callback = SimpleNamespace(
-        data=f"lobbystart:yes:{UUID(int=9).hex}",
+        data=f"lobby{action}:yes:{UUID(int=9).hex}",
         answer=AsyncMock(),
         message=message,
     )
@@ -1953,12 +2004,13 @@ async def test_lobby_start_confirmation_selects_packets_and_starts() -> None:
         packet_ids=(str(UUID(int=32)), str(UUID(int=31))),
         expected_version=3,
     )
-    start = backend.lobby_action.await_args.kwargs
-    assert start["action"] == "start"
-    assert start["expected_version"] == 5
+    mutation = backend.lobby_action.await_args.kwargs
+    assert mutation["action"] == action
+    assert mutation["expected_version"] == 5
 
 
-async def test_lobby_start_confirmation_decline_keeps_the_lobby_unchanged() -> None:
+@pytest.mark.parametrize("action", ("start", "search"))
+async def test_lobby_confirmation_decline_keeps_the_lobby_unchanged(action) -> None:
     from sitg_bot.bot.handlers.lobby import handle_start_confirmation_callback
 
     current = navigation(
@@ -1969,14 +2021,14 @@ async def test_lobby_start_confirmation_decline_keeps_the_lobby_unchanged() -> N
             "version": 1,
             "status": "assembling",
         },
-        allowed_actions=["lobby.start"],
+        allowed_actions=[f"lobby.{action}"],
     )
     backend = SimpleNamespace(lobby_info=AsyncMock(), lobby_action=AsyncMock())
     message = AsyncMock(spec=Message)
     message.answer = AsyncMock()
     message.edit_reply_markup = AsyncMock()
     callback = SimpleNamespace(
-        data=f"lobbystart:no:{UUID(int=9).hex}",
+        data=f"lobby{action}:no:{UUID(int=9).hex}",
         answer=AsyncMock(),
         message=message,
     )

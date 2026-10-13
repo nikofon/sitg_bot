@@ -207,7 +207,7 @@ async def handle_lobby_action(
         )
         return
     lobby = await backend.lobby_info(telegram_update_claim, lobby_id=navigation.active_lobby.id)
-    if lobby_action == "lobby.start" and not lobby["selected_packets"]:
+    if lobby_action in {"lobby.start", "lobby.search"} and not lobby["selected_packets"]:
         packets = automatic_packet_selection(lobby)
         if not packets:
             await send_message_model(
@@ -215,22 +215,23 @@ async def handle_lobby_action(
             )
             return
         names = ", ".join(str(packet["name"]) for packet in packets)
+        callback_prefix = "lobbystart" if lobby_action == "lobby.start" else "lobbysearch"
         await send_message_model(
             message,
             MessageModel(
-                localization.text("lobby.start.auto_packet_confirm", locale, packets=names),
+                localization.text(f"{lobby_action}.auto_packet_confirm", locale, packets=names),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
                                 localization.text("button.yes", locale),
                                 callback_data=(
-                                    f"lobbystart:yes:{navigation.active_lobby.id.hex}"
+                                    f"{callback_prefix}:yes:{navigation.active_lobby.id.hex}"
                                 ),
                             ),
                             InlineButtonModel(
                                 localization.text("button.no", locale),
-                                callback_data=f"lobbystart:no:{navigation.active_lobby.id.hex}",
+                                callback_data=f"{callback_prefix}:no:{navigation.active_lobby.id.hex}",
                             ),
                         ),
                     )
@@ -361,7 +362,7 @@ async def handle_cancel_callback(
     await send_message_model(callback.message, menu_message(updated, localization, locale))
 
 
-@router.callback_query(F.data.regexp(r"^lobbystart:(yes|no):[a-f0-9]{32}$"))
+@router.callback_query(F.data.regexp(r"^lobby(start|search):(yes|no):[a-f0-9]{32}$"))
 async def handle_start_confirmation_callback(
     callback: CallbackQuery,
     backend: BotBackend,
@@ -376,7 +377,8 @@ async def handle_start_confirmation_callback(
     if not isinstance(callback.message, Message):
         return
     await callback.message.edit_reply_markup(reply_markup=None)
-    decision, raw_lobby_id = (callback.data or "").split(":")[1:]
+    prefix, decision, raw_lobby_id = (callback.data or "").split(":")
+    action = "search" if prefix == "lobbysearch" else "start"
     if decision != "yes":
         return
     if navigation is None or navigation.active_lobby is None:
@@ -405,7 +407,7 @@ async def handle_start_confirmation_callback(
         )
         version = int(selection["version"])
     await backend.lobby_action(
-        telegram_update_claim, lobby_id=lobby_id, action="start", expected_version=version
+        telegram_update_claim, lobby_id=lobby_id, action=action, expected_version=version
     )
     updated = await backend.navigation(telegram_update_claim)
     if updated.context == "game":

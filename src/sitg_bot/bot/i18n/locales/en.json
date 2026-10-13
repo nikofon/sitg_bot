@@ -361,6 +361,7 @@
   "lobby.created": "Lobby created.",
   "lobby.open_prompt": "Open the lobby to change its settings and choose packets for the game.",
   "lobby.start.auto_packet_confirm": "You have not selected a packet. Packet {packets} was automatically assigned to your game. Do you want to continue?",
+  "lobby.search.auto_packet_confirm": "You have not selected a packet. Select {packets} automatically and start searching for players?",
   "lobby.start.no_valid_packet": "This tournament does not contain a valid packet for your lobby!",
   "prompt.cancelled": "The current prompt was cancelled. Send /start to continue.",
   "prompt.none": "There is no active prompt to cancel.",

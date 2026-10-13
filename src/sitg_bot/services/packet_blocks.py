@@ -144,12 +144,13 @@ class PacketBlockService:
                         )
                     )
                 )
-                accessible = any(
-                    await self.tournaments.has_assignment_access(
+                accessible = False
+                for assignment in assignments:
+                    if await self.tournaments.has_assignment_access(
                         session, assignment, player_id, "discoverable"
-                    )
-                    for assignment in assignments
-                )
+                    ):
+                        accessible = True
+                        break
                 if not accessible:
                     raise PermissionError(
                         "Packet access through an active tournament is required"

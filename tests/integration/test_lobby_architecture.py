@@ -1901,6 +1901,65 @@ async def test_lobby_packet_cards_report_metadata_freshness_and_all_player_acces
         await database.close()
 
 
+async def test_lobby_content_queries_are_batched_for_suggestions_and_snapshot(
+    database_url: str,
+) -> None:
+    from sqlalchemy import event
+
+    database = Database(database_url)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        packets = PacketAdminService(database)
+        draft_id = await packets.create_draft(
+            packet(), source_filename="second.json", uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        second = await packets.publish(draft_id, administrator_id=fixture.manager.id)
+        async with database.transaction() as session:
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.tournament_id == fixture.tournament_id,
+                TournamentPacketAssignmentRecord.packet_id == second.logical_id,
+            ))
+            assignment.discoverable_by_members = True
+            assignment.playable_by_members = True
+            policy = await session.scalar(select(TournamentPolicyVersionRecord).where(
+                TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id,
+            ))
+            policy.policies = {**policy.policies, "packets_per_lobby": "any"}
+        service = InvitationMatchmakingService(database)
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        lobby = await service.join(lobby.invitation_code, fixture.inputs[1])
+        lobby = await service.select_packets(
+            lobby.id, fixture.inputs[0].telegram_user_id, [fixture.packet_id, second.logical_id],
+            expected_version=lobby.version,
+        )
+        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+        for read in (service.suggest_packets, service.get):
+            statements.clear()
+            await read(lobby.id)
+            for prefix in (
+                "SELECT theme_revisions.id,", "SELECT packet_questions.theme_revision_id,",
+                "SELECT player_exposure_claims.claim_namespace,",
+            ):
+                assert sum(sql.startswith(prefix) for sql in statements) == 1
+            assert sum(
+                sql.startswith("SELECT player_packet_blocks.packet_id")
+                and "player_packet_blocks.packet_id IN" in sql
+                for sql in statements
+            ) == 1
+            assert not any(sql.startswith("SELECT theme_revision_coauthors.content_id")
+                           for sql in statements)
+    finally:
+        if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
+            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        await database.close()
+
+
 async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_url: str) -> None:
     from sitg_bot.application.contracts import ApplicationPrincipal, GatewayRequest
     from sitg_bot.application.gateway import ApplicationGateway
