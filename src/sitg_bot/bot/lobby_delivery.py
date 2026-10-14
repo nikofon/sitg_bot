@@ -122,9 +122,6 @@ class LobbyDelivery:
                 )
                 messages["summary"] = sent.message_id
                 await save()
-            if messages.get("summary_text") != text:
-                messages["summary_text"] = text
-                await save()
             if self.base_url and "settings" not in messages:
                 reference = LaunchReference(
                     state["launch_reference"], datetime.fromisoformat(state["expires_at"]),
@@ -141,8 +138,14 @@ class LobbyDelivery:
             if join_sequence is not None and messages.get("join_sequence") != join_sequence:
                 messages["join_sequence"] = join_sequence
                 await save()
-            if messages.get("summary_version") != state["version"]:
+            if (
+                messages.get("summary_version") != state["version"]
+                or messages.get("summary_text") != text
+                or messages.get("search_status") != state.get("search_status")
+            ):
+                messages["summary_text"] = text
                 messages["summary_version"] = state["version"]
+                messages["search_status"] = state.get("search_status")
                 await save()
 
 

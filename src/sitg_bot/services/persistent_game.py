@@ -532,6 +532,8 @@ class PersistentGameService:
         self, session: AsyncSession, game: GameRecord, player_id: UUID
     ) -> dict[str, Any] | None:
         """Project one observable game for a player, or None when it must be skipped."""
+        if game.assignment_plan.get("is_private", False):
+            return None
         participant = await session.scalar(
             select(GameParticipantRecord.id).where(
                 GameParticipantRecord.game_id == game.id,

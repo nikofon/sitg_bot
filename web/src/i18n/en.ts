@@ -712,6 +712,8 @@ export const en = {
   "setting.between_themes_delay.label": "Between themes delay",
   "ruleset.si.between_themes_delay.description": "Delay between consecutive themes.",
   "setting.pausing_allowed.label": "Pausing allowed",
+  "setting.is_private.label": "Private lobby",
+  "lobby.is_private.description": "Hide this lobby and its game from Ongoing games, even in a public tournament. Players can still join by invitation.",
   "ruleset.si.pausing_allowed.description": "Whether players may pause a game.",
   "setting.question_values.label": "Question values",
   "ruleset.si.question_values.description": "How much each question in a theme is worth.",

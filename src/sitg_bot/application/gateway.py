@@ -1564,13 +1564,14 @@ class ApplicationGateway:
             policy = await session.get(
                 TournamentPolicyVersionRecord, record.tournament_policy_version_id
             )
-            mutable_parameters = sorted(policy.player_mutable_parameters)
+            mutable_parameters = sorted(set(policy.player_mutable_parameters) | {"is_private"})
             tournament = await session.get(TournamentRecord, lobby.tournament_id)
             tournament_name = tournament.name
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
             raw_settings = (
                 dict(record.settings) if record is not None else lobby.settings.to_dict()
             )
+            raw_settings.setdefault("is_private", False)
             rating_rows = (
                 await session.execute(
                     select(
@@ -1628,6 +1629,13 @@ class ApplicationGateway:
                 }
                 for definition in ruleset.parameter_definitions
             ]
+            descriptors.append({
+                "name": "is_private",
+                "value_type": "boolean",
+                "description_key": "lobby.is_private.description",
+                "value": raw_settings["is_private"],
+                "options": [],
+            })
         actions = ["refresh"]
         if lobby.status == "assembling":
             if viewer.role != "player":
@@ -1650,6 +1658,7 @@ class ApplicationGateway:
             "viewer": asdict(viewer),
             "available_actions": actions,
             "mutable_parameters": mutable_parameters,
+            "settings": {**lobby.settings.to_dict(), "is_private": raw_settings["is_private"]},
             "setting_descriptors": descriptors,
             "tournament_name": tournament_name,
             "observing_policy": context.observing_policy,

@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import EditMessageText
 from aiogram.types import ReplyKeyboardMarkup
 
+from sitg_bot.bot.handlers.lobby import lobby_info_text
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.lobby_delivery import (
     LobbyDelivery,
@@ -16,6 +17,42 @@ from sitg_bot.bot.lobby_delivery import (
     packet_draft_status_delivery_handler,
 )
 from sitg_bot.bot.presenters.models import ReplyKeyboardModel
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_lobby_summary_displays_search_time_and_tournament_pool(locale):
+    lobby = {
+        "tournament_name": "Cup", "searching": True, "search_elapsed_minutes": 3,
+        "other_searching_lobby_count": 2, "other_searching_player_count": 5,
+    }
+    text = lobby_info_text(lobby, LocalizationService(), locale)
+    assert ("Search time: 3 min" if locale == "en" else "Время поиска: 3 мин") in text
+    assert ("2 (5 players)" if locale == "en" else "2 (игроков: 5)") in text
+    lobby["searching"] = False
+    text = lobby_info_text(lobby, LocalizationService(), locale)
+    assert ("Search time" if locale == "en" else "Время поиска") not in text
+
+
+async def test_search_status_edits_existing_summary_and_saves_once():
+    status = {"search_elapsed_minutes": 2, "other_searching_lobby_count": 1}
+    state = {
+        "active": True, "version": 1, "search_status": status,
+        "messages": {
+            "summary": 7, "settings": 8, "summary_text": "Old", "summary_version": 1,
+        },
+        "lobby": {"searching": True, **status},
+    }
+    protocol = SimpleNamespace(request=AsyncMock(return_value=state))
+    bot = SimpleNamespace(send_message=AsyncMock(), edit_message_text=AsyncMock())
+    delivery = LobbyDelivery(bot, LocalizationService(), protocol, "https://mini.test", "bot")
+    await delivery.show(42, "lobby", "en")
+    bot.send_message.assert_not_awaited()
+    bot.edit_message_text.assert_awaited_once()
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == 7
+    writes = [call for call in protocol.request.await_args_list
+              if call.args == ("telegram.lobby.record",)]
+    assert len(writes) == 1
+    assert writes[0].kwargs["messages"]["search_status"] == status
 
 
 async def test_uneditable_legacy_summary_is_deleted_before_replacement():

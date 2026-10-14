@@ -1787,6 +1787,7 @@ class ConsoleApplicationServer:
             await self._broadcast_lobby(merge.surviving_lobby_id)
         if merges:
             await self._broadcast_search_pool()
+        await self.matchmaking.refresh_search_status()
 
     async def _console_updates_loop(self) -> None:
         while not self._closing:

@@ -448,6 +448,27 @@ describe("MiniAppShell", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { theme_count: 4 } });
   });
 
+  it("submits the private lobby setting as a boolean", async () => {
+    const { root, fetcher } = lobbyShell("settings", {
+      settings: { ...lobby.settings, is_private: false },
+      mutable_parameters: ["is_private"],
+      setting_descriptors: [...lobby.setting_descriptors, {
+        name: "is_private", value: false, value_type: "boolean",
+        description_key: "lobby.is_private.description", options: [],
+      }],
+    });
+    await vi.waitFor(() => expect(root.querySelector('[name="setting:is_private"]')).not.toBeNull());
+    expect(root.textContent).toContain("Private lobby");
+    expect(root.textContent).toContain("Hide this lobby and its game from Ongoing games");
+    const control = root.querySelector<HTMLInputElement>('[name="setting:is_private"]')!;
+    control.checked = true;
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    control.form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/settings"))).toBe(true));
+    const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/settings"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, changes: { is_private: true } });
+  });
+
   it("lists editable settings before fixed ones and previews message pacing options", async () => {
     const { root } = lobbyShell("settings", { mutable_parameters: ["ready_delay"] });
     await vi.waitFor(() => expect(root.querySelector('input[name="setting:ready_delay"]')).not.toBeNull());

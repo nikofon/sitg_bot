@@ -88,6 +88,14 @@ def test_bound_port_requires_a_started_server() -> None:
         _ = server.bound_port
 
 
+async def test_matchmaking_tick_also_refreshes_search_status_without_a_merge():
+    server = ConsoleApplicationServer(object())
+    server.matchmaking.match_searching = AsyncMock(return_value=())
+    server.matchmaking.refresh_search_status = AsyncMock()
+    await server._run_matchmaking()
+    server.matchmaking.refresh_search_status.assert_awaited_once_with()
+
+
 async def test_lobby_presentation_requires_adapter_and_projects_active_members():
     server = ConsoleApplicationServer(object())
     params = {"telegram_user_id": 42, "lobby_id": str(UUID(int=9))}

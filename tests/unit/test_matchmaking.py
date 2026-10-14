@@ -1,13 +1,16 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import pytest
 
 from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS, PlayUnit
+from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
+from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.tournaments import (
     TournamentContext,
     TournamentService,
@@ -48,6 +51,228 @@ async def test_lobby_theme_count_resolves_maximum(theme_count, packet_counts, ex
     assert service._packet_play_unit_count.await_args_list == [
         call(session, item.packet_version_id, context) for item in selected
     ]
+
+
+def _privacy_settings_service():
+    lobby = SimpleNamespace(
+        id=UUID(int=1), tournament_id=UUID(int=2), tournament_policy_version_id=UUID(int=3),
+        version=1, settings=GameSettings().to_dict(), max_players=4,
+    )
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(player_mutable_parameters=["theme_count"])),
+        flush=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    service = object.__new__(InvitationMatchmakingService)
+    service.database = SimpleNamespace(transaction=transaction)
+    service.tournaments = SimpleNamespace(
+        context=AsyncMock(return_value=SimpleNamespace(
+            ruleset_key="si", ruleset_version=1, type_key="ladder",
+        )),
+        rulesets=DEFAULT_RULESETS,
+    )
+    service._locked_lobby = AsyncMock(return_value=lobby)
+    service._require_open = AsyncMock()
+    service._require_creator = AsyncMock()
+    service._active_member_count = AsyncMock(return_value=1)
+    service._all_active_members = AsyncMock(return_value=[])
+    service._event = AsyncMock()
+    service._refresh_validation = AsyncMock()
+    service._snapshot = AsyncMock(return_value=lobby)
+    return service, lobby
+
+
+async def test_lobby_privacy_is_editable_and_preserved_when_other_settings_change():
+    service, lobby = _privacy_settings_service()
+    await service.set_settings(lobby.id, 42, {"is_private": True}, expected_version=1)
+    assert lobby.settings["is_private"] is True
+    assert lobby.version == 2
+    await service.set_settings(lobby.id, 42, {"theme_count": 3})
+    assert lobby.settings["is_private"] is True
+    assert lobby.settings["theme_count"] == 3
+    await service.set_settings(lobby.id, 42, {"is_private": False})
+    assert lobby.settings["is_private"] is False
+    with pytest.raises(PermissionError, match="Tournament locks parameter: ready_delay"):
+        await service.set_settings(lobby.id, 42, {"ready_delay": 2})
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, []])
+async def test_lobby_privacy_requires_a_boolean(value):
+    service, lobby = _privacy_settings_service()
+    with pytest.raises(ValueError, match="is_private must be true or false"):
+        await service.set_settings(lobby.id, 42, {"is_private": value})
+    assert "is_private" not in lobby.settings
+
+
+async def test_private_lobbies_are_excluded_before_projecting_ongoing_cards():
+    tournament_id = UUID(int=2)
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(status="active")),
+        execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: [SimpleNamespace(
+            tournament_id=tournament_id, settings={"is_private": True},
+        )])),
+    )
+
+    @asynccontextmanager
+    async def sessions():
+        yield session
+
+    service = object.__new__(InvitationMatchmakingService)
+    service.database = SimpleNamespace(sessions=sessions)
+    service.tournaments = SimpleNamespace(player_tournament_map=AsyncMock(
+        return_value=({tournament_id: "Public tournament"}, set()),
+    ))
+    service._snapshot = AsyncMock()
+    assert await service.ongoing_lobbies(UUID(int=1)) == ()
+    service._snapshot.assert_not_awaited()
+
+
+async def test_private_games_are_excluded_before_projecting_observable_cards():
+    service = object.__new__(PersistentGameService)
+    game = SimpleNamespace(assignment_plan={"is_private": True})
+    assert await service._observable_card(None, game, UUID(int=1)) is None
+
+
+async def test_search_pool_is_batched_cached_and_scoped_to_each_tournament(monkeypatch):
+    ticks = [0.0]
+    monkeypatch.setattr("sitg_bot.services.matchmaking.time", SimpleNamespace(
+        monotonic=lambda: ticks[0],
+    ))
+    started = datetime.now(UTC)
+    first, second, third = (UUID(int=i) for i in (1, 2, 3))
+    rows = [
+        (first, UUID(int=10), started, 2),
+        (second, UUID(int=10), started, 3),
+        (third, UUID(int=20), started, 4),
+    ]
+    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)))
+    service = InvitationMatchmakingService(object())
+    pools = await asyncio.gather(*(service._search_pool(session) for _ in range(12)))
+    assert session.execute.await_count == 1
+    assert all(pool[first]["other_searching_lobby_count"] == 1 for pool in pools)
+    assert pools[0][first]["other_searching_player_count"] == 3
+    assert pools[0][second]["other_searching_player_count"] == 2
+    assert pools[0][third]["other_searching_lobby_count"] == 0
+    assert pools[0][third]["other_searching_player_count"] == 0
+    ticks[0] = 29.9
+    await service._search_pool(session)
+    assert session.execute.await_count == 1
+    rows.clear()
+    ticks[0] = 30.0
+    assert await service._search_pool(session) == {}
+    assert session.execute.await_count == 2
+
+
+async def test_search_refresh_throttles_reads_and_queues_only_changed_participants(monkeypatch):
+    ticks = [0.0]
+    monkeypatch.setattr("sitg_bot.services.matchmaking.time", SimpleNamespace(
+        monotonic=lambda: ticks[0],
+    ))
+    enqueue = AsyncMock()
+    monkeypatch.setattr("sitg_bot.services.matchmaking.TransactionalOutbox.enqueue", enqueue)
+    lobby_id = UUID(int=1)
+    started = datetime.now(UTC) - timedelta(minutes=2)
+    pool_rows = [(lobby_id, UUID(int=2), started, 2)]
+    status = InvitationMatchmakingService._search_status(started, {})
+    recipients = [
+        (lobby_id, None, UUID(int=3), 42, "en"),
+        (lobby_id, status, UUID(int=4), 43, "ru"),
+    ]
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[
+        SimpleNamespace(all=lambda: pool_rows), SimpleNamespace(all=lambda: recipients),
+        SimpleNamespace(all=lambda: pool_rows), SimpleNamespace(all=lambda: recipients),
+    ]))
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    service = InvitationMatchmakingService(SimpleNamespace(transaction=transaction))
+    await service.refresh_search_status()
+    assert session.execute.await_count == 2
+    enqueue.assert_awaited_once()
+    assert enqueue.await_args.kwargs["payload"]["recipient_telegram_user_id"] == 42
+    ticks[0] = 29.9
+    await service.refresh_search_status()
+    assert session.execute.await_count == 2
+    recipients[0] = (lobby_id, status, UUID(int=3), 42, "en")
+    ticks[0] = 30.0
+    await service.refresh_search_status()
+    assert session.execute.await_count == 4
+    assert enqueue.await_count == 1
+
+
+async def test_search_presentation_shares_summary_and_skips_unchanged_versions(monkeypatch):
+    now = [datetime.now(UTC)]
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now[0]
+
+    monkeypatch.setattr("sitg_bot.services.matchmaking.datetime", Clock)
+    lobby = SimpleNamespace(
+        id=UUID(int=1), tournament_id=UUID(int=2), version=1, status="assembling", searching=True,
+        expires_at=now[0] + timedelta(hours=1),
+        search_started_at=now[0] - timedelta(minutes=2),
+    )
+    member = SimpleNamespace(active=True, player_id=UUID(int=2), telegram_messages={})
+    session = SimpleNamespace(scalar=AsyncMock(return_value=member))
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    service = InvitationMatchmakingService(SimpleNamespace(transaction=transaction))
+    service._locked_lobby = AsyncMock(return_value=lobby)
+    service._search_pool = AsyncMock(return_value={lobby.id: {
+        "other_searching_lobby_count": 3, "other_searching_player_count": 6,
+    }})
+    service._telegram_summary = AsyncMock(return_value={"members": [], "selected_packets": []})
+    first = await service.telegram_presentation(lobby.id, 42)
+    assert first["lobby"]["other_searching_lobby_count"] == 3
+    # Another recipient reuses the lobby's displayed data.
+    await service.telegram_presentation(lobby.id, 43)
+    assert service._telegram_summary.await_count == 1
+    member.telegram_messages = {
+        "summary": 1, "summary_text": "Summary", "summary_version": 1,
+        "search_status": first["search_status"],
+    }
+    assert "lobby" not in await service.telegram_presentation(lobby.id, 42)
+    now[0] += timedelta(minutes=1)
+    elapsed = await service.telegram_presentation(lobby.id, 42)
+    assert elapsed["lobby"]["search_elapsed_minutes"] == 3
+    assert service._telegram_summary.await_count == 1
+    lobby.searching = False
+    stopped = await service.telegram_presentation(lobby.id, 42)
+    assert stopped["search_status"] is None
+    assert stopped["lobby"]["searching"] is False
+    assert service._telegram_summary.await_count == 2
+
+
+@pytest.mark.parametrize("kind", [
+    "matchmaking_search_started", "matchmaking_search_cancelled",
+    "matchmaking_search_completed", "lobby_merged",
+])
+async def test_search_state_events_refresh_all_active_participants(monkeypatch, kind):
+    enqueue = AsyncMock()
+    monkeypatch.setattr("sitg_bot.services.matchmaking.TransactionalOutbox.enqueue", enqueue)
+    monkeypatch.setattr(
+        "sitg_bot.services.matchmaking.TransactionalOutbox.enqueue_lobby_event", AsyncMock(),
+    )
+    recipients = [SimpleNamespace(id=UUID(int=i), telegram_user_id=40 + i, preferred_locale="en")
+                  for i in (1, 2)]
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=0), add=Mock(), flush=AsyncMock(),
+        execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: recipients)),
+    )
+    await InvitationMatchmakingService._event(session, UUID(int=3), kind, {})
+    assert enqueue.await_count == 2
+    assert all(args.kwargs["topic"] == "telegram.lobby.refresh" for args in enqueue.await_args_list)
 
 
 def test_matchmaking_tolerance_widens_in_steps_and_honors_optional_cap() -> None:
@@ -304,11 +529,17 @@ async def test_suggestions_batch_discoverable_packets_and_preserve_individual_ca
 
 
 @pytest.mark.parametrize("theme_count", [1, "max"])
-async def test_snapshot_reuses_availability_and_excludes_observers(theme_count):
+@pytest.mark.parametrize("searching", [True, False])
+async def test_snapshot_reuses_availability_and_excludes_observers(theme_count, searching):
     service, session, lobby, context, selections, _, members = _packet_listing_service(
         theme_count=theme_count,
     )
     observer = SimpleNamespace(**{**vars(members[0]), "role": "observer", "join_order": 3})
+    context.hybrid_matchmaking_enabled = True
+    lobby.searching = searching
+    counts = {"other_searching_lobby_count": 2, "other_searching_player_count": 3}
+    service._search_pool = AsyncMock(return_value={lobby.id: counts} if searching else {})
+    service._search_pool_totals = {lobby.tournament_id: counts}
     rows = [(member, SimpleNamespace(
         id=member.player_id, public_nickname="Player", telegram_user_id=42 + index,
     )) for index, member in enumerate([*members, observer])]
@@ -324,3 +555,5 @@ async def test_snapshot_reuses_availability_and_excludes_observers(theme_count):
         session, selections[:2], members, context,
     )
     assert snapshot.members[-1].role == "observer"
+    assert snapshot.other_searching_lobby_count == 2
+    assert snapshot.other_searching_player_count == 3

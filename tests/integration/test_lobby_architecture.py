@@ -2012,7 +2012,8 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         info = await gateway.execute(owner, request("lobbies.info.v1", lobby_id=lobby_id))
         assert info.ok, info.error
         assert info.data["tournament_name"] == "Architecture tournament"
-        assert info.data["mutable_parameters"] == ["maximum_players", "theme_count"]
+        assert info.data["mutable_parameters"] == ["is_private", "maximum_players", "theme_count"]
+        assert info.data["settings"]["is_private"] is False
         assert info.data["settings"]["theme_count"] == 1
         assert info.data["setting_descriptors"]
         assert len(info.data["members"]) == 2
@@ -2134,6 +2135,68 @@ async def test_owner_can_kick_lobby_members(database_url: str, role: str, contex
         with pytest.raises(ValueError, match="closed"):
             await service.kick(lobby.id, owner, target, expected_version=lobby.version)
     finally:
+        await database.close()
+
+
+async def test_search_status_batches_queries_and_skips_unchanged_deliveries(
+    database_url: str, monkeypatch,
+) -> None:
+    from sqlalchemy import event
+
+    ticks = [0.0]
+    monkeypatch.setattr("sitg_bot.services.matchmaking.time", SimpleNamespace(
+        monotonic=lambda: ticks[0],
+    ))
+    database = Database(database_url)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    try:
+        fixture = await tournament_fixture(database, player_count=3)
+        service = InvitationMatchmakingService(database)
+        lobbies = []
+        for participant in fixture.inputs[:2]:
+            lobby = await service.create_lobby(
+                participant, tournament_id=fixture.tournament_id, max_players=2,
+            )
+            await service.select_packet(lobby.id, participant.telegram_user_id, fixture.packet_id)
+            await service.find_players(lobby.id, participant.telegram_user_id)
+            lobbies.append(lobby)
+        async with database.transaction() as session:
+            session.add(PregameLobbyMemberRecord(
+                lobby_id=lobbies[1].id, player_id=fixture.players[2].id,
+                role="observer", join_order=2,
+            ))
+        ticks[0] = 30
+        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+        await service.refresh_search_status()
+        assert sum(sql.startswith("SELECT") for sql in statements) == 2
+        assert sum(sql.startswith("INSERT INTO outbox_events") for sql in statements) == 3
+        assert not any("player_exposure_claims" in sql for sql in statements)
+        for lobby, participant in (
+            (lobbies[0], fixture.inputs[0]), (lobbies[1], fixture.inputs[1]),
+            (lobbies[1], fixture.inputs[2]),
+        ):
+            state = await service.telegram_presentation(lobby.id, participant.telegram_user_id)
+            assert state["lobby"]["other_searching_lobby_count"] == 1
+            assert state["lobby"]["other_searching_player_count"] == 1
+            await service.telegram_presentation(lobby.id, participant.telegram_user_id, messages={
+                "summary": 101, "summary_text": "Summary", "summary_version": state["version"],
+                "search_status": state["search_status"],
+            })
+        statements.clear()
+        ticks[0] = 31
+        await service.refresh_search_status()
+        assert statements == []
+        ticks[0] = 60
+        await service.refresh_search_status()
+        assert len(statements) == 2
+        assert all(sql.startswith("SELECT") for sql in statements)
+    finally:
+        if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
+            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
         await database.close()
 
 
@@ -2647,6 +2710,77 @@ async def test_ongoing_overview_lists_lobbies_and_observable_games(
                 )
             )
         assert replay_count == 1
+    finally:
+        await database.close()
+
+
+async def test_private_lobby_and_started_game_are_hidden_from_ongoing_games(
+    database_url: str,
+) -> None:
+    from sitg_bot.application.gateway import ApplicationGateway
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        matchmaking = InvitationMatchmakingService(database)
+        games = PersistentGameService(database)
+        gateway = ApplicationGateway(database)
+        owner = fixture.inputs[0].telegram_user_id
+        async with database.transaction() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            tournament.visibility = "public"
+
+        lobby = await matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=2
+        )
+        assert any(
+            card["id"] == str(lobby.id)
+            for card in await matchmaking.ongoing_lobbies(fixture.players[1].id)
+        )
+        with pytest.raises(ValueError, match="is_private must be true or false"):
+            await matchmaking.set_settings(lobby.id, owner, {"is_private": "true"})
+        with pytest.raises(PermissionError):
+            await matchmaking.set_settings(
+                lobby.id, fixture.inputs[1].telegram_user_id, {"is_private": True}
+            )
+        await matchmaking.set_settings(lobby.id, owner, {"is_private": True})
+        info = await gateway._lobby_payload(lobby.id, owner)
+        assert info["settings"]["is_private"] is True
+        assert "is_private" in info["mutable_parameters"]
+        assert next(
+            item for item in info["setting_descriptors"] if item["name"] == "is_private"
+        )["value_type"] == "boolean"
+        for viewer_id in (fixture.players[0].id, fixture.players[1].id, fixture.manager.id):
+            assert all(
+                card["id"] != str(lobby.id)
+                for card in await matchmaking.ongoing_lobbies(viewer_id)
+            )
+
+        await matchmaking.set_settings(lobby.id, owner, {"is_private": False})
+        assert any(
+            card["id"] == str(lobby.id)
+            for card in await matchmaking.ongoing_lobbies(fixture.players[1].id)
+        )
+        await matchmaking.set_settings(lobby.id, owner, {"is_private": True})
+        await matchmaking.join(lobby.invitation_code, fixture.inputs[1])
+        await matchmaking.select_packet(lobby.id, owner, fixture.packet_id)
+        # Saving another setting must retain privacy.
+        await matchmaking.set_settings(lobby.id, owner, {"theme_count": "max"})
+        assert (await gateway._lobby_payload(lobby.id, owner))["settings"]["is_private"] is True
+        for participant in fixture.inputs:
+            await matchmaking.set_ready(lobby.id, participant.telegram_user_id)
+        started = await matchmaking.start(lobby.id, owner)
+        assert started.game is not None
+        async with database.sessions() as session:
+            game = await session.get(GameRecord, started.game.id)
+            assert game.assignment_plan["is_private"] is True
+        for participant in fixture.inputs:
+            await games.join(started.game.id, participant.telegram_user_id)
+        for viewer_id in (fixture.players[1].id, fixture.manager.id):
+            assert all(
+                str(card["id"]) != str(started.game.id)
+                for card in await games.ongoing_games(viewer_id)
+            )
     finally:
         await database.close()
 

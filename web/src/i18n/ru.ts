@@ -714,6 +714,8 @@ export const ru: Record<MessageKey, string> = {
   "setting.between_themes_delay.label": "Задержка между темами",
   "ruleset.si.between_themes_delay.description": "Задержка между последовательными темами.",
   "setting.pausing_allowed.label": "Пауза разрешена",
+  "setting.is_private.label": "Приватное лобби",
+  "lobby.is_private.description": "Скрыть это лобби и его игру из списка идущих игр, даже в публичном турнире. Игроки по-прежнему могут присоединиться по приглашению.",
   "ruleset.si.pausing_allowed.description": "Могут ли игроки ставить игру на паузу.",
   "setting.question_values.label": "Стоимость вопросов",
   "ruleset.si.question_values.description": "Сколько стоит каждый вопрос в теме.",

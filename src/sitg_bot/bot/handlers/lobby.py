@@ -1,6 +1,6 @@
 import html
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from aiogram import F, Router
@@ -66,6 +66,16 @@ def lobby_info_text(
                 datetime.fromisoformat(lobby["expires_at"]), locale,
             ),
             invitation=f"https://t.me/{bot_username}?start=join_{lobby['invitation_code']}",
+        ))
+    if lobby.get("searching"):
+        minutes = lobby.get("search_elapsed_minutes", 0)
+        if "search_elapsed_minutes" not in lobby and lobby.get("search_started_at"):
+            started = datetime.fromisoformat(lobby["search_started_at"])
+            minutes = max(0, int((datetime.now(UTC) - started).total_seconds() // 60))
+        lines.append(localization.text(
+            "lobby.info.search", locale, minutes=minutes,
+            lobbies=lobby.get("other_searching_lobby_count", 0),
+            players=lobby.get("other_searching_player_count", 0),
         ))
     players = [member for member in members if member.get("role") == "player"]
     observers = [member for member in members if member.get("role") == "observer"]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
+import time
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -178,6 +180,12 @@ class InvitationMatchmakingService:
         self.tournaments = TournamentService(database, rulesets=rulesets)
         self.content_adapters = content_adapters
         self.rating_confidence_model = confidence_model(rating_confidence_model).key
+        self._search_pool_lock = asyncio.Lock()
+        self._search_pool_checked_at = float("-inf")
+        self._search_pool_cache: dict[UUID, dict[str, object]] = {}
+        self._search_pool_totals: dict[UUID, dict[str, int]] = {}
+        self._search_summaries: dict[UUID, tuple[int, dict]] = {}
+        self._search_status_checked_at = float("-inf")
 
     async def create_lobby(
         self,
@@ -198,7 +206,7 @@ class InvitationMatchmakingService:
             type_maximum = int(context.type_rules.get("maximum_players", 12))
             type_minimum = int(context.type_rules.get("minimum_players", 1))
             settings = context.settings
-            stored_settings = settings.to_dict()
+            stored_settings = {**settings.to_dict(), "is_private": False}
             policy = await session.get(
                 TournamentPolicyVersionRecord, context.policy_version_id
             )
@@ -397,12 +405,139 @@ class InvitationMatchmakingService:
                 "version": lobby.version,
             }
             saved = state["messages"]
+            if messages is None and state["active"]:
+                state["search_status"] = None
+                if lobby.searching:
+                    pool = await self._search_pool(session)
+                    state["search_status"] = self._search_status(
+                        lobby.search_started_at, pool.get(
+                            lobby.id, self._search_pool_totals.get(lobby.tournament_id, {}),
+                        ),
+                    )
             if messages is None and state["active"] and (
                 force or saved.get("summary_version") != lobby.version
                 or "summary" not in saved or "summary_text" not in saved
+                or saved.get("search_status") != state["search_status"]
             ):
-                state["lobby"] = await self._telegram_summary(session, lobby)
+                cached = self._search_summaries.get(lobby.id) if lobby.searching else None
+                if force or cached is None or cached[0] != lobby.version:
+                    summary = await self._telegram_summary(session, lobby)
+                    if lobby.searching:
+                        self._search_summaries[lobby.id] = (lobby.version, summary)
+                else:
+                    summary = cached[1]
+                state["lobby"] = {
+                    **summary, "searching": lobby.searching,
+                    **(state["search_status"] or {}),
+                }
             return state
+
+    async def _search_pool(self, session: AsyncSession) -> dict[UUID, dict[str, object]]:
+        """Share one aggregate read across all search summaries for thirty seconds."""
+        async with self._search_pool_lock:
+            if time.monotonic() - self._search_pool_checked_at < 30:
+                return self._search_pool_cache
+            rows = (await session.execute(
+                select(
+                    PregameLobbyRecord.id, PregameLobbyRecord.tournament_id,
+                    PregameLobbyRecord.search_started_at,
+                    func.count(PregameLobbyMemberRecord.id),
+                )
+                .outerjoin(PregameLobbyMemberRecord, and_(
+                    PregameLobbyMemberRecord.lobby_id == PregameLobbyRecord.id,
+                    PregameLobbyMemberRecord.active.is_(True),
+                    PregameLobbyMemberRecord.role == "player",
+                ))
+                .where(
+                    PregameLobbyRecord.status == "assembling",
+                    PregameLobbyRecord.searching.is_(True),
+                    PregameLobbyRecord.expires_at > datetime.now(UTC),
+                )
+                .group_by(PregameLobbyRecord.id)
+            )).all()
+            lobby_counts = Counter(row[1] for row in rows)
+            player_counts: Counter[UUID] = Counter()
+            for _, tournament_id, _, players in rows:
+                player_counts[tournament_id] += players
+            self._search_pool_totals = {
+                tournament_id: {
+                    "other_searching_lobby_count": count,
+                    "other_searching_player_count": player_counts[tournament_id],
+                }
+                for tournament_id, count in lobby_counts.items()
+            }
+            self._search_pool_cache = {
+                lobby_id: {
+                    "search_started_at": started.isoformat(),
+                    "other_searching_lobby_count": lobby_counts[tournament_id] - 1,
+                    "other_searching_player_count": player_counts[tournament_id] - players,
+                }
+                for lobby_id, tournament_id, started, players in rows
+            }
+            self._search_summaries = {
+                lobby_id: summary for lobby_id, summary in self._search_summaries.items()
+                if lobby_id in self._search_pool_cache
+            }
+            self._search_pool_checked_at = time.monotonic()
+            return self._search_pool_cache
+
+    @staticmethod
+    def _search_status(started: datetime, pool: dict[str, object]) -> dict[str, object]:
+        minutes = max(0, int((datetime.now(UTC) - started).total_seconds() // 60))
+        return {
+            "search_started_at": started.isoformat(),
+            "search_elapsed_minutes": minutes,
+            "other_searching_lobby_count": pool.get("other_searching_lobby_count", 0),
+            "other_searching_player_count": pool.get("other_searching_player_count", 0),
+        }
+
+    async def refresh_search_status(self) -> None:
+        """Queue only changed search summaries, at most once every thirty seconds."""
+        if time.monotonic() - self._search_status_checked_at < 30:
+            return
+        self._search_status_checked_at = time.monotonic()
+        async with self.database.transaction() as session:
+            pool = await self._search_pool(session)
+            if pool:
+                rows = (await session.execute(
+                    select(
+                        PregameLobbyMemberRecord.lobby_id,
+                        PregameLobbyMemberRecord.telegram_messages["search_status"],
+                        PlayerRecord.id, PlayerRecord.telegram_user_id,
+                        PlayerRecord.preferred_locale,
+                    )
+                    .join(PlayerRecord, PlayerRecord.id == PregameLobbyMemberRecord.player_id)
+                    .join(PregameLobbyRecord,
+                          PregameLobbyRecord.id == PregameLobbyMemberRecord.lobby_id)
+                    .where(
+                        PregameLobbyMemberRecord.lobby_id.in_(pool),
+                        PregameLobbyMemberRecord.active.is_(True),
+                        PlayerRecord.telegram_user_id.is_not(None),
+                        PregameLobbyRecord.searching.is_(True),
+                        PregameLobbyRecord.status == "assembling",
+                        PregameLobbyRecord.expires_at > datetime.now(UTC),
+                    )
+                )).all()
+                bucket = int(datetime.now(UTC).timestamp()) // 30
+                statuses = {
+                    lobby_id: self._search_status(
+                        datetime.fromisoformat(str(item["search_started_at"])), item,
+                    )
+                    for lobby_id, item in pool.items()
+                }
+                for lobby_id, saved_status, player_id, telegram_id, locale in rows:
+                    if saved_status == statuses[lobby_id]:
+                        continue
+                    await TransactionalOutbox.enqueue(
+                        session, topic="telegram.lobby.refresh",
+                        deduplication_key=f"lobby:{lobby_id}:search:{bucket}:{player_id}",
+                        partition_key=f"telegram:chat:{telegram_id}",
+                        aggregate_type="lobby", aggregate_id=lobby_id,
+                        payload={
+                            "lobby_id": str(lobby_id),
+                            "recipient_telegram_user_id": telegram_id, "locale": locale,
+                        },
+                    )
 
     @staticmethod
     async def _telegram_summary(session: AsyncSession, lobby: PregameLobbyRecord) -> dict:
@@ -748,18 +883,21 @@ class InvitationMatchmakingService:
                 TournamentPolicyVersionRecord, lobby.tournament_policy_version_id
             )
             assert policy is not None
-            locked = set(changes) - set(policy.player_mutable_parameters)
+            locked = set(changes) - set(policy.player_mutable_parameters) - {"is_private"}
             if locked:
                 raise PermissionError(f"Tournament locks parameter: {sorted(locked)[0]}")
             context = await self.tournaments.context(session, lobby.tournament_id)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
             raw = {**lobby.settings, **changes}
+            is_private = raw.pop("is_private", False)
+            if not isinstance(is_private, bool):
+                raise ValueError("is_private must be true or false")
             maximum_themes = raw.get("theme_count") == MAX_THEME_COUNT
             validated = dict(raw)
             if maximum_themes:
                 del validated["theme_count"]
             settings = ruleset.parameters(validated)
-            stored = settings.to_dict()
+            stored = {**settings.to_dict(), "is_private": is_private}
             if maximum_themes:
                 stored["theme_count"] = MAX_THEME_COUNT
             if stored == lobby.settings:
@@ -1350,6 +1488,8 @@ class InvitationMatchmakingService:
         discarded: PregameLobbyRecord,
         packet_plan: list[PregameLobbyPacketRecord],
     ) -> None:
+        if discarded.settings.get("is_private", False):
+            survivor.settings = {**survivor.settings, "is_private": True}
         discarded_members = await self._all_active_members(session, discarded.id)
         transferred_player_ids = [member.player_id for member in discarded_members]
         for member in discarded_members:
@@ -1692,6 +1832,7 @@ class InvitationMatchmakingService:
                 source_lobby_id=lobby.id,
                 assignment_plan={
                     **plan.to_dict(),
+                    "is_private": lobby.settings.get("is_private", False),
                     **({"classic_match_id": str(classic_match.id)} if classic_match else {}),
                 },
                 join_deadline=now + INITIAL_PLAYER_JOIN_TIMEOUT,
@@ -1863,6 +2004,8 @@ class InvitationMatchmakingService:
                 )
             ).scalars()
             for lobby in lobbies:
+                if lobby.settings.get("is_private", False):
+                    continue
                 snapshot = await self._snapshot(session, lobby)
                 viewer = next(
                     (
@@ -2053,38 +2196,11 @@ class InvitationMatchmakingService:
                     total=total, fresh=fresh_by_version[version.id],
                 )
             )
-        other_searching_lobby_count = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(PregameLobbyRecord)
-                .where(
-                    PregameLobbyRecord.status == "assembling",
-                    PregameLobbyRecord.searching.is_(True),
-                    PregameLobbyRecord.tournament_id == lobby.tournament_id,
-                    PregameLobbyRecord.id != lobby.id,
-                )
+        search_pool = {}
+        if context.hybrid_matchmaking_enabled:
+            search_pool = (await self._search_pool(session)).get(
+                lobby.id, self._search_pool_totals.get(lobby.tournament_id, {}),
             )
-            or 0
-        )
-        other_searching_player_count = int(
-            await session.scalar(
-                select(func.count())
-                .select_from(PregameLobbyMemberRecord)
-                .join(
-                    PregameLobbyRecord,
-                    PregameLobbyRecord.id == PregameLobbyMemberRecord.lobby_id,
-                )
-                .where(
-                    PregameLobbyRecord.status == "assembling",
-                    PregameLobbyRecord.searching.is_(True),
-                    PregameLobbyRecord.tournament_id == lobby.tournament_id,
-                    PregameLobbyRecord.id != lobby.id,
-                    PregameLobbyMemberRecord.active.is_(True),
-                    PregameLobbyMemberRecord.role == "player",
-                )
-            )
-            or 0
-        )
         return LobbySnapshot(
             id=lobby.id,
             version=lobby.version,
@@ -2098,8 +2214,8 @@ class InvitationMatchmakingService:
             hybrid_matchmaking_available=context.hybrid_matchmaking_enabled,
             search_started_at=lobby.search_started_at,
             merged_into_lobby_id=lobby.merged_into_lobby_id,
-            other_searching_lobby_count=other_searching_lobby_count,
-            other_searching_player_count=other_searching_player_count,
+            other_searching_lobby_count=int(search_pool.get("other_searching_lobby_count", 0)),
+            other_searching_player_count=int(search_pool.get("other_searching_player_count", 0)),
             settings=await self._lobby_parameters(session, lobby, selected, context, ruleset),
             selected_packets=tuple(selected_snapshots),
             validation_violations=tuple(lobby.validation),
@@ -2487,6 +2603,8 @@ class InvitationMatchmakingService:
         if kind in {
             "lobby_created", "player_joined", "player_left", "role_changed",
             "packet_selected", "packet_removed", "settings_changed", "readiness_changed",
+            "matchmaking_search_started", "matchmaking_search_cancelled",
+            "matchmaking_search_completed", "lobby_merged",
         }:
             await session.flush()
             recipients = (await session.execute(
