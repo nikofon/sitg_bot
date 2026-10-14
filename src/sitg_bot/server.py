@@ -159,6 +159,7 @@ class ConsoleApplicationServer:
                 "classic.chat.reminder": self._job_classic_chat_reminder,
                 "packet.availability": self._job_packet_availability,
                 "suspicion.tick": self._job_suspicion,
+                "game.finished_closure": self._job_finished_game_closure,
             },
             poll_interval=poll_interval,
         )
@@ -1666,6 +1667,11 @@ class ConsoleApplicationServer:
         from sitg_bot.services.packet_notifications import PacketAvailabilityService
 
         await PacketAvailabilityService(self.database).reconcile()
+
+    async def _job_finished_game_closure(self, payload: dict[str, Any]) -> None:
+        del payload
+        for game_id in await self.application_gateway.telegram_games.close_finished_games():
+            await self._broadcast_game(game_id)
 
     async def _job_classic(self, payload: dict[str, Any]) -> None:
         from sitg_bot.services.classic import ClassicService

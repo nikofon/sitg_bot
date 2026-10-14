@@ -104,6 +104,9 @@ class AutomaticJobScheduler:
         scheduled += await self._periodic(
             "packet.availability", now, every=timedelta(seconds=30), priority=55
         )
+        scheduled += await self._periodic(
+            "game.finished_closure", now, every=timedelta(seconds=30), priority=60
+        )
         return scheduled
 
     async def _periodic(

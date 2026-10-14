@@ -13,6 +13,7 @@ from test_lobby_architecture import packet as architecture_packet
 from test_lobby_architecture import tournament_fixture
 
 from sitg_bot.application.contracts import ActionCode, GameActOperation
+from sitg_bot.domain.game_deadlines import FINISHED_GAME_CLOSURE_TIMEOUT
 from sitg_bot.domain.packet import Question
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.navigation import TelegramNavigationService
@@ -22,6 +23,8 @@ from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AnswerAttemptRecord,
+    GameEventRecord,
+    GameObserverRecord,
     GameRecord,
     GameThemeRecord,
     OutboxEventRecord,
@@ -184,6 +187,62 @@ async def test_quit_notifies_remaining_players_once(database_url):
         departures = (await restarted.delivery(third.telegram_user_id, game_id))["events"]
         assert len(departures) == 1 and departures[0]["kind"] == "player_quit"
         assert departures[0]["parameters"]["name"] == fixture.players[1].public_nickname
+    finally:
+        await database.close()
+
+
+async def test_finished_games_close_automatically_after_timeout(database_url):
+    database = Database(database_url)
+    try:
+        fixture, game_id = await assigned_game(database, 3)
+        service = TelegramGameService(database)
+        for player in fixture.inputs:
+            await act(service, player, game_id, "join")
+        await service.observe(fixture.manager.telegram_user_id, game_id)
+        await progress_until(
+            database, game_id, fixture.inputs[0],
+            lambda v: v["status"] in {"completed", "finalized"},
+        )
+        assert not (await service.delivery(
+            fixture.inputs[1].telegram_user_id, game_id
+        ))["skip"]
+        assert await service.close_finished_games() == ()
+        await act(service, fixture.inputs[0], game_id, "quit")
+        async with database.transaction() as session:
+            game = await session.get(GameRecord, game_id, with_for_update=True)
+            stale = datetime.now(UTC) - FINISHED_GAME_CLOSURE_TIMEOUT - timedelta(minutes=1)
+            for field in ("completed_at", "finalized_at"):
+                if getattr(game, field) is not None:
+                    setattr(game, field, stale)
+        restarted = TelegramGameService(database)
+        assert await restarted.close_finished_games() == (game_id,)
+        assert await restarted.close_finished_games() == ()
+        for player in fixture.inputs:
+            assert (await restarted.delivery(player.telegram_user_id, game_id))["skip"]
+        with pytest.raises(PermissionError, match="has been left"):
+            await act(restarted, fixture.inputs[1], game_id, "quit")
+        async with database.sessions() as session:
+            views = list(await session.scalars(select(TelegramGameViewRecord).where(
+                TelegramGameViewRecord.game_id == game_id,
+            )))
+            assert views and all(view.dismissed_at is not None for view in views)
+            cleanups = list(await session.scalars(select(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == game_id,
+                OutboxEventRecord.topic == "telegram.game.cleanup",
+            )))
+            assert {event.payload["recipient_telegram_user_id"] for event in cleanups} == {
+                player.telegram_user_id for player in (*fixture.inputs, fixture.manager)
+            }
+            observers = list(await session.scalars(select(GameObserverRecord).where(
+                GameObserverRecord.game_id == game_id,
+            )))
+            assert observers and all(not observer.active for observer in observers)
+            closed_event = await session.scalar(select(GameEventRecord).where(
+                GameEventRecord.game_id == game_id,
+                GameEventRecord.kind == "game_closed",
+            ))
+            assert closed_event is not None
+            assert closed_event.payload["reason"] == "closure_timeout"
     finally:
         await database.close()
 

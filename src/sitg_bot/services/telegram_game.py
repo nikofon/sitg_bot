@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 
 from sitg_bot.application.contracts import GameActOperation
 from sitg_bot.domain.game_action_reasons import game_action_reason
+from sitg_bot.domain.game_deadlines import FINISHED_GAME_CLOSURE_TIMEOUT
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.trust import TrustService
@@ -23,6 +24,7 @@ from sitg_bot.storage.models import (
     GameParticipantRecord,
     GameRecord,
     PacketVersionRecord,
+    PlayerExposureClaimRecord,
     PlayerRecord,
     PlayerReportRecord,
     QuestionRevisionRecord,
@@ -32,6 +34,16 @@ from sitg_bot.storage.models import (
     TelegramGameViewRecord,
     ThemeRevisionRecord,
     TournamentRecord,
+)
+
+
+TERMINAL_GAME_STATUSES = (
+    "completed",
+    "finalized",
+    "failed_to_start",
+    "cancelled",
+    "abandoned",
+    "invalidated",
 )
 
 
@@ -251,6 +263,111 @@ class TelegramGameService:
                 await self._cleanup(session, game.id, telegram_user_id)
             await session.flush()
             return {"accepted": accepted, "receipt": None}
+
+    async def close_finished_games(self, *, limit: int = 100) -> tuple[UUID, ...]:
+        """Close views of finished games that lingered past the closure timeout.
+
+        Every participant who never ran /quit and every still-attached observer is
+        dismissed at once: cursors are closed, tracked messages queued for deletion,
+        observers deactivated, and reserved exposure claims released.
+        """
+        async with self.database.sessions() as session:
+            cutoff = datetime.now(UTC) - FINISHED_GAME_CLOSURE_TIMEOUT
+            game_ids = tuple(
+                (
+                    await session.execute(
+                        select(GameRecord.id)
+                        .join(
+                            TelegramGameViewRecord,
+                            TelegramGameViewRecord.game_id == GameRecord.id,
+                        )
+                        .where(
+                            GameRecord.status.in_(TERMINAL_GAME_STATUSES),
+                            func.least(
+                                GameRecord.completed_at,
+                                GameRecord.cancelled_at,
+                                GameRecord.abandoned_at,
+                                GameRecord.finalized_at,
+                            )
+                            <= cutoff,
+                            TelegramGameViewRecord.dismissed_at.is_(None),
+                        )
+                        .distinct()
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
+        closed: list[UUID] = []
+        for game_id in game_ids:
+            async with self.database.transaction() as session:
+                game = await session.scalar(
+                    select(GameRecord).where(GameRecord.id == game_id).with_for_update()
+                )
+                if game is None or game.status not in TERMINAL_GAME_STATUSES:
+                    continue
+                now = datetime.now(UTC)
+                finished_at = min(
+                    (
+                        value
+                        for value in (
+                            game.completed_at,
+                            game.cancelled_at,
+                            game.abandoned_at,
+                            game.finalized_at,
+                        )
+                        if value is not None
+                    ),
+                    default=None,
+                )
+                if finished_at is None or now < finished_at + FINISHED_GAME_CLOSURE_TIMEOUT:
+                    continue
+                views = (
+                    await session.execute(
+                        select(TelegramGameViewRecord, PlayerRecord.telegram_user_id)
+                        .join(
+                            PlayerRecord, PlayerRecord.id == TelegramGameViewRecord.player_id
+                        )
+                        .where(
+                            TelegramGameViewRecord.game_id == game.id,
+                            TelegramGameViewRecord.dismissed_at.is_(None),
+                        )
+                    )
+                ).all()
+                for cursor, telegram_user_id in views:
+                    cursor.dismissed_at = now
+                    cursor.connected = False
+                    await self._cleanup(session, game.id, telegram_user_id)
+                observers = (
+                    await session.execute(
+                        select(GameObserverRecord).where(
+                            GameObserverRecord.game_id == game.id,
+                            GameObserverRecord.active.is_(True),
+                        )
+                    )
+                ).scalars()
+                for observer in observers:
+                    observer.active = False
+                    observer.left_at = now
+                reservations = (
+                    await session.execute(
+                        select(PlayerExposureClaimRecord).where(
+                            PlayerExposureClaimRecord.game_id == game.id,
+                            PlayerExposureClaimRecord.state == "reserved",
+                        )
+                    )
+                ).scalars()
+                for reservation in reservations:
+                    reservation.state = "released"
+                    reservation.released_at = now
+                await PersistentGameService._event(
+                    session,
+                    game.id,
+                    "game_closed",
+                    {"reason": "closure_timeout", "closed_at": now},
+                )
+                await session.flush()
+            closed.append(game_id)
+        return tuple(closed)
 
     @staticmethod
     async def _cleanup(session, game_id, telegram_user_id):
