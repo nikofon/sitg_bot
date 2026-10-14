@@ -557,3 +557,63 @@ async def test_snapshot_reuses_availability_and_excludes_observers(theme_count, 
     assert snapshot.members[-1].role == "observer"
     assert snapshot.other_searching_lobby_count == 2
     assert snapshot.other_searching_player_count == 3
+
+
+async def test_packet_pages_filter_before_calculating_and_return_complete_matches():
+    service, session, lobby, _, selections, versions, _ = _packet_listing_service()
+    rows = [(SimpleNamespace(id=selection.packet_id), SimpleNamespace(
+        id=selection.assignment_id, adopted_version_id=selection.packet_version_id,
+    )) for selection in selections]
+
+    async def execute(query):
+        cursor = next((value for value in query.compile().params.values()
+                       if isinstance(value, UUID) and value in [row[1].id for row in rows]), None)
+        return SimpleNamespace(all=lambda: [
+            row for row in rows if cursor is None or row[1].id > cursor
+        ])
+
+    session.execute.side_effect = execute
+    service._packet_play_unit_count.side_effect = None
+    service._packet_play_unit_count.return_value = 3
+    first = await service.packet_page(lobby.id, telegram_user_id=42, limit=1)
+    assert [item.name for item in first["items"]] == ["Zulu"]
+    assert first["next_cursor"] == str(selections[0].assignment_id)
+    second = await service.packet_page(
+        lobby.id, telegram_user_id=42, limit=1, cursor=UUID(first["next_cursor"]),
+    )
+    assert [item.name for item in second["items"]] == ["Alpha"]
+    assert second["next_cursor"] is None
+    service._available_play_units.reset_mock()
+    filtered = await service.packet_page(
+        lobby.id, telegram_user_id=42, filters={"name": " ALPHA "},
+    )
+    assert [item.name for item in filtered["items"]] == ["Alpha"]
+    calculated = service._available_play_units.await_args.args[1]
+    assert [item.packet_version_id for item in calculated] == [versions[1].id]
+
+
+async def test_listing_services_share_a_background_limiter_without_blocking_other_work():
+    from sitg_bot.services.packet_blocks import PacketBlockService
+
+    loop = asyncio.get_running_loop()
+    starts, finishes = [], []
+
+    async def page(*args, **kwargs):
+        starts.append(loop.time())
+        await asyncio.sleep(0.01)
+        finishes.append(loop.time())
+        return {"items": [], "next_cursor": None}
+
+    lobby_service = object.__new__(InvitationMatchmakingService)
+    lobby_service._packet_page = page
+    tournament_service = object.__new__(PacketBlockService)
+    tournament_service._packet_page = page
+    first = asyncio.create_task(lobby_service.packet_page(UUID(int=1), telegram_user_id=42))
+    second = asyncio.create_task(tournament_service.list_tournament_packets(
+        UUID(int=2), UUID(int=3), limit=25,
+    ))
+    await asyncio.sleep(0.03)
+    assert not second.done()
+    assert first.done()
+    await asyncio.gather(first, second)
+    assert starts[1] - finishes[0] >= 0.19

@@ -982,6 +982,12 @@ class ApplicationGateway:
         if isinstance(operation, LibraryListOperation):
             return await self.library.list_packets(player_id)
         if isinstance(operation, TournamentPacketListOperation):
+            if operation.limit is not None or not operation.include_items:
+                return await self.packet_blocks.list_tournament_packets(
+                    player_id, operation.tournament_id, include_items=operation.include_items,
+                    limit=operation.limit, cursor=operation.cursor, packet_id=operation.packet_id,
+                    filters=operation.packet_filters(),
+                )
             return await self.packet_blocks.list_tournament_packets(
                 player_id, operation.tournament_id
             )
@@ -1178,6 +1184,12 @@ class ApplicationGateway:
             return await self._lobby_reference(operation.lobby_id, player_id)
         if isinstance(operation, LobbyInfoOperation):
             await self._require_lobby_member(operation.lobby_id, player_id)
+            if operation.limit is not None:
+                return await self.matchmaking.packet_page(
+                    operation.lobby_id, telegram_user_id=telegram_user_id,
+                    limit=operation.limit, cursor=operation.cursor, packet_id=operation.packet_id,
+                    filters=operation.packet_filters(),
+                )
             return await self._lobby_payload(
                 operation.lobby_id, telegram_user_id,
                 include_packet_suggestions=operation.include_packet_suggestions,

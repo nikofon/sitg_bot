@@ -176,6 +176,12 @@ class MiniAppHttpServer:
             "/api/miniapp/tournaments/{tournament_id}/packets/{packet_id}/{command}",
             self._packet_block,
         )
+        app.router.add_get(
+            "/api/miniapp/tournaments/{tournament_id}/packets", self._tournament_packet_page,
+        )
+        app.router.add_get(
+            "/api/miniapp/lobbies/{launch_ref}/packets", self._lobby_packet_page,
+        )
         app.router.add_post(
             "/api/miniapp/chats/{chat_id}/game-time",
             self._set_chat_game_time,
@@ -618,6 +624,7 @@ class MiniAppHttpServer:
                 TournamentPacketListOperation(
                     action=ActionCode.TOURNAMENT_PACKET_LIST,
                     tournament_id=UUID(tournament_packets_match.group(1)),
+                    include_items=False,
                 ),
             )
             if not result.ok:
@@ -777,9 +784,7 @@ class MiniAppHttpServer:
                 LobbyInfoOperation(
                     action=ActionCode.LOBBY_INFO,
                     lobby_id=lobby_id,
-                    include_packet_suggestions=(
-                        parse_qs(parsed.query).get("section", ["overview"])[-1] == "packets"
-                    ),
+                    include_packet_suggestions=False,
                 ),
                 correlation_id=self._correlation_id(request),
             )
@@ -938,6 +943,35 @@ class MiniAppHttpServer:
             tournament_id=self._tournament_id(request),
         )
         _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    @staticmethod
+    def _packet_page_options(request: web.Request) -> dict[str, object]:
+        fields = {"name", "author", "year_from", "year_to", "publication_from",
+                  "publication_to", "cursor", "packet_id"}
+        return {"limit": request.query.get("limit", "25"),
+                **{key: request.query[key] for key in fields if request.query.get(key)}}
+
+    async def _tournament_packet_page(self, request: web.Request) -> web.Response:
+        operation = TournamentPacketListOperation.model_validate({
+            "action": ActionCode.TOURNAMENT_PACKET_LIST,
+            "tournament_id": self._path_uuid(request, "tournament_id"),
+            **self._packet_page_options(request),
+        })
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _lobby_packet_page(self, request: web.Request) -> web.Response:
+        session, lobby_id = await self._resolve_lobby_reference(
+            request, request.match_info["launch_ref"], action=ActionCode.LOBBY_INFO,
+        )
+        operation = LobbyInfoOperation.model_validate({
+            "action": ActionCode.LOBBY_INFO, "lobby_id": lobby_id,
+            **self._packet_page_options(request),
+        })
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request),
+        )
         return self._gateway_response(result)
 
     async def _packet_block(self, request: web.Request) -> web.Response:

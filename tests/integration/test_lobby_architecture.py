@@ -1944,16 +1944,20 @@ async def test_lobby_content_queries_are_batched_for_suggestions_and_snapshot(
             await read(lobby.id)
             for prefix in (
                 "SELECT theme_revisions.id,", "SELECT packet_questions.theme_revision_id,",
-                "SELECT player_exposure_claims.claim_namespace,",
             ):
-                assert sum(sql.startswith(prefix) for sql in statements) == 1
+                assert sum(sql.startswith(prefix) for sql in statements) == 0
+            # A snapshot validates the lobby and then describes selected packets.
+            expected_checks = 2 if read == service.get else 1
+            assert sum(sql.startswith("SELECT player_exposure_claims.player_id,")
+                       for sql in statements) == expected_checks
             assert sum(
-                sql.startswith("SELECT player_packet_blocks.packet_id")
-                and "player_packet_blocks.packet_id IN" in sql
+                sql.startswith("SELECT packet_versions.id")
+                and "JOIN player_packet_blocks" in sql
                 for sql in statements
-            ) == 1
+            ) == expected_checks
             assert not any(sql.startswith("SELECT theme_revision_coauthors.content_id")
                            for sql in statements)
+            assert not any(sql.startswith("UPDATE ") for sql in statements)
     finally:
         if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)

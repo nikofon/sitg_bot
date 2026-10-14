@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,6 +11,7 @@ from test_lobby_architecture import tournament_fixture
 
 from sitg_bot.services.library import PacketLibraryService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
+from sitg_bot.services.packet_blocks import PacketBlockService
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.ruleset_content import PacketSelection, SIContentAdapter
@@ -52,6 +53,49 @@ async def configure(database, fixture, *, level="anytime", readable=True, releas
         version = await session.get(PacketVersionRecord, assignment.adopted_version_id)
         version.library_released_at = datetime.now(UTC) if released else None
         return assignment.id, version.id
+
+
+async def test_packet_pages_share_cache_and_reconcile_library_exposure(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        await configure(database, fixture)
+        blocks = PacketBlockService(database)
+        matching = InvitationMatchmakingService(database)
+        lobby = await matching.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        with patch.object(SIContentAdapter, "_calculate_available",
+                          wraps=SIContentAdapter._calculate_available) as calculate:
+            page = await blocks.list_tournament_packets(
+                fixture.players[0].id, fixture.tournament_id, limit=25,
+            )
+            assert page["items"][0]["fresh_play_unit_count"] == 1
+            assert calculate.call_count == 1
+            page = await matching.packet_page(
+                lobby.id, telegram_user_id=fixture.inputs[0].telegram_user_id,
+            )
+            assert page["items"][0].fresh_play_unit_count == 1
+            assert calculate.call_count == 1
+            lobby = await matching.join(lobby.invitation_code, fixture.inputs[1])
+            page = await matching.packet_page(
+                lobby.id, telegram_user_id=fixture.inputs[0].telegram_user_id,
+            )
+            assert calculate.call_count == 2
+            await PacketLibraryService(database).access(
+                fixture.players[0].id, page["items"][0].packet_version_id,
+                confirm=True, request_key="cache-library-view",
+            )
+            page = await matching.packet_page(
+                lobby.id, telegram_user_id=fixture.inputs[0].telegram_user_id,
+            )
+            assert page["items"][0].fresh_play_unit_count == 0
+            assert calculate.call_count == 3
+            page = await blocks.list_tournament_packets(
+                fixture.players[0].id, fixture.tournament_id, limit=25,
+            )
+            assert page["items"][0]["fresh_play_unit_count"] == 0
+            assert calculate.call_count == 3
+    finally:
+        await database.close()
 
 
 async def claims_for(database, player_id, version_id=None):

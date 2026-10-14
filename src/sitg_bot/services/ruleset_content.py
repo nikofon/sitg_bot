@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from typing import Protocol
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +21,41 @@ from sitg_bot.storage.models import (
     ThemeRevisionRecord,
 )
 from sitg_bot.storage.packets import PostgresPacketRepository
+
+LAYOUT_CACHE_LIMIT = 1024
+PLAYER_CACHE_LIMIT = 8192
+
+
+@dataclass
+class _ContentCache:
+    layouts: OrderedDict = field(default_factory=OrderedDict)
+    counts: OrderedDict = field(default_factory=OrderedDict)
+    players: OrderedDict = field(default_factory=OrderedDict)
+    layout_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass(frozen=True)
+class _Layout:
+    units: tuple[PlayUnit, ...]
+    identities: frozenset[tuple[str, UUID]]
+
+
+_CACHES: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def _cache(session: AsyncSession) -> _ContentCache:
+    # The engine, rather than a URL or session, isolates separate databases and tests.
+    bind = session.get_bind()
+    if bind not in _CACHES:
+        _CACHES[bind] = _ContentCache()
+    return _CACHES[bind]
+
+
+def _remember(cache: OrderedDict, key, value, limit: int) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > limit:
+        cache.popitem(last=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,14 +155,24 @@ class SIContentAdapter:
         ]
 
     async def play_unit_count(self, session: AsyncSession, packet_version_id: UUID) -> int:
-        return int(
-            await session.scalar(
-                select(func.count())
-                .select_from(ThemeRevisionRecord)
-                .where(ThemeRevisionRecord.packet_version_id == packet_version_id)
+        cache = _cache(session)
+        identity = (self.key, self.version, packet_version_id)
+        if identity in cache.counts:
+            cache.counts.move_to_end(identity)
+            return cache.counts[identity]
+        async with cache.layout_lock:
+            if identity in cache.counts:
+                return cache.counts[identity]
+            count = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ThemeRevisionRecord)
+                    .where(ThemeRevisionRecord.packet_version_id == packet_version_id)
+                )
+                or 0
             )
-            or 0
-        )
+            _remember(cache.counts, identity, count, LAYOUT_CACHE_LIMIT)
+        return count
 
     async def available_play_units(
         self,
@@ -137,6 +185,94 @@ class SIContentAdapter:
         packet_order = {
             selection.packet_version_id: selection.selection_order for selection in selections
         }
+        # Resolve blocks using only version metadata, before any content or exposure read.
+        blocked_versions = set()
+        if player_ids:
+            blocked_versions = set((await session.execute(
+                select(PacketVersionRecord.id)
+                .join(PlayerPacketBlockRecord,
+                      PlayerPacketBlockRecord.packet_id == PacketVersionRecord.packet_id)
+                .where(PacketVersionRecord.id.in_(packet_order),
+                       PlayerPacketBlockRecord.player_id.in_(player_ids))
+            )).scalars())
+        packet_order = {key: value for key, value in packet_order.items()
+                        if key not in blocked_versions}
+        if not packet_order:
+            return []
+        cache = _cache(session)
+        # Coalesce cold layout loads. Exposure is always read from the caller's transaction.
+        layouts = {version_id: cache.layouts[(self.key, self.version, version_id)]
+                   for version_id in packet_order
+                   if (self.key, self.version, version_id) in cache.layouts}
+        # Warm gameplay reads must not wait for unrelated background layout loads.
+        if len(layouts) != len(packet_order):
+            async with cache.layout_lock:
+                missing = [version_id for version_id in packet_order
+                           if (self.key, self.version, version_id) not in cache.layouts]
+                loaded = await self._load_layouts(session, missing) if missing else {}
+                layouts = {version_id: cache.layouts[(self.key, self.version, version_id)]
+                           for version_id in packet_order if version_id not in loaded}
+                for version_id, layout in loaded.items():
+                    identity = (self.key, self.version, version_id)
+                    _remember(cache.layouts, identity, layout, LAYOUT_CACHE_LIMIT)
+                    _remember(cache.counts, identity, len(layout.units), LAYOUT_CACHE_LIMIT)
+                layouts.update(loaded)
+        for version_id in layouts:
+            identity = (self.key, self.version, version_id)
+            if identity in cache.layouts:
+                cache.layouts.move_to_end(identity)
+        claims = set().union(*(layout.identities for layout in layouts.values()))
+        exposure: dict[UUID, set[tuple[str, UUID]]] = {player: set() for player in player_ids}
+        if player_ids and claims:
+            rows = (await session.execute(
+                select(PlayerExposureClaimRecord.player_id,
+                       PlayerExposureClaimRecord.claim_namespace,
+                       PlayerExposureClaimRecord.claim_id)
+                .where(
+                    PlayerExposureClaimRecord.player_id.in_(player_ids),
+                    PlayerExposureClaimRecord.state.in_(("reserved", "burnt")),
+                    or_(*[
+                        (PlayerExposureClaimRecord.claim_namespace == namespace)
+                        & PlayerExposureClaimRecord.claim_id.in_(
+                            [identity for kind, identity in claims if kind == namespace]
+                        )
+                        for namespace in ("theme", "question")
+                    ]),
+                )
+            )).all()
+            for player, namespace, identity in rows:
+                exposure[player].add((namespace, identity))
+        available: list[PlayUnit] = []
+        for version_id, layout in layouts.items():
+            units, identities = layout.units, layout.identities
+            common = {unit.revision_id for unit in units}
+            for player in dict.fromkeys(player_ids):
+                inputs = frozenset(exposure[player] & identities)
+                identity = (self.key, self.version, version_id, player)
+                previous = cache.players.get(identity)
+                if previous is None or previous[0] != inputs:
+                    fresh = self._calculate_available(units, inputs)
+                    _remember(cache.players, identity, (inputs, fresh), PLAYER_CACHE_LIMIT)
+                else:
+                    fresh = previous[1]
+                    cache.players.move_to_end(identity)
+                common.intersection_update(fresh)
+            available.extend(replace(unit, packet_order=packet_order[version_id],
+                                     metadata={"question_values": list(
+                                         unit.metadata["question_values"]
+                                     )})
+                             for unit in units if unit.revision_id in common)
+        return sorted(available, key=lambda unit: (unit.packet_version_id, unit.position))
+
+    @staticmethod
+    def _calculate_available(units, inputs) -> frozenset[UUID]:
+        return frozenset(unit.revision_id for unit in units
+                         if not any((claim.namespace, claim.identity) in inputs
+                                    for claim in unit.claims))
+
+    async def _load_layouts(
+        self, session: AsyncSession, version_ids: Sequence[UUID]
+    ) -> dict[UUID, _Layout]:
         theme_rows = (
             await session.execute(
                 select(
@@ -150,70 +286,13 @@ class SIContentAdapter:
                     PacketVersionRecord,
                     PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id,
                 )
-                .where(ThemeRevisionRecord.packet_version_id.in_(packet_order))
+                .where(ThemeRevisionRecord.packet_version_id.in_(version_ids))
                 .order_by(
                     ThemeRevisionRecord.packet_version_id,
                     ThemeRevisionRecord.position,
                 )
             )
         ).all()
-        if not theme_rows:
-            return []
-        blocked: set[tuple[str, UUID]] = set()
-        blocked_packets: set[UUID] = set()
-        if player_ids:
-            blocked = set(
-                (
-                    await session.execute(
-                        select(
-                            PlayerExposureClaimRecord.claim_namespace,
-                            PlayerExposureClaimRecord.claim_id,
-                        ).where(
-                            PlayerExposureClaimRecord.player_id.in_(player_ids),
-                            PlayerExposureClaimRecord.state.in_(("reserved", "burnt")),
-                            # Match logical identities across corrections, not claim provenance.
-                            or_(
-                                (PlayerExposureClaimRecord.claim_namespace == "theme")
-                                & PlayerExposureClaimRecord.claim_id.in_(
-                                    select(ThemeRevisionRecord.theme_id).where(
-                                        ThemeRevisionRecord.packet_version_id.in_(packet_order)
-                                    )
-                                ),
-                                (PlayerExposureClaimRecord.claim_namespace == "question")
-                                & PlayerExposureClaimRecord.claim_id.in_(
-                                    select(QuestionRevisionRecord.question_id)
-                                    .join(
-                                        PacketQuestionRecord,
-                                        PacketQuestionRecord.question_revision_id
-                                        == QuestionRevisionRecord.id,
-                                    )
-                                    .where(PacketQuestionRecord.packet_version_id.in_(packet_order))
-                                ),
-                            ),
-                        )
-                    )
-                ).tuples()
-            )
-            # A player-declared block treats every theme and question of the
-            # packet as burnt without persisting exposure claims.
-            blocked_packets = set(
-                (
-                    await session.execute(
-                        select(PlayerPacketBlockRecord.packet_id).where(
-                            PlayerPacketBlockRecord.player_id.in_(player_ids),
-                            PlayerPacketBlockRecord.packet_id.in_(
-                                {theme.packet_id for theme in theme_rows}
-                            ),
-                        )
-                    )
-                ).scalars()
-            )
-        themes = [
-            theme for theme in theme_rows
-            if theme.packet_id not in blocked_packets and ("theme", theme.theme_id) not in blocked
-        ]
-        if not themes:
-            return []
         question_rows = (
             await session.execute(
                 select(
@@ -227,7 +306,7 @@ class SIContentAdapter:
                     QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
                 )
                 .where(PacketQuestionRecord.packet_version_id.in_(
-                    {theme.packet_version_id for theme in themes}
+                    version_ids
                 ))
                 .order_by(PacketQuestionRecord.theme_revision_id, PacketQuestionRecord.position)
             )
@@ -235,30 +314,30 @@ class SIContentAdapter:
         questions_by_theme: dict[UUID, list[tuple[UUID, int, UUID]]] = {}
         for theme_id, revision_id, value, question_id in question_rows:
             questions_by_theme.setdefault(theme_id, []).append((revision_id, value, question_id))
-        units: list[PlayUnit] = []
-        for theme in themes:
+        layouts: dict[UUID, list[PlayUnit]] = {version_id: [] for version_id in version_ids}
+        for theme in theme_rows:
             questions = questions_by_theme.get(theme.id, [])
             claims = (ExposureClaim("theme", theme.theme_id),) + tuple(
                 ExposureClaim("question", question_id) for _, _, question_id in questions
             )
-            if any((claim.namespace, claim.identity) in blocked for claim in claims):
-                continue
-            units.append(
+            layouts[theme.packet_version_id].append(
                 PlayUnit(
                     kind="si_theme",
                     logical_id=theme.theme_id,
                     revision_id=theme.id,
                     packet_version_id=theme.packet_version_id,
-                    packet_order=packet_order[theme.packet_version_id],
+                    packet_order=1,
                     position=theme.position,
                     question_revision_ids=tuple(
                         revision_id for revision_id, _, _ in questions
                     ),
                     claims=claims,
-                    metadata={"question_values": [value for _, value, _ in questions]},
+                    metadata={"question_values": tuple(value for _, value, _ in questions)},
                 )
             )
-        return units
+        return {version_id: _Layout(tuple(units), frozenset(
+            (claim.namespace, claim.identity) for unit in units for claim in unit.claims
+        )) for version_id, units in layouts.items()}
 
 
 class RulesetContentRegistry:

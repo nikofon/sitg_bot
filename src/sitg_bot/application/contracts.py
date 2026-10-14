@@ -590,9 +590,27 @@ class LibraryListOperation(ContractModel):
     action: Literal[ActionCode.LIBRARY_LIST]
 
 
-class TournamentPacketListOperation(ContractModel):
+class PacketListOptions(ContractModel):
+    name: str = Field(default="", max_length=200)
+    author: str = Field(default="", max_length=200)
+    year_from: int | None = Field(default=None, ge=1000, le=9999)
+    year_to: int | None = Field(default=None, ge=1000, le=9999)
+    publication_from: int | None = Field(default=None, ge=1000, le=9999)
+    publication_to: int | None = Field(default=None, ge=1000, le=9999)
+    cursor: UUID | None = None
+    limit: int | None = Field(default=None, ge=1, le=25)
+    packet_id: UUID | None = None
+
+    def packet_filters(self) -> dict[str, object]:
+        return self.model_dump(include={
+            "name", "author", "year_from", "year_to", "publication_from", "publication_to",
+        })
+
+
+class TournamentPacketListOperation(PacketListOptions):
     action: Literal[ActionCode.TOURNAMENT_PACKET_LIST]
     tournament_id: UUID
+    include_items: bool = True
 
 
 class PacketBlockOperation(ContractModel):
@@ -772,7 +790,7 @@ class LobbyLinkOperation(ContractModel):
     lobby_id: UUID
 
 
-class LobbyInfoOperation(ContractModel):
+class LobbyInfoOperation(PacketListOptions):
     action: Literal[ActionCode.LOBBY_INFO]
     lobby_id: UUID
     include_packet_suggestions: bool = True

@@ -2,6 +2,7 @@ import type { TournamentPacket } from "../api/types";
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
+import { preserveListPosition } from "./scroll";
 
 export function renderTournamentPackets(
   packets: TournamentPacket[],
@@ -11,10 +12,13 @@ export function renderTournamentPackets(
   actions: {
     viewInLibrary: (packet: TournamentPacket) => void;
     toggleBlock: (packet: TournamentPacket) => void;
+    changeFilters?: (filters: Record<string, string>) => void;
   },
-): HTMLElement {
+): HTMLElement & { update: (packets: TournamentPacket[], loading?: boolean) => void } {
   const controls = element("div", { className: "lobby-packet-filters", role: "search", "aria-label": i18n.t("lobby.packet_filters") });
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
+  const loading = element("p", { role: "status", hidden: true }, i18n.t("common.loading"));
+  const cards = new Map<string, { node: HTMLElement; signature: string; packet: TournamentPacket }>();
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
   let sortMode: "default" | "fresh_zeroes_last" | "fresh" | "fresh_asc" | "name_asc" | "name_desc" | "year_asc" | "year_desc" = "fresh_zeroes_last";
   const inRange = (year: number | null, from: string, to: string): boolean =>
@@ -32,20 +36,24 @@ export function renderTournamentPackets(
     element("dt", {}, i18n.t(key)), element("dd", {}, value),
   );
   const card = (packet: TournamentPacket): HTMLElement => {
+    let cached = cards.get(packet.packet_id);
+    const signature = JSON.stringify(packet);
+    if (cached?.signature === signature) return cached.node;
+    const current = (): TournamentPacket => cards.get(packet.packet_id)!.packet;
     const buttons = element("div", { className: "settings-actions" });
     buttons.append(element("button", {
       type: "button", className: packet.library_viewable ? "primary-button" : "secondary-button",
       disabled: !packet.library_viewable,
       title: packet.library_viewable ? "" : i18n.t("tournament_packets.library_unavailable"),
       onclick: (() => {
-        if (packet.library_viewable) actions.viewInLibrary(packet);
+        if (current().library_viewable) actions.viewInLibrary(current());
       }) as EventListener,
     }, i18n.t("tournament_packets.view_in_library")));
     buttons.append(element("button", {
       type: "button", className: packet.blocked ? "secondary-button" : "warning-button",
-      onclick: (() => actions.toggleBlock(packet)) as EventListener,
+      onclick: (() => actions.toggleBlock(current())) as EventListener,
     }, i18n.t(packet.blocked ? "packet.unblock" : "packet.block")));
-    return element("article", {
+    const node = element("article", {
       className: "resource-card lobby-packet-card",
       "data-packet-id": packet.packet_id,
     },
@@ -61,6 +69,25 @@ export function renderTournamentPackets(
     element("p", { className: `lobby-packet-access ${packet.playable ? "is-playable" : "is-unplayable"}` },
       `${i18n.t("lobby.packet_playable")}: ${i18n.t(packet.playable ? "lobby.packet_yes" : "lobby.packet_no")}`),
     buttons);
+    if (cached) {
+      // Retain action buttons so a mutation keeps keyboard focus and event handlers.
+      const oldButtons = cached.node.querySelectorAll("button");
+      node.querySelectorAll("button").forEach((button, index) => {
+        const old = oldButtons[index]!;
+        old.className = button.className;
+        old.textContent = button.textContent;
+        old.disabled = button.disabled;
+        old.title = button.title;
+        button.replaceWith(old);
+      });
+      cached.node.replaceChildren(...Array.from(node.childNodes));
+      cached.packet = packet;
+      cached.signature = signature;
+    } else {
+      cached = { node, packet, signature };
+      cards.set(packet.packet_id, cached);
+    }
+    return cached.node;
   };
   const render = (): void => {
     const visible = packets.filter(matches);
@@ -95,7 +122,14 @@ export function renderTournamentPackets(
     } else if (sortMode === "year_desc") {
       visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
     }
-    list.replaceChildren(...visible.map(card));
+    const nodes = visible.map(card);
+    const retained = new Set(nodes);
+    for (const child of Array.from(list.children)) if (!retained.has(child as HTMLElement)) child.remove();
+    nodes.forEach((node, index) => {
+      if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
+    });
+    const packetIds = new Set(packets.map((packet) => packet.packet_id));
+    for (const id of cards.keys()) if (!packetIds.has(id)) cards.delete(id);
     if (!visible.length) {
       list.append(element("p", {}, i18n.t(packets.length ? "lobby.packet_no_matches" : "tournament_packets.empty")));
     }
@@ -109,6 +143,7 @@ export function renderTournamentPackets(
         filters[name] = (event.currentTarget as HTMLInputElement).value;
         saveFilters(filters);
         render();
+        actions.changeFilters?.(filters);
       }) as EventListener,
     }));
   controls.append(input("name", "lobby.packet_search"), input("author", "lobby.packet_authors"));
@@ -144,8 +179,18 @@ export function renderTournamentPackets(
       for (const field of controls.querySelectorAll("input")) field.value = "";
       saveFilters(filters);
       render();
+      actions.changeFilters?.(filters);
     }) as EventListener,
   }, i18n.t("lobby.packet_reset")));
   render();
-  return element("section", { className: "route-content" }, controls, list);
+  return Object.assign(element("section", { className: "route-content" }, controls, list, loading), {
+    update: (next: TournamentPacket[], isLoading = false): void => {
+      preserveListPosition(list, () => {
+        packets = next;
+        render();
+        loading.hidden = !isLoading;
+        list.setAttribute("aria-busy", String(isLoading));
+      });
+    },
+  });
 }

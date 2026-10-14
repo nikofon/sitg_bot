@@ -163,4 +163,33 @@ describe("renderLobbyPackets sorting", () => {
     input.dispatchEvent(new Event("input"));
     expect(view.element.querySelector('[data-packet-id="echo"]')).not.toBeNull();
   });
+
+  it("settles locale sorting, name ties, unknown years and zero freshness across batches", () => {
+    const entries = [
+      ["a", "Бета", 5, 2021], ["b", "Альфа", 0, null], ["c", "Ёлка", 2, 2020],
+      ["d", "Альфа", 2, null], ["e", "Альфа", 2, 2019],
+    ] as const;
+    const packets = entries.map(([id, name, fresh, year]) => ({
+      ...lobby.packet_suggestions[0]!, packet_id: id, name, fresh_play_unit_count: fresh, year,
+    }));
+    const changeFilters = vi.fn();
+    const view = renderLobbyPackets({ ...lobby, packet_suggestions: [] }, new I18n("ru"),
+      {}, true, vi.fn(), undefined, changeFilters);
+    view.update({ ...lobby, packet_suggestions: packets.slice(0, 2) });
+    view.update({ ...lobby, packet_suggestions: packets });
+    const ids = (): string[] => Array.from(view.element.querySelectorAll("article"),
+      (node) => node.dataset.packetId!);
+    expect(ids()).toEqual(["d", "e", "c", "a", "b"]);
+    const sort = view.element.querySelector<HTMLSelectElement>("select")!;
+    for (const [mode, expected] of [
+      ["name_asc", ["b", "d", "e", "a", "c"]],
+      ["year_asc", ["e", "c", "a", "b", "d"]],
+      ["year_desc", ["a", "c", "e", "b", "d"]],
+    ] as const) {
+      sort.value = mode;
+      sort.dispatchEvent(new Event("change"));
+      expect(ids()).toEqual(expected);
+    }
+    expect(changeFilters).not.toHaveBeenCalled();
+  });
 });

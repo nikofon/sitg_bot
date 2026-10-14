@@ -4,6 +4,8 @@ import type {
   LibraryAccess,
   RouteResource,
   LobbyResource,
+  LobbyPacket,
+  TournamentPacket,
   TournamentPacketsResource,
   GameObservation,
   OngoingGame,
@@ -47,6 +49,7 @@ import { filterNames, renderFilters } from "./ui/filters";
 import { renderLobbyPackets, type LobbyPacketFilters } from "./ui/lobby-packets";
 import { preserveListPosition } from "./ui/scroll";
 import { renderTournamentPackets } from "./ui/tournament-packets";
+import { PacketLoader, type PacketPage } from "./ui/packet-loading";
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
@@ -943,45 +946,74 @@ export class MiniAppShell {
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
-  private async togglePacketBlock(
-    route: RouteMatch,
+  private async togglePacketBlock<T extends { packet_id: string; blocked?: boolean }>(
     tournamentId: string,
-    packetId: string,
-    blocked: boolean,
+    packet: T,
+    loader: PacketLoader<T>,
+    pagePath: string,
+    signal: AbortSignal,
+    changed?: () => Promise<void>,
   ): Promise<void> {
+    const packetId = packet.packet_id;
+    if (!loader.protect(packetId)) return;
     try {
       await this.api.request(
         `/api/miniapp/tournaments/${encodeURIComponent(tournamentId)}`
-        + `/packets/${encodeURIComponent(packetId)}/${blocked ? "block" : "unblock"}`,
-        { method: "POST", body: {} },
+        + `/packets/${encodeURIComponent(packetId)}/${packet.blocked ? "unblock" : "block"}`,
+        { method: "POST", body: {}, signal },
       );
+      const page = await this.api.request<PacketPage<T>>(
+        `${pagePath}?limit=1&packet_id=${encodeURIComponent(packetId)}`, { signal },
+      );
+      if (signal.aborted) return;
+      loader.finish(packetId, page.items[0]);
+      await changed?.();
       this.platform.notifySuccess();
-      await this.load(route);
     } catch (error) {
+      if (signal.aborted) return;
+      loader.finish(packetId, packet);
+      loader.reconcile();
       const code = error instanceof ApiError ? error.code : "internal_error";
       this.platform.notifyError();
       this.showTextDialog(this.i18n.t(`error.${code}`), []);
     }
   }
 
+  private packetLoadFailed(route: RouteMatch, error: unknown): boolean {
+    if (error instanceof ApiError && ["authentication_required", "forbidden", "not_found"].includes(error.code)) {
+      this.renderError(route, error.code);
+      return true;
+    }
+    return false;
+  }
+
   private renderTournamentPacketsRoute(
     route: RouteMatch,
     resource: TournamentPacketsResource,
   ): void {
+    const signal = this.request!.signal;
+    const pagePath = `/api/miniapp/tournaments/${encodeURIComponent(resource.tournament_id)}/packets`;
+    const filters = this.filters.read("tournament_packets");
     const content = renderTournamentPackets(
       resource.items, this.i18n,
-      this.filters.read("tournament_packets"),
+      filters,
       (filters) => this.filters.write("tournament_packets", filters),
       {
         viewInLibrary: (packet) => this.router.navigate(
           `/library/${encodeURIComponent(packet.version_id)}`,
         ),
         toggleBlock: (packet) => void this.togglePacketBlock(
-          route, resource.tournament_id, packet.packet_id, !packet.blocked,
+          resource.tournament_id, packet, loader, pagePath, signal,
         ),
+        changeFilters: (next) => loader.start(next, true),
       },
     );
+    const loader = new PacketLoader<TournamentPacket>(signal,
+      (query, pageSignal) => this.api.request(`${pagePath}?${query}`, { signal: pageSignal }),
+      (items, loading) => content.update(items, loading),
+      (error) => this.packetLoadFailed(route, error), resource.items);
     this.renderFrame(route, content);
+    loader.start(filters);
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
   }
 
@@ -1000,6 +1032,7 @@ export class MiniAppShell {
     let busy = false;
     const section = route.query.get("section") ?? "overview";
     const signal = this.request!.signal;
+    let packetLoader: PacketLoader<LobbyPacket> | undefined;
     let active = true;
     let refreshing = false;
     let refreshSequence = 0;
@@ -1008,6 +1041,7 @@ export class MiniAppShell {
       active = false;
       window.clearTimeout(this.pollTimer);
       window.clearTimeout(this.eventTimer);
+      packetLoader?.stop();
     };
     const refresh = async (force = false): Promise<void> => {
       if (!isActive() || (!force && (dirty || busy || refreshing))) return;
@@ -1028,13 +1062,20 @@ export class MiniAppShell {
           this.renderRoute(route, payload);
           return;
         }
-        if (JSON.stringify(lobby) === JSON.stringify(payload.resource) && !dirty) return;
-        lobby = payload.resource;
+        const next = { ...payload.resource, packet_suggestions: lobby.packet_suggestions };
+        if (JSON.stringify(lobby) === JSON.stringify(next) && !dirty) return;
+        const catalogueChanged = JSON.stringify([
+          lobby.members.map((member) => [member.player_id, member.role]), lobby.settings, lobby.available_actions, lobby.last_event_sequence,
+        ]) !== JSON.stringify([
+          next.members.map((member) => [member.player_id, member.role]), next.settings, next.available_actions, next.last_event_sequence,
+        ]);
+        lobby = next;
         dirty = false;
         preserveListPosition(content, () => {
           renderDetails();
           packetList.update(lobby);
         });
+        if (catalogueChanged) packetLoader?.start(packetFilters);
       } catch (error) {
         if (!isActive() || sequence !== refreshSequence) return;
         if (error instanceof ApiError && ["authentication_required", "forbidden", "not_found"].includes(error.code)) {
@@ -1074,12 +1115,34 @@ export class MiniAppShell {
     };
     const packetFilters = this.lobbyPacketFilters.get(lobby.id) ?? {};
     this.lobbyPacketFilters.set(lobby.id, packetFilters);
+    const pagePath = `/api/miniapp/lobbies/${encodeURIComponent(route.params.launch_ref ?? "")}/packets`;
     const packetList = renderLobbyPackets(
       lobby, this.i18n, packetFilters, section === "packets", mutate,
       (packet) => this.togglePacketBlock(
-        route, lobby.tournament_id, packet.packet_id, !packet.blocked,
+        lobby.tournament_id, packet, packetLoader!, pagePath, signal,
+        async () => {
+          if (lobby.selected_packets.some((item) => item.packet_id === packet.packet_id)) await refresh(true);
+        },
       ),
+      (filters) => packetLoader?.start(filters, true),
     );
+    packetLoader = new PacketLoader<LobbyPacket>(signal,
+      (query, pageSignal) => this.api.request(`${pagePath}?${query}`, { signal: pageSignal }),
+      (items, loading) => {
+        const suggestions = [...items].sort((a, b) => {
+          const left = a.name.toLowerCase(), right = b.name.toLowerCase();
+          return left < right ? -1 : left > right ? 1 : 0;
+        });
+        lobby = { ...lobby, packet_suggestions: suggestions,
+          selected_packets: lobby.selected_packets.map((selected) =>
+            items.find((item) => item.packet_id === selected.packet_id) ?? selected) };
+        packetList.update(lobby);
+        packetList.setLoading(loading);
+      }, (error) => {
+        const failed = this.packetLoadFailed(route, error);
+        if (failed) stopRefreshing();
+        return failed;
+      }, lobby.packet_suggestions);
     const title = element("h2", { className: "lobby-tournament-title" });
     const tabs = element("nav", { className: "settings-actions", "aria-label": this.i18n.t("lobby.sections") });
     for (const [value, key] of [["overview", "lobby.overview"], ["packets", "lobby.packets"], ["settings", "lobby.options"]] as const) {
@@ -1208,6 +1271,7 @@ export class MiniAppShell {
     };
     renderDetails();
     this.renderFrame(route, content);
+    if (section === "packets") packetLoader.start(packetFilters);
     const watchEvents = async (): Promise<void> => {
       try {
         const feed = await this.api.request<{ items: Array<{ sequence: number }> }>(

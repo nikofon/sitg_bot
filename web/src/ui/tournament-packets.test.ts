@@ -145,4 +145,60 @@ describe("renderTournamentPackets", () => {
     buttons[1]!.click();
     expect(toggleBlock).toHaveBeenCalledWith(packets[0]);
   });
+
+  it("sorts progressive updates without requesting on sort and retains focus when blocked", () => {
+    const changeFilters = vi.fn();
+    const toggleBlock = vi.fn();
+    const root = renderTournamentPackets([packets[0]!], new I18n("en"), {}, vi.fn(), {
+      viewInLibrary: vi.fn(), toggleBlock, changeFilters,
+    });
+    document.body.append(root);
+    const alpha = root.querySelector<HTMLElement>('[data-packet-id="alpha"]')!;
+    const button = alpha.querySelectorAll<HTMLButtonElement>("button")[1]!;
+    button.focus();
+    root.update(packets, true);
+    expect(Array.from(root.querySelectorAll("article"), (node) => node.dataset.packetId))
+      .toEqual(["unknown", "alpha", "charlie", "bravo"]);
+    expect(root.querySelector('[role="status"]')?.hasAttribute("hidden")).toBe(false);
+    const sort = root.querySelector<HTMLSelectElement>("select")!;
+    sort.value = "name_desc";
+    sort.dispatchEvent(new Event("change"));
+    expect(changeFilters).not.toHaveBeenCalled();
+    const blocked = { ...packet, blocked: true, fresh_play_unit_count: 0 };
+    root.update([blocked, ...packets.slice(1)]);
+    expect(root.querySelector('[data-packet-id="alpha"]')).toBe(alpha);
+    expect(alpha.querySelectorAll("button")[1]).toBe(button);
+    expect(document.activeElement).toBe(button);
+    expect(button.textContent).toBe("Unblock");
+    button.click();
+    expect(toggleBlock).toHaveBeenCalledWith(blocked);
+  });
+
+  it("settles locale sorting, name ties, unknown years and zero freshness across batches", () => {
+    const entries = [
+      ["a", "Бета", 5, 2021], ["b", "Альфа", 0, null], ["c", "Ёлка", 2, 2020],
+      ["d", "Альфа", 2, null], ["e", "Альфа", 2, 2019],
+    ] as const;
+    const received = entries.map(([id, name, fresh, year]) => ({
+      ...packet, packet_id: id, name, fresh_play_unit_count: fresh, year,
+    }));
+    const root = renderTournamentPackets([], new I18n("ru"), {}, vi.fn(), {
+      viewInLibrary: vi.fn(), toggleBlock: vi.fn(),
+    });
+    root.update(received.slice(0, 2), true);
+    root.update(received);
+    const ids = (): string[] => Array.from(root.querySelectorAll("article"),
+      (node) => node.dataset.packetId!);
+    expect(ids()).toEqual(["d", "e", "c", "a", "b"]);
+    const sort = root.querySelector<HTMLSelectElement>("select")!;
+    for (const [mode, expected] of [
+      ["name_asc", ["b", "d", "e", "a", "c"]],
+      ["year_asc", ["e", "c", "a", "b", "d"]],
+      ["year_desc", ["a", "c", "e", "b", "d"]],
+    ] as const) {
+      sort.value = mode;
+      sort.dispatchEvent(new Event("change"));
+      expect(ids()).toEqual(expected);
+    }
+  });
 });

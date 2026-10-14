@@ -209,6 +209,8 @@ class FakeGateway:
                 "available_actions": ["ready", "leave"],
                 "members": [],
             }
+            if operation.limit is not None:
+                data = {"items": [], "next_cursor": None}
         elif operation.action == ActionCode.AUTHOR_CATALOGUE:
             data = {"kind": "authors", "state": "ready", "items": []}
         elif operation.action == ActionCode.AUTHOR_PROFILE:
@@ -290,6 +292,9 @@ class FakeGateway:
                     }
                 ],
             }
+            data["next_cursor"] = None
+            if not operation.include_items:
+                data["items"] = []
         elif operation.action in {ActionCode.PACKET_BLOCK, ActionCode.PACKET_UNBLOCK}:
             data = {
                 "packet_id": str(operation.packet_id),
@@ -716,11 +721,51 @@ async def test_tournament_packets_route_resolves_listing() -> None:
     assert response.status == 200
     payload = json.loads(response.text)
     assert payload["resource"]["kind"] == "tournament_packets"
-    assert payload["resource"]["state"] == "ready"
-    assert payload["resource"]["items"][0]["packet_id"] == str(UUID(int=30))
+    assert payload["resource"]["items"] == []
     operation = gateway.requests[0].operation
     assert operation.action == ActionCode.TOURNAMENT_PACKET_LIST
     assert operation.tournament_id == tournament_id
+    assert operation.include_items is False
+
+
+@pytest.mark.parametrize("listing", ["lobby", "tournament"])
+async def test_packet_page_authenticates_and_passes_filters_cursor_and_limit(listing):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(
+        FakeAuth(), gateway, launch_references=FakeLobbyLaunchReferences(),
+    )
+    match_info = ({"launch_ref": "opaque-lobby"} if listing == "lobby"
+                  else {"tournament_id": str(UUID(int=10))})
+    request = make_mocked_request(
+        "GET", f"/packets?name=Alpha&author=Anna&year_from=2020&publication_to=2026"
+        f"&cursor={UUID(int=50)}&limit=25", match_info=match_info,
+        headers={"Origin": "https://mini.example.test",
+                 "Cookie": "__Host-sitg_session=test-session"},
+    )
+    response = await (http._lobby_packet_page(request) if listing == "lobby"
+                      else http._tournament_packet_page(request))
+    assert response.status == 200
+    assert "next_cursor" in json.loads(response.text)
+    operation = gateway.requests[0].operation
+    assert (operation.name, operation.author, operation.year_from, operation.publication_to) == (
+        "Alpha", "Anna", 2020, 2026,
+    )
+    assert operation.cursor == UUID(int=50)
+    assert operation.limit == 25
+
+
+@pytest.mark.parametrize("query", ["limit=26", "limit=0", "cursor=invalid", "year_from=999"])
+async def test_packet_page_rejects_invalid_query(query):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request(
+        "GET", f"/packets?{query}", match_info={"tournament_id": str(UUID(int=10))},
+        headers={"Origin": "https://mini.example.test",
+                 "Cookie": "__Host-sitg_session=test-session"},
+    )
+    response = await http._headers(request, http._tournament_packet_page)
+    assert response.status == 400
+    assert not gateway.requests
 
 
 async def test_tournament_packet_block_mutation_maps_command() -> None:
@@ -995,7 +1040,7 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
 
 
 @pytest.mark.parametrize(("section", "include_suggestions"), [
-    (None, False), ("", False), ("overview", False), ("settings", False), ("packets", True),
+    (None, False), ("", False), ("overview", False), ("settings", False), ("packets", False),
 ])
 async def test_lobby_route_rechecks_reference_and_returns_backend_capabilities(
     section: str | None, include_suggestions: bool,

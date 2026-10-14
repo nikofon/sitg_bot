@@ -15,9 +15,11 @@ export function renderLobbyPackets(
   showPicker: boolean,
   mutate: (command: string, body: Record<string, unknown>) => Promise<void>,
   toggleBlock?: (packet: LobbyPacket) => Promise<void>,
-): { element: HTMLElement; update: (next: LobbyResource) => void } {
+  changeFilters?: (filters: LobbyPacketFilters) => void,
+): { element: HTMLElement; update: (next: LobbyResource) => void; setLoading: (loading: boolean) => void } {
   const container = element("div", { className: "lobby-packets" });
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
+  const loading = element("p", { role: "status", hidden: true }, i18n.t("common.loading"));
   const cards = new Map<string, { node: HTMLElement; update: (packet: LobbyPacket, added: boolean, allowed: boolean) => void }>();
   const normalize = (value: string): string => value.trim().toLocaleLowerCase(i18n.locale);
   let sortMode: "default" | "fresh_zeroes_last" | "fresh" | "fresh_asc" | "name_asc" | "name_desc" | "year_asc" | "year_desc" = "fresh_zeroes_last";
@@ -161,6 +163,7 @@ export function renderLobbyPackets(
         oninput: ((event: Event) => {
           filters[name] = (event.currentTarget as HTMLInputElement).value;
           render();
+          changeFilters?.(filters);
         }) as EventListener,
       }),
     );
@@ -198,13 +201,17 @@ export function renderLobbyPackets(
           delete filters[field.name as keyof LobbyPacketFilters];
         }
         render();
+        changeFilters?.(filters);
       }) as EventListener,
     }, i18n.t("lobby.packet_reset")));
     container.append(controls);
   }
   render();
-  container.append(list);
-  return { element: container, update: (next) => {
+  container.append(list, loading);
+  return { element: container, setLoading: (value) => {
+    loading.hidden = !value;
+    list.setAttribute("aria-busy", String(value));
+  }, update: (next) => {
     preserveListPosition(list, () => {
       lobby = next;
       render();

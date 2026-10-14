@@ -98,6 +98,9 @@ class FakeSession:
         self.queries.append(query)
         return self._results.pop(0)
 
+    def get_bind(self):
+        return self
+
 
 def _theme(version_id, position=1):
     return ThemeRevisionRecord(
@@ -119,25 +122,19 @@ def _theme_row(theme, packet_id):
 
 async def test_available_play_units_skips_themes_of_blocked_packets() -> None:
     version_id = uuid4()
-    packet_id = uuid4()
-    theme = _theme(version_id)
     session = FakeSession([
-        FakeResult([_theme_row(theme, packet_id)]),
-        FakeResult([]),  # exposure claims
-        FakeResult([packet_id]),  # blocked packet ids
+        FakeResult([version_id]),  # block resolution must precede all content reads
     ])
     units = await SIContentAdapter().available_play_units(
         session, [PacketSelection(version_id, 1)], [uuid4()]
     )
     assert units == []
-    # No per-theme question query runs: blocked themes are treated as burnt.
-    assert len(session.queries) == 3
+    assert len(session.queries) == 1
 
 
 async def test_available_play_units_keeps_unblocked_themes() -> None:
     version_id = uuid4()
     packet_id = uuid4()
-    other_packet_id = uuid4()
     theme = _theme(version_id)
     question_revision_id = uuid4()
     placement = PacketQuestionRecord(
@@ -148,10 +145,10 @@ async def test_available_play_units_keeps_unblocked_themes() -> None:
         value=10,
     )
     session = FakeSession([
-        FakeResult([_theme_row(theme, packet_id)]),
         FakeResult([]),
-        FakeResult([other_packet_id]),
+        FakeResult([_theme_row(theme, packet_id)]),
         FakeResult([(theme.id, placement.question_revision_id, placement.value, uuid4())]),
+        FakeResult([]),
     ])
     units = await SIContentAdapter().available_play_units(
         session, [PacketSelection(version_id, 1)], [uuid4()]

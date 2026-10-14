@@ -25,6 +25,7 @@ from sitg_bot.domain.game_settings import MAX_THEME_COUNT
 from sitg_bot.domain.rating import DEFAULT_CONFIDENCE_MODEL_KEY, confidence_model
 from sitg_bot.services.classic import ClassicService, is_chair
 from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.packet_catalogue import background_packet_batch, matches_packet
 from sitg_bot.services.persistent_game import GameSnapshot, ParticipantInput, PersistentGameService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.ruleset_content import (
@@ -1651,11 +1652,35 @@ class InvitationMatchmakingService:
     async def suggest_packets(
         self, lobby_id: UUID, *, telegram_user_id: int | None = None
     ) -> tuple[PacketSuggestion, ...]:
+        page = await self._packet_page(lobby_id, telegram_user_id=telegram_user_id)
+        return page["items"]
+
+    async def packet_page(
+        self, lobby_id: UUID, *, telegram_user_id: int, limit: int = 25,
+        cursor: UUID | None = None, packet_id: UUID | None = None,
+        filters: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        if packet_id is not None:
+            return await self._packet_page(
+                lobby_id, telegram_user_id=telegram_user_id, limit=limit,
+                packet_id=packet_id, filters=filters,
+            )
+        async with background_packet_batch():
+            return await self._packet_page(
+                lobby_id, telegram_user_id=telegram_user_id, limit=limit,
+                cursor=cursor, filters=filters,
+            )
+
+    async def _packet_page(
+        self, lobby_id: UUID, *, telegram_user_id: int | None = None,
+        limit: int | None = None, cursor: UUID | None = None,
+        packet_id: UUID | None = None, filters: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         async with self.database.sessions() as session:
             lobby = await session.get(PregameLobbyRecord, lobby_id)
             if lobby is None:
                 raise LookupError("Lobby not found")
-            members = await self._active_members(session, lobby.id)
+            members = await self._active_members(session, lobby.id, lock=False)
             context = await self.tournaments.context(session, lobby.tournament_id)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
             packet_rows = list(
@@ -1670,7 +1695,10 @@ class InvitationMatchmakingService:
                             TournamentPacketAssignmentRecord.tournament_id == lobby.tournament_id,
                             TournamentPacketAssignmentRecord.status == "active",
                             LogicalPacketRecord.retired_at.is_(None),
+                            *([TournamentPacketAssignmentRecord.id > cursor] if cursor else []),
+                            *([LogicalPacketRecord.id == packet_id] if packet_id else []),
                         )
+                        .order_by(TournamentPacketAssignmentRecord.id)
                     )
                 ).all()
             )
@@ -1686,6 +1714,8 @@ class InvitationMatchmakingService:
                 )
             )
             candidates: list[tuple[PregameLobbyPacketRecord, PacketVersionRecord]] = []
+            descriptions: dict[UUID, PacketSuggestion] = {}
+            next_cursor = None
             for packet, assignment in packet_rows:
                 if not await self.tournaments.has_assignment_access(
                     session, assignment, viewer_id, "discoverable"
@@ -1712,6 +1742,15 @@ class InvitationMatchmakingService:
                         assignment_id=assignment.id,
                         selection_order=1,
                     )
+                    description = await self._describe_packet(
+                        session, candidate, version, members, total=0, fresh=0,
+                    )
+                    if not matches_packet(version, description.authors, filters or {}):
+                        continue
+                    if limit is not None and len(candidates) == limit:
+                        next_cursor = str(candidates[-1][0].assignment_id)
+                        break
+                    descriptions[version.id] = description
                     candidates.append((candidate, version))
             available_by_version: dict[UUID, list[PlayUnit]] = defaultdict(list)
             for unit in await self._available_play_units(
@@ -1742,14 +1781,13 @@ class InvitationMatchmakingService:
                 )
                 suggestions.append(
                     replace(
-                        await self._describe_packet(
-                            session, candidate, version, members,
-                            total=total, fresh=len(available), violations=violations,
-                        ),
+                        descriptions[version.id], total_play_unit_count=total,
+                        fresh_play_unit_count=len(available), validation_violations=violations,
                         blocked=candidate.packet_id in viewer_blocked,
                     )
                 )
-            return tuple(sorted(suggestions, key=lambda item: item.name.casefold()))
+            return {"items": tuple(sorted(suggestions, key=lambda item: item.name.casefold())),
+                    "next_cursor": next_cursor, "lobby_version": lobby.version}
 
     async def start(
         self, lobby_id: UUID, telegram_user_id: int, *, expected_version: int | None = None
@@ -1979,7 +2017,9 @@ class InvitationMatchmakingService:
             lobby = await session.get(PregameLobbyRecord, lobby_id)
             if lobby is None:
                 raise LookupError("Lobby not found")
-            return await self._snapshot(session, lobby)
+            with session.no_autoflush:
+                await self._refresh_validation(session, lobby, read_only=True)
+                return await self._snapshot(session, lobby)
 
     async def ongoing_lobbies(self, player_id: UUID) -> tuple[dict[str, object], ...]:
         """Project open lobbies from tournaments where the player is a member or manager."""
@@ -2056,10 +2096,13 @@ class InvitationMatchmakingService:
         self,
         session: AsyncSession,
         lobby: PregameLobbyRecord,
+        *,
+        read_only: bool = False,
     ) -> bool:
         previous = list(lobby.validation)
         selected = await self._selected_packets(session, lobby.id)
-        members = await self._active_members(session, lobby.id)
+        members = (await self._active_members(session, lobby.id, lock=False) if read_only
+                   else await self._active_members(session, lobby.id))
         context = await self.tournaments.context(session, lobby.tournament_id)
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
         if context.type_key == "classic" and context.ruleset_key == "si":
@@ -2410,22 +2453,20 @@ class InvitationMatchmakingService:
 
     @staticmethod
     async def _active_members(
-        session: AsyncSession, lobby_id: UUID
+        session: AsyncSession, lobby_id: UUID, *, lock: bool = True,
     ) -> list[PregameLobbyMemberRecord]:
-        return list(
-            (
-                await session.execute(
-                    select(PregameLobbyMemberRecord)
-                    .where(
-                        PregameLobbyMemberRecord.lobby_id == lobby_id,
-                        PregameLobbyMemberRecord.active.is_(True),
-                        PregameLobbyMemberRecord.role == "player",
-                    )
-                    .order_by(PregameLobbyMemberRecord.join_order)
-                    .with_for_update()
-                )
-            ).scalars()
+        query = (
+            select(PregameLobbyMemberRecord)
+            .where(
+                PregameLobbyMemberRecord.lobby_id == lobby_id,
+                PregameLobbyMemberRecord.active.is_(True),
+                PregameLobbyMemberRecord.role == "player",
+            )
+            .order_by(PregameLobbyMemberRecord.join_order)
         )
+        if lock:
+            query = query.with_for_update()
+        return list((await session.execute(query)).scalars())
 
     @staticmethod
     async def _active_member_count(session: AsyncSession, lobby_id: UUID) -> int:

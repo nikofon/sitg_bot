@@ -38,8 +38,8 @@ describe("MiniAppShell", () => {
     tournament_id: "cup-id", tournament_name: "Autumn Cup", invitation_code: "invite-code",
     status: "assembling", max_players: 4, expires_at: "2099-01-01", searching: false,
     hybrid_matchmaking_available: false, settings: { theme_count: 3, ready_delay: 1 },
-    selected_packets: [{ packet_id: "selected", name: "Selected packet", year: 2020, published_at: "2024-12-31T23:00:00Z", lead_author: "Anna", authors: ["Anna", "Boris"], fresh_play_unit_count: 2, total_play_unit_count: 5, playable_for_all: true }],
-    packet_suggestions: [{ packet_id: "discoverable", name: "Discoverable packet", year: 2022, published_at: "2025-01-01T00:00:00Z", lead_author: "Carol", authors: ["Carol", "Dmitry"], fresh_play_unit_count: 4, total_play_unit_count: 6, playable_for_all: false }],
+    selected_packets: [{ packet_id: "selected", name: "Selected packet", year: 2020, published_at: "2024-12-31T23:00:00Z", lead_author: "Anna", authors: ["Anna", "Boris"], fresh_play_unit_count: 2, total_play_unit_count: 5, playable_for_all: true, blocked: false }],
+    packet_suggestions: [{ packet_id: "discoverable", name: "Discoverable packet", year: 2022, published_at: "2025-01-01T00:00:00Z", lead_author: "Carol", authors: ["Carol", "Dmitry"], fresh_play_unit_count: 4, total_play_unit_count: 6, playable_for_all: false, blocked: false }],
     members: [{ display_name: "Alice <b>", role: "player", ready: true }],
     viewer: { display_name: "Alice <b>", role: "player", ready: true },
     validation_violations: [{ code: "insufficient_fresh_content" }], available_actions: ["settings_update", "packet_select", "packet_remove", "unready", "invite"],
@@ -72,7 +72,20 @@ describe("MiniAppShell", () => {
         const after = Number(new URL(String(url), window.location.origin).searchParams.get("after"));
         return response({ items: resource.last_event_sequence > after ? [{ sequence: resource.last_event_sequence }] : [] });
       }
-      return response({ locale: "en", authorization: { allowed: true }, resource });
+      if (String(url).includes("/packets?")) {
+        const id = new URL(String(url), window.location.origin).searchParams.get("packet_id");
+        const items = [...resource.selected_packets, ...resource.packet_suggestions];
+        return response({ items: id ? items.filter((packet) => packet.packet_id === id) : items, next_cursor: null });
+      }
+      if (String(url).endsWith("/block")) {
+        const id = String(url).split("/").at(-2);
+        const packet = [...resource.selected_packets, ...resource.packet_suggestions].find((item) => item.packet_id === id)!;
+        packet.blocked = true;
+        packet.fresh_play_unit_count = 0;
+        return response({ blocked: true });
+      }
+      return response({ locale: "en", authorization: { allowed: true },
+        resource: { ...resource, packet_suggestions: [] } });
     });
     const root = document.createElement("div");
     document.body.append(root);
@@ -232,6 +245,25 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Add packet"));
     const remove = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
     expect(JSON.parse(String(remove?.[1]?.body))).toEqual({ expected_version: 8, packet_id: "discoverable" });
+  });
+
+  it.each(["selected", "discoverable"])("blocks %s in place and refreshes only a selected summary", async (id) => {
+    const { root, fetcher } = lobbyShell("packets");
+    await vi.waitFor(() => expect(root.querySelectorAll("article")).toHaveLength(2));
+    const main = root.querySelector("main");
+    const card = root.querySelector(`[data-packet-id="${id}"]`)!;
+    const other = root.querySelector(`[data-packet-id="${id === "selected" ? "discoverable" : "selected"}"]`);
+    const button = Array.from(card.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === "Block")!;
+    button.focus();
+    button.click();
+    await vi.waitFor(() => expect(button.textContent).toBe("Unblock"));
+    expect(root.querySelector("main")).toBe(main);
+    expect(root.querySelector(`[data-packet-id="${id}"]`)).toBe(card);
+    expect(document.activeElement).toBe(button);
+    expect(other?.isConnected).toBe(true);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/routes/resolve")))
+      .toHaveLength(id === "selected" ? 2 : 1);
+    expect(fetcher.mock.calls.some(([url]) => String(url).endsWith(`?limit=1&packet_id=${id}`))).toBe(true);
   });
 
   it("keeps the packet list, filters, sort and focused button mounted after actions and reconciliation", async () => {
@@ -644,8 +676,17 @@ describe("MiniAppShell", () => {
     ];
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
       if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).includes("/packets?")) {
+        const id = new URL(String(url), window.location.origin).searchParams.get("packet_id");
+        return response({ items: id ? items.filter((item) => item.packet_id === id) : items, next_cursor: null });
+      }
+      if (String(url).endsWith("/block")) {
+        items[0]!.blocked = true;
+        items[0]!.fresh_play_unit_count = 0;
+        return response({ blocked: true });
+      }
       return response({ locale: "en", authorization: { allowed: true }, resource: {
-        kind: "tournament_packets", state: "ready", tournament_id: tournamentId, tournament_name: "Cup", items,
+        kind: "tournament_packets", state: "ready", tournament_id: tournamentId, tournament_name: "Cup", items: [],
       } });
     });
     const root = document.createElement("div");
@@ -661,10 +702,16 @@ describe("MiniAppShell", () => {
     const blockButton = cards[0]?.querySelectorAll<HTMLButtonElement>("button")[1];
     expect(libraryButton?.textContent).toBe("View in library");
     expect(blockButton?.textContent).toBe("Block");
+    blockButton?.focus();
     blockButton?.click();
     await vi.waitFor(() => expect(
       fetcher.mock.calls.some(([url]) => String(url).endsWith(`/tournaments/${tournamentId}/packets/packet-1/block`)),
     ).toBe(true));
+    await vi.waitFor(() => expect(blockButton?.textContent).toBe("Unblock"));
+    expect(root.querySelector('[data-packet-id="packet-1"]')).toBe(cards[0]);
+    expect(root.querySelector('[data-packet-id="packet-2"]')).toBe(cards[1]);
+    expect(document.activeElement).toBe(blockButton);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/routes/resolve"))).toHaveLength(1);
     const hiddenButtons = cards[1]?.querySelectorAll<HTMLButtonElement>("button");
     expect(hiddenButtons?.[0]?.disabled).toBe(true);
     expect(hiddenButtons?.[1]?.textContent).toBe("Unblock");
