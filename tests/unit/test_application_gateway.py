@@ -21,6 +21,7 @@ from sitg_bot.application.contracts import (
     PacketDraftTelegramBindOperation,
 )
 from sitg_bot.application.gateway import ACTION_POLICIES, ApplicationGateway
+from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS
 from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
@@ -28,6 +29,7 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import (
     InvitationMatchmakingService,
     LobbyMemberSnapshot,
+    LobbyReadinessError,
     LobbySnapshot,
     PacketSuggestion,
 )
@@ -160,8 +162,9 @@ async def test_lobby_info_dispatch_preserves_membership_check_and_suggestion_fla
 
 
 @pytest.mark.parametrize("include_suggestions", [True, False])
+@pytest.mark.parametrize("stored_indicator", [None, True, False])
 async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets(
-    include_suggestions,
+    include_suggestions, stored_indicator,
 ):
     member = LobbyMemberSnapshot(42, "Owner", 1, False, ())
     selected = PacketSuggestion(UUID(int=3), UUID(int=4), "Selected", fresh_play_unit_count=2)
@@ -170,13 +173,16 @@ async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets
         status="assembling", max_players=4, expires_at=datetime.now(UTC) + timedelta(hours=1),
         game_id=None, searching=False, hybrid_matchmaking_available=False, search_started_at=None,
         merged_into_lobby_id=None, other_searching_lobby_count=0, other_searching_player_count=0,
-        settings=GameSettings(), selected_packets=(selected,), validation_violations=(),
+        settings=GameSettings(question_fully_read_indication=stored_indicator is not False),
+        selected_packets=(selected,), validation_violations=(),
         available_play_unit_count=2, members=(member,),
     )
     record = SimpleNamespace(
         creator_player_id=UUID(int=6), tournament_policy_version_id=UUID(int=5),
         settings={"theme_count": 8},
     )
+    if stored_indicator is not None:
+        record.settings["question_fully_read_indication"] = stored_indicator
     policy = SimpleNamespace(player_mutable_parameters=["theme_count"])
     session = SimpleNamespace(
         get=AsyncMock(side_effect=[record, policy, SimpleNamespace(name="Tournament")]),
@@ -205,6 +211,11 @@ async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets
 
     assert payload["selected_packets"][0]["fresh_play_unit_count"] == 2
     assert payload["settings"]["theme_count"] == 8
+    indicator = next(item for item in payload["setting_descriptors"]
+                     if item["name"] == "question_fully_read_indication")
+    assert indicator["value_type"] == "boolean"
+    assert indicator["value"] is (stored_indicator is not False)
+    assert payload["settings"]["question_fully_read_indication"] is indicator["value"]
     assert "packet_select" in payload["available_actions"]
     assert payload["last_event_sequence"] == 3
     if include_suggestions:
@@ -357,6 +368,74 @@ def test_lobby_version_guard_rejects_a_stale_snapshot() -> None:
         InvitationMatchmakingService._require_version(lobby, 7)
 
     InvitationMatchmakingService._require_version(lobby, 8)
+
+
+@pytest.mark.parametrize(
+    ("action", "failure", "reason", "code"),
+    [
+        (ActionCode.LOBBY_START, ValueError("Every lobby member must be ready"),
+         "players_not_ready", ErrorCode.VALIDATION_FAILED),
+        (ActionCode.LOBBY_START, ValueError("Cancel Find players before starting the lobby"),
+         "search_active", ErrorCode.VALIDATION_FAILED),
+        (ActionCode.LOBBY_START, ValueError("Select at least one packet before starting"),
+         "packet_required", ErrorCode.VALIDATION_FAILED),
+        (ActionCode.LOBBY_JOIN, ValueError("Lobby is full"),
+         "full", ErrorCode.VALIDATION_FAILED),
+        (ActionCode.LOBBY_CANCEL, PermissionError("Only the lobby creator may do this"),
+         "creator_required", ErrorCode.FORBIDDEN),
+        (ActionCode.LOBBY_INFO, PermissionError("Active lobby membership is required"),
+         "membership_required", ErrorCode.FORBIDDEN),
+        (ActionCode.LOBBY_JOIN, LookupError("Invitation not found"),
+         "invitation_not_found", ErrorCode.NOT_FOUND),
+        (ActionCode.LOBBY_INVITE, LookupError("Registered Telegram user not found"),
+         "invitee_not_found", ErrorCode.NOT_FOUND),
+        (ActionCode.LOBBY_PACKET_REMOVE, LookupError("Packet is not selected"),
+         "packet_not_selected", ErrorCode.NOT_FOUND),
+        (ActionCode.LOBBY_SEARCH_START, ValueError("The lobby has no viable packet selection"),
+         "no_viable_packets", ErrorCode.VALIDATION_FAILED),
+        (ActionCode.LOBBY_SETTINGS_UPDATE,
+         PermissionError("Tournament locks parameter: ready_delay"),
+         "setting_locked", ErrorCode.FORBIDDEN),
+        (ActionCode.LOBBY_SETTINGS_UPDATE,
+         ValueError("Maximum players cannot be below the current lobby size"),
+         "capacity_too_small", ErrorCode.VALIDATION_FAILED),
+    ],
+)
+def test_lobby_failures_have_localized_reasons(action, failure, reason, code) -> None:
+    error = ApplicationGateway._error(failure, action=action)
+
+    assert error.code == code
+    assert error.message_key == f"lobby.error.{reason}"
+    localization = LocalizationService()
+    for locale in ("en", "ru"):
+        assert localization.text(error.message_key, locale, **error.details)
+
+
+@pytest.mark.parametrize(
+    ("action", "failure", "key"),
+    [
+        (ActionCode.LOBBY_START, ValueError("private internal details"), "error.validation_failed"),
+        (ActionCode.LOBBY_START, RuntimeError("Lobby is full"), "error.internal_error"),
+        (ActionCode.GAME_ACT, ValueError("Lobby is full"), "error.validation_failed"),
+    ],
+)
+def test_lobby_error_mapping_keeps_unknown_and_unrelated_errors_generic(action, failure, key):
+    error = ApplicationGateway._error(failure, action=action)
+
+    assert error.message_key == key
+    assert not error.details
+
+
+def test_start_validation_error_preserves_content_counts_and_filters_private_details() -> None:
+    error = ApplicationGateway._error(
+        LobbyReadinessError("insufficient_fresh_content", {
+            "available": 1, "required": 3, "packet_id": "private", "actual": "invalid",
+        }),
+        action=ActionCode.LOBBY_START,
+    )
+
+    assert error.message_key == "lobby.readiness.insufficient_fresh_content"
+    assert error.details == {"available": 1, "required": 3}
 
 
 @pytest.mark.asyncio

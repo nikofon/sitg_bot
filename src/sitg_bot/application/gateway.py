@@ -209,6 +209,54 @@ class _SecretAlreadyDelivered(ValueError):
     pass
 
 
+_LOBBY_ERROR_MESSAGES = {
+    "Every lobby member must be ready": "lobby.error.players_not_ready",
+    "Cancel Find players before starting the lobby": "lobby.error.search_active",
+    "Select at least one packet before starting": "lobby.error.packet_required",
+    "Select at least one packet before finding players": "lobby.error.packet_required",
+    "Lobby is full": "lobby.error.full",
+    "Lobby is already full": "lobby.error.full",
+    "Lobby is closed": "lobby.readiness.closed",
+    "Lobby has expired": "lobby.readiness.expired",
+    "Lobby not found": "lobby.error.not_found",
+    "Active lobby not found": "lobby.error.not_found",
+    "Invitation not found": "lobby.error.invitation_not_found",
+    "Player is not a lobby member": "lobby.error.membership_required",
+    "Lobby membership required": "lobby.error.membership_required",
+    "Active lobby membership is required": "lobby.error.membership_required",
+    "Only the lobby creator may do this": "lobby.error.creator_required",
+    "The creator must cancel the lobby instead of leaving": "lobby.error.creator_leave",
+    "The creator cannot kick themselves": "lobby.error.creator_kick",
+    "Active lobby member not found": "lobby.error.member_not_found",
+    "Registered Telegram user not found": "lobby.error.invitee_not_found",
+    "Completed player registration is required": "lobby.error.registration_required",
+    "Active tournament membership is required": "lobby.error.tournament_membership_required",
+    "Tournament managers cannot play in their tournament": "lobby.error.manager_cannot_play",
+    "Player already belongs to an active game": "lobby.error.active_game",
+    "Player already belongs to an active lobby": "lobby.error.active_lobby",
+    "Observing is forbidden by tournament policy": "lobby.error.observing_forbidden",
+    "Burnt-only observing does not allow this observer to see fresh content": (
+        "lobby.error.observer_fresh_content"
+    ),
+    "Tournament type does not support hybrid matchmaking": "lobby.error.search_unavailable",
+    "Hybrid matchmaking is disabled by tournament policy": "lobby.error.search_disabled",
+    "The lobby has no viable packet selection": "lobby.error.no_viable_packets",
+    "Packet not found": "lobby.error.packet_not_found",
+    "Packet is not selected": "lobby.error.packet_not_selected",
+    "Packet has no published version": "lobby.error.packet_unpublished",
+    "Packet is not game-eligible in this tournament": "lobby.readiness.packet_not_playable",
+    "Every player needs packet game eligibility": "lobby.error.player_packet_access",
+    "Classic games use exactly one round packet": "lobby.error.classic_packet_count",
+    "classic_participants_required": "lobby.readiness.classic_participants_required",
+    "tournament_stage_closed": "lobby.readiness.tournament_stage_closed",
+    "Maximum players cannot be below the current lobby size": "lobby.error.capacity_too_small",
+    "minimum_players cannot exceed maximum_players": "lobby.error.player_limits",
+    "minimum_players must be between 1 and 12": "lobby.error.player_limit_range",
+    "maximum_players must be between 1 and 12": "lobby.error.player_limit_range",
+    "A lobby supports between one and twelve players": "lobby.error.player_limit_range",
+}
+
+
 ACTION_POLICIES: dict[ActionCode, ActionPolicy] = {action: ActionPolicy() for action in ActionCode}
 # Banned players keep read access to their packet library; every other action is refused.
 BAN_EXEMPT_ACTIONS = frozenset(
@@ -1580,9 +1628,9 @@ class ApplicationGateway:
             tournament = await session.get(TournamentRecord, lobby.tournament_id)
             tournament_name = tournament.name
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
-            raw_settings = (
-                dict(record.settings) if record is not None else lobby.settings.to_dict()
-            )
+            raw_settings = {
+                **lobby.settings.to_dict(), **(record.settings if record is not None else {}),
+            }
             raw_settings.setdefault("is_private", False)
             rating_rows = (
                 await session.execute(
@@ -1888,9 +1936,19 @@ class ApplicationGateway:
             code = ErrorCode.VALIDATION_FAILED
         else:
             code = ErrorCode.INTERNAL_ERROR
+        message_key = f"error.{code.value}"
+        if action.value.startswith("lobbies.") and code in {
+            ErrorCode.VALIDATION_FAILED, ErrorCode.FORBIDDEN, ErrorCode.NOT_FOUND,
+        }:
+            # Expose only known domain failures, never arbitrary exception text.
+            message_key = _LOBBY_ERROR_MESSAGES.get(str(error), message_key)
+            if isinstance(error, PermissionError) and str(error).startswith(
+                "Tournament locks parameter: "
+            ):
+                message_key = "lobby.error.setting_locked"
         return GatewayError(
             code=code,
-            message_key=f"error.{code.value}",
+            message_key=message_key,
             retryable=code in {ErrorCode.REQUEST_IN_PROGRESS, ErrorCode.INTERNAL_ERROR},
         )
 

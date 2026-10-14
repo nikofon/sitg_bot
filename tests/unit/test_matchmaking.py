@@ -9,7 +9,7 @@ import pytest
 
 from sitg_bot.domain.game_rulesets import DEFAULT_RULESETS, PlayUnit
 from sitg_bot.domain.game_settings import GameSettings
-from sitg_bot.services.matchmaking import InvitationMatchmakingService
+from sitg_bot.services.matchmaking import InvitationMatchmakingService, LobbyReadinessError
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.tournaments import (
     TournamentContext,
@@ -106,6 +106,44 @@ async def test_lobby_privacy_requires_a_boolean(value):
     with pytest.raises(ValueError, match="is_private must be true or false"):
         await service.set_settings(lobby.id, 42, {"is_private": value})
     assert "is_private" not in lobby.settings
+
+
+async def test_start_rejects_a_player_who_is_not_ready():
+    service, lobby = _privacy_settings_service()
+    lobby.searching = False
+    lobby.validation = []
+    service._selected_packets = AsyncMock(return_value=[SimpleNamespace()])
+    service._active_members = AsyncMock(return_value=[
+        SimpleNamespace(ready=True), SimpleNamespace(ready=False),
+    ])
+
+    with pytest.raises(ValueError, match="Every lobby member must be ready"):
+        await service.start(lobby.id, 42, expected_version=1)
+    assert lobby.version == 1
+    service._event.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("reason", "details"),
+    [
+        ("insufficient_fresh_content", {"available": 1, "required": 3}),
+        ("ruleset_player_limit_exceeded", {"actual": 2, "minimum": 4, "maximum": 4}),
+        ("tournament_stage_closed", {}),
+    ],
+)
+async def test_start_preserves_the_validation_failure_reason_and_details(reason, details):
+    service, lobby = _privacy_settings_service()
+    lobby.searching = False
+    lobby.validation = [{"code": reason, "details": details}]
+    service._selected_packets = AsyncMock(return_value=[SimpleNamespace()])
+    service._active_members = AsyncMock(return_value=[SimpleNamespace(ready=True)])
+
+    with pytest.raises(LobbyReadinessError) as failure:
+        await service.start(lobby.id, 42, expected_version=1)
+
+    assert failure.value.reason == reason
+    assert failure.value.details == details
+    service._event.assert_not_awaited()
 
 
 async def test_private_lobbies_are_excluded_before_projecting_ongoing_cards():

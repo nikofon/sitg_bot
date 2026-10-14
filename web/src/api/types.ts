@@ -19,6 +19,7 @@ export type StableErrorCode =
 export interface ApiErrorPayload {
   code: StableErrorCode;
   message_key?: string;
+  details?: Record<string, unknown>;
   retryable?: boolean;
   correlation_id?: string;
 }

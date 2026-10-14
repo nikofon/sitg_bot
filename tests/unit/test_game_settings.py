@@ -84,6 +84,18 @@ def test_game_settings_restore_known_values_from_persisted_mapping() -> None:
     assert GameSettings.from_mapping(None) == GameSettings()
 
 
+def test_question_fully_read_indication_defaults_on_and_round_trips() -> None:
+    assert GameSettings.from_mapping({"buzz_timeout": 5}).question_fully_read_indication is True
+    settings = GameSettings().updated({"question_fully_read_indication": False})
+    assert GameSettings.from_mapping(settings.to_dict()).question_fully_read_indication is False
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", None])
+def test_question_fully_read_indication_requires_boolean(value) -> None:
+    with pytest.raises(ValueError, match="question_fully_read_indication must be true or false"):
+        GameSettings(question_fully_read_indication=value)
+
+
 @pytest.mark.parametrize(
     ("text", "target", "expected"),
     [

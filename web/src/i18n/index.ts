@@ -25,7 +25,10 @@ export class I18n {
     document.documentElement.lang = locale;
   }
 
-  t(key: MessageKey): string {
-    return catalogs[this.currentLocale][key];
+  t(key: MessageKey, parameters: Record<string, unknown> = {}): string {
+    return catalogs[this.currentLocale][key]?.replace(/\{(\w+)\}/g, (placeholder, name: string) => {
+      const value = parameters[name];
+      return typeof value === "string" || typeof value === "number" ? String(value) : placeholder;
+    });
   }
 }

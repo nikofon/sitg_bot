@@ -198,6 +198,11 @@ class GameDelivery:
         def t(key, **values):
             return self.localization.text(key, locale, **values)
 
+        def question_text(text, fully_announced):
+            if view.get("question_fully_read_indication", True) and fully_announced:
+                return text + " ✅"
+            return text
+
         kind, params = event["kind"], event["parameters"]
         keyboard = (
             game_keyboard()
@@ -277,7 +282,14 @@ class GameDelivery:
         elif kind == "question_token_revealed":
             if time.monotonic() - self.last_edit.get(chat, 0) < 0.8:
                 raise RetryableDeliveryError("Coalesced reveal", retry_after_seconds=1)
-            await self._question(chat, game, messages, round_id, params["text"])
+            await self._question(
+                chat, game, messages, round_id,
+                question_text(
+                    params["text"],
+                    params.get("total_token_count") is not None
+                    and params.get("revealed_token_count", 0) >= params["total_token_count"],
+                ),
+            )
             self.last_edit[chat] = time.monotonic()
         elif kind == "player_buzzed":
             await self._question(chat, game, messages, round_id, t("flow.hidden"))
@@ -312,9 +324,14 @@ class GameDelivery:
             keyboard = game_keyboard() if any(p["self"] for p in view["participants"]) else None
             await self._send(chat, game, messages, key, MessageModel(t(verdict), keyboard))
             if not params["original_correct"] and params.get("revealed_text"):
-                await self._question(chat, game, messages, round_id, params["revealed_text"])
+                await self._question(
+                    chat, game, messages, round_id,
+                    question_text(params["revealed_text"], params.get("fully_announced", False)),
+                )
         elif kind == "question_completed":
-            await self._question(chat, game, messages, round_id, params["text"])
+            await self._question(
+                chat, game, messages, round_id, question_text(params["text"], True)
+            )
             text = t(
                 "flow.answer",
                 answer=params["answer"],
@@ -439,7 +456,9 @@ class GameDelivery:
                     game,
                     messages,
                     str(question["round_id"]),
-                    t("flow.hidden") if question["accepted_buzzer_id"] else question["text"],
+                    t("flow.hidden") if question["accepted_buzzer_id"] else question_text(
+                        question["text"], question.get("fully_announced", False)
+                    ),
                 )
                 if question["revealed_answer"] is not None:
                     text = t(

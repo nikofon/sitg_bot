@@ -97,6 +97,14 @@ def test_ruleset_registry_rejects_unknown_versions() -> None:
         raise AssertionError("Unknown ruleset version was accepted")
 
 
+def test_question_fully_read_indication_is_a_boolean_parameter() -> None:
+    definition = next(
+        item for item in SIGameRuleset().parameter_definitions
+        if item.name == "question_fully_read_indication"
+    )
+    assert definition.value_type == "boolean"
+
+
 @pytest.mark.parametrize(
     ("accepted", "submitted", "expected"),
     [

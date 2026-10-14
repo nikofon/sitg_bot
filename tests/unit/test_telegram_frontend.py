@@ -2157,24 +2157,31 @@ async def test_lobby_confirmation_decline_keeps_the_lobby_unchanged(action) -> N
     callback.message.answer.assert_not_awaited()
 
 
-async def test_readiness_error_in_telegram_displays_the_specific_condition() -> None:
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("callback", [False, True])
+@pytest.mark.parametrize("starting", [False, True])
+async def test_lobby_error_in_telegram_displays_the_specific_condition(
+    locale, callback, starting,
+) -> None:
     from unittest.mock import patch
 
-    from aiogram.types import Message, Update
+    from aiogram.types import CallbackQuery, Message, Update
 
     from sitg_bot.application.contracts import GatewayResponse
     from sitg_bot.application.gateway import ApplicationGateway
     from sitg_bot.bot.middleware.errors import ErrorMappingMiddleware
     from sitg_bot.services.matchmaking import LobbyReadinessError
 
+    action = ActionCode.LOBBY_START if starting else ActionCode.LOBBY_READY_UPDATE
     error = ApplicationGateway._error(
+        ValueError("Every lobby member must be ready") if starting else
         LobbyReadinessError("insufficient_fresh_content", {"available": 1, "required": 3}),
-        action=ActionCode.LOBBY_READY_UPDATE,
+        action=action,
     )
     handler = AsyncMock(
         side_effect=GatewayCallError(
             GatewayResponse(
-                action=ActionCode.LOBBY_READY_UPDATE,
+                action=action,
                 correlation_id=UUID(int=1),
                 ok=False,
                 error=error,
@@ -2192,12 +2199,32 @@ async def test_readiness_error_in_telegram_displays_the_specific_condition() -> 
             },
         }
     )
-    with patch.object(Message, "answer", new=AsyncMock()) as answer:
-        await ErrorMappingMiddleware(LocalizationService())(
-            handler, update, {"locale": "ru"}
+    if callback:
+        update = Update.model_validate({
+            "update_id": 1,
+            "callback_query": {
+                "id": "1", "chat_instance": "1", "data": "lobbystart:yes",
+                "from": {"id": 42, "is_bot": False, "first_name": "Player"},
+                "message": update.message.model_dump(),
+            },
+        })
+    localization = LocalizationService()
+    expected = localization.text(error.message_key, locale, **error.details)
+    with (
+        patch.object(Message, "answer", new=AsyncMock()) as answer,
+        patch.object(CallbackQuery, "answer", new=AsyncMock()) as callback_answer,
+    ):
+        await ErrorMappingMiddleware(localization)(
+            handler, update, {"locale": locale}
         )
-        assert "доступно 1, требуется 3" in answer.await_args.args[0]
-        assert "Проверьте введённое значение" not in answer.await_args.args[0]
+        answer.assert_awaited_once_with(expected)
+        if callback:
+            callback_answer.assert_awaited_once_with(expected, show_alert=True)
+        if starting:
+            assert ("не все игроки готовы" if locale == "ru" else "not ready") in expected
+        else:
+            assert ("доступно 1, требуется 3" if locale == "ru" else
+                    "1 available, 3 required") in expected
 
 
 async def test_banned_player_middleware_blocks_interaction_but_allows_library(

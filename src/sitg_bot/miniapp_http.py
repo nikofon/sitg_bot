@@ -1878,6 +1878,7 @@ class MiniAppHttpServer:
                 "error": {
                     "code": response.error.code.value,
                     "message_key": response.error.message_key,
+                    "details": response.error.details,
                     "retryable": response.error.retryable,
                     "correlation_id": str(response.correlation_id),
                 }

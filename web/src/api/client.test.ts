@@ -66,4 +66,20 @@ describe("ApiClient", () => {
     expect(failure).toBeInstanceOf(ApiError);
     expect(failure).toMatchObject({ code: "forbidden", message: "forbidden" });
   });
+
+  it("preserves localized failure keys and details for lobby actions", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(session))
+      .mockResolvedValueOnce(jsonResponse({ error: {
+        code: "validation_failed", message_key: "lobby.readiness.insufficient_fresh_content",
+        details: { available: 1, required: 3 },
+      } }, 400));
+    const client = new ApiClient("signed-init-data", fetcher);
+
+    await expect(client.request("/api/miniapp/lobbies/ref/start", { method: "POST" }))
+      .rejects.toMatchObject({
+        code: "validation_failed", messageKey: "lobby.readiness.insufficient_fresh_content",
+        details: { available: 1, required: 3 },
+      });
+  });
 });

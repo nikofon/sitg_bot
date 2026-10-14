@@ -2818,7 +2818,13 @@ class PersistentGameService:
         game.answer_deadline = None
         placement = await self._placement(session, game, round_record)
         settings = self._settings(game)
-        if placement.position == 5:
+        last_question_position = await session.scalar(
+            select(func.max(PacketQuestionRecord.position)).where(
+                PacketQuestionRecord.packet_version_id == placement.packet_version_id,
+                PacketQuestionRecord.theme_revision_id == placement.theme_revision_id,
+            )
+        )
+        if placement.position == last_question_position:
             game.progression_stage = "theme_complete"
             delay = settings.last_question_to_theme_complete_delta
         else:
@@ -4120,6 +4126,7 @@ class PersistentGameService:
                         PersistentGameService._settings(game).question_token_target_chars,
                     )
                     payload["revealed_text"] = " ".join(tokens[: game.question_token_index])
+                    payload["fully_announced"] = game.question_token_index >= len(tokens)
                     if kind == "player_buzzed":
                         payload["answer_deadline"] = game.answer_deadline
         payload = PersistentGameService._json_payload(payload)

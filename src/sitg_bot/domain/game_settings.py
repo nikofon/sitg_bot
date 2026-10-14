@@ -24,6 +24,7 @@ class GameSettings:
     question_cost_announcement_delay: float = 1.0
     question_token_delay: float = 0.6
     question_token_target_chars: int = 18
+    question_fully_read_indication: bool = True
     buzz_timer_countdown_delay: float = 0.0
     buzz_timeout: float = 10.0
     answer_timeout: float = 15.0
@@ -75,6 +76,8 @@ class GameSettings:
             raise ValueError("question_token_target_chars must be between 1 and 200")
         if not isinstance(self.pausing_allowed, bool):
             raise ValueError("pausing_allowed must be true or false")
+        if not isinstance(self.question_fully_read_indication, bool):
+            raise ValueError("question_fully_read_indication must be true or false")
         if not isinstance(self.question_values, (tuple, list)):
             raise ValueError("question_values must be an ordered list of integers")
         normalized_values = tuple(self.question_values)

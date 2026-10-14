@@ -1107,7 +1107,9 @@ export class MiniAppShell {
         if (code === "stale_write") await refresh(true);
         else {
           this.platform.notifyError();
-          this.showTextDialog(this.i18n.t(`error.${code}`), []);
+          const reason = error instanceof ApiError && error.messageKey?.startsWith("lobby.")
+            ? this.i18n.t(error.messageKey as MessageKey, error.details) : undefined;
+          this.showTextDialog(reason || this.i18n.t(`error.${code}`), []);
         }
       } finally {
         busy = false;
@@ -2531,7 +2533,9 @@ export class MiniAppShell {
     const playerItems = pick(["minimum_players", "maximum_players"]);
     const themeItems = pick(["theme_count"]);
     const questionValueItems = pick(["question_values", "minus_multiplier"]);
-    const appearanceItems = pick(["question_token_target_chars", "question_token_delay"]);
+    const appearanceItems = pick([
+      "question_token_target_chars", "question_token_delay", "question_fully_read_indication",
+    ]);
     const timingPattern = /(_delay|_timeout)$/;
     const timingItems = remaining().filter((item) => timingPattern.test(item.name));
     for (const item of timingItems) used.add(item.name);

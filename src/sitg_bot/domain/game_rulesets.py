@@ -188,7 +188,7 @@ class SIGameRuleset:
                     else "integer"
                     if name in integer_names
                     else "boolean"
-                    if name == "pausing_allowed"
+                    if name in {"pausing_allowed", "question_fully_read_indication"}
                     else "array"
                 ),
                 f"ruleset.si.{name}.description",

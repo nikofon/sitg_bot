@@ -1805,7 +1805,8 @@ class InvitationMatchmakingService:
             await self._refresh_validation(session, lobby)
             members = await self._active_members(session, lobby.id)
             if lobby.validation:
-                raise ValueError(str(lobby.validation[0]["code"]))
+                violation = lobby.validation[0]
+                raise LobbyReadinessError(str(violation["code"]), violation.get("details", {}))
             if any(not member.ready for member in members):
                 raise ValueError("Every lobby member must be ready")
             for member in members:

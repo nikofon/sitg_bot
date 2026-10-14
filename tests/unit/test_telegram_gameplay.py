@@ -34,6 +34,7 @@ from sitg_bot.bot.presenters.game import (
     plain_chunks,
     rating_message,
     score_text,
+    start_message,
 )
 from sitg_bot.bot.presenters.render import telegram_keyboard
 
@@ -410,8 +411,11 @@ async def test_join_updates_existing_prompt_with_waiting_confirmation():
     assert bot.edit_message_text.await_args.kwargs["reply_markup"] is None
 
 
-async def test_buzz_hides_question_wrong_answer_resumes_same_message_and_completion_reveals_it():
-    bot, protocol, delivery = fixture()
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_buzz_hides_question_wrong_answer_resumes_same_message_and_completion_reveals_it(
+    enabled,
+):
+    bot, protocol, delivery = fixture(view(question_fully_read_indication=enabled))
     protocol.events = [event(1, "question_token_revealed", round_id=ROUND, text="First")]
     await delivery.sync(42, GAME)
     question_id = protocol.messages[f"question:{ROUND}:0"]["ids"][0]
@@ -455,12 +459,71 @@ async def test_buzz_hides_question_wrong_answer_resumes_same_message_and_complet
         )
     ]
     await delivery.sync(42, GAME)
-    assert bot.edit_message_text.await_args.args[0] == "First and remaining"
+    expected = "First and remaining" + (" ✅" if enabled else "")
+    assert bot.edit_message_text.await_args.args[0] == expected
     assert bot.edit_message_text.await_args.kwargs["message_id"] == question_id
     assert bot.send_message.await_args.args[1] == (
         "Ответ: Official\nКомментарий: Explanation\nАвтор: Author"
     )
     assert sum("First" in c.args[1] for c in bot.send_message.await_args_list) == 1
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("fully_announced", [True, False])
+async def test_question_indicator_during_reveal_and_after_wrong_answer(enabled, fully_announced):
+    bot, protocol, delivery = fixture(view(question_fully_read_indication=enabled))
+    protocol.events = [event(
+        1, "question_token_revealed", round_id=ROUND, text="Question <text>",
+        revealed_token_count=2 if fully_announced else 1, total_token_count=2,
+    )]
+    expected = "Question &lt;text&gt;" + (" ✅" if enabled and fully_announced else "")
+    await delivery.sync(42, GAME)
+    assert bot.send_message.await_args.args[1] == expected
+    protocol.events.append(event(2, "player_buzzed", round_id=ROUND, mine=True, form="Who?"))
+    await delivery.sync(42, GAME)
+    assert bot.edit_message_text.await_args.args[0] == "Вопрос скрыт"
+    protocol.events.append(event(
+        3, "answer_judged", round_id=ROUND, mine=True, answer=None,
+        timed_out=True, original_correct=False, revealed_text="Question <text>",
+        fully_announced=fully_announced,
+    ))
+    await delivery.sync(42, GAME)
+    assert bot.edit_message_text.await_args.args[0] == expected
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("fully_announced", [True, False])
+@pytest.mark.parametrize("hidden", [True, False])
+async def test_reconnected_question_keeps_indicator_only_when_fully_visible(
+    enabled, fully_announced, hidden,
+):
+    bot, protocol, delivery = fixture(view(
+        question_fully_read_indication=enabled,
+        question={
+            "round_id": ROUND, "text": "Question", "value": 10,
+            "accepted_buzzer_id": "player" if hidden else None,
+            "revealed_answer": None, "fully_announced": fully_announced,
+        },
+    ))
+    protocol.events = [event(1, "player_reconnected", mine=True)]
+    await delivery.sync(42, GAME)
+    expected = "Вопрос скрыт" if hidden else "Question" + (
+        " ✅" if enabled and fully_announced else ""
+    )
+    assert bot.send_message.await_args.args[1] == expected
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_start_explains_question_indicator_only_when_enabled(locale, enabled):
+    localization = LocalizationService()
+    message = start_message(view(question_fully_read_indication=enabled), localization, locale)
+    explanation = localization.text("flow.question_fully_read_indication", locale)
+    assert (explanation in message.text) is enabled
+    assert ("✅" in message.text) is enabled
+    assert (
+        "not part of the question text" if locale == "en" else "не является частью текста вопроса"
+    ) in explanation
 
 
 @pytest.mark.parametrize(

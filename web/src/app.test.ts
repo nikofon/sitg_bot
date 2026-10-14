@@ -347,6 +347,25 @@ describe("MiniAppShell", () => {
     expect(root.querySelector('[data-packet-id="selected"]')).toBe(card);
   });
 
+  it.each([
+    ["lobby.error.players_not_ready", {}, "some players are not ready"],
+    ["lobby.readiness.insufficient_fresh_content", { available: 1, required: 3 }, "1 available, 3 required"],
+    ["lobby.error.unknown", {}, "Check the entered values and try again."],
+  ])("explains rejected lobby actions using %s", async (messageKey, details, expected) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, fetcher } = lobbyShell("overview", { available_actions: ["start"] });
+    await vi.advanceTimersByTimeAsync(0);
+    fetcher.mockResolvedValueOnce(response({ error: {
+      code: "validation_failed", message_key: messageKey, details,
+    } }, 400));
+
+    root.querySelector<HTMLButtonElement>(".lobby-overview .settings-actions button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(document.querySelector("dialog")?.textContent).toContain(expected);
+    expect(root.querySelector(".lobby-overview")).not.toBeNull();
+  });
+
   it("refreshes stale actions in place and uses the current version on retry", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { root, fetcher, resource } = lobbyShell("packets");
@@ -527,6 +546,7 @@ describe("MiniAppShell", () => {
       mutable_parameters: [
         "theme_count", "ready_delay", "minimum_players", "question_values", "minus_multiplier",
         "question_token_target_chars", "question_token_delay",
+        "question_fully_read_indication",
       ],
       setting_descriptors: [
         { name: "theme_count", value: 3, value_type: "integer", description_key: "ruleset.si.theme_count.description", options: [] },
@@ -536,6 +556,7 @@ describe("MiniAppShell", () => {
         { name: "minus_multiplier", value: 1, value_type: "number", description_key: "ruleset.si.minus_multiplier.description", options: [] },
         { name: "question_token_target_chars", value: 18, value_type: "integer", description_key: "ruleset.si.question_token_target_chars.description", options: [] },
         { name: "question_token_delay", value: 0.6, value_type: "number", description_key: "ruleset.si.question_token_delay.description", options: [] },
+        { name: "question_fully_read_indication", value: true, value_type: "boolean", description_key: "ruleset.si.question_fully_read_indication.description", options: [] },
       ],
     });
     await vi.waitFor(() => expect(root.querySelector('input[name="setting:theme_count"]')).not.toBeNull());
@@ -548,7 +569,13 @@ describe("MiniAppShell", () => {
     expect(groups[2]).toContain("Wrong-answer multiplier");
     expect(groups[3]).toContain("Question token size");
     expect(groups[3]).toContain("Question token delay");
+    expect(groups[3]).toContain("Question fully read indication");
     expect(groups[3]).not.toContain("Question values");
+    const indicator = root.querySelector<HTMLInputElement>('[name="setting:question_fully_read_indication"]')!;
+    expect(indicator.type).toBe("checkbox");
+    expect(indicator.checked).toBe(true);
+    indicator.checked = false;
+    indicator.dispatchEvent(new Event("change", { bubbles: true }));
     const maximum = root.querySelector<HTMLInputElement>('input[name="setting:theme_count:max"]')!;
     const count = root.querySelector<HTMLInputElement>('input[name="setting:theme_count"]')!;
     expect(maximum.checked).toBe(false);
@@ -566,6 +593,7 @@ describe("MiniAppShell", () => {
         minus_multiplier: 1,
         question_token_target_chars: 18,
         question_token_delay: 0.6,
+        question_fully_read_indication: false,
       },
     });
   });

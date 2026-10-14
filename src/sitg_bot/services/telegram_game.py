@@ -1000,6 +1000,7 @@ class TelegramGameService:
             "paused": game.paused,
             "appeal_selecting": game.appeal_selection_player_id is not None,
             "pausing_allowed": snapshot.settings.pausing_allowed,
+            "question_fully_read_indication": snapshot.settings.question_fully_read_indication,
             "ruleset": snapshot.game_ruleset,
             "ruleset_version": snapshot.game_ruleset_version,
             "locale": player.preferred_locale,

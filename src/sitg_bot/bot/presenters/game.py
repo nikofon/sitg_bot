@@ -121,11 +121,12 @@ def start_message(view, localization, locale):
     keyboard = (
         game_keyboard() if any(p["self"] for p in view["participants"]) else RemoveKeyboardModel()
     )
-    return MessageModel(
-        localization.text("flow.started", locale, players="{players}")
-        .replace("{players}", players),
-        keyboard,
+    text = localization.text("flow.started", locale, players="{players}").replace(
+        "{players}", players
     )
+    if view.get("question_fully_read_indication", True):
+        text += "\n\n" + localization.text("flow.question_fully_read_indication", locale)
+    return MessageModel(text, keyboard)
 
 
 def score_text(view, localization, locale, *, final=False):

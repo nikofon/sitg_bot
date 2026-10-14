@@ -14,12 +14,31 @@ from sitg_bot.application.contracts import (
     ApplicationPrincipal,
     GatewayResponse,
 )
+from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.miniapp_http import MiniAppHttpServer
+from sitg_bot.services.matchmaking import LobbyReadinessError
 from sitg_bot.services.miniapp_auth import (
     MiniAppSecurityPolicy,
     MiniAppSessionContext,
     MiniAppSessionCredentials,
 )
+
+
+def test_lobby_http_error_preserves_the_specific_reason_and_counts() -> None:
+    response = MiniAppHttpServer._gateway_response(GatewayResponse(
+        action=ActionCode.LOBBY_START,
+        correlation_id=UUID(int=1),
+        ok=False,
+        error=ApplicationGateway._error(
+            LobbyReadinessError("insufficient_fresh_content", {"available": 1, "required": 3}),
+            action=ActionCode.LOBBY_START,
+        ),
+    ))
+
+    assert response.status == 400
+    error = json.loads(response.text)["error"]
+    assert error["message_key"] == "lobby.readiness.insufficient_fresh_content"
+    assert error["details"] == {"available": 1, "required": 3}
 
 
 @pytest.mark.parametrize("origin,refresh,same_site", [

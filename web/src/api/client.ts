@@ -32,6 +32,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly retryable: boolean,
     public readonly correlationId?: string,
+    public readonly messageKey?: string,
+    public readonly details: Record<string, unknown> = {},
   ) {
     super(code);
     this.name = "ApiError";
@@ -182,6 +184,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
       response.status,
       payload.retryable === true,
       typeof payload.correlation_id === "string" ? payload.correlation_id : undefined,
+      typeof payload.message_key === "string" ? payload.message_key : undefined,
+      isRecord(payload.details) ? payload.details : {},
     );
   }
   return value as T;
