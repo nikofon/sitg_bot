@@ -182,7 +182,7 @@ The notice uses the durable game event stream, including retry/restart deduplica
 Ordinary menu commands do not reopen historical games. Explicit `/reconnect`
 restores an abandoned running game until a later game assignment forfeits that right.
 
-Finished games close themselves `FINISHED_GAME_CLOSURE_TIMEOUT` (24 hours) after the
+Finished games close themselves `FINISHED_GAME_CLOSURE_TIMEOUT` (12 hours) after the
 terminal status timestamp, through the periodic `game.finished_closure` durable job:
 every view that was never quit is dismissed with the same message cleanup as `/quit`,
 attached observers are detached, reserved exposure claims are released, and a
