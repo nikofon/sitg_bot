@@ -2109,7 +2109,13 @@ async def test_lobby_metadata_pages_are_bounded_and_preserve_authors(database_ur
             )
             assert len(page["items"]) == int(packet_id != hidden_id)
         empty = await service._packet_page(lobby.id, filters={"name": "does not exist"}, limit=2)
-        assert empty["items"] == () and empty["next_cursor"] is None
+        assert empty["items"] == () and empty["next_cursor"] is not None
+        while empty["next_cursor"] is not None:
+            empty = await service._packet_page(
+                lobby.id, filters={"name": "does not exist"}, limit=2,
+                cursor=UUID(empty["next_cursor"]),
+            )
+            assert empty["items"] == ()
     finally:
         if event.contains(database.engine.sync_engine, "after_cursor_execute", capture):
             event.remove(database.engine.sync_engine, "after_cursor_execute", capture)
@@ -2668,12 +2674,12 @@ async def test_readiness_reports_specific_conditions_and_allows_unready(database
         service = InvitationMatchmakingService(database)
         owner = fixture.inputs[0].telegram_user_id
         lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
-        with pytest.raises(LobbyReadinessError) as failure:
-            await service.set_ready(lobby.id, owner, expected_version=lobby.version)
-        assert failure.value.reason == "packet_required"
+        lobby = await service.set_ready(lobby.id, owner, expected_version=lobby.version)
+        assert lobby.members[0].ready
         lobby = await service.select_packet(
             lobby.id, owner, fixture.packet_id, expected_version=lobby.version
         )
+        assert not lobby.members[0].ready
         lobby = await service.set_settings(
             lobby.id, owner, {"theme_count": 2}, expected_version=lobby.version
         )
@@ -2687,6 +2693,46 @@ async def test_readiness_reports_specific_conditions_and_allows_unready(database
             lobby.id, owner, ready=False, expected_version=lobby.version
         )
         assert not lobby.members[0].ready
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("hybrid_matchmaking_enabled", [True, False])
+async def test_packetless_ladder_lobby_starts_after_automatic_selection(
+    database_url: str, hybrid_matchmaking_enabled: bool,
+) -> None:
+    from sitg_bot.bot.handlers.lobby import automatic_packet_selection
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(
+            database, player_count=2, hybrid_matchmaking_enabled=hybrid_matchmaking_enabled,
+        )
+        service = InvitationMatchmakingService(database)
+        owner = fixture.inputs[0].telegram_user_id
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        lobby = await service.join(lobby.invitation_code, fixture.inputs[1])
+        for player in fixture.inputs:
+            lobby = await service.set_ready(
+                lobby.id, player.telegram_user_id, expected_version=lobby.version,
+            )
+        assert not lobby.selected_packets
+        assert all(member.ready for member in lobby.members)
+        packets = automatic_packet_selection({
+            "settings": lobby.settings.to_dict(),
+            "packet_suggestions": [
+                asdict(item) for item in await service.suggest_packets(lobby.id)
+            ],
+        })
+        assert packets
+        lobby = await service.select_packets(
+            lobby.id, owner, [item["packet_id"] for item in packets],
+            expected_version=lobby.version,
+        )
+        assert all(member.ready for member in lobby.members)
+        started = await service.start(lobby.id, owner, expected_version=lobby.version)
+        assert started.lobby.status == "started"
+        assert len(started.game.participants) == 2
     finally:
         await database.close()
 

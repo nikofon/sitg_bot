@@ -862,6 +862,7 @@ export interface AdminManagementResource {
   state: "ready";
   section: AdminSection;
   items: AdminCard[];
+  packets_deferred?: boolean;
 }
 
 export interface AdminSuspicionInspectionPayload {

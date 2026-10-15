@@ -18,6 +18,7 @@ from sitg_bot.services.tournaments import (
     normalize_tournament_policies,
 )
 from sitg_bot.storage.models import (
+    LogicalPacketRecord,
     PacketVersionRecord,
     PlayerPacketBlockRecord,
     PregameLobbyPacketRecord,
@@ -121,6 +122,117 @@ async def test_start_rejects_a_player_who_is_not_ready():
         await service.start(lobby.id, 42, expected_version=1)
     assert lobby.version == 1
     service._event.assert_not_awaited()
+
+
+async def _readiness_service():
+    service, lobby = _privacy_settings_service()
+    lobby.status = "assembling"
+    lobby.expires_at = datetime.now(UTC) + timedelta(hours=1)
+    lobby.validation = []
+    lobby.creator_player_id = UUID(int=3)
+    lobby.settings = {**lobby.settings, "minimum_players": 1}
+    members = [SimpleNamespace(
+        player_id=UUID(int=index), role="player", ready=False, validation_violations=[],
+    ) for index in (3, 4)]
+    service._member = AsyncMock(return_value=members[0])
+    service._active_members = AsyncMock(return_value=members)
+    service._selected_packets = AsyncMock(return_value=[])
+    service._available_play_units = AsyncMock(return_value=[])
+    context = service.tournaments.context.return_value
+    context.type_rules = {}
+    context.policies = {}
+    context.assembly_open = True
+    async with service.database.transaction() as session:
+        player = SimpleNamespace(id=members[0].player_id, public_nickname="Player", status="active")
+        session.get.return_value = player
+        session.scalars = AsyncMock(return_value=[player])
+    return service, lobby, members, context, session
+
+
+async def test_ladder_players_can_be_ready_without_packets():
+    service, lobby, members, _, _ = await _readiness_service()
+    for member in members:
+        service._member.return_value = member
+        await service.set_ready(lobby.id, 42)
+    assert all(member.ready for member in members)
+    assert service._event.await_count == 2
+    await service.set_ready(lobby.id, 42, ready=False)
+    assert not members[-1].ready
+
+
+@pytest.mark.parametrize(
+    ("condition", "reason"),
+    [
+        ("classic", "packet_required"),
+        ("closed_stage", "tournament_stage_closed"),
+        ("inactive_member", "tournament_membership_required"),
+        ("player_limit", "ruleset_player_limit_exceeded"),
+    ],
+)
+async def test_packetless_readiness_preserves_other_requirements(condition, reason):
+    service, lobby, members, context, session = await _readiness_service()
+    if condition == "classic":
+        context.type_key = "classic"
+    elif condition == "closed_stage":
+        context.assembly_open = False
+    elif condition == "inactive_member":
+        session.get.return_value.status = "left"
+    elif condition == "player_limit":
+        lobby.settings = {**lobby.settings, "minimum_players": 3}
+    with pytest.raises(LobbyReadinessError) as failure:
+        await service.set_ready(lobby.id, 42)
+    assert failure.value.reason == reason
+    assert not any(member.ready for member in members)
+    service._event.assert_not_awaited()
+
+
+@pytest.mark.parametrize("playable", [True, False])
+async def test_selected_packets_still_require_access_and_fresh_content(playable):
+    service, lobby, members, _, _ = await _readiness_service()
+    service._selected_packets.return_value = [SimpleNamespace(
+        packet_id=UUID(int=10), assignment_id=UUID(int=11), packet_version_id=UUID(int=12),
+    )]
+    service._packet_selection_violation = AsyncMock(return_value=None)
+    service.tournaments.has_assignment_access = AsyncMock(return_value=playable)
+
+    with pytest.raises(LobbyReadinessError) as failure:
+        await service.set_ready(lobby.id, 42)
+
+    assert failure.value.reason == (
+        "insufficient_fresh_content" if playable else "packet_not_playable"
+    )
+    assert not any(member.ready for member in members)
+
+
+@pytest.mark.parametrize("initial_selection", [True, False])
+@pytest.mark.parametrize("bulk", [True, False])
+async def test_only_initial_bulk_packet_selection_preserves_readiness(initial_selection, bulk):
+    service, lobby, members, _, session = await _readiness_service()
+    for member in members:
+        member.ready = True
+    packet_id = UUID(int=10)
+    version = SimpleNamespace(id=UUID(int=11), name="Packet")
+    assignment = SimpleNamespace(id=UUID(int=12), adopted_version_id=version.id)
+    packet = SimpleNamespace(id=packet_id, retired_at=None)
+    session.get.side_effect = lambda model, identity: (
+        packet if model is LogicalPacketRecord else version
+    )
+    session.scalar = AsyncMock(return_value=assignment)
+    session.add = Mock()
+    service.tournaments.has_assignment_access = AsyncMock(return_value=True)
+    service._all_active_members = AsyncMock(return_value=members)
+    service._validate_lobby = AsyncMock()
+    if not initial_selection:
+        service._selected_packets.return_value = [SimpleNamespace(
+            packet_id=UUID(int=20), selection_order=1,
+        )]
+
+    if bulk:
+        await service.select_packets(lobby.id, 42, [packet_id, UUID(int=13)])
+    else:
+        await service.select_packet(lobby.id, 42, packet_id)
+
+    assert all(member.ready == (initial_selection and bulk) for member in members)
 
 
 @pytest.mark.parametrize(
@@ -649,7 +761,11 @@ async def test_packet_pages_filter_before_calculating_and_return_complete_matche
         lobby.id, telegram_user_id=42, limit=1, cursor=UUID(first["next_cursor"]),
     )
     assert [item.name for item in second["items"]] == ["Alpha"]
-    assert second["next_cursor"] is None
+    assert second["next_cursor"] == str(selections[2].assignment_id)
+    last = await service.packet_page(
+        lobby.id, telegram_user_id=42, limit=1, cursor=UUID(second["next_cursor"]),
+    )
+    assert last["items"] == () and last["next_cursor"] is None
     service._available_play_units.reset_mock()
     filtered = await service.packet_page(
         lobby.id, telegram_user_id=42, filters={"name": " ALPHA "},
@@ -657,6 +773,35 @@ async def test_packet_pages_filter_before_calculating_and_return_complete_matche
     assert [item.name for item in filtered["items"]] == ["Alpha"]
     calculated = service._available_play_units.await_args.args[1]
     assert [item.packet_version_id for item in calculated] == [versions[1].id]
+
+
+async def test_sparse_lobby_packet_pages_bound_work_and_advance_past_rejected_rows():
+    service, session, lobby, _, _, versions, _ = _packet_listing_service()
+    rows = [(SimpleNamespace(id=UUID(int=10000 + i)), SimpleNamespace(
+        id=UUID(int=1000 + i), adopted_version_id=versions[0].id,
+    )) for i in range(1000)]
+
+    async def execute(query):
+        assert query._limit_clause.value == 26
+        cursor = next((value for value in query.compile().params.values()
+                       if isinstance(value, UUID) and value in {row[1].id for row in rows}), None)
+        return SimpleNamespace(all=lambda: [
+            row for row in rows if cursor is None or row[1].id > cursor
+        ][:query._limit_clause.value])
+
+    session.execute.side_effect = execute
+    cursor = None
+    for index in range(2):
+        service.tournaments.has_assignment_access.reset_mock()
+        page = await service.packet_page(
+            lobby.id, telegram_user_id=42, limit=25, cursor=cursor, filters={"name": "absent"},
+        )
+        assert page["items"] == ()
+        assert page["next_cursor"] == str(rows[(index + 1) * 26 - 1][1].id)
+        assert service.tournaments.has_assignment_access.await_count == 26
+        cursor = UUID(page["next_cursor"])
+    assert session.execute.await_count == 2
+    assert service._available_play_units.await_args.args[1] == []
 
 
 async def test_listing_services_share_a_background_limiter_without_blocking_other_work():

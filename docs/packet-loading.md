@@ -40,6 +40,24 @@ This uses jsdom; it does not measure browser layout or paint. Measure the deploy
 Mini App before predicting user-visible load times. Deploy backend support before
 the updated frontend.
 
+## Administrator packet lists
+
+The admin Packets tab starts with an authorized empty shell and loads versions
+through `/api/miniapp/admin/management/packets` in batches of 25. Each nonempty page
+uses seven service-level SQL reads, including authorization. Requests share the
+backend limiter and the browser's cancellable packet loader. Cursors and browser
+card keys use **version IDs**, preserving
+multiple versions of one logical packet. Legacy catalogue calls still return
+complete lists using batched queries.
+
+Search continues to cover all loaded metadata, including collapsed author and
+tournament details. Results and sorting update as pages arrive. Cards retain
+focus and open details between unchanged updates; collapsed metadata is built
+only when opened. Embedded tournament packet names and author version lists also
+use bulk queries. Admin view/download authorization and confirmation remain live.
+
+## Freshness caching
+
 The content adapter keeps database-scoped LRU caches for 1,024 layouts/counts and
 8,192 player/version results. Every availability request checks current player
 blocks, then compares relevant reserved/burnt logical exposure identities with

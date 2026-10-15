@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api/client";
 import { PacketLoader, type PacketPage } from "./packet-loading";
 
 type Packet = { packet_id: string; fresh: number };
@@ -60,6 +61,53 @@ describe("PacketLoader", () => {
     finishOld({ items: [packet("old")], next_cursor: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(update).toHaveBeenLastCalledWith([packet("new")], false);
+  });
+
+  it.each<Record<string, string>>([
+    { year_from: "20" }, { year_to: "10000" }, { publication_from: "2020.5" },
+    { publication_to: "999" }, { name: "x".repeat(201) }, { author: "x".repeat(201) },
+  ])("waits for valid filters before requesting or reconciling: %o", async (filters) => {
+    const fetch = vi.fn().mockResolvedValue({ items: [packet("a")], next_cursor: null });
+    const update = vi.fn();
+    const loader = new PacketLoader<Packet>(controller.signal, fetch, update, () => false);
+    loader.start(filters, true);
+    loader.reconcile();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(update).toHaveBeenLastCalledWith([], false);
+    loader.start({ year_from: "2020", publication_to: "9999", name: "x".repeat(200) }, true);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenLastCalledWith([packet("a")], false);
+  });
+
+  it("stops permanent API errors and allows a corrected search", async () => {
+    const fetch = vi.fn().mockRejectedValue(new ApiError("validation_failed", 400, false));
+    const update = vi.fn();
+    const loader = new PacketLoader<Packet>(controller.signal, fetch, update, () => false, [packet("a")]);
+    loader.start({});
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenLastCalledWith([packet("a")], false);
+    expect(vi.getTimerCount()).toBe(0);
+    fetch.mockResolvedValue({ items: [packet("b")], next_cursor: null });
+    loader.start({ name: "corrected" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(update).toHaveBeenLastCalledWith([packet("b")], false);
+  });
+
+  it("continues after empty filtered pages and reconciles only after the final cursor", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ items: [], next_cursor: "scanned" })
+      .mockResolvedValueOnce({ items: [packet("b")], next_cursor: null });
+    const update = vi.fn();
+    const loader = new PacketLoader<Packet>(controller.signal, fetch, update, () => false, [packet("a")]);
+    loader.start({ name: "rare" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(update).toHaveBeenLastCalledWith([packet("a")], true);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(fetch.mock.calls[1]![0].get("cursor")).toBe("scanned");
+    expect(update).toHaveBeenLastCalledWith([packet("b")], false);
   });
 
   it("protects a blocked card from pages fetched before its mutation", async () => {

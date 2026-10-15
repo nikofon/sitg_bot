@@ -24,6 +24,7 @@ from sitg_bot.application.contracts import (
     AdminAuthorUpdateOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
+    AdminPacketListOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
@@ -281,6 +282,9 @@ class MiniAppHttpServer:
         )
         app.router.add_get(
             "/api/miniapp/admin/suspicion/ledger", self._admin_suspicion_ledger
+        )
+        app.router.add_get(
+            "/api/miniapp/admin/management/packets", self._admin_packet_page
         )
         app.router.add_post(
             "/api/miniapp/admin/management/{section}/{resource_id}/{command}",
@@ -591,6 +595,7 @@ class MiniAppHttpServer:
             operation = AdminManagementListOperation.model_validate({
                 "action": ActionCode.ADMIN_MANAGEMENT_LIST,
                 "section": parse_qs(parsed.query).get("section", ["tournaments"])[0],
+                "include_items": request.query.get("include_items", "true"),
             })
             session, result = await self._query(request, operation)
             if not result.ok:
@@ -1312,6 +1317,12 @@ class MiniAppHttpServer:
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
+        return self._gateway_response(result)
+
+    async def _admin_packet_page(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, AdminPacketListOperation.model_validate({
+            "action": ActionCode.ADMIN_PACKET_LIST, **request.query,
+        }))
         return self._gateway_response(result)
 
     async def _get_packet_access(self, request: web.Request) -> web.Response:

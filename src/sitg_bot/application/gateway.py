@@ -21,6 +21,7 @@ from sitg_bot.application.contracts import (
     AdminAuthorUpdateOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
+    AdminPacketListOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
@@ -297,6 +298,7 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.AUTHORS_SEARCH: ActionPolicy(cursor_paginated=True),
+        ActionCode.ADMIN_PACKET_LIST: ActionPolicy(cursor_paginated=True),
         ActionCode.AUTHOR_CATALOGUE: ActionPolicy(),
         ActionCode.AUTHOR_PROFILE: ActionPolicy(),
         ActionCode.AUTHOR_LINK_MINE: ActionPolicy(cursor_paginated=True),
@@ -1443,7 +1445,11 @@ class ApplicationGateway:
             return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
         if isinstance(operation, AdminManagementListOperation):
             return await AdminManagementService(self.database).catalogue(
-                player_id, operation.section
+                player_id, operation.section, include_items=operation.include_items
+            )
+        if isinstance(operation, AdminPacketListOperation):
+            return await AdminManagementService(self.database).packet_page(
+                player_id, cursor=operation.cursor, limit=operation.limit,
             )
         if isinstance(operation, AdminTournamentModerateOperation):
             return await AdminManagementService(self.database).moderate_tournament(

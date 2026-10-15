@@ -747,16 +747,23 @@ class InvitationMatchmakingService:
         *,
         expected_version: int | None = None,
     ) -> LobbySnapshot:
-        """Select several packets atomically so one update can assign them together."""
+        """Select packets atomically, preserving readiness for an initial automatic selection."""
 
         async with self.database.transaction() as session:
             lobby = await self._locked_lobby(session, lobby_id)
             self._require_version(lobby, expected_version)
             await self._require_open(session, lobby)
             await self._require_creator(session, lobby, telegram_user_id)
+            context = await self.tournaments.context(session, lobby.tournament_id)
+            preserve_readiness = (
+                context.type_key != "classic"
+                and not await self._selected_packets(session, lobby.id)
+            )
             validation = None
             for packet_id in packet_ids:
-                validation = await self._apply_packet_selection(session, lobby, packet_id)
+                validation = await self._apply_packet_selection(
+                    session, lobby, packet_id, preserve_readiness=preserve_readiness,
+                )
             return await self._snapshot(session, lobby, validation=validation)
 
     async def _apply_packet_selection(
@@ -764,6 +771,8 @@ class InvitationMatchmakingService:
         session: AsyncSession,
         lobby: PregameLobbyRecord,
         packet_id: UUID,
+        *,
+        preserve_readiness: bool = False,
     ) -> _LobbyValidationResult:
         packet = await session.get(LogicalPacketRecord, packet_id)
         if packet is None or packet.retired_at is not None:
@@ -827,9 +836,10 @@ class InvitationMatchmakingService:
                     ),
                 )
             )
-        members = await self._all_active_members(session, lobby.id)
-        for member in members:
-            member.ready = False
+        if not preserve_readiness:
+            members = await self._all_active_members(session, lobby.id)
+            for member in members:
+                member.ready = False
         await session.flush()
         validation = await self._validate_lobby(session, lobby)
         await self._event(
@@ -972,10 +982,16 @@ class InvitationMatchmakingService:
             if member.role != "player":
                 raise LobbyReadinessError("observer")
             if ready:
-                if not await self._selected_packets(session, lobby.id):
+                validation = await self._validate_lobby(session, lobby)
+                if not validation.selected and validation.context.type_key == "classic":
                     raise LobbyReadinessError("packet_required")
-                await self._refresh_validation(session, lobby)
                 violations = member.validation_violations or lobby.validation
+                if not validation.selected:
+                    # Packet eligibility and freshness are checked after automatic selection.
+                    violations = [item for item in violations if item["code"] not in {
+                        "packet_not_playable", "insufficient_fresh_content",
+                        "tournament_packet_limit_exceeded",
+                    }]
                 if violations:
                     violation = violations[0]
                     raise LobbyReadinessError(str(violation["code"]), violation.get("details", {}))
@@ -1777,6 +1793,10 @@ class InvitationMatchmakingService:
                         or packet_id is not None):
                     break
                 cursor = packet_rows[-1][1].id
+                if limit is not None:
+                    # Continue sparse searches in another paced request.
+                    next_cursor = str(cursor)
+                    break
             available_by_version: dict[UUID, list[PlayUnit]] = defaultdict(list)
             for unit in await self._available_play_units(
                 session, [candidate for candidate, _, _ in candidates], members, context

@@ -158,6 +158,7 @@ export function renderLobbyPackets(
     const input = (name: keyof LobbyPacketFilters, label: MessageKey, numeric = false): HTMLElement => element(
       "label", {}, i18n.t(label), element("input", {
         name, type: numeric ? "number" : "search", value: filters[name] ?? "",
+        maxlength: numeric ? undefined : "200",
         min: numeric ? "1000" : undefined, max: numeric ? "9999" : undefined,
         step: numeric ? "1" : undefined,
         oninput: ((event: Event) => {

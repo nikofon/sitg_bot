@@ -744,6 +744,49 @@ describe("MiniAppShell", () => {
     expect(root.querySelector(".lobby-packet-card")).toBeNull();
   });
 
+  it.each(["lobby", "tournament"])("pauses invalid filters and resumes corrected searches in %s packets", async (listing) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let root: HTMLElement;
+    let fetcher: ReturnType<typeof vi.fn<typeof fetch>>;
+    if (listing === "lobby") {
+      ({ root, fetcher } = lobbyShell("packets"));
+    } else {
+      const tournamentId = "11111111-1111-1111-1111-111111111111";
+      window.history.replaceState({}, "", `/tournaments/${tournamentId}/packets`);
+      fetcher = vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/session")) return response({
+          csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en",
+        });
+        if (String(url).includes("/packets?")) return response({ items: [], next_cursor: null });
+        return response({ locale: "en", authorization: { allowed: true }, resource: {
+          kind: "tournament_packets", state: "empty", tournament_id: tournamentId,
+          tournament_name: "Cup", items: [],
+        } });
+      });
+      root = document.createElement("div");
+      document.body.append(root);
+      shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+      shell.start();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    const pageCalls = (): number => fetcher.mock.calls.filter(([url]) => String(url).includes("/packets?")).length;
+    for (const [name, invalid, valid] of [["year_from", "20", "2020"], ["name", "x".repeat(201), "packet"]] as const) {
+      const field = root.querySelector<HTMLInputElement>(`input[name="${name}"]`)!;
+      const before = pageCalls();
+      field.value = invalid;
+      field.dispatchEvent(new Event("input"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(pageCalls()).toBe(before);
+      expect(root.querySelector('.lobby-packets[aria-busy="true"]')).toBeNull();
+      field.value = valid;
+      field.dispatchEvent(new Event("input"));
+      await vi.advanceTimersByTimeAsync(250);
+      expect(pageCalls()).toBe(before + 1);
+      expect(root.querySelector(`input[name="${name}"]`)).toBe(field);
+    }
+    expect(root.querySelector<HTMLInputElement>('input[name="name"]')!.maxLength).toBe(200);
+  });
+
   it("renders tournament packets with library links and block toggles", async () => {
     const tournamentId = "11111111-1111-1111-1111-111111111111";
     window.history.replaceState({}, "", `/tournaments/${tournamentId}/packets`);

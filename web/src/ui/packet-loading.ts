@@ -1,3 +1,5 @@
+import { ApiError } from "../api/client";
+
 export interface PacketPage<T> {
   items: T[];
   next_cursor: string | null;
@@ -31,6 +33,10 @@ export class PacketLoader<T extends { packet_id: string }> {
     this.stop();
     this.filters = { ...filters };
     if (this.signal.aborted) return;
+    if (!this.validFilters()) {
+      this.update([...this.items.values()], false);
+      return;
+    }
     this.update([...this.items.values()], true);
     if (debounce) this.timer = window.setTimeout(() => void this.run(), 250);
     else void this.run();
@@ -66,7 +72,7 @@ export class PacketLoader<T extends { packet_id: string }> {
   }
 
   private async run(): Promise<void> {
-    if (this.signal.aborted) return;
+    if (this.signal.aborted || !this.validFilters()) return;
     const controller = new AbortController();
     this.controller = controller;
     const sequence = ++this.sequence;
@@ -90,8 +96,10 @@ export class PacketLoader<T extends { packet_id: string }> {
           }
         } catch (error) {
           if (!active()) return;
-          if (this.failed(error)) {
+          const failed = this.failed(error);
+          if (failed || (error instanceof ApiError && !error.retryable)) {
             this.stop();
+            if (!failed) this.update([...this.items.values()], false);
             return;
           }
           await this.pause(1000, controller.signal);
@@ -125,6 +133,14 @@ export class PacketLoader<T extends { packet_id: string }> {
         this.timer = window.setTimeout(() => void this.run(), 30_000);
       }
     }
+  }
+
+  private validFilters(): boolean {
+    if (["name", "author"].some((key) => (this.filters[key]?.length ?? 0) > 200)) return false;
+    return ["year_from", "year_to", "publication_from", "publication_to"].every((key) => {
+      const value = this.filters[key];
+      return !value || /^[1-9]\d{3}$/.test(value);
+    });
   }
 
   private pause(ms: number, signal: AbortSignal): Promise<void> {

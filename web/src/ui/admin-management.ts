@@ -3,6 +3,11 @@ import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
 import { saveReminder } from "./save-reminder";
+import { preserveListPosition } from "./scroll";
+
+export interface AdminManagementView extends HTMLElement {
+  update(items: AdminCard[], loading: boolean): void;
+}
 
 export function renderAdminManagement(
   resource: AdminManagementResource, i18n: I18n, filters: Record<string, string>,
@@ -10,7 +15,8 @@ export function renderAdminManagement(
   navigate: (path: string) => void,
   action: (card: AdminCard, command: string, button: HTMLButtonElement) => void,
   saveWeight: (card: AdminCard, weight: number, button: HTMLButtonElement) => void = () => undefined,
-): HTMLElement {
+  signal?: AbortSignal,
+): AdminManagementView {
   const label = (key: string): string => {
     const translated = `admin_management.${key}` as MessageKey;
     const value = i18n.t(translated);
@@ -21,14 +27,28 @@ export function renderAdminManagement(
   const link = (path: string, text: string): HTMLAnchorElement => element("a", {
     href: path, onclick: ((event: Event) => { event.preventDefault(); navigate(path); }) as EventListener,
   }, text);
+  const lazyDetails = (title: string, build: () => Node[]): HTMLDetailsElement => {
+    const details = element("details", {}, element("summary", {}, title));
+    if (!["packets", "tournaments", "authors"].includes(resource.section)) {
+      details.append(...build());
+      return details;
+    }
+    let built = false;
+    details.addEventListener("toggle", () => {
+      if (!details.open || built || signal?.aborted) return;
+      built = true;
+      details.append(...build());
+    });
+    return details;
+  };
   const metadata = (data: Record<string, AdminValue>): HTMLElement => element("dl", {
     className: "admin-metadata",
   }, ...Object.entries(data).flatMap(([key, value]) => {
     if (value !== null && typeof value === "object") {
       const entries = Array.isArray(value) ? value : [value];
-      return [element("div", {}, element("details", {},
-        element("summary", {}, `${label(key)}${Array.isArray(value) ? ` (${value.length})` : ""}`),
-        ...entries.map((entry) => {
+      return [element("div", {}, lazyDetails(
+        `${label(key)}${Array.isArray(value) ? ` (${value.length})` : ""}`,
+        () => entries.map((entry) => {
           if (entry === null || typeof entry !== "object") return element("p", {}, String(entry ?? "—"));
           if (Array.isArray(entry)) return element("p", {}, entry.join(", "));
           const profile = (key === "players" || key === "managers" || key === "player"
@@ -122,17 +142,26 @@ export function renderAdminManagement(
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)
       && !(resource.section === "authors" && ["version", "split_names"].includes(key))));
-    return element("article", { className: "resource-card admin-card", "data-resource-id": item.id },
+    return element("article", { className: "resource-card admin-card", "data-resource-id": item.id,
+      "data-packet-id": resource.section === "packets" ? item.id : undefined },
       element("h2", {}, name(item)), profile, metadata(essential), weightControl,
-      element("details", {}, element("summary", {}, label("details")), metadata(remaining)), buttons);
+      lazyDetails(label("details"), () => [metadata(remaining)]), buttons);
   };
+  let currentItems: AdminCard[] = [];
+  let loading = false;
+  let searchTimer: number | undefined;
+  const progress = element("p", { className: "field-help", hidden: true }, i18n.t("common.loading"));
+  const cache = new Map<string, {
+    item: AdminCard; signature: string; search: string; node?: HTMLElement;
+  }>();
   const render = (): void => {
+    if (signal?.aborted) return;
     const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
     const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
       : resource.section === "link_requests" ? "created_at:desc"
       : resource.section === "ongoing_games" ? "created_at:desc" : "name:asc");
     const [key, direction] = order.split(":");
-    const items = resource.items.filter((item) => JSON.stringify(item).toLocaleLowerCase(i18n.locale).includes(search));
+    const items = currentItems.filter((item) => cache.get(item.id)!.search.includes(search));
     const value = (item: AdminCard): string | number => key === "name" ? name(item) :
       typeof item[key!] === "number" ? item[key!] as number : String(item[key!] ?? "");
     items.sort((a, b) => {
@@ -148,13 +177,35 @@ export function renderAdminManagement(
     });
     const summary = resource.section === "ongoing_games"
       ? [element("p", { className: "resource-summary" },
-        `${label("ongoing_games")}: ${resource.items.length}`)]
+        `${label("ongoing_games")}: ${currentItems.length}`)]
       : [];
-    list.replaceChildren(...summary, ...items.map(card));
-    if (!items.length) list.append(element("p", {}, label("empty")));
+    const nodes = [...summary, ...items.map((item) => {
+      const entry = cache.get(item.id)!;
+      entry.node ??= card(item);
+      return entry.node;
+    })];
+    if (!items.length && !loading) nodes.push(element("p", {}, label("empty")));
+    preserveListPosition(list, () => {
+      const wanted = new Set(nodes);
+      for (const child of Array.from(list.children)) {
+        if (!wanted.has(child as HTMLElement)) child.remove();
+      }
+      nodes.forEach((node, index) => {
+        if (list.children[index] !== node) list.insertBefore(node, list.children[index] ?? null);
+      });
+    });
+    progress.hidden = !loading;
+    list.setAttribute("aria-busy", String(loading));
   };
   const search = element("input", { type: "search", value: filters.search ?? "", "aria-label": label("search") });
-  search.addEventListener("input", () => { filters.search = search.value; save(filters); render(); });
+  search.addEventListener("input", () => {
+    filters.search = search.value;
+    save(filters);
+    window.clearTimeout(searchTimer);
+    if (resource.section === "packets") searchTimer = window.setTimeout(render, 250);
+    else render();
+  });
+  signal?.addEventListener("abort", () => window.clearTimeout(searchTimer), { once: true });
   const sortKeys = ["name", "created_at", ...{
     tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
@@ -168,9 +219,25 @@ export function renderAdminManagement(
     : resource.section === "link_requests" || resource.section === "ongoing_games"
       ? "created_at:desc" : "name:asc");
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
-  render();
-  return element("section", { className: "route-content" }, tabs,
+  const update = (items: AdminCard[], nextLoading: boolean): void => {
+    if (signal?.aborted) return;
+    currentItems = items;
+    loading = nextLoading;
+    const ids = new Set(items.map((item) => item.id));
+    for (const id of cache.keys()) if (!ids.has(id)) cache.delete(id);
+    for (const item of items) {
+      const previous = cache.get(item.id);
+      if (previous?.item === item) continue;
+      const signature = JSON.stringify(item);
+      cache.set(item.id, { item, signature, search: signature.toLocaleLowerCase(i18n.locale),
+        node: previous?.signature === signature ? previous.node : undefined });
+    }
+    render();
+  };
+  update(resource.items, false);
+  return Object.assign(element("section", { className: "route-content" }, tabs,
     resource.section === "tournaments" ? saveReminder(i18n) : null,
     element("div", { className: "lobby-packet-filters", role: "search" },
-      element("label", {}, label("search"), search), element("label", {}, label("sort"), sort)), list);
+      element("label", {}, label("search"), search), element("label", {}, label("sort"), sort)), progress, list),
+    { update });
 }

@@ -100,6 +100,7 @@ class PacketBlockService:
                           if packet_id else []),
                     )
                     .order_by(TournamentPacketAssignmentRecord.id)
+                    .limit(limit + 1 if limit is not None else None)
                 )
             )
             items: list[dict[str, object]] = []
@@ -122,6 +123,10 @@ class PacketBlockService:
                     next_cursor = str(candidates[-1][0].id)
                     break
                 candidates.append((assignment, version, authors))
+            else:
+                # Sparse pages advance past rejected rows without scanning the whole catalogue.
+                if limit is not None and len(assignments) > limit:
+                    next_cursor = str(assignments[-1].id)
             available = await adapter.available_play_units(
                 session, [PacketSelection(version.id, 1) for _, version, _ in candidates],
                 [player_id],

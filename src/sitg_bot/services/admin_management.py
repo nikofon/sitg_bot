@@ -7,14 +7,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 
 from sitg_bot.services.author_exposure import burn_author_content
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.moderation import _require_administrator, _resolve_player
+from sitg_bot.services.packet_catalogue import background_packet_batch
 from sitg_bot.services.tournaments import TournamentService
-from sitg_bot.storage.authorship import packet_author_ids
+from sitg_bot.storage.authorship import packet_author_rows
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -70,7 +71,9 @@ class AdminManagementService:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    async def catalogue(self, administrator_id: UUID, section: str) -> dict:
+    async def catalogue(
+        self, administrator_id: UUID, section: str, *, include_items: bool = True,
+    ) -> dict:
         if section not in {
             "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
         }:
@@ -78,6 +81,16 @@ class AdminManagementService:
         async with self.database.sessions() as session:
             await _require_administrator(session, administrator_id)
             items = []
+            if section == "packets":
+                if include_items:
+                    versions = tuple(await session.scalars(
+                        select(PacketVersionRecord).order_by(PacketVersionRecord.id)
+                    ))
+                    items = await self._packet_cards(session, versions)
+                return {
+                    "kind": "admin_management", "state": "ready", "section": section,
+                    "items": items, **({"packets_deferred": True} if not include_items else {}),
+                }
             if section == "link_requests":
                 requests = await session.scalars(
                     select(PlayerAuthorLinkRequestRecord).order_by(
@@ -189,9 +202,42 @@ class AdminManagementService:
                 "tournaments": TournamentRecord,
                 "authors": AuthorRecord,
                 "players": PlayerRecord,
-                "packets": PacketVersionRecord,
             }[section]
-            for record in await session.scalars(select(model).order_by(model.id)):
+            records = tuple(await session.scalars(select(model).order_by(model.id)))
+            tournament_packets = {}
+            author_packets = {}
+            if records and section == "tournaments":
+                latest = select(
+                    PacketVersionRecord.packet_id, PacketVersionRecord.name,
+                    func.row_number().over(
+                        partition_by=PacketVersionRecord.packet_id,
+                        order_by=PacketVersionRecord.version_number.desc(),
+                    ).label("position"),
+                ).subquery()
+                for assignment, name in await session.execute(
+                    select(TournamentPacketAssignmentRecord, latest.c.name)
+                    .outerjoin(latest, and_(
+                        latest.c.packet_id == TournamentPacketAssignmentRecord.packet_id,
+                        latest.c.position == 1,
+                    ))
+                    .where(TournamentPacketAssignmentRecord.tournament_id.in_(
+                        [record.id for record in records]
+                    ))
+                ):
+                    tournament_packets.setdefault(assignment.tournament_id, []).append({
+                        **fields(assignment), "name": name or "",
+                    })
+            if records and section == "authors":
+                attribution = packet_author_rows(select(PacketVersionRecord.id)).subquery()
+                for author_id, version in await session.execute(
+                    select(attribution.c.author_id, PacketVersionRecord)
+                    .join(PacketVersionRecord,
+                          PacketVersionRecord.id == attribution.c.packet_version_id)
+                    .where(attribution.c.author_id.in_([record.id for record in records]))
+                    .order_by(PacketVersionRecord.id)
+                ):
+                    author_packets.setdefault(author_id, []).append(version)
+            for record in records:
                 card = fields(record)
                 if section == "players":
                     card = await self._player(session, record)
@@ -218,22 +264,7 @@ class AdminManagementService:
                             TournamentMembershipRecord.status == "active",
                         )
                     )
-                    card["packets"] = [
-                        fields(a)
-                        for a in await session.scalars(
-                            select(TournamentPacketAssignmentRecord).where(
-                                TournamentPacketAssignmentRecord.tournament_id == record.id
-                            )
-                        )
-                    ]
-                    for assignment in card["packets"]:
-                        version = await session.scalar(
-                            select(PacketVersionRecord)
-                            .where(PacketVersionRecord.packet_id == assignment["packet_id"])
-                            .order_by(PacketVersionRecord.version_number.desc())
-                            .limit(1)
-                        )
-                        assignment["name"] = version.name if version else ""
+                    card["packets"] = tournament_packets.get(record.id, [])
                     policy = await session.scalar(
                         select(TournamentPolicyVersionRecord)
                         .where(TournamentPolicyVersionRecord.tournament_id == record.id)
@@ -286,69 +317,10 @@ class AdminManagementService:
                     card["ruleset"] = (
                         await session.get(GameRulesetVersionRecord, record.game_ruleset_version_id)
                     ).key
-                elif section == "packets":
-                    packet = await session.get(LogicalPacketRecord, record.packet_id)
-                    card["packet"] = fields(packet)
-                    card["tournaments"] = [
-                        fields(t)
-                        for t in await session.scalars(
-                            select(TournamentRecord)
-                            .join(TournamentPacketAssignmentRecord)
-                            .where(TournamentPacketAssignmentRecord.packet_id == record.packet_id)
-                        )
-                    ]
-                    card["assignments"] = [
-                        fields(a)
-                        for a in await session.scalars(
-                            select(TournamentPacketAssignmentRecord).where(
-                                TournamentPacketAssignmentRecord.packet_id == record.packet_id
-                            )
-                        )
-                    ]
-                    card["themes"] = await session.scalar(
-                        select(func.count())
-                        .select_from(ThemeRevisionRecord)
-                        .where(ThemeRevisionRecord.packet_version_id == record.id)
-                    )
-                    card["questions"] = await session.scalar(
-                        select(func.count())
-                        .select_from(PacketQuestionRecord)
-                        .where(PacketQuestionRecord.packet_version_id == record.id)
-                    )
-                    author_ids = packet_author_ids(record.id)
-                    card["authors"] = [
-                        fields(a)
-                        for a in await session.scalars(
-                            select(AuthorRecord).where(
-                                AuthorRecord.id.in_(author_ids)
-                                | (AuthorRecord.id == record.lead_author_id)
-                            )
-                        )
-                    ]
                 else:
                     card["version"] = author_version(record)
                     card["split_names"] = split_author_names(record.display_name)
-                    versions = (
-                        select(ThemeRevisionRecord.packet_version_id)
-                        .where(ThemeRevisionRecord.has_author(record.id))
-                        .union(
-                            select(PacketQuestionRecord.packet_version_id)
-                            .join(
-                                QuestionRevisionRecord,
-                                QuestionRevisionRecord.id
-                                == PacketQuestionRecord.question_revision_id,
-                            )
-                            .where(QuestionRevisionRecord.has_author(record.id)),
-                            select(PacketVersionRecord.id).where(
-                                PacketVersionRecord.lead_author_id == record.id
-                            ),
-                        )
-                    )
-                    packets = list(
-                        await session.scalars(
-                            select(PacketVersionRecord).where(PacketVersionRecord.id.in_(versions))
-                        )
-                    )
+                    packets = author_packets.get(record.id, [])
                     card["packets"] = [fields(p) for p in packets]
                     card["packet_count"] = len({p.packet_id for p in packets})
                     card["questions"] = await session.scalar(
@@ -395,6 +367,71 @@ class AdminManagementService:
                 "section": section,
                 "items": items,
             }
+
+    async def packet_page(
+        self, administrator_id: UUID, *, cursor: UUID | None = None, limit: int = 25,
+    ) -> dict:
+        if not 1 <= limit <= 25:
+            raise ValueError("Packet page size must be between 1 and 25")
+        async with self.database.sessions() as session:
+            await _require_administrator(session, administrator_id)
+            async with background_packet_batch():
+                query = (
+                    select(PacketVersionRecord).order_by(PacketVersionRecord.id).limit(limit + 1)
+                )
+                if cursor is not None:
+                    query = query.where(PacketVersionRecord.id > cursor)
+                versions = tuple(await session.scalars(query))
+                page = versions[:limit]
+                return {
+                    "items": await self._packet_cards(session, page),
+                    "next_cursor": page[-1].id if len(versions) > limit else None,
+                }
+
+    @staticmethod
+    async def _packet_cards(session, versions) -> list[dict]:
+        if not versions:
+            return []
+        version_ids = [version.id for version in versions]
+        packet_ids = {version.packet_id for version in versions}
+        packets = {packet.id: fields(packet) for packet in await session.scalars(
+            select(LogicalPacketRecord).where(LogicalPacketRecord.id.in_(packet_ids))
+        )}
+        assignments, tournaments, authors = {}, {}, {}
+        for assignment, tournament in await session.execute(
+            select(TournamentPacketAssignmentRecord, TournamentRecord)
+            .outerjoin(TournamentRecord,
+                       TournamentRecord.id == TournamentPacketAssignmentRecord.tournament_id)
+            .where(TournamentPacketAssignmentRecord.packet_id.in_(packet_ids))
+            .order_by(TournamentPacketAssignmentRecord.id)
+        ):
+            assignments.setdefault(assignment.packet_id, []).append(fields(assignment))
+            if tournament is not None:
+                tournaments.setdefault(assignment.packet_id, []).append(fields(tournament))
+        themes = dict((await session.execute(
+            select(ThemeRevisionRecord.packet_version_id, func.count())
+            .where(ThemeRevisionRecord.packet_version_id.in_(version_ids))
+            .group_by(ThemeRevisionRecord.packet_version_id)
+        )).all())
+        questions = dict((await session.execute(
+            select(PacketQuestionRecord.packet_version_id, func.count())
+            .where(PacketQuestionRecord.packet_version_id.in_(version_ids))
+            .group_by(PacketQuestionRecord.packet_version_id)
+        )).all())
+        attribution = packet_author_rows(version_ids).subquery()
+        for version_id, author in await session.execute(
+            select(attribution.c.packet_version_id, AuthorRecord)
+            .join(AuthorRecord, AuthorRecord.id == attribution.c.author_id)
+            .order_by(AuthorRecord.id)
+        ):
+            authors.setdefault(version_id, []).append(fields(author))
+        return [{
+            **fields(version), "packet": packets.get(version.packet_id),
+            "tournaments": tournaments.get(version.packet_id, []),
+            "assignments": assignments.get(version.packet_id, []),
+            "themes": themes.get(version.id, 0), "questions": questions.get(version.id, 0),
+            "authors": authors.get(version.id, []),
+        } for version in versions]
 
     @staticmethod
     async def _player(session, player) -> dict:

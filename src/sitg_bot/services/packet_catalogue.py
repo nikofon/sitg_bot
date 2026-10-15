@@ -3,7 +3,6 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from weakref import WeakKeyDictionary
 
 
 @dataclass
@@ -12,13 +11,14 @@ class _BatchLimiter:
     finished_at: float = -1
 
 
-_LIMITERS: WeakKeyDictionary = WeakKeyDictionary()
-
-
 @asynccontextmanager
 async def background_packet_batch():
     loop = asyncio.get_running_loop()
-    limiter = _LIMITERS.setdefault(loop, _BatchLimiter(asyncio.Lock()))
+    # A contended lock retains its loop; keep that cycle local to the loop.
+    limiter = getattr(loop, "_sitg_packet_batch_limiter", None)
+    if limiter is None:
+        limiter = _BatchLimiter(asyncio.Lock())
+        loop._sitg_packet_batch_limiter = limiter
     async with limiter.lock:
         await asyncio.sleep(max(0, limiter.finished_at + 0.2 - loop.time()))
         try:

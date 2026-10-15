@@ -138,6 +138,7 @@ class ActionCode(StrEnum):
     ADMIN_AUTHOR_UPDATE = "platform.admin.authors.update.v1"
     ADMIN_AUTHOR_SPLIT = "platform.admin.authors.split.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
+    ADMIN_PACKET_LIST = "platform.admin.packets.list.v1"
 
 
 class ErrorCode(StrEnum):
@@ -994,6 +995,13 @@ class AdminManagementListOperation(ContractModel):
     section: Literal[
         "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
     ] = ("tournaments")
+    include_items: bool = True
+
+
+class AdminPacketListOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_PACKET_LIST]
+    cursor: UUID | None = None
+    limit: int = Field(default=25, ge=1, le=25)
 
 
 class AdminTournamentModerateOperation(ContractModel):
@@ -1175,6 +1183,7 @@ GatewayOperation = Annotated[
     | AdminSuspicionInspectOperation
     | AdminSuspicionClearOperation
     | AdminManagementListOperation
+    | AdminPacketListOperation
     | AdminTournamentModerateOperation
     | AdminTournamentRatingWeightOperation
     | AdminAuthorLinkOperation

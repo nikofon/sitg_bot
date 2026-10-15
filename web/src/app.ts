@@ -114,8 +114,13 @@ export class MiniAppShell {
     this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
     try {
       const path = encodeURIComponent(routeRequestPath(route));
+      let requestPath = `/api/miniapp/routes/resolve?path=${path}`;
+      if (route.id === "manager_management") requestPath += "&include_player_access=false";
+      if (route.id === "admin_management" && route.query.get("section") === "packets") {
+        requestPath += "&include_items=false";
+      }
       const payload = await this.api.request<RoutePayload>(
-        `/api/miniapp/routes/resolve?path=${path}${route.id === "manager_management" ? "&include_player_access=false" : ""}`,
+        requestPath,
         { signal: controller.signal },
       );
       if (controller.signal.aborted) return;
@@ -3241,11 +3246,37 @@ export class MiniAppShell {
 
   private renderAdminManagementRoute(route: RouteMatch, resource: AdminManagementResource): void {
     const filterKey = `admin_management_${resource.section}`;
-    this.renderFrame(route, renderAdminManagement(resource, this.i18n, this.filters.read(filterKey),
+    const signal = this.request!.signal;
+    const pageController = new AbortController();
+    signal.addEventListener("abort", () => pageController.abort(), { once: true });
+    const content = renderAdminManagement(resource, this.i18n, this.filters.read(filterKey),
       (filters) => this.filters.write(filterKey, filters),
       (path) => this.router.navigate(path),
-      (card, command, button) => void this.adminManagementAction(route, resource, card, command, button),
-      (card, weight, button) => void this.adminTournamentWeight(route, card, weight, button)));
+      (card, command, button) => {
+        if (command === "view") pageController.abort();
+        void this.adminManagementAction(route, resource, card, command, button);
+      },
+      (card, weight, button) => void this.adminTournamentWeight(route, card, weight, button), pageController.signal);
+    this.renderFrame(route, content);
+    if (resource.section === "packets" && resource.packets_deferred) {
+      // PacketLoader keys logical packets elsewhere; admin cards identify individual versions.
+      type VersionCard = { packet_id: string; card: AdminCard };
+      const loader = new PacketLoader<VersionCard>(pageController.signal, async (query, pageSignal) => {
+        const page = await this.api.request<PacketPage<AdminCard>>(
+          `/api/miniapp/admin/management/packets?${query}`, { signal: pageSignal },
+        );
+        return { ...page, items: page.items.map((card) => ({ packet_id: card.id, card })) };
+      }, (items, loading) => content.update(items.map((item) => item.card), loading),
+      (error) => {
+        if (this.packetLoadFailed(route, error)) return true;
+        if (error instanceof ApiError && !error.retryable) {
+          this.renderError(route, error.code);
+          return true;
+        }
+        return false;
+      });
+      loader.start({});
+    }
   }
 
   private async adminTournamentWeight(route: RouteMatch, card: AdminCard,

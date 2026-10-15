@@ -1,13 +1,16 @@
+import asyncio
+import gc
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
+from weakref import ref
 
 import pytest
 
 from sitg_bot.services.packet_blocks import PacketBlockService
-from sitg_bot.services.packet_catalogue import matches_packet
+from sitg_bot.services.packet_catalogue import background_packet_batch, matches_packet
 from sitg_bot.storage.models import (
     PlayerPacketBlockRecord,
     TournamentManagerRecord,
@@ -38,10 +41,11 @@ async def test_tournament_pages_filter_before_freshness_and_recheck_permissions(
     async def scalars(query):
         if query.column_descriptions[0]["entity"] is PlayerPacketBlockRecord:
             return []
+        assert query._limit_clause.value == 26
         cursor = next((value for value in query.compile().params.values()
                        if isinstance(value, UUID) and value in versions), None)
         return [assignment for assignment in assignments
-                if cursor is None or assignment.id > cursor]
+                if cursor is None or assignment.id > cursor][:query._limit_clause.value]
 
     session = SimpleNamespace(get=AsyncMock(side_effect=get),
                               scalars=AsyncMock(side_effect=scalars))
@@ -89,6 +93,23 @@ async def test_tournament_pages_filter_before_freshness_and_recheck_permissions(
     assert len(calculated) == 55
     assert versions[assignments[0].id].id not in calculated
     assert versions[assignments[30].id].id not in calculated
+    service._assignment_version.reset_mock()
+    page = await service.list_tournament_packets(
+        UUID(int=1), UUID(int=2), limit=25, filters={"name": "absent"},
+    )
+    assert page["items"] == []
+    assert page["next_cursor"] == str(assignments[25].id)
+    assert service._assignment_version.await_count == 26
+    cursor, sparse_pages = None, []
+    for _ in range(3):
+        page = await service.list_tournament_packets(
+            UUID(int=1), UUID(int=2), limit=25, cursor=cursor, filters={"name": "match 56"},
+        )
+        sparse_pages.append(page["items"])
+        cursor = UUID(page["next_cursor"]) if page["next_cursor"] else None
+    assert [len(items) for items in sparse_pages] == [0, 0, 1]
+    assert sparse_pages[-1][0]["packet_id"] == str(assignments[-1].packet_id)
+    assert cursor is None
     allowed["playable"] = False
     page = await service.list_tournament_packets(UUID(int=1), UUID(int=2), limit=25)
     assert all(not item["playable"] for item in page["items"])
@@ -106,3 +127,18 @@ def test_unknown_years_only_match_unrestricted_ranges():
     assert matches_packet(version, ["Анна", "Борис"], {"author": "анна"})
     assert not matches_packet(version, [], {"year_from": 2020})
     assert not matches_packet(version, [], {"publication_to": 2026})
+
+
+def test_background_limiter_does_not_retain_closed_event_loops():
+    async def batch():
+        async with background_packet_batch():
+            await asyncio.sleep(0)
+
+    async def contend():
+        loop = asyncio.get_running_loop()
+        await asyncio.gather(batch(), batch())
+        return ref(loop)
+
+    loop_ref = asyncio.run(contend())
+    gc.collect()
+    assert loop_ref() is None
