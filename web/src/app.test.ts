@@ -40,10 +40,11 @@ describe("MiniAppShell", () => {
     hybrid_matchmaking_available: false, settings: { theme_count: 3, ready_delay: 1 },
     selected_packets: [{ packet_id: "selected", name: "Selected packet", year: 2020, published_at: "2024-12-31T23:00:00Z", lead_author: "Anna", authors: ["Anna", "Boris"], fresh_play_unit_count: 2, total_play_unit_count: 5, playable_for_all: true, blocked: false }],
     packet_suggestions: [{ packet_id: "discoverable", name: "Discoverable packet", year: 2022, published_at: "2025-01-01T00:00:00Z", lead_author: "Carol", authors: ["Carol", "Dmitry"], fresh_play_unit_count: 4, total_play_unit_count: 6, playable_for_all: false, blocked: false }],
-    members: [{ display_name: "Alice <b>", role: "player", ready: true }],
+    members: [{ player_id: "alice", display_name: "Alice <b>", role: "player", ready: true }],
     viewer: { display_name: "Alice <b>", role: "player", ready: true },
     validation_violations: [{ code: "insufficient_fresh_content" }], available_actions: ["settings_update", "packet_select", "packet_remove", "unready", "invite"],
     mutable_parameters: ["theme_count"], poll_after_seconds: 5, last_event_sequence: 1,
+    packet_catalogue_revision: 0,
     setting_descriptors: [
       { name: "theme_count", value: 3, value_type: "integer", description_key: "setting.theme_count.description", options: [] },
       { name: "ready_delay", value: 1, value_type: "number", description_key: "setting.ready_delay.description", options: [] },
@@ -60,12 +61,14 @@ describe("MiniAppShell", () => {
         const { packet_id } = JSON.parse(String(options?.body));
         resource.selected_packets.push(resource.packet_suggestions.find((packet) => packet.packet_id === packet_id)!);
         resource.version += 1;
+        resource.last_event_sequence += 1;
         return response({ selected: true });
       }
       if (String(url).endsWith("/packet-remove")) {
         const { packet_id } = JSON.parse(String(options?.body));
         resource.selected_packets = resource.selected_packets.filter((packet) => packet.packet_id !== packet_id);
         resource.version += 1;
+        resource.last_event_sequence += 1;
         return response({ removed: true });
       }
       if (String(url).includes("/events?")) {
@@ -238,13 +241,15 @@ describe("MiniAppShell", () => {
     button?.click();
     await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/packet-select"))).toBe(true));
     const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-select"));
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "discoverable" });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "discoverable", include_snapshot: false });
     await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Remove"));
     expect(root.querySelectorAll('[data-packet-id="discoverable"]')).toHaveLength(1);
     root.querySelector<HTMLButtonElement>('[data-packet-id="discoverable"] button')?.click();
     await vi.waitFor(() => expect(root.querySelector('[data-packet-id="discoverable"] button')?.textContent).toBe("Add packet"));
     const remove = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
-    expect(JSON.parse(String(remove?.[1]?.body))).toEqual({ expected_version: 8, packet_id: "discoverable" });
+    expect(JSON.parse(String(remove?.[1]?.body))).toEqual({ expected_version: 8, packet_id: "discoverable", include_snapshot: false });
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/packets?"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/routes/resolve"))).toHaveLength(3);
   });
 
   it.each(["selected", "discoverable"])("blocks %s in place and refreshes only a selected summary", async (id) => {
@@ -295,6 +300,47 @@ describe("MiniAppShell", () => {
     expect(sort.value).toBe("fresh");
   });
 
+  it.each([
+    ["readiness", false], ["observer", false], ["maximum", false],
+    ["player", true], ["parameters", true], ["revision", true], ["legacy", true],
+  ] as const)("invalidates the catalogue appropriately for %s changes", async (change, reload) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, resource, fetcher } = lobbyShell("packets", change === "maximum" ? {
+      setting_descriptors: [{ name: "theme_count", value: "max", value_type: "integer", description_key: "theme_count", options: [] }],
+    } : {});
+    await vi.advanceTimersByTimeAsync(0);
+    const before = fetcher.mock.calls.filter(([url]) => String(url).includes("/packets?")).length;
+    resource.last_event_sequence += 1;
+    if (change === "readiness") {
+      resource.members[0]!.ready = false;
+      resource.available_actions = ["ready", "packet_select", "packet_remove"];
+    } else if (change === "observer" || change === "player") {
+      resource.members.push({ player_id: "bob", display_name: "Bob", role: change, ready: false });
+    } else if (change === "maximum") {
+      resource.settings.theme_count = 20;
+    } else if (change === "parameters") {
+      resource.settings.theme_count = 5;
+      resource.setting_descriptors[0]!.value = 5;
+    } else if (change === "revision") resource.packet_catalogue_revision += 1;
+    else Reflect.deleteProperty(resource, "packet_catalogue_revision");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/packets?")))
+      .toHaveLength(before + Number(reload));
+    expect(root.querySelector('[data-packet-id="selected"]')).not.toBeNull();
+  });
+
+  it("keeps selected freshness from the snapshot when catalogue pages contain older data", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { root, resource, fetcher } = lobbyShell("packets");
+    await vi.advanceTimersByTimeAsync(0);
+    const original = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((url, options) => String(url).includes("/packets?")
+      ? Promise.resolve(response({ items: [{ ...resource.selected_packets[0], fresh_play_unit_count: 0 }], next_cursor: null }))
+      : original(url, options));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(root.querySelector('[data-packet-id="selected"]')?.textContent).toContain("2 / 5");
+  });
+
   it("applies event-driven freshness and permission changes without disturbing a packet search", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const { root, resource, fetcher } = lobbyShell("packets");
@@ -308,6 +354,7 @@ describe("MiniAppShell", () => {
     resource.packet_suggestions[0]!.playable_for_all = true;
     resource.available_actions = [];
     resource.last_event_sequence = 2;
+    resource.packet_catalogue_revision = 2;
     await vi.advanceTimersByTimeAsync(5_000);
     expect(root.querySelector('[data-packet-id="discoverable"]')).toBe(card);
     expect(card?.textContent).toContain("1 / 6");
@@ -326,7 +373,7 @@ describe("MiniAppShell", () => {
     const main = root.querySelector("main");
     const card = root.querySelector('[data-packet-id="selected"]');
     expect(card?.querySelector("button")?.textContent).toBe("Remove");
-    resource.members.push({ display_name: "Bob", role: "player", ready: false });
+    resource.members.push({ player_id: "bob", display_name: "Bob", role: "player", ready: false });
     resource.members[0]!.ready = false;
     resource.available_actions = ["ready"];
     resource.validation_violations = [];
@@ -429,6 +476,7 @@ describe("MiniAppShell", () => {
       return original(url, options);
     });
     resource.last_event_sequence = 2;
+    resource.packet_catalogue_revision = 2;
     resource.packet_suggestions[0]!.fresh_play_unit_count = 1;
     await vi.advanceTimersByTimeAsync(5_000);
     expect(root.querySelector("main")).toBe(main);
@@ -690,7 +738,8 @@ describe("MiniAppShell", () => {
     remove.click();
     await vi.waitFor(() => expect(root.querySelector('[data-packet-id="selected"]')).toBeNull());
     const call = fetcher.mock.calls.find(([url]) => String(url).endsWith("/packet-remove"));
-    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "selected" });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ expected_version: 7, packet_id: "selected", include_snapshot: false });
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes("/packets?"))).toBe(false);
     expect(root.querySelector(".lobby-overview")).toBe(overview);
     expect(root.querySelector(".lobby-packet-card")).toBeNull();
   });

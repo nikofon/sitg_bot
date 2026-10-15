@@ -38,7 +38,7 @@ from sitg_bot.services.tournaments import (
     TournamentContext,
     TournamentService,
 )
-from sitg_bot.storage.authorship import packet_author_ids
+from sitg_bot.storage.authorship import packet_author_ids, packet_author_rows
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
@@ -117,6 +117,23 @@ class PacketSuggestion:
     authors: tuple[str, ...] = ()
     playable_for_all: bool = False
     blocked: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LobbyMutationReceipt:
+    id: UUID
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LobbyValidationResult:
+    changed: bool
+    selected: list[PregameLobbyPacketRecord]
+    members: list[PregameLobbyMemberRecord]
+    context: TournamentContext
+    parameters: RulesetParameters
+    available: list[PlayUnit]
+    playable: dict[tuple[UUID, UUID], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,10 +672,12 @@ class InvitationMatchmakingService:
         packet_id: UUID,
         *,
         expected_version: int | None = None,
-    ) -> LobbySnapshot:
+        include_snapshot: bool = True,
+    ) -> LobbySnapshot | LobbyMutationReceipt:
         try:
             return await self._select_packet(
-                lobby_id, telegram_user_id, packet_id, expected_version=expected_version
+                lobby_id, telegram_user_id, packet_id, expected_version=expected_version,
+                include_snapshot=include_snapshot,
             )
         except (PermissionError, LookupError, ValueError) as error:
             # Only an authorized selection of a discoverable tournament packet is broadcast.
@@ -708,14 +727,17 @@ class InvitationMatchmakingService:
         packet_id: UUID,
         *,
         expected_version: int | None = None,
-    ) -> LobbySnapshot:
+        include_snapshot: bool = True,
+    ) -> LobbySnapshot | LobbyMutationReceipt:
         async with self.database.transaction() as session:
             lobby = await self._locked_lobby(session, lobby_id)
             self._require_version(lobby, expected_version)
             await self._require_open(session, lobby)
             await self._require_creator(session, lobby, telegram_user_id)
-            await self._apply_packet_selection(session, lobby, packet_id)
-            return await self._snapshot(session, lobby)
+            validation = await self._apply_packet_selection(session, lobby, packet_id)
+            if not include_snapshot:
+                return LobbyMutationReceipt(lobby.id, lobby.version)
+            return await self._snapshot(session, lobby, validation=validation)
 
     async def select_packets(
         self,
@@ -732,16 +754,17 @@ class InvitationMatchmakingService:
             self._require_version(lobby, expected_version)
             await self._require_open(session, lobby)
             await self._require_creator(session, lobby, telegram_user_id)
+            validation = None
             for packet_id in packet_ids:
-                await self._apply_packet_selection(session, lobby, packet_id)
-            return await self._snapshot(session, lobby)
+                validation = await self._apply_packet_selection(session, lobby, packet_id)
+            return await self._snapshot(session, lobby, validation=validation)
 
     async def _apply_packet_selection(
         self,
         session: AsyncSession,
         lobby: PregameLobbyRecord,
         packet_id: UUID,
-    ) -> None:
+    ) -> _LobbyValidationResult:
         packet = await session.get(LogicalPacketRecord, packet_id)
         if packet is None or packet.retired_at is not None:
             raise LookupError("Packet not found")
@@ -808,7 +831,7 @@ class InvitationMatchmakingService:
         for member in members:
             member.ready = False
         await session.flush()
-        await self._refresh_validation(session, lobby)
+        validation = await self._validate_lobby(session, lobby)
         await self._event(
             session,
             lobby.id,
@@ -822,6 +845,7 @@ class InvitationMatchmakingService:
         )
         self._bump(lobby)
         await session.flush()
+        return validation
 
     async def remove_packet(
         self,
@@ -830,7 +854,8 @@ class InvitationMatchmakingService:
         packet_id: UUID,
         *,
         expected_version: int | None = None,
-    ) -> LobbySnapshot:
+        include_snapshot: bool = True,
+    ) -> LobbySnapshot | LobbyMutationReceipt:
         async with self.database.transaction() as session:
             lobby = await self._locked_lobby(session, lobby_id)
             self._require_version(lobby, expected_version)
@@ -856,7 +881,7 @@ class InvitationMatchmakingService:
             if not result.rowcount:
                 raise LookupError("Packet is not selected")
             await self._clear_readiness(session, lobby.id)
-            await self._refresh_validation(session, lobby)
+            validation = await self._validate_lobby(session, lobby)
             await self._event(
                 session,
                 lobby.id,
@@ -865,7 +890,9 @@ class InvitationMatchmakingService:
             )
             self._bump(lobby)
             await session.flush()
-            return await self._snapshot(session, lobby)
+            if not include_snapshot:
+                return LobbyMutationReceipt(lobby.id, lobby.version)
+            return await self._snapshot(session, lobby, validation=validation)
 
     async def set_settings(
         self,
@@ -1683,25 +1710,6 @@ class InvitationMatchmakingService:
             members = await self._active_members(session, lobby.id, lock=False)
             context = await self.tournaments.context(session, lobby.tournament_id)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
-            packet_rows = list(
-                (
-                    await session.execute(
-                        select(LogicalPacketRecord, TournamentPacketAssignmentRecord)
-                        .join(
-                            TournamentPacketAssignmentRecord,
-                            TournamentPacketAssignmentRecord.packet_id == LogicalPacketRecord.id,
-                        )
-                        .where(
-                            TournamentPacketAssignmentRecord.tournament_id == lobby.tournament_id,
-                            TournamentPacketAssignmentRecord.status == "active",
-                            LogicalPacketRecord.retired_at.is_(None),
-                            *([TournamentPacketAssignmentRecord.id > cursor] if cursor else []),
-                            *([LogicalPacketRecord.id == packet_id] if packet_id else []),
-                        )
-                        .order_by(TournamentPacketAssignmentRecord.id)
-                    )
-                ).all()
-            )
             viewer_id = lobby.creator_player_id
             if telegram_user_id is not None:
                 viewer = await self._member(session, lobby.id, telegram_user_id)
@@ -1713,28 +1721,50 @@ class InvitationMatchmakingService:
                     )
                 )
             )
-            candidates: list[tuple[PregameLobbyPacketRecord, PacketVersionRecord]] = []
-            descriptions: dict[UUID, PacketSuggestion] = {}
+            candidates: list[
+                tuple[PregameLobbyPacketRecord, PacketVersionRecord, list[AuthorRecord]]
+            ] = []
             next_cursor = None
-            for packet, assignment in packet_rows:
-                if not await self.tournaments.has_assignment_access(
-                    session, assignment, viewer_id, "discoverable"
-                ):
-                    continue
-                version = (
-                    await session.get(PacketVersionRecord, assignment.adopted_version_id)
-                    if assignment.adopted_version_id is not None
-                    else await session.scalar(
-                        select(PacketVersionRecord)
-                        .where(
-                            PacketVersionRecord.packet_id == packet.id,
-                            PacketVersionRecord.state == "published",
-                        )
-                        .order_by(PacketVersionRecord.version_number.desc())
-                        .limit(1)
+            batch_size = limit + 1 if limit is not None else 26
+            while True:
+                packet_rows = (await session.execute(
+                    select(LogicalPacketRecord, TournamentPacketAssignmentRecord)
+                    .join(
+                        TournamentPacketAssignmentRecord,
+                        TournamentPacketAssignmentRecord.packet_id == LogicalPacketRecord.id,
                     )
+                    .where(
+                        TournamentPacketAssignmentRecord.tournament_id == lobby.tournament_id,
+                        TournamentPacketAssignmentRecord.status == "active",
+                        LogicalPacketRecord.retired_at.is_(None),
+                        *([TournamentPacketAssignmentRecord.id > cursor] if cursor else []),
+                        *([LogicalPacketRecord.id == packet_id] if packet_id else []),
+                    )
+                    .order_by(TournamentPacketAssignmentRecord.id)
+                    .limit(batch_size)
+                )).all()
+                if not packet_rows:
+                    break
+                discoverable = []
+                for packet, assignment in packet_rows:
+                    if await self.tournaments.has_assignment_access(
+                        session, assignment, viewer_id, "discoverable"
+                    ):
+                        discoverable.append((packet, assignment))
+                versions = await self._assignment_versions(
+                    session, [assignment for _, assignment in discoverable],
                 )
-                if version is not None:
+                authors = await self._packet_authors(session, [v.id for v in versions.values()])
+                for packet, assignment in discoverable:
+                    version = versions.get(assignment.id)
+                    if version is None or not matches_packet(
+                        version, [author.display_name for author in authors[version.id]],
+                        filters or {},
+                    ):
+                        continue
+                    if limit is not None and len(candidates) == limit:
+                        next_cursor = str(candidates[-1][0].assignment_id)
+                        break
                     candidate = PregameLobbyPacketRecord(
                         lobby_id=lobby.id,
                         packet_id=packet.id,
@@ -1742,23 +1772,18 @@ class InvitationMatchmakingService:
                         assignment_id=assignment.id,
                         selection_order=1,
                     )
-                    description = await self._describe_packet(
-                        session, candidate, version, members, total=0, fresh=0,
-                    )
-                    if not matches_packet(version, description.authors, filters or {}):
-                        continue
-                    if limit is not None and len(candidates) == limit:
-                        next_cursor = str(candidates[-1][0].assignment_id)
-                        break
-                    descriptions[version.id] = description
-                    candidates.append((candidate, version))
+                    candidates.append((candidate, version, authors[version.id]))
+                if (next_cursor is not None or len(packet_rows) < batch_size
+                        or packet_id is not None):
+                    break
+                cursor = packet_rows[-1][1].id
             available_by_version: dict[UUID, list[PlayUnit]] = defaultdict(list)
             for unit in await self._available_play_units(
-                session, [candidate for candidate, _ in candidates], members, context
+                session, [candidate for candidate, _, _ in candidates], members, context
             ):
                 available_by_version[unit.packet_version_id].append(unit)
             suggestions: list[PacketSuggestion] = []
-            for candidate, version in candidates:
+            for candidate, version, authors in candidates:
                 available = available_by_version[version.id]
                 total = await self._packet_play_unit_count(session, version.id, context)
                 raw_settings = dict(lobby.settings)
@@ -1781,13 +1806,63 @@ class InvitationMatchmakingService:
                 )
                 suggestions.append(
                     replace(
-                        descriptions[version.id], total_play_unit_count=total,
-                        fresh_play_unit_count=len(available), validation_violations=violations,
+                        await self._describe_packet(
+                            session, candidate, version, members, total=total, fresh=len(available),
+                            violations=violations, authors=authors,
+                        ),
                         blocked=candidate.packet_id in viewer_blocked,
                     )
                 )
             return {"items": tuple(sorted(suggestions, key=lambda item: item.name.casefold())),
                     "next_cursor": next_cursor, "lobby_version": lobby.version}
+
+    @staticmethod
+    async def _assignment_versions(
+        session: AsyncSession, assignments: Sequence[TournamentPacketAssignmentRecord],
+    ) -> dict[UUID, PacketVersionRecord]:
+        adopted_ids = {item.adopted_version_id for item in assignments
+                       if item.adopted_version_id is not None}
+        adopted = {version.id: version for version in await session.scalars(
+            select(PacketVersionRecord).where(PacketVersionRecord.id.in_(adopted_ids))
+        )} if adopted_ids else {}
+        unpinned = [item.packet_id for item in assignments if item.adopted_version_id is None]
+        latest = {}
+        if unpinned:
+            ranked = select(
+                PacketVersionRecord.id,
+                func.row_number().over(
+                    partition_by=PacketVersionRecord.packet_id,
+                    order_by=PacketVersionRecord.version_number.desc(),
+                ).label("rank"),
+            ).where(
+                PacketVersionRecord.packet_id.in_(unpinned),
+                PacketVersionRecord.state == "published",
+            ).subquery()
+            latest = {version.packet_id: version for version in await session.scalars(
+                select(PacketVersionRecord).join(ranked, ranked.c.id == PacketVersionRecord.id)
+                .where(ranked.c.rank == 1)
+            )}
+        return {
+            item.id: version for item in assignments
+            if (version := (adopted.get(item.adopted_version_id)
+                            if item.adopted_version_id is not None
+                            else latest.get(item.packet_id))) is not None
+        }
+
+    @staticmethod
+    async def _packet_authors(
+        session: AsyncSession, version_ids: Sequence[UUID],
+    ) -> dict[UUID, list[AuthorRecord]]:
+        authors: dict[UUID, list[AuthorRecord]] = {version_id: [] for version_id in version_ids}
+        if version_ids:
+            attribution = packet_author_rows(version_ids).subquery()
+            for version_id, author in (await session.execute(
+                select(attribution.c.packet_version_id, AuthorRecord)
+                .join(AuthorRecord, AuthorRecord.id == attribution.c.author_id)
+                .order_by(AuthorRecord.display_name, AuthorRecord.id)
+            )).all():
+                authors[version_id].append(author)
+        return authors
 
     async def start(
         self, lobby_id: UUID, telegram_user_id: int, *, expected_version: int | None = None
@@ -2019,8 +2094,8 @@ class InvitationMatchmakingService:
             if lobby is None:
                 raise LookupError("Lobby not found")
             with session.no_autoflush:
-                await self._refresh_validation(session, lobby, read_only=True)
-                return await self._snapshot(session, lobby)
+                validation = await self._validate_lobby(session, lobby, read_only=True)
+                return await self._snapshot(session, lobby, validation=validation)
 
     async def ongoing_lobbies(self, player_id: UUID) -> tuple[dict[str, object], ...]:
         """Project open lobbies from tournaments where the player is a member or manager."""
@@ -2100,6 +2175,15 @@ class InvitationMatchmakingService:
         *,
         read_only: bool = False,
     ) -> bool:
+        return (await self._validate_lobby(session, lobby, read_only=read_only)).changed
+
+    async def _validate_lobby(
+        self,
+        session: AsyncSession,
+        lobby: PregameLobbyRecord,
+        *,
+        read_only: bool = False,
+    ) -> _LobbyValidationResult:
         previous = list(lobby.validation)
         selected = await self._selected_packets(session, lobby.id)
         members = (await self._active_members(session, lobby.id, lock=False) if read_only
@@ -2190,6 +2274,7 @@ class InvitationMatchmakingService:
         lobby.validation = [
             {"code": violation.code, "details": dict(violation.details)} for violation in violations
         ]
+        playable: dict[tuple[UUID, UUID], bool] = {}
         for member in members:
             member_violations: list[dict[str, object]] = []
             membership = await session.get(
@@ -2199,9 +2284,11 @@ class InvitationMatchmakingService:
                 member_violations.append({"code": "tournament_membership_required", "details": {}})
             for item in selected:
                 assignment = await session.get(TournamentPacketAssignmentRecord, item.assignment_id)
-                if assignment is None or not await self.tournaments.has_assignment_access(
+                allowed = assignment is not None and await self.tournaments.has_assignment_access(
                     session, assignment, member.player_id, "playable"
-                ):
+                )
+                playable[item.assignment_id, member.player_id] = allowed
+                if not allowed:
                     member_violations.append(
                         {
                             "code": "packet_not_playable",
@@ -2209,9 +2296,15 @@ class InvitationMatchmakingService:
                         }
                     )
             member.validation_violations = member_violations
-        return previous != lobby.validation
+        return _LobbyValidationResult(
+            previous != lobby.validation, selected, members, context,
+            parameters, available, playable,
+        )
 
-    async def _snapshot(self, session: AsyncSession, lobby: PregameLobbyRecord) -> LobbySnapshot:
+    async def _snapshot(
+        self, session: AsyncSession, lobby: PregameLobbyRecord, *,
+        validation: _LobbyValidationResult | None = None,
+    ) -> LobbySnapshot:
         rows = (
             await session.execute(
                 select(PregameLobbyMemberRecord, PlayerRecord)
@@ -2223,12 +2316,21 @@ class InvitationMatchmakingService:
                 .order_by(PregameLobbyMemberRecord.join_order)
             )
         ).all()
-        selected = await self._selected_packets(session, lobby.id)
-        context = await self.tournaments.context(session, lobby.tournament_id)
+        if validation is not None and (
+            {member.player_id for member in validation.members}
+            != {member.player_id for member, _ in rows if member.role == "player"}
+        ):
+            # A player may join/leave between read-only validation and this projection.
+            validation = None
+        selected = (validation.selected if validation is not None
+                    else await self._selected_packets(session, lobby.id))
+        context = (validation.context if validation is not None
+                   else await self.tournaments.context(session, lobby.tournament_id))
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
         selected_snapshots: list[PacketSuggestion] = []
         members = [member for member, _ in rows if member.role == "player"]
-        all_available = await self._available_play_units(session, selected, members, context)
+        all_available = (validation.available if validation is not None
+                         else await self._available_play_units(session, selected, members, context))
         fresh_by_version = Counter(unit.packet_version_id for unit in all_available)
         for item in selected:
             version = await session.get(PacketVersionRecord, item.packet_version_id)
@@ -2238,6 +2340,10 @@ class InvitationMatchmakingService:
                 await self._describe_packet(
                     session, item, version, members,
                     total=total, fresh=fresh_by_version[version.id],
+                    playable_for_all=(all(
+                        validation.playable[item.assignment_id, member.player_id]
+                        for member in validation.members
+                    ) if validation is not None and validation.members else None),
                 )
             )
         search_pool = {}
@@ -2260,7 +2366,8 @@ class InvitationMatchmakingService:
             merged_into_lobby_id=lobby.merged_into_lobby_id,
             other_searching_lobby_count=int(search_pool.get("other_searching_lobby_count", 0)),
             other_searching_player_count=int(search_pool.get("other_searching_player_count", 0)),
-            settings=await self._lobby_parameters(session, lobby, selected, context, ruleset),
+            settings=(validation.parameters if validation is not None else
+                      await self._lobby_parameters(session, lobby, selected, context, ruleset)),
             selected_packets=tuple(selected_snapshots),
             validation_violations=tuple(lobby.validation),
             available_play_unit_count=len(all_available),
@@ -2303,23 +2410,29 @@ class InvitationMatchmakingService:
         total: int,
         fresh: int,
         violations: tuple[dict[str, object], ...] = (),
+        playable_for_all: bool | None = None,
+        authors: Sequence[AuthorRecord] | None = None,
     ) -> PacketSuggestion:
-        author_ids = packet_author_ids(version.id)
-        authors = list(await session.scalars(
-            select(AuthorRecord).where(or_(
-                AuthorRecord.id.in_(author_ids),
-                AuthorRecord.id == version.lead_author_id,
-            )).order_by(AuthorRecord.display_name, AuthorRecord.id)
-        ))
-        assignment = await session.get(TournamentPacketAssignmentRecord, selection.assignment_id)
-        playable_for_all = assignment is not None
-        if assignment is not None:
-            for member in members:
-                if not await self.tournaments.has_assignment_access(
-                    session, assignment, member.player_id, "playable"
-                ):
-                    playable_for_all = False
-                    break
+        if authors is None:
+            author_ids = packet_author_ids(version.id)
+            authors = list(await session.scalars(
+                select(AuthorRecord).where(or_(
+                    AuthorRecord.id.in_(author_ids),
+                    AuthorRecord.id == version.lead_author_id,
+                )).order_by(AuthorRecord.display_name, AuthorRecord.id)
+            ))
+        if playable_for_all is None:
+            assignment = await session.get(
+                TournamentPacketAssignmentRecord, selection.assignment_id,
+            )
+            playable_for_all = assignment is not None
+            if assignment is not None:
+                for member in members:
+                    if not await self.tournaments.has_assignment_access(
+                        session, assignment, member.player_id, "playable"
+                    ):
+                        playable_for_all = False
+                        break
         return PacketSuggestion(
             packet_id=selection.packet_id,
             packet_version_id=version.id,
@@ -2642,14 +2755,19 @@ class InvitationMatchmakingService:
             parameters=payload,
         )
 
-        if kind in {
+        refresh_members = kind in {
             "lobby_created", "player_joined", "player_left", "role_changed",
             "packet_selected", "packet_removed", "settings_changed", "readiness_changed",
             "matchmaking_search_started", "matchmaking_search_cancelled",
             "matchmaking_search_completed", "lobby_merged",
-        }:
+        }
+        notify_members = kind in {
+            "settings_changed", "packet_selected", "packet_removed", "packet_rejected",
+            "player_joined", "player_left", "lobby_cancelled", "readiness_changed",
+        }
+        if refresh_members or notify_members:
             await session.flush()
-            recipients = (await session.execute(
+            recipients = list((await session.execute(
                 select(PlayerRecord)
                 .join(
                     PregameLobbyMemberRecord, PregameLobbyMemberRecord.player_id == PlayerRecord.id,
@@ -2659,7 +2777,8 @@ class InvitationMatchmakingService:
                     PregameLobbyMemberRecord.active.is_(True),
                     PlayerRecord.telegram_user_id.is_not(None),
                 )
-            )).scalars()
+            )).scalars())
+        if refresh_members:
             for recipient in recipients:
                 joined = kind == "player_joined" and str(recipient.id) == payload["player_id"]
                 await TransactionalOutbox.enqueue(
@@ -2677,16 +2796,7 @@ class InvitationMatchmakingService:
                     },
                 )
 
-        if kind in {
-            "settings_changed",
-            "packet_selected",
-            "packet_removed",
-            "packet_rejected",
-            "player_joined",
-            "player_left",
-            "lobby_cancelled",
-            "readiness_changed",
-        }:
+        if notify_members:
             notice = {"changes": payload} if kind == "settings_changed" else dict(payload)
             if kind in {"player_joined", "player_left"}:
                 player = await session.get(PlayerRecord, UUID(str(payload["player_id"])))
@@ -2708,20 +2818,6 @@ class InvitationMatchmakingService:
                             "kind": "kicked_self",
                         },
                     )
-            recipients = (
-                await session.execute(
-                    select(PlayerRecord)
-                    .join(
-                        PregameLobbyMemberRecord,
-                        PregameLobbyMemberRecord.player_id == PlayerRecord.id,
-                    )
-                    .where(
-                        PregameLobbyMemberRecord.lobby_id == lobby_id,
-                        PregameLobbyMemberRecord.active.is_(True),
-                        PlayerRecord.telegram_user_id.is_not(None),
-                    )
-                )
-            ).scalars()
             for recipient in recipients:
                 await TransactionalOutbox.enqueue(
                     session,

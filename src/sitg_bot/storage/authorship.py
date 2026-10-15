@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from sitg_bot.storage.models import (
     PacketQuestionRecord,
+    PacketVersionRecord,
     QuestionRevisionRecord,
     ThemeRevisionRecord,
 )
@@ -27,4 +28,23 @@ def packet_author_ids(version_id):
             PacketQuestionRecord,
             PacketQuestionRecord.question_revision_id == questions.c.content_id,
         ).where(PacketQuestionRecord.packet_version_id == version_id)
+    )
+
+
+def packet_author_rows(version_ids):
+    """Unique version/author pairs, including packet leads and content coauthors."""
+    themes = authorship_rows(ThemeRevisionRecord)
+    questions = authorship_rows(QuestionRevisionRecord)
+    return select(
+        ThemeRevisionRecord.packet_version_id, themes.c.author_id,
+    ).join(
+        themes, ThemeRevisionRecord.id == themes.c.content_id,
+    ).where(ThemeRevisionRecord.packet_version_id.in_(version_ids)).union(
+        select(PacketQuestionRecord.packet_version_id, questions.c.author_id).join(
+            questions, PacketQuestionRecord.question_revision_id == questions.c.content_id,
+        ).where(PacketQuestionRecord.packet_version_id.in_(version_ids)),
+        select(PacketVersionRecord.id, PacketVersionRecord.lead_author_id).where(
+            PacketVersionRecord.id.in_(version_ids),
+            PacketVersionRecord.lead_author_id.is_not(None),
+        ),
     )

@@ -102,4 +102,17 @@ describe("PacketLoader", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("can update a single packet without starting background requests outside the picker", async () => {
+    const fetch = vi.fn();
+    const update = vi.fn();
+    const loader = new PacketLoader<Packet>(controller.signal, fetch, update, () => false, [], false);
+    loader.start({});
+    loader.reconcile();
+    expect(loader.protect("a")).toBe(true);
+    loader.finish("a", packet("a", 0));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(update).toHaveBeenLastCalledWith([packet("a", 0)], false);
+  });
 });

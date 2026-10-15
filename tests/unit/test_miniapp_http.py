@@ -1139,6 +1139,25 @@ async def test_lobby_mutation_does_not_reuse_write_authorization_for_read(comman
     assert [request.operation.action for request in gateway.requests] == [action]
 
 
+@pytest.mark.parametrize("command", ["packet-select", "packet-remove"])
+async def test_lobby_packet_mutation_forwards_snapshot_preference(command):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway, launch_references=FakeLobbyLaunchReferences())
+    request = make_mocked_request(
+        "POST", f"/api/miniapp/lobbies/opaque-lobby/{command}",
+        headers={"Origin": "https://mini.example.test",
+                 "Cookie": "__Host-sitg_session=test-session", "X-CSRF-Token": "csrf",
+                 "X-Idempotency-Key": "packet-toggle-test"},
+        match_info={"launch_ref": "opaque-lobby", "command": command},
+    )
+    request._read_bytes = json.dumps({
+        "expected_version": 3, "packet_id": str(UUID(int=30)), "include_snapshot": False,
+    }).encode()
+    result = await http._mutate_lobby(request)
+    assert result.status == 200
+    assert gateway.requests[0].operation.include_snapshot is False
+
+
 async def test_admin_suspicion_ledger_route_resolves_and_supports_events_and_clear():
     gateway = FakeGateway()
     http = MiniAppHttpServer(FakeAuth(), gateway)

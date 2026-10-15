@@ -1,3 +1,5 @@
+import hashlib
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ from sitg_bot.application.contracts import (
     GatewayRequest,
     GatewayResponse,
     LobbyInfoOperation,
+    LobbyPacketOperation,
     NotificationReadOperation,
     PacketDraftTelegramBindOperation,
 )
@@ -48,6 +51,23 @@ def _request(operation: dict[str, object], *, idempotency_key: str | None = None
             "operation": operation,
         }
     )
+
+
+@pytest.mark.parametrize("action", [ActionCode.LOBBY_PACKET_SELECT, ActionCode.LOBBY_PACKET_REMOVE])
+def test_packet_snapshot_option_preserves_legacy_idempotency_digest(action):
+    legacy = {"action": action, "lobby_id": str(UUID(int=1)),
+              "packet_id": str(UUID(int=2)), "expected_version": 3}
+    request = _request(legacy)
+    expected = hashlib.sha256(json.dumps(
+        legacy, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    assert isinstance(request.operation, LobbyPacketOperation)
+    assert request.operation.include_snapshot is True
+    assert ApplicationGateway._request_digest(request) == expected
+    explicit = _request({**legacy, "include_snapshot": True})
+    lightweight = _request({**legacy, "include_snapshot": False})
+    assert ApplicationGateway._request_digest(explicit) == expected
+    assert ApplicationGateway._request_digest(lightweight) != expected
 
 
 def test_contract_selects_a_typed_versioned_operation() -> None:
@@ -186,8 +206,10 @@ async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets
     policy = SimpleNamespace(player_mutable_parameters=["theme_count"])
     session = SimpleNamespace(
         get=AsyncMock(side_effect=[record, policy, SimpleNamespace(name="Tournament")]),
-        scalar=AsyncMock(side_effect=[42, 3, "Owner"]),
-        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+        scalar=AsyncMock(side_effect=[42, "Owner"]),
+        execute=AsyncMock(side_effect=[
+            SimpleNamespace(one=lambda: (3, 2)), SimpleNamespace(all=lambda: []),
+        ]),
     )
 
     @asynccontextmanager
@@ -218,6 +240,7 @@ async def test_lobby_payload_skips_hidden_suggestions_but_keeps_selected_packets
     assert payload["settings"]["question_fully_read_indication"] is indicator["value"]
     assert "packet_select" in payload["available_actions"]
     assert payload["last_event_sequence"] == 3
+    assert payload["packet_catalogue_revision"] == 2
     if include_suggestions:
         gateway.matchmaking.suggest_packets.assert_awaited_once_with(lobby.id, telegram_user_id=42)
         assert payload["packet_suggestions"] == (selected,)

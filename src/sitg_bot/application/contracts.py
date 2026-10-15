@@ -832,6 +832,7 @@ class LobbyKickOperation(LobbyVersionedOperation):
 class LobbyPacketOperation(LobbyVersionedOperation):
     action: Literal[ActionCode.LOBBY_PACKET_SELECT, ActionCode.LOBBY_PACKET_REMOVE]
     packet_id: UUID
+    include_snapshot: bool = True
 
 
 class LobbyPacketBulkSelectOperation(LobbyVersionedOperation):

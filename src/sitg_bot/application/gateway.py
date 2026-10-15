@@ -1313,6 +1313,7 @@ class ApplicationGateway:
                 telegram_user_id,
                 operation.packet_id,
                 expected_version=operation.expected_version,
+                include_snapshot=operation.include_snapshot,
             )
         if isinstance(operation, LobbySimpleMutationOperation):
             methods = {
@@ -1609,14 +1610,20 @@ class ApplicationGateway:
                 if record is not None
                 else None
             )
-            last_event_sequence = int(
-                await session.scalar(
-                    select(func.max(PregameLobbyEventRecord.sequence)).where(
-                        PregameLobbyEventRecord.lobby_id == lobby_id
-                    )
+            event_sequences = (await session.execute(
+                select(
+                    func.max(PregameLobbyEventRecord.sequence),
+                    func.max(PregameLobbyEventRecord.sequence).filter(
+                        PregameLobbyEventRecord.kind.in_((
+                            "lobby_context_invalidated", "tournament_policy_changed",
+                        ))
+                    ),
+                ).where(
+                    PregameLobbyEventRecord.lobby_id == lobby_id
                 )
-                or 0
-            )
+            )).one()
+            last_event_sequence = int(event_sequences[0] or 0)
+            packet_catalogue_revision = int(event_sequences[1] or 0)
         is_creator = creator_telegram_id == telegram_user_id
         mutable_parameters: list[str] = []
         async with self.database.sessions() as session:
@@ -1724,6 +1731,7 @@ class ApplicationGateway:
             "observing_policy": context.observing_policy,
             "packet_suggestions": suggestions,
             "last_event_sequence": last_event_sequence,
+            "packet_catalogue_revision": packet_catalogue_revision,
             "poll_after_seconds": 5,
         }
         for member in payload["members"]:
@@ -1977,6 +1985,8 @@ class ApplicationGateway:
     @staticmethod
     def _request_digest(request: GatewayRequest) -> str:
         payload = request.operation.model_dump(mode="json")
+        if isinstance(request.operation, LobbyPacketOperation) and payload["include_snapshot"]:
+            payload.pop("include_snapshot")
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 

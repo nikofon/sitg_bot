@@ -526,6 +526,11 @@ def _packet_listing_service(*, type_key="ladder", theme_count=1):
     service._member = AsyncMock(return_value=members[1])
     service._available_play_units = AsyncMock(return_value=units)
     service._packet_play_unit_count = AsyncMock(side_effect=[3, 2, 3, 2])
+    service._assignment_versions = AsyncMock(side_effect=lambda s, items: {
+        item.id: next(version for version in versions if version.id == item.adopted_version_id)
+        for item in items
+    })
+    service._packet_authors = AsyncMock(side_effect=lambda s, ids: {key: [] for key in ids})
     return service, session, lobby, context, selections, versions, members
 
 
@@ -597,6 +602,28 @@ async def test_snapshot_reuses_availability_and_excludes_observers(theme_count, 
     assert snapshot.other_searching_player_count == 3
 
 
+async def test_snapshot_rechecks_availability_if_players_change_after_validation():
+    service, session, lobby, context, selections, _, members = _packet_listing_service()
+    session.execute.return_value = SimpleNamespace(all=lambda: [
+        (member, SimpleNamespace(id=member.player_id, public_nickname="Player",
+                                 telegram_user_id=42))
+        for member in members
+    ])
+    service._selected_packets = AsyncMock(return_value=selections[:2])
+    validation = SimpleNamespace(
+        members=members[:1], selected=selections[:2], context=context,
+        parameters=GameSettings(theme_count=1), available=[],
+        playable={(item.assignment_id, members[0].player_id): True for item in selections[:2]},
+    )
+
+    snapshot = await service._snapshot(session, lobby, validation=validation)
+
+    assert snapshot.available_play_unit_count == 3
+    service._available_play_units.assert_awaited_once_with(
+        session, selections[:2], members, context,
+    )
+
+
 async def test_packet_pages_filter_before_calculating_and_return_complete_matches():
     service, session, lobby, _, selections, versions, _ = _packet_listing_service()
     rows = [(SimpleNamespace(id=selection.packet_id), SimpleNamespace(
@@ -608,7 +635,7 @@ async def test_packet_pages_filter_before_calculating_and_return_complete_matche
                        if isinstance(value, UUID) and value in [row[1].id for row in rows]), None)
         return SimpleNamespace(all=lambda: [
             row for row in rows if cursor is None or row[1].id > cursor
-        ])
+        ][:query._limit_clause.value])
 
     session.execute.side_effect = execute
     service._packet_play_unit_count.side_effect = None
@@ -616,6 +643,8 @@ async def test_packet_pages_filter_before_calculating_and_return_complete_matche
     first = await service.packet_page(lobby.id, telegram_user_id=42, limit=1)
     assert [item.name for item in first["items"]] == ["Zulu"]
     assert first["next_cursor"] == str(selections[0].assignment_id)
+    assert not any(call.args[1].id == selections[1].assignment_id and call.args[3] == "playable"
+                   for call in service.tournaments.has_assignment_access.await_args_list)
     second = await service.packet_page(
         lobby.id, telegram_user_id=42, limit=1, cursor=UUID(first["next_cursor"]),
     )

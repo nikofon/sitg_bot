@@ -151,6 +151,9 @@ reconciliation refresh data in the background. Packet cards update in place, pre
 filters, sorting, focus, and the visible packet's scroll position where possible. Membership,
 readiness, permissions, and packet availability still follow the server snapshot; unsaved
 settings defer background updates. Navigation and terminal lobby states may replace the screen.
+Packet toggles request `include_snapshot: false` and then fetch authoritative lobby information;
+omitting the flag preserves the full mutation snapshot. Catalogue loading runs only in the
+Packets section and restarts for player, raw parameter or `packet_catalogue_revision` changes.
 
 **Manager settings:** tournament metadata, pre-finalization type/ruleset, named multi-currency
 pricing plans, registration/schedule, policies, ruleset defaults, mutability grants, and

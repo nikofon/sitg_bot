@@ -1043,6 +1043,15 @@ export class MiniAppShell {
       window.clearTimeout(this.eventTimer);
       packetLoader?.stop();
     };
+    const catalogueInputs = (value: LobbyResource): string => {
+      const raw = new Map(value.setting_descriptors?.map((item) => [item.name, item.value]));
+      return JSON.stringify([
+        value.members.filter((member) => member.role === "player").map((member) => member.player_id).sort(),
+        Object.keys(value.settings).filter((name) => name !== "is_private").sort()
+          .map((name) => [name, raw.has(name) ? raw.get(name) : value.settings[name]]),
+        value.packet_catalogue_revision ?? value.last_event_sequence,
+      ]);
+    };
     const refresh = async (force = false): Promise<void> => {
       if (!isActive() || (!force && (dirty || busy || refreshing))) return;
       const sequence = ++refreshSequence;
@@ -1064,18 +1073,14 @@ export class MiniAppShell {
         }
         const next = { ...payload.resource, packet_suggestions: lobby.packet_suggestions };
         if (JSON.stringify(lobby) === JSON.stringify(next) && !dirty) return;
-        const catalogueChanged = JSON.stringify([
-          lobby.members.map((member) => [member.player_id, member.role]), lobby.settings, lobby.available_actions, lobby.last_event_sequence,
-        ]) !== JSON.stringify([
-          next.members.map((member) => [member.player_id, member.role]), next.settings, next.available_actions, next.last_event_sequence,
-        ]);
+        const catalogueChanged = catalogueInputs(lobby) !== catalogueInputs(next);
         lobby = next;
         dirty = false;
         preserveListPosition(content, () => {
           renderDetails();
           packetList.update(lobby);
         });
-        if (catalogueChanged) packetLoader?.start(packetFilters);
+        if (section === "packets" && catalogueChanged) packetLoader?.start(packetFilters);
       } catch (error) {
         if (!isActive() || sequence !== refreshSequence) return;
         if (error instanceof ApiError && ["authentication_required", "forbidden", "not_found"].includes(error.code)) {
@@ -1095,7 +1100,9 @@ export class MiniAppShell {
       try {
         await this.api.request(
           `/api/miniapp/lobbies/${encodeURIComponent(route.params.launch_ref ?? "")}/${command}`,
-          { method: "POST", body: { expected_version: lobby.version, ...body }, signal },
+          { method: "POST", body: { expected_version: lobby.version,
+            ...(["packet-select", "packet-remove"].includes(command) ? { include_snapshot: false } : {}),
+            ...body }, signal },
         );
         if (!isActive()) return;
         this.platform.notifySuccess();
@@ -1135,16 +1142,14 @@ export class MiniAppShell {
           const left = a.name.toLowerCase(), right = b.name.toLowerCase();
           return left < right ? -1 : left > right ? 1 : 0;
         });
-        lobby = { ...lobby, packet_suggestions: suggestions,
-          selected_packets: lobby.selected_packets.map((selected) =>
-            items.find((item) => item.packet_id === selected.packet_id) ?? selected) };
+        lobby = { ...lobby, packet_suggestions: suggestions };
         packetList.update(lobby);
         packetList.setLoading(loading);
       }, (error) => {
         const failed = this.packetLoadFailed(route, error);
         if (failed) stopRefreshing();
         return failed;
-      }, lobby.packet_suggestions);
+      }, lobby.packet_suggestions, section === "packets");
     const title = element("h2", { className: "lobby-tournament-title" });
     const tabs = element("nav", { className: "settings-actions", "aria-label": this.i18n.t("lobby.sections") });
     for (const [value, key] of [["overview", "lobby.overview"], ["packets", "lobby.packets"], ["settings", "lobby.options"]] as const) {

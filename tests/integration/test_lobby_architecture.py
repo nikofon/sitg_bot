@@ -1946,8 +1946,8 @@ async def test_lobby_content_queries_are_batched_for_suggestions_and_snapshot(
                 "SELECT theme_revisions.id,", "SELECT packet_questions.theme_revision_id,",
             ):
                 assert sum(sql.startswith(prefix) for sql in statements) == 0
-            # A snapshot validates the lobby and then describes selected packets.
-            expected_checks = 2 if read == service.get else 1
+            # Validation and snapshot share the same operation-local availability result.
+            expected_checks = 1
             assert sum(sql.startswith("SELECT player_exposure_claims.player_id,")
                        for sql in statements) == expected_checks
             assert sum(
@@ -1961,6 +1961,222 @@ async def test_lobby_content_queries_are_batched_for_suggestions_and_snapshot(
     finally:
         if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        await database.close()
+
+
+@pytest.mark.parametrize("include_snapshot", [True, False])
+async def test_packet_toggle_shares_validation_and_preserves_notifications(
+    database_url: str, include_snapshot: bool,
+) -> None:
+    from sqlalchemy import event
+
+    from sitg_bot.services.matchmaking import LobbyMutationReceipt, LobbySnapshot
+
+    database = Database(database_url)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    def content_checks():
+        return sum(sql.startswith("SELECT player_exposure_claims.player_id,")
+                   for sql in statements)
+
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        packets = PacketAdminService(database)
+        draft = await packets.create_draft(
+            packet(), source_filename="toggle.json", uploader_id=fixture.manager.id,
+            tournament_id=fixture.tournament_id,
+        )
+        second = await packets.publish(draft, administrator_id=fixture.manager.id)
+        async with database.transaction() as session:
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.packet_id == second.logical_id,
+            ))
+            assignment.discoverable_by_members = assignment.playable_by_members = True
+        service = InvitationMatchmakingService(database)
+        owner = fixture.inputs[0].telegram_user_id
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        await service.join(lobby.invitation_code, fixture.inputs[1])
+        await service.select_packet(lobby.id, owner, fixture.packet_id)
+        await service.suggest_packets(lobby.id)
+        event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+        for method in (service.select_packet, service.remove_packet):
+            statements.clear()
+            result = await method(lobby.id, owner, second.logical_id,
+                                  include_snapshot=include_snapshot)
+            assert isinstance(result, LobbySnapshot if include_snapshot else LobbyMutationReceipt)
+            assert content_checks() == 1
+            assert sum("JOIN player_packet_blocks" in sql for sql in statements) == 1
+            assert sum(sql.startswith("SELECT players.id,")
+                       and "JOIN pregame_lobby_members" in sql for sql in statements) == 1
+            async with database.sessions() as session:
+                notices = (await session.scalars(select(OutboxEventRecord).where(
+                    OutboxEventRecord.aggregate_id == lobby.id,
+                    OutboxEventRecord.aggregate_sequence == await session.scalar(
+                        select(func.max(OutboxEventRecord.aggregate_sequence)).where(
+                            OutboxEventRecord.aggregate_id == lobby.id,
+                        )
+                    ),
+                ))).all()
+                for topic in ("telegram.lobby.refresh", "telegram.lobby.notice"):
+                    recipients = {row.payload["recipient_telegram_user_id"] for row in notices
+                                  if row.topic == topic}
+                    assert recipients == {item.telegram_user_id for item in fixture.inputs}
+            statements.clear()
+            snapshot = await service.get(lobby.id)
+            assert snapshot.version == result.version
+            assert content_checks() == 1
+            assert sum("JOIN player_packet_blocks" in sql for sql in statements) == 1
+            assert not any(sql.startswith("UPDATE ") for sql in statements)
+        statements.clear()
+        await service.remove_packet(lobby.id, owner, fixture.packet_id, include_snapshot=False)
+        assert content_checks() == 0
+        assert not any("JOIN player_packet_blocks" in sql for sql in statements)
+    finally:
+        if event.contains(database.engine.sync_engine, "before_cursor_execute", capture):
+            event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        await database.close()
+
+
+async def test_lobby_metadata_pages_are_bounded_and_preserve_authors(database_url: str) -> None:
+    from sqlalchemy import event
+
+    database = Database(database_url)
+    assignment_rows = []
+
+    def capture(_connection, cursor, statement, _parameters, _context, _many):
+        if statement.startswith("SELECT logical_packets.id,"):
+            assignment_rows.append(cursor.rowcount)
+
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        packets = PacketAdminService(database)
+        expected = {}
+        hidden_id = None
+        for index in range(13):
+            source = packet()
+            theme = replace(source.themes[0], authors=("Anna Theme", "Shared"), author="",
+                            questions=(replace(source.themes[0].questions[0],
+                                               authors=("Bea Question", "Shared")),
+                                       *source.themes[0].questions[1:]))
+            name = f"Catalogue {'Match' if index % 2 == 0 else 'Other'} {index}"
+            content = replace(source, name=name,
+                              lead_author="Zed Lead", themes=(theme,))
+            draft = await packets.create_draft(
+                content, source_filename=f"catalogue-{index}.json", uploader_id=fixture.manager.id,
+                tournament_id=fixture.tournament_id,
+            )
+            stored = await packets.publish(draft, administrator_id=fixture.manager.id)
+            async with database.transaction() as session:
+                assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.packet_id == stored.logical_id,
+                ))
+                assignment.discoverable_by_members = index != 4
+                assignment.playable_by_members = True
+            if index == 4:
+                hidden_id = stored.logical_id
+            elif index % 2 == 0:
+                expected[stored.logical_id] = content.name
+        service = InvitationMatchmakingService(database)
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        event.listen(database.engine.sync_engine, "after_cursor_execute", capture)
+        cursor, items = None, []
+        while True:
+            page = await service._packet_page(
+                lobby.id, telegram_user_id=fixture.inputs[0].telegram_user_id,
+                limit=2, cursor=cursor, filters={"name": "match", "author": "shared"},
+            )
+            assert len(page["items"]) <= 2
+            assert list(page["items"]) == sorted(
+                page["items"], key=lambda item: item.name.casefold(),
+            )
+            items.extend(page["items"])
+            if page["next_cursor"] is None:
+                break
+            cursor = UUID(page["next_cursor"])
+        assert len(items) == len(expected)
+        assert {item.packet_id: item.name for item in items} == expected
+        assert assignment_rows and max(assignment_rows) <= 3
+        assert all(item.authors == ("Anna Theme", "Bea Question", "Shared", "Zed Lead")
+                   for item in items)
+        assert all(item.playable_for_all and item.fresh_play_unit_count == 1 for item in items)
+        for packet_id in (items[0].packet_id, hidden_id):
+            page = await service.packet_page(
+                lobby.id, telegram_user_id=fixture.inputs[0].telegram_user_id,
+                packet_id=packet_id, limit=1,
+            )
+            assert len(page["items"]) == int(packet_id != hidden_id)
+        empty = await service._packet_page(lobby.id, filters={"name": "does not exist"}, limit=2)
+        assert empty["items"] == () and empty["next_cursor"] is None
+    finally:
+        if event.contains(database.engine.sync_engine, "after_cursor_execute", capture):
+            event.remove(database.engine.sync_engine, "after_cursor_execute", capture)
+        await database.close()
+
+
+async def test_lobby_batch_versions_preserves_pins_and_ignores_archived_latest(database_url: str):
+    from uuid import uuid4
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        async with database.transaction() as session:
+            original = await session.scalar(select(PacketVersionRecord).where(
+                PacketVersionRecord.packet_id == fixture.packet_id,
+            ))
+            versions = []
+            for number, state in ((2, "published"), (3, "archived")):
+                draft = PacketDraftRecord(
+                    status="published", source_filename="version.json", source_checksum="0" * 64,
+                    content={}, creation_tournament_id=fixture.tournament_id,
+                )
+                session.add(draft)
+                await session.flush()
+                version = PacketVersionRecord(
+                    packet_id=fixture.packet_id, version_number=number, state=state,
+                    name=f"Version {number}", source_draft_id=draft.id,
+                )
+                session.add(version)
+                versions.append(version)
+            await session.flush()
+            assignments = [SimpleNamespace(id=uuid4(), packet_id=fixture.packet_id,
+                                           adopted_version_id=identity)
+                           for identity in (original.id, None, uuid4())]
+            found = await InvitationMatchmakingService._assignment_versions(session, assignments)
+            assert found[assignments[0].id].id == original.id
+            assert found[assignments[1].id].id == versions[0].id
+            assert assignments[2].id not in found
+    finally:
+        await database.close()
+
+
+async def test_lobby_catalogue_revision_tracks_context_but_not_selection(database_url: str) -> None:
+    from sitg_bot.application.gateway import ApplicationGateway
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        gateway = ApplicationGateway(database)
+        lobby = await gateway.matchmaking.create_lobby(
+            fixture.inputs[0], tournament_id=fixture.tournament_id,
+        )
+        owner = fixture.inputs[0].telegram_user_id
+        before = await gateway._lobby_payload(lobby.id, owner, include_packet_suggestions=False)
+        await gateway.matchmaking.select_packet(lobby.id, owner, fixture.packet_id,
+                                                include_snapshot=False)
+        selected = await gateway._lobby_payload(lobby.id, owner, include_packet_suggestions=False)
+        assert selected["last_event_sequence"] > before["last_event_sequence"]
+        assert selected["packet_catalogue_revision"] == before["packet_catalogue_revision"] == 0
+        async with database.transaction() as session:
+            await gateway.tournaments._invalidate_assembling_lobbies(session, fixture.tournament_id)
+        invalidated = await gateway._lobby_payload(
+            lobby.id, owner, include_packet_suggestions=False,
+        )
+        assert invalidated["packet_catalogue_revision"] == invalidated["last_event_sequence"]
+        assert invalidated["packet_catalogue_revision"] > selected["last_event_sequence"]
+    finally:
         await database.close()
 
 
@@ -2013,7 +2229,9 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         assert joined.ok, joined.error
         assert (await gateway.execute(guest, join)).data == joined.data
         assert (await gateway.navigation.snapshot(guest.telegram_user_id)).context == "lobby"
-        info = await gateway.execute(owner, request("lobbies.info.v1", lobby_id=lobby_id))
+        info = await gateway.execute(owner, request(
+            "lobbies.info.v1", lobby_id=lobby_id, include_packet_suggestions=False,
+        ))
         assert info.ok, info.error
         assert info.data["tournament_name"] == "Architecture tournament"
         assert info.data["mutable_parameters"] == ["is_private", "maximum_players", "theme_count"]
@@ -2031,12 +2249,24 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
         assert picker.ok, picker.error
         assert len(picker.data["packet_suggestions"]) == 1
         catalogue.assert_awaited_once()
-        selected = await gateway.execute(owner, request(
+        selection = request(
             "lobbies.packets.select.v1", lobby_id=lobby_id,
             packet_id=str(fixture.packet_id), expected_version=info.data["version"],
-        ))
+        )
+        selected = await gateway.execute(owner, selection)
         assert selected.ok, selected.error
-        overview = await gateway.execute(owner, request("lobbies.info.v1", lobby_id=lobby_id))
+        assert len(selected.data["members"]) == 2
+        replay = await gateway.execute(owner, selection.model_copy(update={
+            "operation": selection.operation.model_copy(update={"include_snapshot": True}),
+        }))
+        assert replay.ok and replay.data == selected.data
+        conflict = await gateway.execute(owner, selection.model_copy(update={
+            "operation": selection.operation.model_copy(update={"include_snapshot": False}),
+        }))
+        assert not conflict.ok and conflict.error.code.value == "idempotency_conflict"
+        overview = await gateway.execute(owner, request(
+            "lobbies.info.v1", lobby_id=lobby_id, include_packet_suggestions=False,
+        ))
         assert overview.ok, overview.error
         assert len(overview.data["selected_packets"]) == 1
         assert overview.data["packet_suggestions"] == []
@@ -2051,6 +2281,14 @@ async def test_lobby_gateway_creation_join_and_payload_are_idempotent(database_u
             ),
         )
         assert not forbidden.ok and forbidden.error.code.value == "forbidden"
+        removal = request(
+            "lobbies.packets.remove.v1", lobby_id=lobby_id, packet_id=str(fixture.packet_id),
+            expected_version=overview.data["version"], include_snapshot=False,
+        )
+        removed = await gateway.execute(owner, removal)
+        assert removed.ok, removed.error
+        assert removed.data == {"id": lobby_id, "version": overview.data["version"] + 1}
+        assert (await gateway.execute(owner, removal)).data == removed.data
     finally:
         await database.close()
 

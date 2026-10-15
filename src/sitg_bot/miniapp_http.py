@@ -1077,7 +1077,8 @@ class MiniAppHttpServer:
             )
         elif action in {ActionCode.LOBBY_PACKET_SELECT, ActionCode.LOBBY_PACKET_REMOVE}:
             operation = LobbyPacketOperation.model_validate(
-                {**common, "packet_id": body.get("packet_id")}
+                {**common, "packet_id": body.get("packet_id"),
+                 "include_snapshot": body.get("include_snapshot", True)}
             )
         else:
             operation = LobbySimpleMutationOperation.model_validate(common)

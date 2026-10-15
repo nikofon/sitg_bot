@@ -20,12 +20,14 @@ export class PacketLoader<T extends { packet_id: string }> {
     private readonly update: (items: T[], loading: boolean) => void,
     private readonly failed: (error: unknown) => boolean,
     initial: T[] = [],
+    private readonly backgroundEnabled = true,
   ) {
     initial.forEach((item) => this.items.set(item.packet_id, item));
     signal.addEventListener("abort", () => this.stop(), { once: true });
   }
 
   start(filters: Record<string, string>, debounce = false): void {
+    if (!this.backgroundEnabled) return;
     this.stop();
     this.filters = { ...filters };
     if (this.signal.aborted) return;
@@ -35,7 +37,7 @@ export class PacketLoader<T extends { packet_id: string }> {
   }
 
   reconcile(): void {
-    if (!this.controller && !this.signal.aborted) {
+    if (this.backgroundEnabled && !this.controller && !this.signal.aborted) {
       window.clearTimeout(this.timer);
       void this.run();
     }

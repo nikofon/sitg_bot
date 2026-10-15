@@ -427,6 +427,7 @@ export interface LobbyResource {
   mutable_parameters: string[];
   poll_after_seconds: number;
   last_event_sequence: number;
+  packet_catalogue_revision?: number;
 }
 
 export interface OngoingLobbyMember {
