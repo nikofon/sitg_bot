@@ -1,5 +1,6 @@
 import secrets
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +11,7 @@ from test_lobby_architecture import packet, tournament_fixture
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.packet_notifications import PacketAvailabilityService
 from sitg_bot.services.packets import PacketAdminService
+from sitg_bot.services.subscriptions import SubscriptionService
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
@@ -25,6 +27,46 @@ from sitg_bot.storage.models import (
 
 pytestmark = pytest.mark.integration
 database_url = _database_url
+
+
+async def test_management_updates_can_defer_player_access(database_url, monkeypatch):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2, started=False)
+        service = TournamentService(database)
+        monkeypatch.setattr(service, "_management_player_access", AsyncMock(
+            side_effect=AssertionError("Deferred snapshots must not load player access")
+        ))
+        view = await service.manager_management(
+            fixture.tournament_id, fixture.manager.id, include_player_access=False
+        )
+        assignment_id = view.packets[0].assignment_id
+        view = await service.start_tournament(
+            fixture.tournament_id, fixture.manager.id,
+            expected_version=view.settings_version, include_player_access=False,
+        )
+        view = await service.set_registration_override(
+            fixture.tournament_id, fixture.manager.id, registration_open=True,
+            expected_version=view.settings_version, include_player_access=False,
+        )
+        for values in (
+            {"right": "readable", "enabled": True, "player_id": fixture.players[0].id},
+            {"right": "readable", "enabled": True, "scope": "default", "player_id": None},
+            {"right": "library_viewing_rule", "library_viewing_rule": "anytime", "player_id": None},
+        ):
+            view = await service.set_management_packet_access(
+                fixture.tournament_id, assignment_id, fixture.manager.id,
+                **values, expected_version=view.settings_version, include_player_access=False,
+            )
+            assert view.packets[0].player_access is None
+        view = await SubscriptionService(service).mutate(
+            fixture.tournament_id, fixture.manager.id, expected_version=view.settings_version,
+            command="create", values={"name": "Basic"}, include_player_access=False,
+        )
+        assert view.packets[0].player_access is None
+        assert view.subscriptions["cards"][0]["name"] == "Basic"
+    finally:
+        await database.close()
 
 
 @pytest.mark.parametrize("scheduled_open", [True, False])

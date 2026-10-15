@@ -64,6 +64,7 @@ from sitg_bot.application.contracts import (
     LobbyRoleUpdateOperation,
     LobbySettingsUpdateOperation,
     LobbySimpleMutationOperation,
+    ManagementSnapshotOptions,
     NavigationContextSetOperation,
     NavigationModeSetOperation,
     NavigationSnapshotOperation,
@@ -120,6 +121,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerSettingsLinkOperation,
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
+    TournamentPacketAccessGetOperation,
     TournamentPacketAccessUpdateOperation,
     TournamentPacketListOperation,
     TournamentProfileOperation,
@@ -946,7 +948,13 @@ class ApplicationGateway:
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
             )
-            return await self.tournaments.manager_management(tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                tournament_id, player_id, include_player_access=operation.include_player_access
+            )
+        if isinstance(operation, TournamentPacketAccessGetOperation):
+            return await self.tournaments.manager_packet_access(
+                operation.tournament_id, operation.assignment_id, player_id
+            )
         if isinstance(operation, TournamentSubscriptionsUpdateOperation):
             from sitg_bot.services.subscriptions import SubscriptionService
 
@@ -954,6 +962,7 @@ class ApplicationGateway:
                 operation.tournament_id, player_id,
                 expected_version=operation.expected_version,
                 command=operation.command, values=dict(operation.values),
+                include_player_access=operation.include_player_access,
             )
         if isinstance(operation, TournamentClassicUpdateOperation):
             from sitg_bot.services.classic import ClassicService
@@ -966,7 +975,10 @@ class ApplicationGateway:
                 kind=operation.kind,
                 values=dict(operation.values),
             )
-            return await self.tournaments.manager_management(operation.tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                operation.tournament_id, player_id,
+                include_player_access=operation.include_player_access,
+            )
         if isinstance(operation, TournamentRegistrationOverrideOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -976,6 +988,7 @@ class ApplicationGateway:
                 player_id,
                 registration_open=operation.registration_open,
                 expected_version=operation.expected_version,
+                include_player_access=operation.include_player_access,
             )
         if isinstance(operation, TournamentRegistrationDecideOperation):
             tournament_id = await self._manager_tournament_id(
@@ -989,7 +1002,9 @@ class ApplicationGateway:
                 await self.tournaments.reject_registration(
                     tournament_id, operation.player_id, manager_id=player_id
                 )
-            return await self.tournaments.manager_management(tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                tournament_id, player_id, include_player_access=operation.include_player_access
+            )
         if isinstance(operation, TournamentPacketAccessUpdateOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -1004,6 +1019,7 @@ class ApplicationGateway:
                 library_viewing_rule=operation.library_viewing_rule,
                 expected_version=operation.expected_version,
                 scope=operation.scope,
+                include_player_access=operation.include_player_access,
             )
         if isinstance(operation, TournamentCompleteOperation):
             tournament_id = await self._manager_tournament_id(
@@ -1014,13 +1030,16 @@ class ApplicationGateway:
                 player_id,
                 expected_version=operation.expected_version,
             )
-            return await self.tournaments.manager_management(tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                tournament_id, player_id, include_player_access=operation.include_player_access
+            )
         if isinstance(operation, TournamentStartOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
             )
             return await self.tournaments.start_tournament(
                 tournament_id, player_id, expected_version=operation.expected_version,
+                include_player_access=operation.include_player_access,
             )
         if isinstance(operation, PacketUploadEligibilityOperation):
             tournament_id = await self._manager_tournament_id(
@@ -1066,7 +1085,10 @@ class ApplicationGateway:
                 ),
             )
             if isinstance(operation, PacketExistingAddOperation):
-                return await self.tournaments.manager_management(operation.tournament_id, player_id)
+                return await self.tournaments.manager_management(
+                    operation.tournament_id, player_id,
+                    include_player_access=operation.include_player_access,
+                )
             return preview
         if isinstance(operation, PacketManagementUpdateOperation):
             await self.packets.modify_packet(
@@ -1075,14 +1097,20 @@ class ApplicationGateway:
                 content=dict(operation.content), changes=operation.changes,
                 field_author_ids=operation.field_author_ids,
             )
-            return await self.tournaments.manager_management(operation.tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                operation.tournament_id, player_id,
+                include_player_access=operation.include_player_access,
+            )
         if isinstance(operation, PacketManagementActionOperation):
             await self.packets.management_action(
                 operation.tournament_id, operation.assignment_id, player_id,
                 expected_version=operation.expected_version,
                 delete=action == ActionCode.PACKET_MANAGEMENT_DELETE,
             )
-            return await self.tournaments.manager_management(operation.tournament_id, player_id)
+            return await self.tournaments.manager_management(
+                operation.tournament_id, player_id,
+                include_player_access=operation.include_player_access,
+            )
         if isinstance(operation, PacketUploadOperation):
             tournament_id = await self._manager_tournament_id(
                 telegram_user_id, operation.tournament_id
@@ -1987,6 +2015,11 @@ class ApplicationGateway:
         payload = request.operation.model_dump(mode="json")
         if isinstance(request.operation, LobbyPacketOperation) and payload["include_snapshot"]:
             payload.pop("include_snapshot")
+        if (
+            isinstance(request.operation, ManagementSnapshotOptions)
+            and payload["include_player_access"]
+        ):
+            payload.pop("include_player_access")
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 

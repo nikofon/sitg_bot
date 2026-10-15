@@ -6,6 +6,7 @@ import json
 import math
 import re
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -29,10 +30,11 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.subscriptions import SubscriptionService, subscription_snapshot
-from sitg_bot.storage.authorship import packet_author_ids
+from sitg_bot.storage.authorship import packet_author_rows
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     AuthorRecord,
+    ClassicMatchRecord,
     ClassicRoundRecord,
     ClassicStageRecord,
     GameParticipantRecord,
@@ -357,7 +359,7 @@ class ManagementPacket:
     packet_id: UUID
     name: str
     version: int | None
-    player_access: tuple[ManagementPacketAccess, ...]
+    player_access: tuple[ManagementPacketAccess, ...] | None
     year: int | None = None
     published_at: datetime | None = None
     lead_author: str | None = None
@@ -2044,6 +2046,7 @@ class TournamentService:
 
     async def start_tournament(
         self, tournament_id: UUID, manager_id: UUID, *, expected_version: int,
+        include_player_access: bool = True,
     ) -> TournamentManagement:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
@@ -2066,7 +2069,9 @@ class TournamentService:
             tournament.settings_version += 1
             await self._invalidate_assembling_lobbies(session, tournament_id)
             await session.flush()
-            return await self._manager_management_snapshot(session, tournament_id, manager_id)
+            return await self._manager_management_snapshot(
+                session, tournament_id, manager_id, include_player_access=include_player_access
+            )
 
     async def remind_scheduled_starts(self, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -2104,11 +2109,13 @@ class TournamentService:
                 tournament.start_reminded_for = tournament.starts_at
 
     async def manager_management(
-        self, tournament_id: UUID, manager_id: UUID
+        self, tournament_id: UUID, manager_id: UUID, *, include_player_access: bool = True,
     ) -> TournamentManagement:
         async with self.database.sessions() as session:
             await self._require_manager(session, tournament_id, manager_id)
-            return await self._manager_management_snapshot(session, tournament_id, manager_id)
+            return await self._manager_management_snapshot(
+                session, tournament_id, manager_id, include_player_access=include_player_access
+            )
 
     async def set_registration_override(
         self,
@@ -2117,6 +2124,7 @@ class TournamentService:
         *,
         registration_open: bool,
         expected_version: int,
+        include_player_access: bool = True,
     ) -> TournamentManagement:
         async with self.database.transaction() as session:
             await self._require_manager(session, tournament_id, manager_id)
@@ -2136,7 +2144,9 @@ class TournamentService:
             tournament.registration_open_override = registration_open
             tournament.settings_version += 1
             await session.flush()
-            return await self._manager_management_snapshot(session, tournament_id, manager_id)
+            return await self._manager_management_snapshot(
+                session, tournament_id, manager_id, include_player_access=include_player_access
+            )
 
     async def set_management_packet_access(
         self,
@@ -2150,6 +2160,7 @@ class TournamentService:
         library_viewing_rule: str | None = None,
         expected_version: int | None = None,
         scope: str = "players",
+        include_player_access: bool = True,
     ) -> TournamentManagement:
         right_map = {
             "playable": ("playable", "playable_by_members"),
@@ -2189,7 +2200,9 @@ class TournamentService:
                 assignment.library_viewing_rule = library_viewing_rule
                 tournament.settings_version += 1
                 await session.flush()
-                return await self._manager_management_snapshot(session, tournament_id, manager_id)
+                return await self._manager_management_snapshot(
+                    session, tournament_id, manager_id, include_player_access=include_player_access
+                )
             entitlement_field, assignment_field = right_map[right]
             if scope == "default":
                 await self._set_assignment_default_access(
@@ -2203,7 +2216,9 @@ class TournamentService:
                 )
                 await self._invalidate_assembling_lobbies(session, tournament_id)
                 await session.flush()
-                return await self._manager_management_snapshot(session, tournament_id, manager_id)
+                return await self._manager_management_snapshot(
+                    session, tournament_id, manager_id, include_player_access=include_player_access
+                )
             participants = tuple(
                 (
                     await session.execute(
@@ -2258,7 +2273,9 @@ class TournamentService:
                 setattr(assignment, assignment_field, enabled)
             await self._invalidate_assembling_lobbies(session, tournament_id)
             await session.flush()
-            return await self._manager_management_snapshot(session, tournament_id, manager_id)
+            return await self._manager_management_snapshot(
+                session, tournament_id, manager_id, include_player_access=include_player_access
+            )
 
     async def _set_assignment_default_access(
         self,
@@ -2368,7 +2385,7 @@ class TournamentService:
         )
 
     async def tournament_authors(
-        self, session: AsyncSession, tournament_id: UUID
+        self, session: AsyncSession, tournament_id: UUID, *, packet_metadata=None,
     ) -> tuple[str, ...]:
         names = set(
             (
@@ -2382,44 +2399,18 @@ class TournamentService:
                 )
             ).scalars()
         )
-        assignments = tuple(
-            (
-                await session.execute(
-                    select(TournamentPacketAssignmentRecord).where(
-                        TournamentPacketAssignmentRecord.tournament_id == tournament_id,
-                        TournamentPacketAssignmentRecord.status == "active",
-                    )
+        if packet_metadata is None:
+            assignments = tuple(await session.scalars(
+                select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.tournament_id == tournament_id,
+                    TournamentPacketAssignmentRecord.status == "active",
                 )
-            ).scalars()
-        )
-        for assignment in assignments:
-            version = (
-                await session.get(PacketVersionRecord, assignment.adopted_version_id)
-                if assignment.adopted_version_id is not None
-                else await session.scalar(
-                    select(PacketVersionRecord)
-                    .where(
-                        PacketVersionRecord.packet_id == assignment.packet_id,
-                        PacketVersionRecord.state == "published",
-                    )
-                    .order_by(PacketVersionRecord.version_number.desc())
-                    .limit(1)
-                )
-            )
-            if version is None:
-                continue
-            author_ids: set[UUID] = set()
-            if version.lead_author_id is not None:
-                author_ids.add(version.lead_author_id)
-            author_ids.update(await session.scalars(packet_author_ids(version.id)))
-            if author_ids:
-                names.update(
-                    (
-                        await session.execute(
-                            select(AuthorRecord.display_name).where(AuthorRecord.id.in_(author_ids))
-                        )
-                    ).scalars()
-                )
+            ))
+            packet_metadata = await self._management_packet_metadata(session, assignments)
+        for _, lead, authors in packet_metadata.values():
+            if lead is not None:
+                names.add(lead)
+            names.update(authors)
         return tuple(sorted(names, key=str.casefold))
 
     @staticmethod
@@ -2696,7 +2687,8 @@ class TournamentService:
         )
 
     async def _manager_management_snapshot(
-        self, session: AsyncSession, tournament_id: UUID, manager_id: UUID
+        self, session: AsyncSession, tournament_id: UUID, manager_id: UUID,
+        *, include_player_access: bool = True,
     ) -> TournamentManagement:
         rows = await self._visible_listing_rows(
             session,
@@ -2707,7 +2699,17 @@ class TournamentService:
         if not rows:
             raise LookupError("Managed tournament not found")
         tournament = rows[0][0]
-        item = await self._visible_list_item(session, rows[0], datetime.now(UTC), "manager")
+        assignments = tuple(await session.scalars(
+            select(TournamentPacketAssignmentRecord)
+            .where(
+                TournamentPacketAssignmentRecord.tournament_id == tournament_id,
+                TournamentPacketAssignmentRecord.status == "active",
+            ).order_by(TournamentPacketAssignmentRecord.created_at)
+        ))
+        metadata = await self._management_packet_metadata(session, assignments)
+        item = await self._visible_list_item(
+            session, rows[0], datetime.now(UTC), "manager", packet_metadata=metadata
+        )
         type_version = await session.get(TournamentTypeVersionRecord, tournament.type_version_id)
         assert type_version is not None
 
@@ -2752,80 +2754,29 @@ class TournamentService:
             for membership, player in registration_rows
             if membership.registered_at is not None
         )
-        participant_rows = tuple(
-            (
-                await session.execute(
-                    select(TournamentMembershipRecord, PlayerRecord)
-                    .join(PlayerRecord, PlayerRecord.id == TournamentMembershipRecord.player_id)
-                    .where(
-                        TournamentMembershipRecord.tournament_id == tournament_id,
-                        TournamentMembershipRecord.status == "active",
-                    )
-                    .order_by(PlayerRecord.public_nickname, PlayerRecord.id)
-                )
-            ).all()
-        )
-        assignments = tuple(
-            (
-                await session.execute(
-                    select(TournamentPacketAssignmentRecord)
-                    .where(
-                        TournamentPacketAssignmentRecord.tournament_id == tournament_id,
-                        TournamentPacketAssignmentRecord.status == "active",
-                    )
-                    .order_by(TournamentPacketAssignmentRecord.created_at)
-                )
-            ).scalars()
-        )
+        participant_count = int(await session.scalar(
+            select(func.count()).select_from(TournamentMembershipRecord).where(
+                TournamentMembershipRecord.tournament_id == tournament_id,
+                TournamentMembershipRecord.status == "active",
+            )
+        ) or 0)
+        access = await self._management_player_access(
+            session, tournament, assignments, item.type_key
+        ) if include_player_access else {}
         packets: list[ManagementPacket] = []
         for assignment in assignments:
-            version = (
-                await session.get(PacketVersionRecord, assignment.adopted_version_id)
-                if assignment.adopted_version_id is not None
-                else await session.scalar(
-                    select(PacketVersionRecord)
-                    .where(
-                        PacketVersionRecord.packet_id == assignment.packet_id,
-                        PacketVersionRecord.state == "published",
-                    )
-                    .order_by(PacketVersionRecord.version_number.desc())
-                    .limit(1)
-                )
-            )
-            player_access: list[ManagementPacketAccess] = []
-            for membership, player in participant_rows:
-                player_access.append(
-                    ManagementPacketAccess(
-                        player_id=membership.player_id,
-                        display_name=player.public_nickname or "—",
-                        playable=await self.has_assignment_access(
-                            session, assignment, membership.player_id, "playable"
-                        ),
-                        discoverable=await self.has_assignment_access(
-                            session, assignment, membership.player_id, "discoverable"
-                        ),
-                        readable=await self.has_assignment_access(
-                            session, assignment, membership.player_id, "content_visible"
-                        ),
-                    )
-                )
+            version, lead_author, authors = metadata[assignment.id]
             packets.append(
                 ManagementPacket(
                     assignment_id=assignment.id,
                     packet_id=assignment.packet_id,
                     name=version.name if version is not None else str(assignment.packet_id),
                     version=version.version_number if version is not None else None,
-                    player_access=tuple(player_access),
+                    player_access=access[assignment.id] if include_player_access else None,
                     year=version.year if version else None,
                     published_at=version.published_at if version else None,
-                    lead_author=(await session.scalar(select(AuthorRecord.display_name).where(
-                        AuthorRecord.id == version.lead_author_id
-                    ))) if version else None,
-                    authors=tuple((await session.scalars(
-                        select(AuthorRecord.display_name).where(AuthorRecord.id.in_(
-                            packet_author_ids(version.id)
-                        )).distinct().order_by(AuthorRecord.display_name)
-                    )).all()) if version else (),
+                    lead_author=lead_author,
+                    authors=authors,
                     released=bool(version and version.library_released_at),
                     packet_version_id=version.id if version else None,
                     library_viewing_rule=assignment.library_viewing_rule,
@@ -2881,7 +2832,7 @@ class TournamentService:
             approved_count=sum(
                 registration.status in {"approved", "active"} for registration in registrations
             ),
-            participant_count=len(participant_rows),
+            participant_count=participant_count,
             packet_count=len(assignments),
             registrations=registrations,
             packets=tuple(packets),
@@ -2892,6 +2843,157 @@ class TournamentService:
             subscriptions=await subscription_snapshot(session, tournament_id)
             if item.type_key == "ladder" else None,
         )
+
+    @staticmethod
+    async def _management_packet_metadata(
+        session: AsyncSession, assignments: Sequence[TournamentPacketAssignmentRecord],
+    ) -> dict[UUID, tuple[PacketVersionRecord | None, str | None, tuple[str, ...]]]:
+        if not assignments:
+            return {}
+        adopted_ids = {a.adopted_version_id for a in assignments if a.adopted_version_id}
+        fallback_ids = {a.packet_id for a in assignments if a.adopted_version_id is None}
+        ranked = select(
+            PacketVersionRecord.id,
+            func.row_number().over(
+                partition_by=PacketVersionRecord.packet_id,
+                order_by=PacketVersionRecord.version_number.desc(),
+            ).label("position"),
+        ).where(
+            PacketVersionRecord.packet_id.in_(fallback_ids),
+            PacketVersionRecord.state == "published",
+        ).subquery()
+        rows = (await session.execute(
+            select(PacketVersionRecord, AuthorRecord.display_name)
+            .outerjoin(AuthorRecord, AuthorRecord.id == PacketVersionRecord.lead_author_id)
+            .where(or_(
+                PacketVersionRecord.id.in_(adopted_ids),
+                PacketVersionRecord.id.in_(select(ranked.c.id).where(ranked.c.position == 1)),
+            ))
+        )).all()
+        versions = {version.id: (version, lead) for version, lead in rows}
+        latest = {version.packet_id: (version, lead) for version, lead in rows
+                  if version.packet_id in fallback_ids}
+        authors: dict[UUID, list[str]] = {}
+        if versions:
+            attribution = packet_author_rows(versions, include_leads=False).subquery()
+            for version_id, name in (await session.execute(
+                select(attribution.c.packet_version_id, AuthorRecord.display_name)
+                .join(AuthorRecord, AuthorRecord.id == attribution.c.author_id)
+                .distinct().order_by(attribution.c.packet_version_id, AuthorRecord.display_name)
+            )).all():
+                authors.setdefault(version_id, []).append(name)
+        result = {}
+        for assignment in assignments:
+            version, lead = (
+                versions.get(assignment.adopted_version_id, (None, None))
+                if assignment.adopted_version_id is not None
+                else latest.get(assignment.packet_id, (None, None))
+            )
+            result[assignment.id] = (
+                version, lead, tuple(authors.get(version.id, ())) if version else (),
+            )
+        return result
+
+    async def manager_packet_access(
+        self, tournament_id: UUID, assignment_id: UUID, manager_id: UUID,
+    ) -> dict:
+        async with self.database.sessions() as session:
+            await self._require_manager(session, tournament_id, manager_id)
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.id == assignment_id,
+                TournamentPacketAssignmentRecord.tournament_id == tournament_id,
+                TournamentPacketAssignmentRecord.status == "active",
+            ))
+            if assignment is None:
+                raise LookupError("Active tournament packet assignment not found")
+            tournament = await session.get(TournamentRecord, tournament_id)
+            if tournament is None:
+                raise LookupError("Managed tournament not found")
+            type_key = await session.scalar(select(TournamentTypeVersionRecord.key).where(
+                TournamentTypeVersionRecord.id == tournament.type_version_id
+            ))
+            access = await self._management_player_access(
+                session, tournament, (assignment,), type_key
+            )
+            return {"assignment_id": assignment_id, "player_access": access[assignment_id]}
+
+    @classmethod
+    async def _management_player_access(
+        cls, session: AsyncSession, tournament: TournamentRecord,
+        assignments: Sequence[TournamentPacketAssignmentRecord], type_key: str,
+    ) -> dict[UUID, tuple[ManagementPacketAccess, ...]]:
+        if not assignments:
+            return {}
+        participants = (await session.execute(
+            select(PlayerRecord.id, PlayerRecord.public_nickname)
+            .join(TournamentMembershipRecord,
+                  TournamentMembershipRecord.player_id == PlayerRecord.id)
+            .where(TournamentMembershipRecord.tournament_id == tournament.id,
+                   TournamentMembershipRecord.status == "active")
+            .order_by(PlayerRecord.public_nickname, PlayerRecord.id)
+        )).all()
+        if not participants:
+            return {a.id: () for a in assignments}
+        assignment_ids = [a.id for a in assignments]
+        managers = set(await session.scalars(select(TournamentManagerRecord.player_id).where(
+            TournamentManagerRecord.tournament_id == tournament.id,
+            TournamentManagerRecord.revoked_at.is_(None),
+        )))
+        entitlements = {
+            (e.assignment_id, e.player_id): e for e in await session.scalars(
+                select(TournamentPacketEntitlementRecord)
+                .join(TournamentMembershipRecord, and_(
+                    TournamentMembershipRecord.player_id
+                    == TournamentPacketEntitlementRecord.player_id,
+                    TournamentMembershipRecord.tournament_id == tournament.id,
+                    TournamentMembershipRecord.status == "active",
+                ))
+                .where(TournamentPacketEntitlementRecord.assignment_id.in_(assignment_ids))
+            )
+        }
+        classic_access: set[tuple[UUID, str, str]] = set()
+        if type_key == "classic":
+            by_id = {a.id: a for a in assignments}
+            now = datetime.now(UTC)
+            rounds = (await session.execute(
+                select(ClassicRoundRecord, ClassicStageRecord, ClassicMatchRecord)
+                .join(ClassicStageRecord, ClassicStageRecord.id == ClassicRoundRecord.stage_id)
+                .join(ClassicMatchRecord, ClassicMatchRecord.round_id == ClassicRoundRecord.id)
+                .where(ClassicRoundRecord.assignment_id.in_(assignment_ids),
+                       ClassicStageRecord.started_at.is_not(None))
+            )).all()
+            for round_record, stage, match in rounds:
+                assignment = by_id[round_record.assignment_id]
+                for right in ("playable", "discoverable"):
+                    override = getattr(round_record, right)
+                    enabled = override if override is not None else getattr(
+                        assignment, f"{right}_by_members"
+                    )
+                    if ClassicService.match_assignment_access(
+                        round_record, stage, match, right, enabled=enabled, now=now
+                    ):
+                        classic_access.update((assignment.id, seat, right) for seat in match.seats)
+
+        def allowed(assignment, player_id, right):
+            if not cls._assignment_right_available(assignment, tournament, right):
+                return False
+            if player_id in managers:
+                return True
+            if type_key == "classic" and right in {"playable", "discoverable"}:
+                return (assignment.id, str(player_id), right) in classic_access
+            return cls._entitlement_access(
+                assignment, entitlements.get((assignment.id, player_id)), right
+            )
+
+        return {
+            a.id: tuple(ManagementPacketAccess(
+                player_id=player_id, display_name=name or "—",
+                playable=allowed(a, player_id, "playable"),
+                discoverable=allowed(a, player_id, "discoverable"),
+                readable=allowed(a, player_id, "content_visible"),
+            ) for player_id, name in participants)
+            for a in assignments
+        }
 
     async def update_policy(
         self,
@@ -3276,9 +3378,7 @@ class TournamentService:
         if assignment.status != "active":
             return False
         tournament = await session.get(TournamentRecord, assignment.tournament_id)
-        if tournament is None or tournament.moderation_status == "abolished":
-            return False
-        if right in {"playable", "editable"} and tournament.moderation_status == "halted":
+        if not cls._assignment_right_available(assignment, tournament, right):
             return False
         if await cls._is_manager(session, assignment.tournament_id, player_id):
             return True
@@ -3303,6 +3403,20 @@ class TournamentService:
         entitlement = await session.get(
             TournamentPacketEntitlementRecord, (assignment.id, player_id)
         )
+        return cls._entitlement_access(assignment, entitlement, right)
+
+    @staticmethod
+    def _assignment_right_available(assignment, tournament, right) -> bool:
+        return bool(
+            assignment.status == "active"
+            and tournament is not None
+            and tournament.moderation_status != "abolished"
+            and not (right in {"playable", "editable"}
+                     and tournament.moderation_status == "halted")
+        )
+
+    @staticmethod
+    def _entitlement_access(assignment, entitlement, right) -> bool:
         override = {
             "discoverable": "discoverable_override", "content_visible": "readable_override",
         }.get(right)
@@ -3559,6 +3673,7 @@ class TournamentService:
         row: tuple[object, ...],
         now: datetime,
         role: str,
+        *, packet_metadata=None,
     ) -> TournamentListItem:
         tournament, type_version, ruleset_version, policy, membership, manager = row
         phase = self._phase(tournament, now)
@@ -3603,7 +3718,9 @@ class TournamentService:
             registration_open=registration_open,
             registration_starts_at=tournament.registration_starts_at,
             registration_ends_at=tournament.registration_ends_at,
-            authors=await self.tournament_authors(session, tournament.id),
+            authors=await self.tournament_authors(
+                session, tournament.id, packet_metadata=packet_metadata
+            ),
             type_key=type_version.key,
             type_version=type_version.version,
             ruleset_key=ruleset_version.key,

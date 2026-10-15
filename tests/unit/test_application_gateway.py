@@ -70,6 +70,78 @@ def test_packet_snapshot_option_preserves_legacy_idempotency_digest(action):
     assert ApplicationGateway._request_digest(lightweight) != expected
 
 
+@pytest.mark.parametrize("operation", [
+    {"action": ActionCode.TOURNAMENT_MANAGER_MANAGEMENT},
+    {"action": ActionCode.TOURNAMENT_REGISTRATION_OVERRIDE,
+     "expected_version": 1, "registration_open": True},
+    {"action": ActionCode.TOURNAMENT_REGISTRATION_DECIDE,
+     "player_id": str(UUID(int=3)), "decision": "approve"},
+    {"action": ActionCode.TOURNAMENT_PACKET_ACCESS_UPDATE,
+     "assignment_id": str(UUID(int=3)), "right": "playable", "enabled": True},
+    {"action": ActionCode.TOURNAMENT_COMPLETE, "expected_version": 1},
+    {"action": ActionCode.TOURNAMENT_START, "expected_version": 1},
+    {"action": ActionCode.TOURNAMENT_CLASSIC_UPDATE, "expected_version": 1,
+     "command": "seed", "kind": "first", "values": {"mode": "automatic"}},
+    {"action": ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE, "expected_version": 1,
+     "command": "create", "values": {"name": "Basic"}},
+    {"action": ActionCode.PACKET_EXISTING_ADD, "packet_id": str(UUID(int=3)),
+     "expected_version_id": str(UUID(int=4))},
+    {"action": ActionCode.PACKET_MANAGEMENT_UPDATE, "assignment_id": str(UUID(int=3)),
+     "expected_version": 1, "content": {}, "changes": {}, "field_author_ids": {}},
+    {"action": ActionCode.PACKET_MANAGEMENT_DELETE, "assignment_id": str(UUID(int=3)),
+     "expected_version": 1},
+])
+def test_management_snapshot_option_preserves_legacy_idempotency_digest(operation):
+    legacy = {**operation, "tournament_id": str(UUID(int=1))}
+    # Preserve defaults of pre-existing fields in the legacy digest.
+    request = _request(legacy)
+    payload = request.operation.model_dump(mode="json")
+    payload.pop("include_player_access")
+    expected = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    assert request.operation.include_player_access is True
+    assert ApplicationGateway._request_digest(request) == expected
+    assert ApplicationGateway._request_digest(
+        _request({**legacy, "include_player_access": True})
+    ) == expected
+    assert ApplicationGateway._request_digest(
+        _request({**legacy, "include_player_access": False})
+    ) != expected
+
+
+@pytest.mark.parametrize("include_access", [True, False])
+async def test_management_dispatch_passes_snapshot_option(include_access):
+    gateway = object.__new__(ApplicationGateway)
+    gateway._require_active_principal = AsyncMock(return_value=UUID(int=2))
+    gateway._reject_banned_player = AsyncMock()
+    gateway._manager_tournament_id = AsyncMock(return_value=UUID(int=1))
+    gateway.tournaments = SimpleNamespace(manager_management=AsyncMock(return_value={}))
+    await gateway._dispatch(ApplicationPrincipal(telegram_user_id=42), _request({
+        "action": ActionCode.TOURNAMENT_MANAGER_MANAGEMENT,
+        "tournament_id": str(UUID(int=1)), "include_player_access": include_access,
+    }))
+    gateway.tournaments.manager_management.assert_awaited_once_with(
+        UUID(int=1), UUID(int=2), include_player_access=include_access,
+    )
+
+
+async def test_packet_access_dispatch_is_authenticated_and_read_only():
+    gateway = object.__new__(ApplicationGateway)
+    gateway._require_active_principal = AsyncMock(return_value=UUID(int=2))
+    gateway._reject_banned_player = AsyncMock()
+    gateway.tournaments = SimpleNamespace(manager_packet_access=AsyncMock(return_value={}))
+    await gateway._dispatch(ApplicationPrincipal(telegram_user_id=42), _request({
+        "action": ActionCode.TOURNAMENT_PACKET_ACCESS_GET,
+        "tournament_id": str(UUID(int=1)), "assignment_id": str(UUID(int=3)),
+    }))
+    gateway.tournaments.manager_packet_access.assert_awaited_once_with(
+        UUID(int=1), UUID(int=3), UUID(int=2),
+    )
+    policy = ACTION_POLICIES[ActionCode.TOURNAMENT_PACKET_ACCESS_GET]
+    assert policy.authentication_required and not policy.mutation
+
+
 def test_contract_selects_a_typed_versioned_operation() -> None:
     request = _request(
         {

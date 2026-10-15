@@ -77,6 +77,7 @@ from sitg_bot.application.contracts import (
     TournamentManagerManagementOperation,
     TournamentManagerSettingsOperation,
     TournamentManagerSettingsUpdateOperation,
+    TournamentPacketAccessGetOperation,
     TournamentPacketAccessUpdateOperation,
     TournamentPacketListOperation,
     TournamentProfileOperation,
@@ -237,6 +238,10 @@ class MiniAppHttpServer:
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/packet-access",
             self._set_packet_access,
+        )
+        app.router.add_get(
+            "/api/miniapp/manager/tournaments/{launch_ref}/packets/{assignment_id}/access",
+            self._get_packet_access,
         )
         app.router.add_post(
             "/api/miniapp/manager/tournaments/{launch_ref}/subscriptions",
@@ -850,6 +855,7 @@ class MiniAppHttpServer:
                 TournamentManagerManagementOperation(
                     action=ActionCode.TOURNAMENT_MANAGER_MANAGEMENT,
                     tournament_id=tournament_id,
+                    include_player_access=request.query.get("include_player_access", "true"),
                 ),
                 correlation_id=self._correlation_id(request),
             )
@@ -1284,6 +1290,7 @@ class MiniAppHttpServer:
                 "tournament_id": tournament_id,
                 "player_id": request.match_info["player_id"],
                 "decision": body.get("decision"),
+                "include_player_access": body.get("include_player_access", True),
             }
         )
         result = await self.gateway.execute(
@@ -1306,6 +1313,22 @@ class MiniAppHttpServer:
             session, operation, correlation_id=self._correlation_id(request)
         )
         return self._gateway_response(result)
+
+    async def _get_packet_access(self, request: web.Request) -> web.Response:
+        session, tournament_id = await self._resolve_manager_reference(
+            request, request.match_info["launch_ref"],
+            action=ActionCode.TOURNAMENT_PACKET_ACCESS_GET,
+            expected_routes={"manager_management"},
+        )
+        return self._gateway_response(await self.gateway.execute(
+            session,
+            TournamentPacketAccessGetOperation(
+                action=ActionCode.TOURNAMENT_PACKET_ACCESS_GET,
+                tournament_id=tournament_id,
+                assignment_id=request.match_info["assignment_id"],
+            ),
+            correlation_id=self._correlation_id(request),
+        ))
 
     async def _set_packet_access(self, request: web.Request) -> web.Response:
         body = await self._json_body(request)

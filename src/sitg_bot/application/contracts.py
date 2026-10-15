@@ -57,6 +57,7 @@ class ActionCode(StrEnum):
     TOURNAMENT_SUBSCRIPTIONS_UPDATE = "tournaments.manager.subscriptions.update.v1"
     TOURNAMENT_REGISTRATION_DECIDE = "tournaments.manager.registration.decide.v1"
     TOURNAMENT_PACKET_ACCESS_UPDATE = "tournaments.manager.packets.access.update.v1"
+    TOURNAMENT_PACKET_ACCESS_GET = "tournaments.manager.packets.access.get.v1"
     PACKET_MANAGEMENT_GET = "packets.management.get.v1"
     PACKET_EXISTING_PREVIEW = "packets.existing.preview.v1"
     PACKET_EXISTING_ADD = "packets.existing.add.v1"
@@ -434,7 +435,11 @@ class TournamentFinalizeOperation(ContractModel):
     expected_version: int = Field(ge=1)
 
 
-class TournamentManagerManagementOperation(ContractModel):
+class ManagementSnapshotOptions(ContractModel):
+    include_player_access: bool = True
+
+
+class TournamentManagerManagementOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_MANAGER_MANAGEMENT]
     tournament_id: UUID | None = None
 
@@ -468,7 +473,7 @@ class ClassicRoundValues(ContractModel):
     start_deadline: datetime | None = None
 
 
-class TournamentClassicUpdateOperation(ContractModel):
+class TournamentClassicUpdateOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_CLASSIC_UPDATE]
     tournament_id: UUID
     expected_version: int = Field(ge=1)
@@ -515,7 +520,7 @@ class SubscriptionRevokeValues(ContractModel):
     subscription_id: UUID
 
 
-class TournamentSubscriptionsUpdateOperation(ContractModel):
+class TournamentSubscriptionsUpdateOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE]
     tournament_id: UUID
     expected_version: int = Field(ge=1, strict=True)
@@ -532,21 +537,27 @@ class TournamentSubscriptionsUpdateOperation(ContractModel):
         return self
 
 
-class TournamentRegistrationOverrideOperation(ContractModel):
+class TournamentRegistrationOverrideOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_REGISTRATION_OVERRIDE]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
     registration_open: bool
 
 
-class TournamentRegistrationDecideOperation(ContractModel):
+class TournamentRegistrationDecideOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_REGISTRATION_DECIDE]
     tournament_id: UUID | None = None
     player_id: UUID
     decision: Literal["approve", "reject"]
 
 
-class TournamentPacketAccessUpdateOperation(ContractModel):
+class TournamentPacketAccessGetOperation(ContractModel):
+    action: Literal[ActionCode.TOURNAMENT_PACKET_ACCESS_GET]
+    tournament_id: UUID
+    assignment_id: UUID
+
+
+class TournamentPacketAccessUpdateOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_PACKET_ACCESS_UPDATE]
     tournament_id: UUID | None = None
     assignment_id: UUID
@@ -574,13 +585,13 @@ class TournamentPacketAccessUpdateOperation(ContractModel):
         return self
 
 
-class TournamentCompleteOperation(ContractModel):
+class TournamentCompleteOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_COMPLETE]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
 
 
-class TournamentStartOperation(ContractModel):
+class TournamentStartOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_START]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
@@ -658,7 +669,7 @@ class PacketExistingPreviewOperation(ContractModel):
     packet_id: UUID
 
 
-class PacketExistingAddOperation(ContractModel):
+class PacketExistingAddOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.PACKET_EXISTING_ADD]
     tournament_id: UUID
     packet_id: UUID
@@ -671,7 +682,7 @@ class PacketManagementGetOperation(ContractModel):
     assignment_id: UUID
 
 
-class PacketManagementUpdateOperation(ContractModel):
+class PacketManagementUpdateOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.PACKET_MANAGEMENT_UPDATE]
     tournament_id: UUID
     assignment_id: UUID
@@ -681,7 +692,7 @@ class PacketManagementUpdateOperation(ContractModel):
     field_author_ids: dict[str, UUID | list[UUID | None] | None]
 
 
-class PacketManagementActionOperation(ContractModel):
+class PacketManagementActionOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.PACKET_MANAGEMENT_DELETE, ActionCode.PACKET_MANAGEMENT_RELEASE]
     tournament_id: UUID
     assignment_id: UUID
@@ -1101,6 +1112,7 @@ GatewayOperation = Annotated[
     | TournamentSubscriptionsUpdateOperation
     | TournamentRegistrationDecideOperation
     | TournamentPacketAccessUpdateOperation
+    | TournamentPacketAccessGetOperation
     | PacketManagementGetOperation
     | PacketExistingPreviewOperation
     | PacketExistingAddOperation

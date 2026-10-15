@@ -20,6 +20,7 @@ import type {
   TournamentManagerSettingsResource,
   TournamentManagerManagementResource,
   ManagementPacket,
+  ManagementPacketPlayerAccess,
   ClassicStage,
   ClassicTournament,
   ManagerSettingDescriptor,
@@ -69,6 +70,7 @@ export class MiniAppShell {
   private eventTimer?: number;
   private readonly lobbyPacketFilters = new Map<string, LobbyPacketFilters>();
   private readonly managerPacketSelections = new Map<string, string>();
+  private managerAccessRequest?: AbortController;
   private managerSection?: {
     tournamentRef?: string;
     name: TournamentManagerManagementResource["sections"][number];
@@ -92,6 +94,7 @@ export class MiniAppShell {
 
   stop(): void {
     this.request?.abort();
+    this.managerAccessRequest?.abort();
     if (this.pollTimer !== undefined) window.clearTimeout(this.pollTimer);
     if (this.eventTimer !== undefined) window.clearTimeout(this.eventTimer);
     this.router.stop();
@@ -100,6 +103,7 @@ export class MiniAppShell {
 
   private async load(route: RouteMatch): Promise<void> {
     this.request?.abort();
+    this.managerAccessRequest?.abort();
     if (this.pollTimer !== undefined) window.clearTimeout(this.pollTimer);
     if (this.eventTimer !== undefined) window.clearTimeout(this.eventTimer);
     const restored = this.restoreFilters(route);
@@ -111,7 +115,7 @@ export class MiniAppShell {
     try {
       const path = encodeURIComponent(routeRequestPath(route));
       const payload = await this.api.request<RoutePayload>(
-        `/api/miniapp/routes/resolve?path=${path}`,
+        `/api/miniapp/routes/resolve?path=${path}${route.id === "manager_management" ? "&include_player_access=false" : ""}`,
         { signal: controller.signal },
       );
       if (controller.signal.aborted) return;
@@ -727,7 +731,7 @@ export class MiniAppShell {
           const updated = await this.api.request<TournamentManagerManagementResource>(
             `${managementPath}/packets/${encodeURIComponent(resource.assignment_id!)}/save`,
             { method: "POST", body: { expected_version: resource.version, content: packet,
-              changes, field_author_ids: fieldAuthors } },
+              changes, field_author_ids: fieldAuthors, include_player_access: false } },
           );
           this.platform.notifySuccess();
           this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
@@ -1485,391 +1489,438 @@ export class MiniAppShell {
     route: RouteMatch,
     resource: TournamentManagerManagementResource,
   ): void {
+    this.managerAccessRequest?.abort();
     const can = (action: string): boolean => resource.available_actions.includes(action);
     const content = element("div", { className: "management-sections" });
     const panels = new Map<string, HTMLElement>();
-    const section = (name: string, ...children: Node[]): void => {
+    const builders = new Map<string, () => HTMLElement>();
+    const accessCache = new Map<string, ManagementPacketPlayerAccess[]>();
+    for (const packet of resource.packets) {
+      if (packet.player_access !== null) accessCache.set(packet.assignment_id, packet.player_access);
+    }
+    let activateAccess = (): void => {};
+    const section = (name: string, build: () => Node[]): void => {
       if (!resource.sections.includes(name as TournamentManagerManagementResource["sections"][number])) return;
-      panels.set(name, element(
+      builders.set(name, () => element(
         "section",
         { className: "management-section", "data-section": name },
         element("h2", {}, this.i18n.t(`manager_management.${name}` as MessageKey)),
-        ...children,
+        ...build(),
       ));
     };
 
-    const counts = element(
-      "dl",
-      { className: "management-stats" },
-      ...([
-        ["registered_count", resource.registration_count],
-        ["approved_count", resource.approved_count],
-        ["participant_count", resource.participant_count],
-        ["packet_count", resource.packet_count],
-      ] as const).flatMap(([key, value]) => [
-        element("div", { className: "management-stat" },
-          element("dt", {}, this.i18n.t(`manager_management.${key}`)),
-          element("dd", {}, String(value)),
-        ),
-      ]),
-    );
-    const registrationSwitch = element("input", {
-      type: "checkbox",
-      role: "switch",
-      checked: resource.registration_open,
-      disabled: !can("registration_override"),
-    });
-    registrationSwitch.addEventListener("change", () => {
-      void this.mutateManagerManagement(
-        route,
-        "/registration-availability",
-        {
-          expected_version: resource.settings_version,
-          registration_open: (registrationSwitch as HTMLInputElement).checked,
-        },
+    section("general", () => {
+      const counts = element(
+        "dl",
+        { className: "management-stats" },
+        ...([
+          ["registered_count", resource.registration_count],
+          ["approved_count", resource.approved_count],
+          ["participant_count", resource.participant_count],
+          ["packet_count", resource.packet_count],
+        ] as const).flatMap(([key, value]) => [
+          element("div", { className: "management-stat" },
+            element("dt", {}, this.i18n.t(`manager_management.${key}`)),
+            element("dd", {}, String(value)),
+          ),
+        ]),
       );
-    });
-    const finalized = resource.finalized_at != null;
-    const finished = resource.tournament.status === "completed";
-    const startButton = resource.tournament.type_key === "classic" ? null : element("button", {
-      type: "button", className: "primary-button",
-      disabled: !can("start_tournament"),
-      onclick: (() => void this.mutateManagerManagement(route, "/start", {
-        expected_version: resource.settings_version,
-      })) as EventListener,
-    }, this.i18n.t(resource.tournament.actual_starts_at
-      ? "manager_management.started" : "manager_management.start"));
-    const finalizeButton = element(
-      "button",
-      {
-        type: "button",
-        className: "danger-button",
-        disabled: finalized || !can("finalize"),
-        onclick: (() => {
-          if (window.confirm(this.i18n.t("manager_management.finalize_confirm"))) {
-            void this.mutateManagerManagement(
-              route,
-              "/finalize",
-              { expected_version: resource.settings_version },
-              true,
-            );
-          }
-        }) as EventListener,
-      },
-      this.i18n.t(finalized ? "manager_management.finalized" : "manager_management.finalize"),
-    );
-    const finishButton = element(
-      "button",
-      {
-        type: "button",
-        className: "danger-button",
-        disabled: finished || !can("mark_finished"),
-        onclick: (() => {
-          if (window.confirm(this.i18n.t("manager_management.finish_confirm"))) {
-            void this.mutateManagerManagement(
-              route,
-              "/complete",
-              { expected_version: resource.settings_version },
-            );
-          }
-        }) as EventListener,
-      },
-      this.i18n.t(finished ? "manager_management.finished" : "manager_management.mark_finished"),
-    );
-    section(
-      "general",
-      counts,
-      this.managerNavigationButton(route, "settings"),
-      element(
-        "div",
-        { className: "management-control" },
-        element("label", { className: "switch-label" }, registrationSwitch, element("span", {}, this.i18n.t("manager_management.registration_available"))),
-        element("p", { className: "field-help" }, this.i18n.t("manager_management.registration_manual")),
-        element("p", { className: "field-help" }, this.i18n.t(
-          resource.registration_scheduled_open
-            ? "manager_management.registration_scheduled_open"
-            : "manager_management.registration_scheduled_closed",
-        )),
-      ),
-      element("div", { className: "settings-actions" }, startButton, finalizeButton, finishButton),
-    );
-    if (resource.classic) {
-      for (const kind of ["first", "playoff"] as const) {
-        const stage = resource.classic.stages.find((s) => s.kind === kind);
-        panels.get("general")?.append(element("button", {
+      const registrationSwitch = element("input", {
+        type: "checkbox",
+        role: "switch",
+        checked: resource.registration_open,
+        disabled: !can("registration_override"),
+      });
+      registrationSwitch.addEventListener("change", () => {
+        void this.mutateManagerManagement(
+          route,
+          "/registration-availability",
+          {
+            expected_version: resource.settings_version,
+            registration_open: (registrationSwitch as HTMLInputElement).checked,
+          },
+        );
+      });
+      const finalized = resource.finalized_at != null;
+      const finished = resource.tournament.status === "completed";
+      const startButton = resource.tournament.type_key === "classic" ? null : element("button", {
+        type: "button", className: "primary-button",
+        disabled: !can("start_tournament"),
+        onclick: (() => void this.mutateManagerManagement(route, "/start", {
+          expected_version: resource.settings_version,
+        })) as EventListener,
+      }, this.i18n.t(resource.tournament.actual_starts_at
+        ? "manager_management.started" : "manager_management.start"));
+      const finalizeButton = element(
+        "button",
+        {
+          type: "button",
+          className: "danger-button",
+          disabled: finalized || !can("finalize"),
+          onclick: (() => {
+            if (window.confirm(this.i18n.t("manager_management.finalize_confirm"))) {
+              void this.mutateManagerManagement(
+                route,
+                "/finalize",
+                { expected_version: resource.settings_version },
+                true,
+              );
+            }
+          }) as EventListener,
+        },
+        this.i18n.t(finalized ? "manager_management.finalized" : "manager_management.finalize"),
+      );
+      const finishButton = element(
+        "button",
+        {
+          type: "button",
+          className: "danger-button",
+          disabled: finished || !can("mark_finished"),
+          onclick: (() => {
+            if (window.confirm(this.i18n.t("manager_management.finish_confirm"))) {
+              void this.mutateManagerManagement(
+                route,
+                "/complete",
+                { expected_version: resource.settings_version },
+              );
+            }
+          }) as EventListener,
+        },
+        this.i18n.t(finished ? "manager_management.finished" : "manager_management.mark_finished"),
+      );
+      const stageButtons = resource.classic ? (["first", "playoff"] as const).map((kind) => {
+        const stage = resource.classic!.stages.find((s) => s.kind === kind);
+        return element("button", {
           type: "button", className: "primary-button",
           disabled: !finalized || finished || !stage || stage.stage_type === "none" || !!stage.started_at,
           onclick: (() => void this.mutateClassic(route, resource.settings_version, "start", kind, {})) as EventListener,
-        }, this.i18n.t(kind === "first" ? "classic.start_first" : "classic.start_playoff")));
+        }, this.i18n.t(kind === "first" ? "classic.start_first" : "classic.start_playoff"));
+      }) : [];
+      return [
+        counts,
+        this.managerNavigationButton(route, "settings"),
+        element(
+          "div",
+          { className: "management-control" },
+          element("label", { className: "switch-label" }, registrationSwitch, element("span", {}, this.i18n.t("manager_management.registration_available"))),
+          element("p", { className: "field-help" }, this.i18n.t("manager_management.registration_manual")),
+          element("p", { className: "field-help" }, this.i18n.t(
+            resource.registration_scheduled_open
+              ? "manager_management.registration_scheduled_open"
+              : "manager_management.registration_scheduled_closed",
+          )),
+        ),
+        element("div", { className: "settings-actions" }, startButton, finalizeButton, finishButton),
+        ...stageButtons,
+      ];
+    });
+    if (resource.classic) {
+      for (const kind of ["first", "playoff"] as const) {
+        const stage = resource.classic.stages.find((s) => s.kind === kind);
         section(kind === "first" ? "first_stage" : "playoff_stage",
-          this.classicRounds(route, resource, stage));
+          () => [this.classicRounds(route, resource, stage)]);
       }
-      section("first_round_seeding", this.classicSeeding(route, resource));
+      section("first_round_seeding", () => [this.classicSeeding(route, resource)]);
     }
 
-    const registrationList = resource.registrations.length
-      ? element(
-          "ul",
-          { className: "resource-list registration-list" },
-          ...resource.registrations.map((registration) => {
-            const actions = element("div", { className: "inline-actions" });
-            for (const decision of registration.available_actions) {
-              actions.append(element(
-                "button",
-                {
-                  type: "button",
-                  className: decision === "reject" ? "danger-button compact-button" : "primary-button compact-button",
-                  onclick: (() => void this.mutateManagerManagement(
-                    route,
-                    `/registrations/${encodeURIComponent(registration.player_id)}`,
-                    { decision },
-                  )) as EventListener,
-                },
-                this.i18n.t(`manager_management.${decision}`),
-              ));
-            }
-            return element(
-              "li",
-              {},
-              element(
-                "article",
-                { className: "resource-card registration-card" },
-                element("div", {}, element("strong", {}, registration.display_name),
-                  registration.real_name && registration.real_name !== registration.display_name
-                    ? element("p", { className: "field-help" }, registration.real_name)
-                    : null,
-                  element("p", { className: "field-help" }, this.formatDate(registration.registered_at)),
+    section("registrations", () => {
+      const registrationList = resource.registrations.length
+        ? element(
+            "ul",
+            { className: "resource-list registration-list" },
+            ...resource.registrations.map((registration) => {
+              const actions = element("div", { className: "inline-actions" });
+              for (const decision of registration.available_actions) {
+                actions.append(element(
+                  "button",
+                  {
+                    type: "button",
+                    className: decision === "reject" ? "danger-button compact-button" : "primary-button compact-button",
+                    onclick: (() => void this.mutateManagerManagement(
+                      route,
+                      `/registrations/${encodeURIComponent(registration.player_id)}`,
+                      { decision },
+                    )) as EventListener,
+                  },
+                  this.i18n.t(`manager_management.${decision}`),
+                ));
+              }
+              return element(
+                "li",
+                {},
+                element(
+                  "article",
+                  { className: "resource-card registration-card" },
+                  element("div", {}, element("strong", {}, registration.display_name),
+                    registration.real_name && registration.real_name !== registration.display_name
+                      ? element("p", { className: "field-help" }, registration.real_name)
+                      : null,
+                    element("p", { className: "field-help" }, this.formatDate(registration.registered_at)),
+                  ),
+                  this.badge(this.i18n.t(`tournament.membership.${registration.status}` as MessageKey)),
+                  actions,
                 ),
-                this.badge(this.i18n.t(`tournament.membership.${registration.status}` as MessageKey)),
-                actions,
-              ),
-            );
-          }),
-        )
-      : this.statusCard("empty", this.i18n.t("manager_management.registrations_empty"));
-    section("registrations", registrationList);
+              );
+            }),
+          )
+        : this.statusCard("empty", this.i18n.t("manager_management.registrations_empty"));
+      return [registrationList];
+    });
 
-    const packetAccessibility = element("div", { className: "packet-accessibility" });
-    if (!resource.packets.length) {
-      packetAccessibility.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
-    } else {
-      const tournamentRef = route.params.launch_ref ?? "";
-      const selectedPacket = resource.packets.find((packet) =>
-        packet.assignment_id === this.managerPacketSelections.get(tournamentRef)) ?? resource.packets[0]!;
-      this.managerPacketSelections.set(tournamentRef, selectedPacket.assignment_id);
-      const picker = element(
-        "select",
-        { "aria-label": this.i18n.t("manager_management.packet_select") },
-        ...resource.packets.map((packet) => element(
-          "option",
-          { value: packet.assignment_id, selected: packet.assignment_id === selectedPacket.assignment_id },
-          packet.version ? `${packet.name} · v${packet.version}` : packet.name,
-        )),
-      );
-      const tableContainer = element("div", { className: "packet-access-table-wrap" });
-      const renderPacket = (packet: ManagementPacket): void => {
-        replaceChildren(tableContainer, this.packetAccessTable(route, packet, can("packet_access"), resource.tournament.type_key === "classic"));
-      };
-      picker.addEventListener("change", () => {
-        const selected = resource.packets.find((packet) => packet.assignment_id === picker.value);
-        if (selected) {
-          this.managerPacketSelections.set(tournamentRef, selected.assignment_id);
-          renderPacket(selected);
-        }
-      });
-      packetAccessibility.append(
-        element("label", { className: "packet-picker-label" }, this.i18n.t("manager_management.packet_select"), picker),
-        tableContainer,
-        element("p", { className: "field-help" }, this.i18n.t("manager_management.readable_help")),
-      );
-      renderPacket(selectedPacket);
-    }
-    section("packet_accessibility", packetAccessibility);
+    section("packet_accessibility", () => {
+      const packetAccessibility = element("div", { className: "packet-accessibility" });
+      if (!resource.packets.length) {
+        packetAccessibility.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
+      } else {
+        const tournamentRef = route.params.launch_ref ?? "";
+        const selectedPacket = resource.packets.find((packet) =>
+          packet.assignment_id === this.managerPacketSelections.get(tournamentRef)) ?? resource.packets[0]!;
+        this.managerPacketSelections.set(tournamentRef, selectedPacket.assignment_id);
+        const picker = element(
+          "select",
+          { "aria-label": this.i18n.t("manager_management.packet_select") },
+          ...resource.packets.map((packet) => element(
+            "option",
+            { value: packet.assignment_id, selected: packet.assignment_id === selectedPacket.assignment_id },
+            packet.version ? `${packet.name} · v${packet.version}` : packet.name,
+          )),
+        );
+        const tableContainer = element("div", { className: "packet-access-table-wrap" });
+        const renderPacket = async (packet: ManagementPacket): Promise<void> => {
+          this.managerAccessRequest?.abort();
+          const controller = new AbortController();
+          this.managerAccessRequest = controller;
+          const render = (access: ManagementPacketPlayerAccess[]): void => {
+            replaceChildren(tableContainer, this.packetAccessTable(route,
+              { ...packet, player_access: access }, can("packet_access"), resource.tournament.type_key === "classic"));
+          };
+          const cached = accessCache.get(packet.assignment_id);
+          if (cached) { render(cached); return; }
+          replaceChildren(tableContainer, this.statusCard("loading", this.i18n.t("common.loading")));
+          try {
+            const response = await this.api.request<{ assignment_id: string; player_access: ManagementPacketPlayerAccess[] }>(
+              `/api/miniapp/manager/tournaments/${encodeURIComponent(tournamentRef)}/packets/${encodeURIComponent(packet.assignment_id)}/access`,
+              { signal: controller.signal },
+            );
+            if (controller.signal.aborted || this.managerAccessRequest !== controller) return;
+            if (response.assignment_id !== packet.assignment_id) throw new ApiError("invalid_response", 500, false);
+            accessCache.set(packet.assignment_id, response.player_access);
+            render(response.player_access);
+          } catch (error) {
+            if (controller.signal.aborted || this.managerAccessRequest !== controller) return;
+            const code = error instanceof ApiError ? error.code : "internal_error";
+            replaceChildren(tableContainer, this.statusCard("error", this.i18n.t(`error.${code}`)),
+              element("button", { type: "button", className: "secondary-button",
+                onclick: (() => void renderPacket(packet)) as EventListener,
+              }, this.i18n.t("common.retry")));
+          }
+        };
+        picker.addEventListener("change", () => {
+          const selected = resource.packets.find((packet) => packet.assignment_id === picker.value);
+          if (selected) {
+            this.managerPacketSelections.set(tournamentRef, selected.assignment_id);
+            void renderPacket(selected);
+          }
+        });
+        packetAccessibility.append(
+          element("label", { className: "packet-picker-label" }, this.i18n.t("manager_management.packet_select"), picker),
+          tableContainer,
+          element("p", { className: "field-help" }, this.i18n.t("manager_management.readable_help")),
+        );
+        activateAccess = () => {
+          const selected = resource.packets.find((packet) => packet.assignment_id === picker.value);
+          if (selected) void renderPacket(selected);
+        };
+      }
+      return [packetAccessibility];
+    });
     if (resource.tournament.type_key === "ladder" && resource.subscriptions) {
-      section("subscriptions", renderSubscriptions(resource.subscriptions, can("subscriptions"), this.i18n,
+      section("subscriptions", () => [renderSubscriptions(resource.subscriptions!, can("subscriptions"), this.i18n,
         (command, values) => this.mutateManagerManagement(route, "/subscriptions", {
           expected_version: resource.settings_version, command, values,
-        }), this.subscriptionPlayer, (id) => { this.subscriptionPlayer = id; }));
+        }), this.subscriptionPlayer, (id) => { this.subscriptionPlayer = id; })]);
     }
-    const managedPackets = element("div", { className: "lobby-packets" });
-    if (can("packet_management")) managedPackets.append(element("button", {
-      type: "button", className: "primary-button",
-      onclick: (() => this.showExistingPacketDialog(route)) as EventListener,
-    }, this.i18n.t("packet_management.add_existing")));
-    const packetCard = (packet: ManagementPacket): HTMLElement => {
-      const card = element("article", { className: "resource-card lobby-packet-card", "data-packet-id": packet.packet_id },
-        element("h3", {}, packet.name),
-        element("dl", { className: "lobby-packet-details" },
-          ...([
-            ["packet_management.packet_id", packet.packet_id],
-            ["packet_management.packet_version_id", packet.packet_version_id ?? "—"],
-            ["lobby.packet_year", packet.year?.toString() ?? "—"],
-            ["lobby.packet_publication_year", packet.published_at?.slice(0, 4) || "—"],
-            ["lobby.packet_lead_author", packet.lead_author || "—"],
-            ["lobby.packet_authors", packet.authors?.join(", ") || "—"],
-          ] as const).map(([key, value]) => element("div", { className: "lobby-packet-detail" },
-            element("dt", {}, this.i18n.t(key)), element("dd", {}, value))),
-        ),
-      );
-      const actions = element("div", { className: "inline-actions" });
-      const viewingRule = element("select", { disabled: !can("packet_access") },
-        ...["never", "after-play", "anytime"].map((rule) => element(
-          "option", { value: rule, selected: rule === packet.library_viewing_rule },
-          this.i18n.t(`packet_management.library_viewing_rule.${rule}` as MessageKey),
-        )));
-      viewingRule.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
-        assignment_id: packet.assignment_id, right: "library_viewing_rule", library_viewing_rule: viewingRule.value,
-        expected_version: resource.settings_version,
-      }));
-      card.append(element("label", {}, this.i18n.t("packet_management.library_viewing_rule"), viewingRule));
-      card.append(element("p", { className: "field-help" }, this.i18n.t("packet_management.library_viewing_help")));
-      if (can("packet_access")) {
-        const defaultRights: Array<"playable" | "discoverable" | "readable"> =
-          resource.tournament.type_key === "classic" ? ["readable"] : ["playable", "discoverable", "readable"];
-        const defaultAccess = element("div", { className: "packet-default-access" });
-        for (const right of defaultRights) {
-          const checkbox = element("input", {
-            type: "checkbox",
-            checked: packet.default_access?.[right] ?? false,
-            "aria-label": this.i18n.t(`manager_management.default_${right}`),
-          });
-          checkbox.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
-            assignment_id: packet.assignment_id,
-            right,
-            enabled: checkbox.checked,
-            scope: "default",
-          }));
-          defaultAccess.append(element(
-            "label",
-            { className: "packet-default-access-item" },
-            checkbox,
-            this.i18n.t(`manager_management.default_${right}`),
-          ));
-        }
-        card.append(
-          element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_title")),
-          defaultAccess,
-          element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_help")),
+    section("packet_management", () => {
+      const managedPackets = element("div", { className: "lobby-packets" });
+      if (can("packet_management")) managedPackets.append(element("button", {
+        type: "button", className: "primary-button",
+        onclick: (() => this.showExistingPacketDialog(route)) as EventListener,
+      }, this.i18n.t("packet_management.add_existing")));
+      const packetCard = (packet: ManagementPacket): HTMLElement => {
+        const card = element("article", { className: "resource-card lobby-packet-card", "data-packet-id": packet.packet_id },
+          element("h3", {}, packet.name),
+          element("dl", { className: "lobby-packet-details" },
+            ...([
+              ["packet_management.packet_id", packet.packet_id],
+              ["packet_management.packet_version_id", packet.packet_version_id ?? "—"],
+              ["lobby.packet_year", packet.year?.toString() ?? "—"],
+              ["lobby.packet_publication_year", packet.published_at?.slice(0, 4) || "—"],
+              ["lobby.packet_lead_author", packet.lead_author || "—"],
+              ["lobby.packet_authors", packet.authors?.join(", ") || "—"],
+            ] as const).map(([key, value]) => element("div", { className: "lobby-packet-detail" },
+              element("dt", {}, this.i18n.t(key)), element("dd", {}, value))),
+          ),
         );
-      }
-      if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
-        const button = element("button", {
-          type: "button", className: command === "delete" ? "danger-button" : "secondary-button",
-          disabled: command === "release" && packet.released,
-        }, this.i18n.t(packet.released && command === "release" ? "packet_management.released" : `packet_management.${command}`));
-        button.addEventListener("click", async () => {
-          if (command === "delete" && !window.confirm(this.i18n.t("packet_management.delete_confirm"))) return;
-          if (command === "release" && !window.confirm(this.i18n.t("packet_management.release_confirm"))) return;
-          const path = `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/packets/${encodeURIComponent(packet.assignment_id)}`;
-          button.disabled = true;
-          try {
-            if (command === "modify") {
-              const editor = await this.api.request<PacketDraftResource>(path);
-              this.renderPacketEditor(route, editor);
-            } else {
-              const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/${command}`, {
-                method: "POST", body: { expected_version: packet.version },
-              });
-              this.platform.notifySuccess();
-              this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
-            }
-          } catch (error) {
-            const code = error instanceof ApiError ? error.code : "internal_error";
-            if (code === "stale_write") await this.load(route);
-            else this.showTextDialog(this.i18n.t(`error.${code}`), []);
-          } finally { button.disabled = false; }
-        });
-        actions.append(button);
-      }
-      card.append(actions);
-      return card;
-    };
-    if (!resource.packets.length) {
-      managedPackets.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
-    } else {
-      const packetFilters = this.filters.read("manager_management_packets");
-      const savePacketFilters = (filters: Record<string, string>): void =>
-        this.filters.write("manager_management_packets", filters);
-      const packetList = element("div", { className: "lobby-packets", "aria-live": "polite" });
-      const packetControls = element("div", { className: "lobby-packet-filters", role: "search", "aria-label": this.i18n.t("lobby.packet_filters") });
-      const normalize = (value: string): string => value.trim().toLocaleLowerCase(this.i18n.locale);
-      const inRange = (year: number | null, from?: string, to?: string): boolean =>
-        (!from && !to) || (year !== null && (!from || year >= Number(from)) && (!to || year <= Number(to)));
-      const packetMatches = (packet: ManagementPacket): boolean =>
-        normalize(packet.name).includes(normalize(packetFilters.name ?? ""))
-        && normalize([packet.lead_author, ...(packet.authors ?? [])].filter(Boolean).join(" "))
-          .includes(normalize(packetFilters.author ?? ""))
-        && inRange(packet.year ?? null, packetFilters.year_from, packetFilters.year_to)
-        && inRange(packet.published_at ? Number(packet.published_at.slice(0, 4)) : null, packetFilters.publication_from, packetFilters.publication_to);
-      let packetSort: "default" | "name" | "name_desc" | "year_asc" | "year_desc" = "default";
-      const renderPacketList = (): void => {
-        const visible = resource.packets.filter(packetMatches);
-        const byName = (a: ManagementPacket, b: ManagementPacket): number =>
-          a.name.localeCompare(b.name, this.i18n.locale);
-        const byYear = (a: ManagementPacket, b: ManagementPacket, direction: 1 | -1): number => {
-          if (a.year == null && b.year == null) return 0;
-          if (a.year == null) return 1;
-          if (b.year == null) return -1;
-          return (a.year - b.year) * direction;
-        };
-        if (packetSort === "name") visible.sort(byName);
-        else if (packetSort === "name_desc") visible.sort((a, b) => byName(b, a));
-        else if (packetSort === "year_asc") visible.sort((a, b) => byYear(a, b, 1) || byName(a, b));
-        else if (packetSort === "year_desc") visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
-        packetList.replaceChildren(...visible.map(packetCard));
-        if (!visible.length) {
-          packetList.append(this.statusCard("empty", this.i18n.t("lobby.packet_no_matches")));
+        const actions = element("div", { className: "inline-actions" });
+        const viewingRule = element("select", { disabled: !can("packet_access") },
+          ...["never", "after-play", "anytime"].map((rule) => element(
+            "option", { value: rule, selected: rule === packet.library_viewing_rule },
+            this.i18n.t(`packet_management.library_viewing_rule.${rule}` as MessageKey),
+          )));
+        viewingRule.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
+          assignment_id: packet.assignment_id, right: "library_viewing_rule", library_viewing_rule: viewingRule.value,
+          expected_version: resource.settings_version,
+        }));
+        card.append(element("label", {}, this.i18n.t("packet_management.library_viewing_rule"), viewingRule));
+        card.append(element("p", { className: "field-help" }, this.i18n.t("packet_management.library_viewing_help")));
+        if (can("packet_access")) {
+          const defaultRights: Array<"playable" | "discoverable" | "readable"> =
+            resource.tournament.type_key === "classic" ? ["readable"] : ["playable", "discoverable", "readable"];
+          const defaultAccess = element("div", { className: "packet-default-access" });
+          for (const right of defaultRights) {
+            const checkbox = element("input", {
+              type: "checkbox",
+              checked: packet.default_access?.[right] ?? false,
+              "aria-label": this.i18n.t(`manager_management.default_${right}`),
+            });
+            checkbox.addEventListener("change", () => void this.mutateManagerManagement(route, "/packet-access", {
+              assignment_id: packet.assignment_id,
+              right,
+              enabled: checkbox.checked,
+              scope: "default",
+            }));
+            defaultAccess.append(element(
+              "label",
+              { className: "packet-default-access-item" },
+              checkbox,
+              this.i18n.t(`manager_management.default_${right}`),
+            ));
+          }
+          card.append(
+            element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_title")),
+            defaultAccess,
+            element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_help")),
+          );
         }
+        if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
+          const button = element("button", {
+            type: "button", className: command === "delete" ? "danger-button" : "secondary-button",
+            disabled: command === "release" && packet.released,
+          }, this.i18n.t(packet.released && command === "release" ? "packet_management.released" : `packet_management.${command}`));
+          button.addEventListener("click", async () => {
+            if (command === "delete" && !window.confirm(this.i18n.t("packet_management.delete_confirm"))) return;
+            if (command === "release" && !window.confirm(this.i18n.t("packet_management.release_confirm"))) return;
+            const path = `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/packets/${encodeURIComponent(packet.assignment_id)}`;
+            button.disabled = true;
+            try {
+              if (command === "modify") {
+                const editor = await this.api.request<PacketDraftResource>(path);
+                this.renderPacketEditor(route, editor);
+              } else {
+                const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/${command}`, {
+                  method: "POST", body: { expected_version: packet.version, include_player_access: false },
+                });
+                this.platform.notifySuccess();
+                this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
+              }
+            } catch (error) {
+              const code = error instanceof ApiError ? error.code : "internal_error";
+              if (code === "stale_write") await this.load(route);
+              else this.showTextDialog(this.i18n.t(`error.${code}`), []);
+            } finally { button.disabled = false; }
+          });
+          actions.append(button);
+        }
+        card.append(actions);
+        return card;
       };
-      const packetInput = (name: string, label: MessageKey, numeric = false): HTMLElement => element("label", {},
-        this.i18n.t(label), element("input", {
-          name, type: numeric ? "number" : "search", value: packetFilters[name] ?? "",
-          min: numeric ? "1000" : undefined, max: numeric ? "9999" : undefined,
-          step: numeric ? "1" : undefined,
-          oninput: ((event: Event) => {
-            packetFilters[name] = (event.currentTarget as HTMLInputElement).value;
+      if (!resource.packets.length) {
+        managedPackets.append(this.statusCard("empty", this.i18n.t("manager_management.packets_empty")));
+      } else {
+        const packetFilters = this.filters.read("manager_management_packets");
+        const savePacketFilters = (filters: Record<string, string>): void =>
+          this.filters.write("manager_management_packets", filters);
+        const packetList = element("div", { className: "lobby-packets", "aria-live": "polite" });
+        const packetControls = element("div", { className: "lobby-packet-filters", role: "search", "aria-label": this.i18n.t("lobby.packet_filters") });
+        const normalize = (value: string): string => value.trim().toLocaleLowerCase(this.i18n.locale);
+        const inRange = (year: number | null, from?: string, to?: string): boolean =>
+          (!from && !to) || (year !== null && (!from || year >= Number(from)) && (!to || year <= Number(to)));
+        const packetMatches = (packet: ManagementPacket): boolean =>
+          normalize(packet.name).includes(normalize(packetFilters.name ?? ""))
+          && normalize([packet.lead_author, ...(packet.authors ?? [])].filter(Boolean).join(" "))
+            .includes(normalize(packetFilters.author ?? ""))
+          && inRange(packet.year ?? null, packetFilters.year_from, packetFilters.year_to)
+          && inRange(packet.published_at ? Number(packet.published_at.slice(0, 4)) : null, packetFilters.publication_from, packetFilters.publication_to);
+        let packetSort: "default" | "name" | "name_desc" | "year_asc" | "year_desc" = "default";
+        const renderPacketList = (): void => {
+          const visible = resource.packets.filter(packetMatches);
+          const byName = (a: ManagementPacket, b: ManagementPacket): number =>
+            a.name.localeCompare(b.name, this.i18n.locale);
+          const byYear = (a: ManagementPacket, b: ManagementPacket, direction: 1 | -1): number => {
+            if (a.year == null && b.year == null) return 0;
+            if (a.year == null) return 1;
+            if (b.year == null) return -1;
+            return (a.year - b.year) * direction;
+          };
+          if (packetSort === "name") visible.sort(byName);
+          else if (packetSort === "name_desc") visible.sort((a, b) => byName(b, a));
+          else if (packetSort === "year_asc") visible.sort((a, b) => byYear(a, b, 1) || byName(a, b));
+          else if (packetSort === "year_desc") visible.sort((a, b) => byYear(a, b, -1) || byName(a, b));
+          packetList.replaceChildren(...visible.map(packetCard));
+          if (!visible.length) {
+            packetList.append(this.statusCard("empty", this.i18n.t("lobby.packet_no_matches")));
+          }
+        };
+        const packetInput = (name: string, label: MessageKey, numeric = false): HTMLElement => element("label", {},
+          this.i18n.t(label), element("input", {
+            name, type: numeric ? "number" : "search", value: packetFilters[name] ?? "",
+            min: numeric ? "1000" : undefined, max: numeric ? "9999" : undefined,
+            step: numeric ? "1" : undefined,
+            oninput: ((event: Event) => {
+              packetFilters[name] = (event.currentTarget as HTMLInputElement).value;
+              savePacketFilters(packetFilters);
+              renderPacketList();
+            }) as EventListener,
+          }));
+        packetControls.append(packetInput("name", "lobby.packet_search"), packetInput("author", "lobby.packet_authors"));
+        const packetSortSelect = element("select", {
+          "aria-label": this.i18n.t("lobby.packet_sort"),
+          onchange: (() => {
+            const value = packetSortSelect.value;
+            packetSort = value === "name" || value === "name_desc" || value === "year_asc" || value === "year_desc"
+              ? value : "default";
+            renderPacketList();
+          }) as EventListener,
+        });
+        packetSortSelect.append(
+          element("option", { value: "default", selected: true }, this.i18n.t("lobby.packet_sort_default")),
+          element("option", { value: "name" }, this.i18n.t("filters.name_asc")),
+          element("option", { value: "name_desc" }, this.i18n.t("filters.name_desc")),
+          element("option", { value: "year_asc" }, this.i18n.t("lobby.packet_sort_year_asc")),
+          element("option", { value: "year_desc" }, this.i18n.t("lobby.packet_sort_year_desc")),
+        );
+        packetControls.append(packetSortSelect);
+        for (const [label, from, to] of [
+          ["lobby.packet_year", "year_from", "year_to"],
+          ["lobby.packet_publication_year", "publication_from", "publication_to"],
+        ] as const) {
+          packetControls.append(element("fieldset", { className: "lobby-packet-year-range" },
+            element("legend", {}, this.i18n.t(label)), packetInput(from, "lobby.packet_from", true), packetInput(to, "lobby.packet_to", true)));
+        }
+        packetControls.append(element("button", {
+          type: "button", className: "secondary-button",
+          onclick: (() => {
+            for (const key of Object.keys(packetFilters)) delete packetFilters[key];
+            for (const field of packetControls.querySelectorAll("input")) field.value = "";
             savePacketFilters(packetFilters);
             renderPacketList();
           }) as EventListener,
-        }));
-      packetControls.append(packetInput("name", "lobby.packet_search"), packetInput("author", "lobby.packet_authors"));
-      const packetSortSelect = element("select", {
-        "aria-label": this.i18n.t("lobby.packet_sort"),
-        onchange: (() => {
-          const value = packetSortSelect.value;
-          packetSort = value === "name" || value === "name_desc" || value === "year_asc" || value === "year_desc"
-            ? value : "default";
-          renderPacketList();
-        }) as EventListener,
-      });
-      packetSortSelect.append(
-        element("option", { value: "default", selected: true }, this.i18n.t("lobby.packet_sort_default")),
-        element("option", { value: "name" }, this.i18n.t("filters.name_asc")),
-        element("option", { value: "name_desc" }, this.i18n.t("filters.name_desc")),
-        element("option", { value: "year_asc" }, this.i18n.t("lobby.packet_sort_year_asc")),
-        element("option", { value: "year_desc" }, this.i18n.t("lobby.packet_sort_year_desc")),
-      );
-      packetControls.append(packetSortSelect);
-      for (const [label, from, to] of [
-        ["lobby.packet_year", "year_from", "year_to"],
-        ["lobby.packet_publication_year", "publication_from", "publication_to"],
-      ] as const) {
-        packetControls.append(element("fieldset", { className: "lobby-packet-year-range" },
-          element("legend", {}, this.i18n.t(label)), packetInput(from, "lobby.packet_from", true), packetInput(to, "lobby.packet_to", true)));
+        }, this.i18n.t("lobby.packet_reset")));
+        managedPackets.append(packetControls, packetList);
+        renderPacketList();
       }
-      packetControls.append(element("button", {
-        type: "button", className: "secondary-button",
-        onclick: (() => {
-          for (const key of Object.keys(packetFilters)) delete packetFilters[key];
-          for (const field of packetControls.querySelectorAll("input")) field.value = "";
-          savePacketFilters(packetFilters);
-          renderPacketList();
-        }) as EventListener,
-      }, this.i18n.t("lobby.packet_reset")));
-      managedPackets.append(packetControls, packetList);
-      renderPacketList();
-    }
-    section("packet_management", managedPackets);
+      return [managedPackets];
+    });
 
     const sectionNavigation = element(
       "nav",
@@ -1883,10 +1934,16 @@ export class MiniAppShell {
     const showSection = (
       name: TournamentManagerManagementResource["sections"][number],
     ): void => {
-      const panel = panels.get(name);
+      let panel = panels.get(name);
+      if (!panel) {
+        panel = builders.get(name)?.();
+        if (panel) panels.set(name, panel);
+      }
       if (!panel) return;
       this.managerSection = { tournamentRef: route.params.launch_ref, name };
       replaceChildren(sectionContainer, panel);
+      if (name === "packet_accessibility") activateAccess();
+      else this.managerAccessRequest?.abort();
       for (const [sectionName, button] of navigationButtons) {
         const active = sectionName === name;
         button.classList.toggle("active", active);
@@ -1895,7 +1952,7 @@ export class MiniAppShell {
       }
     };
     for (const name of resource.sections) {
-      if (!panels.has(name)) continue;
+      if (!builders.has(name)) continue;
       const button = element(
         "button",
         {
@@ -1911,9 +1968,9 @@ export class MiniAppShell {
     const previousSection = savedSection && savedSection.tournamentRef === route.params.launch_ref
       ? savedSection.name
       : undefined;
-    const initialSection = previousSection && panels.has(previousSection)
+    const initialSection = previousSection && builders.has(previousSection)
       ? previousSection
-      : resource.sections.find((name) => panels.has(name));
+      : resource.sections.find((name) => builders.has(name));
     if (initialSection) showSection(initialSection);
     content.append(sectionNavigation, sectionContainer);
     this.renderFrame(route, content);
@@ -1922,7 +1979,7 @@ export class MiniAppShell {
 
   private packetAccessTable(
     route: RouteMatch,
-    packet: ManagementPacket,
+    packet: ManagementPacket & { player_access: ManagementPacketPlayerAccess[] },
     enabled: boolean,
     classic = false,
   ): HTMLElement {
@@ -2002,7 +2059,7 @@ export class MiniAppShell {
     try {
       const response = await this.api.request<TournamentManagerManagementResource>(
         `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}${suffix}`,
-        { method: "POST", body },
+        { method: "POST", body: suffix === "/finalize" ? body : { ...body, include_player_access: false } },
       );
       this.platform.notifySuccess();
       if (reload) await this.load(route);
@@ -2306,7 +2363,7 @@ export class MiniAppShell {
     controls.forEach((button) => { button.disabled = true; });
     try {
       await this.api.request(`/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/classic`, {
-        method: "POST", body: { expected_version: version, command, kind, values },
+        method: "POST", body: { expected_version: version, command, kind, values, include_player_access: false },
       });
       this.platform.notifySuccess();
       await this.load(route);
@@ -3053,7 +3110,7 @@ export class MiniAppShell {
       try {
         if (preview) {
           const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/add`, {
-            method: "POST", body: { packet_id: preview.packet_id, expected_version_id: preview.packet_version_id },
+            method: "POST", body: { packet_id: preview.packet_id, expected_version_id: preview.packet_version_id, include_player_access: false },
           });
           close();
           this.platform.notifySuccess();

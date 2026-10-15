@@ -294,7 +294,7 @@ export interface ManagementPacket {
   packet_version_id?: string | null;
   name: string;
   version?: number | null;
-  player_access: ManagementPacketPlayerAccess[];
+  player_access: ManagementPacketPlayerAccess[] | null;
   year?: number | null;
   published_at?: string | null;
   lead_author?: string | null;

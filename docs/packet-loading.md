@@ -10,6 +10,36 @@ progressively, and reconciles every 30 seconds. Both services share a backend
 limiter with a 200 ms cooldown. Gameplay and individual card refreshes bypass it.
 Block controls update the affected card and its selected-lobby summary in place.
 
+## Tournament management
+
+Management batches packet versions and author attribution. The Mini App requests
+`include_player_access=false` on route resolution and management mutations;
+`player_access: null` means deferred, while `[]` means no participants. Legacy
+callers default to complete access arrays. Their default idempotency digests stay
+compatible.
+
+Opening Packet accessibility fetches only the selected assignment through
+`GET /api/miniapp/manager/tournaments/{launch_ref}/packets/{assignment_id}/access`.
+The server rechecks the manager role and assignment ownership, then batches player
+rights, including Classic round restrictions. Hidden panels render on first use;
+access is cached within the view and invalidated when its snapshot changes.
+
+Run `python scripts/benchmark_management_loading.py --baseline-ref <old-commit>`
+with development dependencies. On disposable SQLite data with 200 packets and 20
+participants, the pre-change full snapshot used 33,012 SELECTs and 674,723 JSON
+bytes. Batched full snapshots used 16 SELECTs with identical JSON; deferred
+snapshots used 13 SELECTs and 99,523 bytes, followed by 7 SELECTs and 2,956 bytes
+for selected-packet access. Service times were 4.75 s, 0.027 s, 0.011 s, and
+0.0024 s respectively. This fixture has no question content and excludes HTTP,
+network latency, JSON serialization time, and PostgreSQL performance. Use
+`--content` to include one theme, question, and coauthor per packet.
+
+For DOM construction measurements, run from `web`:
+`VITE_MANAGEMENT_BENCHMARK=1 npm test -- src/management-loading.test.ts -t 'opens 200 packets'`.
+This uses jsdom; it does not measure browser layout or paint. Measure the deployed
+Mini App before predicting user-visible load times. Deploy backend support before
+the updated frontend.
+
 The content adapter keeps database-scoped LRU caches for 1,024 layouts/counts and
 8,192 player/version results. Every availability request checks current player
 blocks, then compares relevant reserved/burnt logical exposure identities with

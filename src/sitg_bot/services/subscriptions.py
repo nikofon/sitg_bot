@@ -101,7 +101,10 @@ class SubscriptionService:
     def __init__(self, tournaments):
         self.tournaments = tournaments
 
-    async def mutate(self, tournament_id, manager_id, *, expected_version, command, values):
+    async def mutate(
+        self, tournament_id, manager_id, *, expected_version, command, values,
+        include_player_access=True,
+    ):
         from sitg_bot.services.concurrency import StaleWriteError
 
         if command == "create":
@@ -188,7 +191,7 @@ class SubscriptionService:
             tournament.settings_version += 1
             await session.flush()
             return await self.tournaments._manager_management_snapshot(
-                session, tournament_id, manager_id
+                session, tournament_id, manager_id, include_player_access=include_player_access
             )
 
     @staticmethod

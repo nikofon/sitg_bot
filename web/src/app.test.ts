@@ -1398,7 +1398,7 @@ describe("MiniAppShell", () => {
     await vi.waitFor(() => expect(confirmDialog.querySelector("input")!.disabled).toBe(false));
     expect(fetcher.mock.calls.at(-1)?.[0]).toContain("/existing-packets/add");
     expect(JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body))).toEqual({
-      packet_id: "existing-packet", expected_version_id: "version-1",
+      packet_id: "existing-packet", expected_version_id: "version-1", include_player_access: false,
     });
     confirmDialog.querySelector<HTMLButtonElement>("button[type=button]")!.click();
     const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],

@@ -1033,7 +1033,8 @@ async def test_manager_author_search_is_name_filtered_and_reference_bound() -> N
 
 
 @pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
-async def test_manager_management_route_is_actor_bound(references) -> None:
+@pytest.mark.parametrize("include_access", [None, "false"])
+async def test_manager_management_route_is_actor_bound(references, include_access) -> None:
     gateway = FakeGateway()
     http = MiniAppHttpServer(
         FakeAuth(),  # type: ignore[arg-type]
@@ -1042,7 +1043,8 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
     )
     request = make_mocked_request(
         "GET",
-        "/api/miniapp/routes/resolve?path=/manager/tournaments/opaque-reference/management",
+        "/api/miniapp/routes/resolve?path=/manager/tournaments/opaque-reference/management"
+        + (f"&include_player_access={include_access}" if include_access is not None else ""),
         headers={
             "Origin": "https://mini.example.test",
             "Cookie": "__Host-sitg_session=test-session",
@@ -1056,6 +1058,28 @@ async def test_manager_management_route_is_actor_bound(references) -> None:
     operation = gateway.requests[0].operation
     assert operation.action == ActionCode.TOURNAMENT_MANAGER_MANAGEMENT
     assert operation.tournament_id == UUID(int=10)
+    assert operation.include_player_access is (include_access is None)
+
+
+async def test_manager_packet_access_uses_actor_bound_reference_and_read_policy():
+    auth = FakeAuth()
+    auth.authorize_request = AsyncMock(wraps=auth.authorize_request)
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(auth, gateway, launch_references=FakeManagementLaunchReferences())
+    request = make_mocked_request("GET", "/api/miniapp/manager/tournaments/ref/packets/id/access",
+        match_info={"launch_ref": "opaque-reference", "assignment_id": str(UUID(int=20))},
+        headers={"Origin": "https://mini.example.test",
+                 "Cookie": "__Host-sitg_session=test-session"})
+    match = await http.application.router.resolve(request)
+    assert match.handler == http._get_packet_access
+    response = await http._get_packet_access(request)
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert operation.action == ActionCode.TOURNAMENT_PACKET_ACCESS_GET
+    assert operation.tournament_id == UUID(int=10)
+    assert operation.assignment_id == UUID(int=20)
+    kwargs = auth.authorize_request.call_args.kwargs
+    assert kwargs["method"] == "GET" and "csrf_token" not in kwargs
 
 
 @pytest.mark.parametrize(("section", "include_suggestions"), [

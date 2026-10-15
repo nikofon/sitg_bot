@@ -667,20 +667,23 @@ class ClassicService:
         for round_record, stage, match in rows:
             if str(player_id) not in match.seats:
                 continue
-            if right == "discoverable" and await cls.round_access(
-                session, stage, round_record, right
-            ):
-                return True
-            if (
-                right == "playable"
-                and await cls.round_access(session, stage, round_record, "playable")
-                and not stage.completed_at
-                and match.results is None
-                and match.game_id is None
-                and (round_record.start_deadline is None or now < round_record.start_deadline)
+            if cls.match_assignment_access(
+                round_record, stage, match, right,
+                enabled=await cls.round_access(session, stage, round_record, right), now=now,
             ):
                 return True
         return False
+
+    @staticmethod
+    def match_assignment_access(round_record, stage, match, right, *, enabled, now) -> bool:
+        """Evaluate a seated player's access using already loaded round data."""
+        return bool(enabled and (right == "discoverable" or (
+            right == "playable"
+            and not stage.completed_at
+            and match.results is None
+            and match.game_id is None
+            and (round_record.start_deadline is None or now < round_record.start_deadline)
+        )))
 
     @classmethod
     async def prescribed_match(
