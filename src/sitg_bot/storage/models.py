@@ -644,6 +644,10 @@ class ApplicationRequestAuditRecord(Base, TimestampMixin):
         Index("ix_application_request_audit_correlation", "correlation_id"),
         Index("ix_application_request_audit_actor", "actor_player_id", "created_at"),
         Index("ix_application_request_audit_action", "action", "created_at"),
+        Index(
+            "ix_application_request_audit_maintenance", "outcome", "completed_at", "id",
+            postgresql_where=text("completed_at IS NOT NULL"),
+        ),
     )
 
 
@@ -699,6 +703,7 @@ class OutboxEventRecord(Base, TimestampMixin):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
@@ -720,6 +725,16 @@ class OutboxEventRecord(Base, TimestampMixin):
             "(aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL)"
         ),
         Index("ix_outbox_events_dispatch", "status", "available_at", "created_at"),
+        Index(
+            "ix_outbox_events_maintenance_delivered", "delivered_at", "id",
+            postgresql_where=text("status = 'delivered' AND payload_pruned_at IS NULL "
+                                  "AND topic <> 'telegram.chat.message'"),
+        ),
+        Index(
+            "ix_outbox_events_maintenance_failed", "failed_at", "id",
+            postgresql_where=text("status = 'failed' AND payload_pruned_at IS NULL "
+                                  "AND topic <> 'telegram.chat.message'"),
+        ),
         Index(
             "ix_outbox_events_partition_order",
             "partition_key",
@@ -755,6 +770,7 @@ class DurableJobRecord(Base, TimestampMixin):
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    payload_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
@@ -772,6 +788,14 @@ class DurableJobRecord(Base, TimestampMixin):
             "AND completed_at IS NULL AND failed_at IS NULL)"
         ),
         Index("ix_durable_jobs_claim", "status", "scheduled_at", "priority", "created_at"),
+        Index(
+            "ix_durable_jobs_maintenance_succeeded", "completed_at", "id",
+            postgresql_where=text("status = 'succeeded' AND payload_pruned_at IS NULL"),
+        ),
+        Index(
+            "ix_durable_jobs_maintenance_failed", "failed_at", "id",
+            postgresql_where=text("status = 'failed' AND payload_pruned_at IS NULL"),
+        ),
     )
 
 

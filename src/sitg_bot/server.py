@@ -20,9 +20,11 @@ from sqlalchemy import select
 from sitg_bot.application.contracts import ApplicationPrincipal, GatewayRequest
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.bot.miniapps.notifications import TelegramTournamentSelectionNotifier
+from sitg_bot.database_maintenance import add_retention_arguments, retention_policy
 from sitg_bot.miniapp_http import MiniAppHttpServer
 from sitg_bot.packet_import import packet_from_data
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
+from sitg_bot.services.database_maintenance import DatabaseMaintenanceService, RetentionPolicy
 from sitg_bot.services.launch_references import LaunchReferenceService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.miniapp_auth import MiniAppAuthService
@@ -127,6 +129,8 @@ class ConsoleApplicationServer:
         token_delivery_key: str | None = None,
         launch_references: LaunchReferenceService | None = None,
         poll_interval: float = 0.25,
+        maintenance_enabled: bool = False,
+        maintenance_policy: RetentionPolicy | None = None,
     ) -> None:
         if poll_interval <= 0:
             raise ValueError("poll_interval must be positive")
@@ -138,6 +142,8 @@ class ConsoleApplicationServer:
         self.admin_token = admin_token
         self.application_client_token = application_client_token
         self.poll_interval = poll_interval
+        self.maintenance_enabled = maintenance_enabled
+        self.maintenance = DatabaseMaintenanceService(database, policy=maintenance_policy)
         self.games = PersistentGameService(database)
         self.matchmaking = InvitationMatchmakingService(database)
         self.packet_admin = PacketAdminService(database)
@@ -210,6 +216,10 @@ class ConsoleApplicationServer:
             asyncio.create_task(self._job_worker_loop(), name="durable-job-worker"),
             asyncio.create_task(self._console_updates_loop(), name="console-updates"),
         ]
+        if self.maintenance_enabled:
+            self._background_tasks.append(asyncio.create_task(
+                self._maintenance_loop(), name="database-maintenance",
+            ))
         LOGGER.info("Application server listening on %s:%s", self.host, self.bound_port)
 
     async def serve_forever(self) -> None:
@@ -1599,6 +1609,17 @@ class ConsoleApplicationServer:
                 LOGGER.exception("Automatic game progression failed; polling will continue")
             await asyncio.sleep(self.poll_interval)
 
+    async def _maintenance_loop(self) -> None:
+        while not self._closing:
+            try:
+                report = await self.maintenance.run_once(dry_run=False)
+                LOGGER.info("Database maintenance: %s", json_value(report))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Database maintenance failed; the next hourly run will retry")
+            await asyncio.sleep(3600)
+
     async def _job_scheduler_loop(self) -> None:
         while not self._closing:
             try:
@@ -2110,6 +2131,8 @@ async def main(args: argparse.Namespace) -> None:
         token_delivery_key=args.token_delivery_key,
         poll_interval=args.poll_interval,
         launch_references=launch_references,
+        maintenance_enabled=args.db_maintenance_enabled,
+        maintenance_policy=retention_policy(args),
     )
     mini_app: MiniAppHttpServer | None = None
     if args.mini_app_port is not None:
@@ -2173,6 +2196,13 @@ def run() -> None:
     )
     parser.add_argument("--token-delivery-key", default=os.environ.get("SITG_TOKEN_DELIVERY_KEY"))
     parser.add_argument("--poll-interval", type=float, default=0.25)
+    parser.add_argument(
+        "--db-maintenance-enabled", action=argparse.BooleanOptionalAction,
+        default=os.environ.get("SITG_DB_MAINTENANCE_ENABLED", "false").lower()
+        in {"1", "true", "yes", "on"},
+        help="enable hourly database maintenance (disabled by default)",
+    )
+    add_retention_arguments(parser)
     parser.add_argument("--mini-app-host", default=os.environ.get("MINI_APP_HOST", "127.0.0.1"))
     parser.add_argument(
         "--mini-app-port",

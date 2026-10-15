@@ -6,6 +6,17 @@ from sitg_bot.services.reliable_delivery import DurableJobQueue
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import AppealRecord, GameRecord, PregameLobbyRecord
 
+PERIODIC_JOBS = (
+    ("rating.settlement", timedelta(seconds=1), 30),
+    ("matchmaking.scan", timedelta(seconds=1), 40),
+    ("classic.reconcile", timedelta(seconds=1), 35),
+    ("suspicion.tick", timedelta(seconds=30), 80),
+    ("tournament.start_reminder", timedelta(seconds=30), 50),
+    ("classic.chat.reminder", timedelta(seconds=30), 55),
+    ("packet.availability", timedelta(seconds=30), 55),
+    ("game.finished_closure", timedelta(seconds=30), 60),
+)
+
 
 class AutomaticJobScheduler:
     """Reconciles authoritative deadlines into idempotent durable jobs."""
@@ -83,30 +94,8 @@ class AutomaticJobScheduler:
             )
             scheduled += 1
 
-        scheduled += await self._periodic(
-            "rating.settlement", now, every=timedelta(seconds=1), priority=30
-        )
-        scheduled += await self._periodic(
-            "matchmaking.scan", now, every=timedelta(seconds=1), priority=40
-        )
-        scheduled += await self._periodic(
-            "classic.reconcile", now, every=timedelta(seconds=1), priority=35
-        )
-        scheduled += await self._periodic(
-            "suspicion.tick", now, every=timedelta(seconds=30), priority=80
-        )
-        scheduled += await self._periodic(
-            "tournament.start_reminder", now, every=timedelta(seconds=30), priority=50
-        )
-        scheduled += await self._periodic(
-            "classic.chat.reminder", now, every=timedelta(seconds=30), priority=55
-        )
-        scheduled += await self._periodic(
-            "packet.availability", now, every=timedelta(seconds=30), priority=55
-        )
-        scheduled += await self._periodic(
-            "game.finished_closure", now, every=timedelta(seconds=30), priority=60
-        )
+        for kind, every, priority in PERIODIC_JOBS:
+            scheduled += await self._periodic(kind, now, every=every, priority=priority)
         return scheduled
 
     async def _periodic(

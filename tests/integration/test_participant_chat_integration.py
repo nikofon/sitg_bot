@@ -1,13 +1,15 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from test_lobby_architecture import database_url as database_url
 from test_lobby_architecture import tournament_fixture
 from test_telegram_gameplay_integration import act, assigned_game, progress_until
 
 from sitg_bot.application.contracts import ActionCode, ChatSendOperation
 from sitg_bot.services.chat import ParticipantChatService
+from sitg_bot.services.database_maintenance import DatabaseMaintenanceService
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.persistent_game import PersistentGameService
 from sitg_bot.services.telegram_game import TelegramGameService
@@ -87,6 +89,13 @@ async def test_lobby_broadcast_observer_whisper_and_membership_revalidation(data
                 "lobby", lobby.id, 130, target=str(fixture.players[2].id), media_group_id="album"
             ),
         )
+        # Maintenance must preserve the private routing even for old delivered album items.
+        async with database.transaction() as session:
+            await session.execute(update(OutboxEventRecord).where(
+                OutboxEventRecord.aggregate_id == lobby.id,
+                OutboxEventRecord.topic == "telegram.chat.message",
+            ).values(status="delivered", delivered_at=datetime.now(UTC) - timedelta(days=8)))
+        await DatabaseMaintenanceService(database).run_once(dry_run=False)
         await ParticipantChatService(database).send(
             sender, operation("lobby", lobby.id, 131, media_group_id="album")
         )

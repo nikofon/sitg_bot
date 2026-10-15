@@ -99,6 +99,10 @@ Workers lease jobs and invoke idempotent services. Stored deadlines and state go
 not the lifetime of a worker task. Privacy maintenance helpers are not currently exposed or
 scheduled.
 
+Technical-record retention has an opt-in hourly task and a preview/apply CLI. It preserves
+permanent replay protection and chat album routing; see
+[database operations](database-operations.md#technical-record-maintenance).
+
 Console socket broadcasts are convenient live views; durable presentation delivery uses the
 outbox. Reconnect by loading authoritative context instead of relying on missed socket events.
 

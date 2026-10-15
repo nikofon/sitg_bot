@@ -31,6 +31,7 @@ sitg-server = "sitg_bot.server:run"
 sitg-console = "sitg_bot.client:run"
 sitg-import-packet = "sitg_bot.packet_import:main"
 sitg-admin-packet = "sitg_bot.packet_admin:run"
+sitg-db-maintenance = "sitg_bot.database_maintenance:run"
 sitg-rating-simulation = "sitg_bot.rating_simulation:run"
 
 [tool.hatch.build.targets.wheel]

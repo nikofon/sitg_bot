@@ -17,6 +17,9 @@ The Telegram process loads `.env` through [Settings](../src/sitg_bot/config.py).
 | Variable | SITG-specific behavior |
 | --- | --- |
 | `DATABASE_URL` | Database override for server, Alembic, and packet administration |
+| `SITG_DB_MAINTENANCE_ENABLED` | Opt-in hourly technical-record maintenance; default `false` |
+| `SITG_DB_SUCCESS_RETENTION_DAYS`, `SITG_DB_FAILURE_RETENTION_DAYS` | Technical success/failure retention; defaults 7/30 days |
+| `SITG_DB_EXPIRY_GRACE_HOURS` | Grace after session/reference expiry; default 24 hours |
 | `BOT_TOKEN` | Used by the Telegram process and optional Mini App server |
 | `SITG_APPLICATION_CLIENT_TOKEN` | Shared 32+ character secret authenticating bot-to-server connections |
 | `APPLICATION_SERVER_HOST`, `APPLICATION_SERVER_PORT` | Bot destination only; server listener uses `--host`/`--port` |
@@ -57,6 +60,9 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0020_database_maintenance` adds compaction timestamps and maintenance indexes;
+it does not prune existing data. Apply it before running the maintenance CLI or enabling
+automatic maintenance.
 Revision `0018_appeal_selection_timer` persists appeal selection deadlines and the prior pause
 state. Apply it before deploying the shared selection/voting timer.
 Revision `0012_appeals_per_answer` allows distinct answers on one question to have separate
@@ -99,6 +105,7 @@ Entry points are declared in [pyproject.toml](../pyproject.toml).
 | `sitg-console` | Local interactive client; [command guide](console-commands.md) |
 | `sitg-import-packet` | DOCX/PDF-to-JSON conversion, including multiple packets |
 | `sitg-admin-packet` | Trusted direct-database draft import, preview, publication, and rejection |
+| `sitg-db-maintenance` | Bounded preview or application of technical-record retention |
 | `sitg-rating-simulation` | Comparison of `time_weighted` and `log_recent`; produces `report.html` and CSV files |
 
 Packet administration requires explicit tournament context on import; its global
@@ -120,3 +127,50 @@ game. Its models are described in [ratings and statistics](data-and-statistics.m
 
 Bot diagnostics include update/correlation IDs and go to stderr plus the rotating log file.
 Message content, names, tokens, and configured secrets are excluded.
+
+## Technical-record maintenance
+
+`sitg-db-maintenance` previews eligible records by default. `--apply` deletes or compacts them.
+Both modes use the same bounded scan; `eligible` counts describe the inspected candidates,
+not necessarily the entire backlog. `deleted` and `compacted` count committed changes only.
+
+| Records | Default action |
+| --- | --- |
+| Known scheduler periodic jobs with matching `periodic:<kind>:<bucket>` keys | Delete successes after 7 days and failures after 30 days |
+| Other terminal jobs and outbox events | Clear payload and diagnostic text after 7/30 days; preserve IDs, keys, state, timestamps, and attempts |
+| Completed request audits | Delete successes after 7 days; rejected/failed requests after 30 days |
+| Sessions and launch references | Delete more than 24 hours after expiry, including revoked/redeemed records |
+
+Retention starts at completion, delivery, or failure, rather than creation. Pending/running
+work, cancelled jobs, and missing terminal timestamps do not qualify. Lease expiry alone
+never qualifies a record. Application idempotency rows and cached responses, Telegram
+receipts, and all `telegram.chat.message` outbox records remain intact. Chat payloads preserve
+private album routing. Game history, notifications, and moderation records are unaffected.
+Permanent replay records and excluded chat payloads will continue growing.
+
+Each run cycles through categories in batches of 1,000, committing each batch separately.
+Locked rows are skipped. Runs stop after 100 batches or 10 seconds; later runs resume the
+remaining work. A session advisory lock serializes automatic and CLI runs across processes.
+An unavailable lock produces `lock_acquired: false`. Reports include old unfinished work,
+grouped by status and kind/topic. The bot has no `lobby.event` consumer; such pending records
+are reported and retained. Reports share the runtime limit and may be incomplete when
+`work_limit_reached` is true.
+
+Roll out with the database environment exported:
+
+```bash
+alembic upgrade head
+sitg-db-maintenance
+sitg-db-maintenance --apply
+```
+
+Then set `SITG_DB_MAINTENANCE_ENABLED=true` and restart the server. It runs maintenance on
+startup and hourly in a separate task. The equivalent server flag is
+`--db-maintenance-enabled`; `--no-db-maintenance-enabled` disables it. VPS Compose forwards
+the maintenance variables from `.env`. Automatic maintenance remains disabled by default.
+
+Both tools accept `--success-retention-days`, `--failure-retention-days`, and
+`--expiry-grace-hours`, overriding the corresponding environment variables. The CLI also
+accepts `--database-url`, `--batch-size` (at most 1,000), `--max-batches`, and `--max-runtime`.
+Monitor summaries, unfinished backlog, and autovacuum as old history drains. Deletion makes
+space reusable; it does not promise an immediate reduction in database file size.
