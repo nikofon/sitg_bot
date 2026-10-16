@@ -150,9 +150,13 @@ async def test_job_worker_records_success_and_terminal_missing_handler() -> None
     class Queue:
         succeeded: list[tuple[UUID, UUID]] = []
         failed: list[tuple[UUID, UUID, str, bool]] = []
+        claimed_kinds: tuple[str, ...] | None = None
 
-        async def claim(self, *, limit: int) -> tuple[ClaimedJob, ...]:
+        async def claim(
+            self, *, limit: int, kinds: tuple[str, ...] | None = None
+        ) -> tuple[ClaimedJob, ...]:
             assert limit == 20
+            self.claimed_kinds = kinds
             return jobs
 
         async def succeed(self, job_id: UUID, lease_token: UUID) -> None:
@@ -181,3 +185,48 @@ async def test_job_worker_records_success_and_terminal_missing_handler() -> None
     assert queue.succeeded == [(UUID(int=1), UUID(int=11))]
     assert queue.failed[0][0:2] == (UUID(int=2), UUID(int=12))
     assert queue.failed[0][3] is True
+    assert queue.claimed_kinds is None
+
+
+@pytest.mark.asyncio
+async def test_job_worker_claims_only_requested_job_kinds() -> None:
+    job = ClaimedJob(UUID(int=3), UUID(int=13), "training.analysis", {}, 1)
+    claim_calls: list[tuple[int, tuple[str, ...] | None]] = []
+
+    class Queue:
+        async def claim(
+            self, *, limit: int, kinds: tuple[str, ...] | None = None
+        ) -> tuple[ClaimedJob, ...]:
+            claim_calls.append((limit, kinds))
+            return (job,) if kinds is None or "training.analysis" in kinds else ()
+
+        async def succeed(self, job_id: UUID, lease_token: UUID) -> None:
+            assert (job_id, lease_token) == (job.job_id, job.lease_token)
+
+        async def fail(
+            self,
+            job_id: UUID,
+            lease_token: UUID,
+            error: str,
+            *,
+            terminal: bool = False,
+        ) -> None:
+            raise AssertionError("analysis worker must not fail handled jobs")
+
+    async def handler(payload: dict[str, object]) -> None:
+        return None
+
+    queue = Queue()
+    analysis_worker = DurableJobWorker(
+        queue, {"training.analysis": handler}, kinds=("training.analysis",)
+    )  # type: ignore[arg-type]
+    gameplay_worker = DurableJobWorker(
+        queue, {"game.deadline": handler}, kinds=("game.deadline",)
+    )  # type: ignore[arg-type]
+
+    assert await analysis_worker.run_once() == 1
+    assert await gameplay_worker.run_once() == 0
+    assert claim_calls == [
+        (20, ("training.analysis",)),
+        (20, ("game.deadline",)),
+    ]

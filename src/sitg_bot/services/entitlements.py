@@ -1,0 +1,815 @@
+"""Trainee feature categories, entitlement policies and metered usage.
+
+Agent C module (see `docs/training-mode-plan.md`). Categories are separate
+from tournament roles and subscriptions. Limits and reset rules are
+configurable through versioned feature policies; billing and plan purchase
+flows are deferred. Reservation, settlement and release are server-side,
+atomic and idempotent per request ID.
+"""
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    UniqueConstraint,
+    func,
+    select,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, mapped_column
+
+from sitg_bot.storage.database import Database
+
+FEATURE_DISSECTION = "dissection"
+FEATURE_COMMON_KNOWLEDGE = "common_knowledge"
+FEATURE_BEST_BUZZ = "best_buzz"
+TRAINING_FEATURES = (FEATURE_DISSECTION, FEATURE_COMMON_KNOWLEDGE, FEATURE_BEST_BUZZ)
+
+RESET_NONE = "none"
+RESET_DAILY = "daily"
+RESET_MONTHLY = "monthly"
+RESET_PERIODS = (RESET_NONE, RESET_DAILY, RESET_MONTHLY)
+
+LEDGER_RESERVE = "reserve"
+LEDGER_SETTLE = "settle"
+LEDGER_RELEASE = "release"
+
+#: Used when a player has no explicit category assignment.
+DEFAULT_CATEGORY_CODE = "default"
+
+
+def _check_digest(constraint: Any, table: Any) -> str:
+    return sha256(str(constraint.sqltext).encode()).hexdigest()[:12]
+
+
+ENTITLEMENT_METADATA = MetaData(
+    naming_convention={
+        "ix": "ix_%(column_0_label)s",
+        "ck": "ck_%(table_name)s_%(check_digest)s",
+        "check_digest": _check_digest,
+    }
+)
+
+
+def _uuid_column() -> Mapped[UUID]:
+    return mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+
+
+class EntitlementBase(DeclarativeBase):
+    metadata = ENTITLEMENT_METADATA
+
+
+class TrainingCategoryRecord(EntitlementBase):
+    """A trainee account category referencing a feature policy version."""
+
+    __tablename__ = "training_categories"
+
+    id: Mapped[UUID] = _uuid_column()
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_training_categories_code"),
+        CheckConstraint("length(code) > 0"),
+        CheckConstraint("length(display_name) > 0"),
+        CheckConstraint("policy_version >= 1"),
+    )
+
+
+class TrainingFeaturePolicyRecord(EntitlementBase):
+    """An immutable, versioned feature/limit policy payload."""
+
+    __tablename__ = "training_feature_policies"
+
+    id: Mapped[UUID] = _uuid_column()
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("version", name="uq_training_feature_policies_version"),
+        CheckConstraint("version >= 1"),
+    )
+
+
+class TrainingPolicyStateRecord(EntitlementBase):
+    """Single row holding the default category selection."""
+
+    __tablename__ = "training_policy_state"
+
+    singleton: Mapped[int] = mapped_column(Integer, primary_key=True)
+    default_category_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (CheckConstraint("singleton = 1"),)
+
+
+class TrainingCategoryAssignmentRecord(EntitlementBase):
+    """One active category assignment per trainee."""
+
+    __tablename__ = "training_category_assignments"
+
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), primary_key=True
+    )
+    category_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("training_categories.id"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TrainingUsagePeriodRecord(EntitlementBase):
+    """Mutable usage counters for one player, feature and reset period."""
+
+    __tablename__ = "training_usage_periods"
+
+    id: Mapped[UUID] = _uuid_column()
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
+    )
+    feature: Mapped[str] = mapped_column(String(50), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reserved: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    settled: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "feature", "period_start", name="uq_training_usage_periods_scope"
+        ),
+        CheckConstraint("reserved >= 0 AND settled >= 0"),
+        CheckConstraint("period_end > period_start"),
+        Index("ix_training_usage_periods_player", "player_id", "feature", "period_start"),
+    )
+
+
+class TrainingUsageLedgerRecord(EntitlementBase):
+    """Append-only reservation/settlement ledger entry, idempotent per request."""
+
+    __tablename__ = "training_usage_ledger"
+
+    id: Mapped[UUID] = _uuid_column()
+    reservation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    period_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("training_usage_periods.id"),
+        nullable=False,
+        index=True,
+    )
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
+    )
+    feature: Mapped[str] = mapped_column(String(50), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id", "entry_type", name="uq_training_usage_ledger_request_entry"
+        ),
+        CheckConstraint("entry_type IN ('reserve', 'settle', 'release')"),
+        CheckConstraint("units >= 1"),
+        CheckConstraint("length(request_id) > 0"),
+        Index("ix_training_usage_ledger_player", "player_id", "feature", "created_at"),
+    )
+
+
+class EntitlementsError(Exception):
+    """Entitlement failure with a stable, adapter-facing error code."""
+
+    code = "entitlements_error"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class FeatureDisabledError(EntitlementsError):
+    code = "feature_disabled"
+
+
+class QuotaExceededError(EntitlementsError):
+    code = "quota_exceeded"
+
+
+@dataclass(frozen=True, slots=True)
+class FeaturePolicy:
+    """Validated per-feature policy: limits, resets and charging behavior."""
+
+    enabled: bool = False
+    limit: int | None = None
+    reset_period: str = RESET_NONE
+    cache_hit_charging: bool = True
+    queued_request_cap: int | None = None
+    in_flight_request_cap: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.limit is not None and self.limit < 1:
+            raise ValueError("Feature limit must be at least 1 when bounded")
+        if self.reset_period not in RESET_PERIODS:
+            raise ValueError(f"Unknown reset period {self.reset_period!r}")
+        for cap in (self.queued_request_cap, self.in_flight_request_cap):
+            if cap is not None and cap < 1:
+                raise ValueError("Request caps must be at least 1 when bounded")
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "FeaturePolicy":
+        unknown = set(payload) - {
+            "enabled",
+            "limit",
+            "reset_period",
+            "cache_hit_charging",
+            "queued_request_cap",
+            "in_flight_request_cap",
+        }
+        if unknown:
+            raise ValueError(f"Unknown feature policy keys: {sorted(unknown)}")
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            limit=payload.get("limit"),
+            reset_period=str(payload.get("reset_period", RESET_NONE)),
+            cache_hit_charging=bool(payload.get("cache_hit_charging", True)),
+            queued_request_cap=payload.get("queued_request_cap"),
+            in_flight_request_cap=payload.get("in_flight_request_cap"),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "limit": self.limit,
+            "reset_period": self.reset_period,
+            "cache_hit_charging": self.cache_hit_charging,
+            "queued_request_cap": self.queued_request_cap,
+            "in_flight_request_cap": self.in_flight_request_cap,
+        }
+
+
+def parse_feature_policies(payload: Mapping[str, Any]) -> dict[str, FeaturePolicy]:
+    """Validate a policy payload; every known feature must be configured."""
+    if set(payload) != set(TRAINING_FEATURES):
+        raise ValueError("Feature policy must configure exactly the known features")
+    return {feature: FeaturePolicy.from_mapping(payload[feature]) for feature in TRAINING_FEATURES}
+
+
+#: Default policy keeps all training AI features disabled until product tiers exist.
+DEFAULT_POLICY_PAYLOAD: dict[str, Any] = {
+    feature: {"enabled": False, "limit": None, "reset_period": RESET_NONE}
+    for feature in TRAINING_FEATURES
+}
+
+UNBOUNDED_PERIOD_START = datetime(1970, 1, 1, tzinfo=UTC)
+UNBOUNDED_PERIOD_END = datetime(9999, 12, 31, tzinfo=UTC)
+
+
+def period_bounds(reset_period: str, now: datetime) -> tuple[datetime, datetime]:
+    """Return the [start, end) bounds of the usage period containing ``now``."""
+    if reset_period == RESET_NONE:
+        return UNBOUNDED_PERIOD_START, UNBOUNDED_PERIOD_END
+    moment = now.astimezone(UTC)
+    if reset_period == RESET_DAILY:
+        start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, start + timedelta(days=1)
+    start = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureStatus:
+    """Adapter-facing projection of one feature's entitlement state."""
+
+    feature: str
+    enabled: bool
+    allowed: bool
+    limit: int | None
+    remaining: int | None
+    reset_at: datetime | None
+    cache_hit_charging: bool
+    queued_request_cap: int | None
+    in_flight_request_cap: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class Reservation:
+    """A granted quota reservation, settled or released exactly once."""
+
+    reservation_id: UUID
+    period_id: UUID
+    player_id: UUID
+    feature: str
+    request_id: str
+    units: int
+
+
+class EntitlementService:
+    """Server-authoritative category entitlements and quota metering."""
+
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    async def ensure_defaults(self) -> None:
+        """Create the default disabled policy, category and state idempotently."""
+        async with self.database.transaction() as session:
+            policy_row = (
+                (
+                    await session.execute(
+                        select(TrainingFeaturePolicyRecord).order_by(
+                            TrainingFeaturePolicyRecord.version
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if policy_row is None:
+                policy_row = TrainingFeaturePolicyRecord(
+                    version=1, features=dict(DEFAULT_POLICY_PAYLOAD)
+                )
+                session.add(policy_row)
+                await session.flush()
+            state = await session.get(TrainingPolicyStateRecord, 1)
+            if state is None:
+                category = TrainingCategoryRecord(
+                    code=DEFAULT_CATEGORY_CODE,
+                    display_name="Default",
+                    is_default=True,
+                    policy_version=policy_row.version,
+                )
+                session.add(category)
+                await session.flush()
+                session.add(
+                    TrainingPolicyStateRecord(singleton=1, default_category_id=category.id)
+                )
+
+    async def create_policy(self, session: AsyncSession, payload: Mapping[str, Any]) -> int:
+        """Validate and append a new immutable policy version."""
+        policies = parse_feature_policies(payload)
+        latest = await session.scalar(select(func.max(TrainingFeaturePolicyRecord.version)))
+        version = (latest or 0) + 1
+        session.add(
+            TrainingFeaturePolicyRecord(
+                version=version,
+                features={feature: policy.to_mapping() for feature, policy in policies.items()},
+            )
+        )
+        return version
+
+    async def create_category(
+        self,
+        session: AsyncSession,
+        *,
+        code: str,
+        display_name: str,
+        policy_version: int,
+        is_default: bool = False,
+        now: datetime | None = None,
+    ) -> UUID:
+        """Create a category bound to an existing policy version."""
+        if not code or not display_name:
+            raise ValueError("Category code and display name are required")
+        exists_version = await session.scalar(
+            select(TrainingFeaturePolicyRecord.id).where(
+                TrainingFeaturePolicyRecord.version == policy_version
+            )
+        )
+        if exists_version is None:
+            raise ValueError(f"Policy version {policy_version} does not exist")
+        category = TrainingCategoryRecord(
+            code=code,
+            display_name=display_name,
+            is_default=is_default,
+            policy_version=policy_version,
+        )
+        category.created_at = now or datetime.now(UTC)
+        session.add(category)
+        await session.flush()
+        return category.id
+
+    async def assign_category(
+        self,
+        session: AsyncSession,
+        *,
+        player_id: UUID,
+        category_id: UUID,
+        now: datetime | None = None,
+    ) -> None:
+        """Assign (or replace) the player's category; new limits apply at once."""
+        moment = now or datetime.now(UTC)
+        existing = await session.get(TrainingCategoryAssignmentRecord, player_id)
+        if existing is None:
+            session.add(
+                TrainingCategoryAssignmentRecord(
+                    player_id=player_id, category_id=category_id, assigned_at=moment
+                )
+            )
+        else:
+            existing.category_id = category_id
+            existing.assigned_at = moment
+
+    async def policy_for(
+        self, session: AsyncSession, player_id: UUID, feature: str
+    ) -> FeaturePolicy:
+        """Return the player's effective policy for one feature."""
+        if feature not in TRAINING_FEATURES:
+            raise ValueError(f"Unknown training feature {feature!r}")
+        policies = await self._effective_policies(session, player_id)
+        return policies[feature]
+
+    async def capabilities(
+        self, player_id: UUID, *, now: datetime | None = None
+    ) -> dict[str, FeatureStatus]:
+        """Project allowed features, remaining quota and reset information."""
+        moment = now or datetime.now(UTC)
+        async with self.database.transaction() as session:
+            policies = await self._effective_policies(session, player_id)
+            statuses: dict[str, FeatureStatus] = {}
+            for feature, policy in policies.items():
+                start, end = period_bounds(policy.reset_period, moment)
+                period = (
+                    await session.execute(
+                        select(TrainingUsagePeriodRecord).where(
+                            TrainingUsagePeriodRecord.player_id == player_id,
+                            TrainingUsagePeriodRecord.feature == feature,
+                            TrainingUsagePeriodRecord.period_start == start,
+                        )
+                    )
+                ).scalar_one_or_none()
+                settled = period.settled if period is not None else 0
+                reserved = period.reserved if period is not None else 0
+                remaining = (
+                    None
+                    if policy.limit is None
+                    else max(policy.limit - settled - reserved, 0)
+                )
+                statuses[feature] = FeatureStatus(
+                    feature=feature,
+                    enabled=policy.enabled,
+                    allowed=policy.enabled and (remaining is None or remaining > 0),
+                    limit=policy.limit,
+                    remaining=remaining,
+                    reset_at=end if policy.reset_period != RESET_NONE else None,
+                    cache_hit_charging=policy.cache_hit_charging,
+                    queued_request_cap=policy.queued_request_cap,
+                    in_flight_request_cap=policy.in_flight_request_cap,
+                )
+            return statuses
+
+    async def authorize(
+        self,
+        session: AsyncSession,
+        *,
+        player_id: UUID,
+        feature: str,
+        request_id: str,
+        units: int = 1,
+        charge: bool = True,
+        now: datetime | None = None,
+    ) -> Reservation | None:
+        """Authorize a feature and atomically reserve quota in the caller's transaction.
+
+        Idempotent per request ID: a repeated authorization returns the
+        existing reservation instead of charging twice. Feature authorization
+        applies even when ``charge`` is false (for example on cache hits).
+        """
+        if feature not in TRAINING_FEATURES:
+            raise ValueError(f"Unknown training feature {feature!r}")
+        if not request_id:
+            raise ValueError("Reservation request ID is required")
+        if units < 1:
+            raise ValueError("Reservation units must be positive")
+        moment = now or datetime.now(UTC)
+        policy = await self.policy_for(session, player_id, feature)
+        if not policy.enabled:
+            raise FeatureDisabledError(f"Feature {feature} is disabled")
+        if not charge:
+            return None
+        period = await self._locked_period(session, player_id, feature, policy, moment)
+        existing = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
+        if existing is not None:
+            return Reservation(
+                existing.reservation_id,
+                existing.period_id,
+                existing.player_id,
+                existing.feature,
+                existing.request_id,
+                existing.units,
+            )
+        if policy.limit is not None and period.settled + period.reserved + units > policy.limit:
+            raise QuotaExceededError(f"Feature {feature} quota is exhausted for this period")
+        period.reserved += units
+        reservation_id = uuid4()
+        session.add(
+            TrainingUsageLedgerRecord(
+                reservation_id=reservation_id,
+                period_id=period.id,
+                player_id=player_id,
+                feature=feature,
+                request_id=request_id,
+                entry_type=LEDGER_RESERVE,
+                units=units,
+                created_at=moment,
+            )
+        )
+        return Reservation(reservation_id, period.id, player_id, feature, request_id, units)
+
+    async def settle(
+        self,
+        session: AsyncSession,
+        *,
+        player_id: UUID,
+        feature: str,
+        request_id: str,
+        used_units: int = 1,
+        provider_usage: Mapping[str, Any] | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Settle a reservation for successful work; idempotent and refunding.
+
+        Partial success settles only ``used_units`` and releases the rest.
+        Provider usage and cost are recorded separately from quota units.
+        """
+        if used_units < 1:
+            raise ValueError("Settled units must be positive")
+        moment = now or datetime.now(UTC)
+        reserve_entry = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
+        if reserve_entry is None:
+            return False
+        period = await session.get(
+            TrainingUsagePeriodRecord, reserve_entry.period_id, with_for_update=True
+        )
+        if period is None:
+            return False
+        if (
+            await self._ledger_entry(session, request_id, LEDGER_SETTLE) is not None
+            or await self._ledger_entry(session, request_id, LEDGER_RELEASE) is not None
+        ):
+            return False
+        units = reserve_entry.units
+        if used_units > units:
+            raise ValueError("Settled units exceed the reservation")
+        period.reserved -= units
+        period.settled += used_units
+        session.add(
+            TrainingUsageLedgerRecord(
+                reservation_id=reserve_entry.reservation_id,
+                period_id=period.id,
+                player_id=player_id,
+                feature=feature,
+                request_id=request_id,
+                entry_type=LEDGER_SETTLE,
+                units=used_units,
+                provider_usage=dict(provider_usage) if provider_usage is not None else None,
+                created_at=moment,
+            )
+        )
+        if units > used_units:
+            session.add(
+                TrainingUsageLedgerRecord(
+                    reservation_id=reserve_entry.reservation_id,
+                    period_id=period.id,
+                    player_id=player_id,
+                    feature=feature,
+                    request_id=request_id,
+                    entry_type=LEDGER_RELEASE,
+                    units=units - used_units,
+                    created_at=moment,
+                )
+            )
+        return True
+
+    async def release(
+        self,
+        session: AsyncSession,
+        *,
+        player_id: UUID,
+        feature: str,
+        request_id: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Release a reservation for failed or cancelled work; idempotent."""
+        moment = now or datetime.now(UTC)
+        reserve_entry = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
+        if reserve_entry is None:
+            return False
+        period = await session.get(
+            TrainingUsagePeriodRecord, reserve_entry.period_id, with_for_update=True
+        )
+        if period is None:
+            return False
+        if (
+            await self._ledger_entry(session, request_id, LEDGER_SETTLE) is not None
+            or await self._ledger_entry(session, request_id, LEDGER_RELEASE) is not None
+        ):
+            return False
+        period.reserved -= reserve_entry.units
+        session.add(
+            TrainingUsageLedgerRecord(
+                reservation_id=reserve_entry.reservation_id,
+                period_id=period.id,
+                player_id=player_id,
+                feature=feature,
+                request_id=request_id,
+                entry_type=LEDGER_RELEASE,
+                units=reserve_entry.units,
+                created_at=moment,
+            )
+        )
+        return True
+
+    async def reconcile_abandoned(
+        self,
+        *,
+        older_than: timedelta,
+        now: datetime | None = None,
+        limit: int = 200,
+    ) -> int:
+        """Release reservations never settled or released before a crash.
+
+        Callers should schedule this periodically; only reservations older
+        than the cutoff are touched so in-flight work keeps its quota.
+        """
+        if older_than <= timedelta(0):
+            raise ValueError("Reconciliation cutoff must be positive")
+        if limit < 1:
+            raise ValueError("Reconciliation batch limit must be positive")
+        moment = now or datetime.now(UTC)
+        cutoff = moment - older_than
+        settle_entry = aliased(TrainingUsageLedgerRecord)
+        release_entry = aliased(TrainingUsageLedgerRecord)
+        released = 0
+        while True:
+            async with self.database.transaction() as session:
+                batch = list(
+                    (
+                        await session.execute(
+                            select(TrainingUsageLedgerRecord)
+                            .where(
+                                TrainingUsageLedgerRecord.entry_type == LEDGER_RESERVE,
+                                TrainingUsageLedgerRecord.created_at < cutoff,
+                                ~select(settle_entry.id)
+                                .where(
+                                    settle_entry.request_id
+                                    == TrainingUsageLedgerRecord.request_id,
+                                    settle_entry.entry_type == LEDGER_SETTLE,
+                                )
+                                .exists(),
+                                ~select(release_entry.id)
+                                .where(
+                                    release_entry.request_id
+                                    == TrainingUsageLedgerRecord.request_id,
+                                    release_entry.entry_type == LEDGER_RELEASE,
+                                )
+                                .exists(),
+                            )
+                            .order_by(TrainingUsageLedgerRecord.created_at)
+                            .limit(limit)
+                            .with_for_update(skip_locked=True)
+                        )
+                    )
+                    .scalars()
+                )
+                for entry in batch:
+                    done = await self.release(
+                        session,
+                        player_id=entry.player_id,
+                        feature=entry.feature,
+                        request_id=entry.request_id,
+                        now=moment,
+                    )
+                    released += int(done)
+            if len(batch) < limit:
+                break
+        return released
+
+    async def _effective_policies(
+        self, session: AsyncSession, player_id: UUID
+    ) -> dict[str, FeaturePolicy]:
+        """Resolve the policies of the player's (or default) category."""
+        assignment = await session.get(TrainingCategoryAssignmentRecord, player_id)
+        category: TrainingCategoryRecord | None = None
+        if assignment is not None:
+            category = await session.get(TrainingCategoryRecord, assignment.category_id)
+        else:
+            state = await session.get(TrainingPolicyStateRecord, 1)
+            if state is not None:
+                category = await session.get(TrainingCategoryRecord, state.default_category_id)
+        if category is None:
+            return parse_feature_policies(DEFAULT_POLICY_PAYLOAD)
+        policy_row = await session.scalar(
+            select(TrainingFeaturePolicyRecord).where(
+                TrainingFeaturePolicyRecord.version == category.policy_version
+            )
+        )
+        if policy_row is None:
+            return parse_feature_policies(DEFAULT_POLICY_PAYLOAD)
+        return parse_feature_policies(policy_row.features)
+
+    async def _locked_period(
+        self,
+        session: AsyncSession,
+        player_id: UUID,
+        feature: str,
+        policy: FeaturePolicy,
+        moment: datetime,
+    ) -> TrainingUsagePeriodRecord:
+        """Return the current period row, row-locked, creating it if needed."""
+        start, end = period_bounds(policy.reset_period, moment)
+        record = (
+            await session.execute(
+                select(TrainingUsagePeriodRecord)
+                .where(
+                    TrainingUsagePeriodRecord.player_id == player_id,
+                    TrainingUsagePeriodRecord.feature == feature,
+                    TrainingUsagePeriodRecord.period_start == start,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if record is not None:
+            return record
+        await session.execute(
+            pg_insert(TrainingUsagePeriodRecord)
+            .values(
+                id=uuid4(),
+                player_id=player_id,
+                feature=feature,
+                period_start=start,
+                period_end=end,
+            )
+            .on_conflict_do_nothing(index_elements=["player_id", "feature", "period_start"])
+        )
+        record = (
+            await session.execute(
+                select(TrainingUsagePeriodRecord)
+                .where(
+                    TrainingUsagePeriodRecord.player_id == player_id,
+                    TrainingUsagePeriodRecord.feature == feature,
+                    TrainingUsagePeriodRecord.period_start == start,
+                )
+                .with_for_update()
+            )
+        ).scalar_one()
+        return record
+
+    @staticmethod
+    async def _ledger_entry(
+        session: AsyncSession, request_id: str, entry_type: str
+    ) -> TrainingUsageLedgerRecord | None:
+        return (
+            await session.execute(
+                select(TrainingUsageLedgerRecord).where(
+                    TrainingUsageLedgerRecord.request_id == request_id,
+                    TrainingUsageLedgerRecord.entry_type == entry_type,
+                )
+            )
+        ).scalar_one_or_none()
+
+
+
+
+
+
+
+
