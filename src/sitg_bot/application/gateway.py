@@ -19,6 +19,7 @@ from sitg_bot.application.contracts import (
     AdminAuthorMergeOperation,
     AdminAuthorSplitOperation,
     AdminAuthorUpdateOperation,
+    AdminGameListOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
@@ -299,6 +300,7 @@ ACTION_POLICIES.update(
         ),
         ActionCode.AUTHORS_SEARCH: ActionPolicy(cursor_paginated=True),
         ActionCode.ADMIN_PACKET_LIST: ActionPolicy(cursor_paginated=True),
+        ActionCode.ADMIN_GAME_LIST: ActionPolicy(cursor_paginated=True),
         ActionCode.AUTHOR_CATALOGUE: ActionPolicy(),
         ActionCode.AUTHOR_PROFILE: ActionPolicy(),
         ActionCode.AUTHOR_LINK_MINE: ActionPolicy(cursor_paginated=True),
@@ -1449,6 +1451,10 @@ class ApplicationGateway:
             )
         if isinstance(operation, AdminPacketListOperation):
             return await AdminManagementService(self.database).packet_page(
+                player_id, cursor=operation.cursor, limit=operation.limit,
+            )
+        if isinstance(operation, AdminGameListOperation):
+            return await AdminManagementService(self.database).game_page(
                 player_id, cursor=operation.cursor, limit=operation.limit,
             )
         if isinstance(operation, AdminTournamentModerateOperation):

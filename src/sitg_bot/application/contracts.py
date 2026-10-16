@@ -139,6 +139,7 @@ class ActionCode(StrEnum):
     ADMIN_AUTHOR_SPLIT = "platform.admin.authors.split.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
     ADMIN_PACKET_LIST = "platform.admin.packets.list.v1"
+    ADMIN_GAME_LIST = "platform.admin.games.list.v1"
 
 
 class ErrorCode(StrEnum):
@@ -993,13 +994,20 @@ class BugReportCreateOperation(ContractModel):
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
     section: Literal[
-        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
+        "active_lobbies", "past_games",
     ] = ("tournaments")
     include_items: bool = True
 
 
 class AdminPacketListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_PACKET_LIST]
+    cursor: UUID | None = None
+    limit: int = Field(default=25, ge=1, le=25)
+
+
+class AdminGameListOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_GAME_LIST]
     cursor: UUID | None = None
     limit: int = Field(default=25, ge=1, le=25)
 
@@ -1184,6 +1192,7 @@ GatewayOperation = Annotated[
     | AdminSuspicionClearOperation
     | AdminManagementListOperation
     | AdminPacketListOperation
+    | AdminGameListOperation
     | AdminTournamentModerateOperation
     | AdminTournamentRatingWeightOperation
     | AdminAuthorLinkOperation

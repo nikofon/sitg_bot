@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -9,7 +9,7 @@ from test_library import claims_for, configure
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import packet, tournament_fixture
 
-from sitg_bot.services.admin_management import AdminManagementService
+from sitg_bot.services.admin_management import GAME_SECTION_STATUSES, AdminManagementService
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.library import PacketLibraryService
@@ -594,6 +594,113 @@ async def test_ongoing_games_catalogue_lists_lobby_and_active_games(database_url
         }
         assert card["participants"][0]["is_chair"] is True
         assert card["participants"][1]["is_chair"] is False
+    finally:
+        await database.close()
+
+
+async def test_active_lobbies_and_past_games_sections_and_pagination(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=2)
+        service = AdminManagementService(database)
+        with pytest.raises(PermissionError):
+            await service.catalogue(fixture.manager.id, "active_lobbies")
+        await administrator(database, fixture.manager.id)
+
+        stamp = datetime.now(UTC)
+        sequences: dict[UUID, int] = {}
+
+        def next_sequence(player_id: UUID) -> int:
+            sequences[player_id] = sequences.get(player_id, 0) + 1
+            return sequences[player_id]
+
+        async def add_game(
+            session, tournament, policy, *, status: str, phase: str,
+            created_at: datetime, participants: tuple,
+        ) -> UUID:
+            game = GameRecord(
+                tournament_id=tournament.id,
+                tournament_type_version_id=tournament.type_version_id,
+                game_ruleset_version_id=tournament.game_ruleset_version_id,
+                tournament_policy_version_id=policy.id,
+                host_player_id=fixture.players[0].id,
+                status=status,
+                phase=phase,
+                created_at=created_at,
+            )
+            session.add(game)
+            await session.flush()
+            for player in participants:
+                sequence = next_sequence(player.id)
+                session.add(
+                    GameParticipantRecord(
+                        game_id=game.id,
+                        tournament_id=tournament.id,
+                        player_id=player.id,
+                        seat=sequence,
+                        rating_sequence=sequence,
+                        global_game_sequence=sequence,
+                        joined=True,
+                        ready=True,
+                        is_chair=True,
+                        active=status not in GAME_SECTION_STATUSES["past_games"],
+                    )
+                )
+            return game.id
+
+        async with database.transaction() as session:
+            tournament = await session.get(TournamentRecord, fixture.tournament_id)
+            policy = await session.scalar(
+                select(TournamentPolicyVersionRecord).where(
+                    TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id
+                )
+            )
+            assert tournament is not None and policy is not None
+            lobby_id = await add_game(
+                session, tournament, policy, status="lobby", phase="lobby",
+                created_at=stamp, participants=(fixture.manager,),
+            )
+            await add_game(
+                session, tournament, policy, status="active", phase="question",
+                created_at=stamp, participants=(fixture.players[0],),
+            )
+            past_ids = [
+                await add_game(
+                    session, tournament, policy, status=status, phase="finished",
+                    created_at=stamp + timedelta(minutes=offset),
+                    participants=(fixture.players[1],),
+                )
+                for offset, status in enumerate(
+                    ("completed", "finalized", "cancelled"), start=1
+                )
+            ]
+
+        lobbies = await service.catalogue(fixture.manager.id, "active_lobbies")
+        listed_lobbies = {str(item["id"]): item for item in lobbies["items"]}
+        assert str(lobby_id) in listed_lobbies
+        assert all(item["status"] == "lobby" for item in listed_lobbies.values())
+
+        deferred = await service.catalogue(fixture.manager.id, "past_games", include_items=False)
+        assert deferred["items"] == [] and deferred["games_deferred"]
+        full = await service.catalogue(fixture.manager.id, "past_games")
+        full_by_id = {str(item["id"]): item for item in full["items"]}
+        assert all(str(game_id) in full_by_id for game_id in past_ids)
+        assert str(lobby_id) not in full_by_id
+        assert full_by_id[str(past_ids[2])]["name"] == tournament.name
+        full_ids = [str(item["id"]) for item in full["items"]]
+        assert full_ids.index(str(past_ids[2])) < full_ids.index(str(past_ids[1]))
+        assert full_ids.index(str(past_ids[1])) < full_ids.index(str(past_ids[0]))
+
+        page = await service.game_page(fixture.manager.id, limit=2)
+        assert [str(item["id"]) for item in page["items"]] == [
+            str(past_ids[2]), str(past_ids[1]),
+        ]
+        assert page["next_cursor"] == past_ids[1]
+        tail = await service.game_page(fixture.manager.id, cursor=page["next_cursor"], limit=2)
+        tail_ids = [str(item["id"]) for item in tail["items"]]
+        assert tail_ids and tail_ids[0] == str(past_ids[0])
+        assert str(past_ids[1]) not in tail_ids
+        assert not (await service.game_page(fixture.manager.id, cursor=uuid4()))["items"]
     finally:
         await database.close()
 

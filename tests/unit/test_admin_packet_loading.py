@@ -134,6 +134,30 @@ async def test_gateway_dispatches_admin_packet_loading_options(paged):
         service.catalogue.assert_awaited_once_with(UUID(int=2), "packets", include_items=False)
 
 
+@pytest.mark.parametrize("paged", [True, False])
+async def test_gateway_dispatches_admin_game_loading_options(paged):
+    gateway = object.__new__(ApplicationGateway)
+    gateway.database = object()
+    gateway._require_active_principal = AsyncMock(return_value=UUID(int=2))
+    gateway._reject_banned_player = AsyncMock()
+    service = SimpleNamespace(catalogue=AsyncMock(return_value={}),
+                              game_page=AsyncMock(return_value={}))
+    operation = (
+        {"action": ActionCode.ADMIN_GAME_LIST, "cursor": str(UUID(int=7)), "limit": 10}
+        if paged else {"action": ActionCode.ADMIN_MANAGEMENT_LIST,
+                       "section": "past_games", "include_items": False}
+    )
+    request = GatewayRequest.model_validate({"metadata": {
+        "channel": "mini_app", "client_name": "test", "client_version": "1",
+    }, "operation": operation})
+    with patch("sitg_bot.application.gateway.AdminManagementService", return_value=service):
+        await gateway._dispatch(ApplicationPrincipal(telegram_user_id=42), request)
+    if paged:
+        service.game_page.assert_awaited_once_with(UUID(int=2), cursor=UUID(int=7), limit=10)
+    else:
+        service.catalogue.assert_awaited_once_with(UUID(int=2), "past_games", include_items=False)
+
+
 @pytest.mark.parametrize("packets", [1, 50, 200])
 async def test_embedded_tournament_packet_names_use_one_query(admin_database, packets):
     database = admin_database

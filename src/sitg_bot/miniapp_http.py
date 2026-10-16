@@ -22,6 +22,7 @@ from sitg_bot.application.contracts import (
     AdminAuthorMergeOperation,
     AdminAuthorSplitOperation,
     AdminAuthorUpdateOperation,
+    AdminGameListOperation,
     AdminManagementListOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
@@ -285,6 +286,9 @@ class MiniAppHttpServer:
         )
         app.router.add_get(
             "/api/miniapp/admin/management/packets", self._admin_packet_page
+        )
+        app.router.add_get(
+            "/api/miniapp/admin/management/past_games", self._admin_game_page
         )
         app.router.add_post(
             "/api/miniapp/admin/management/{section}/{resource_id}/{command}",
@@ -1322,6 +1326,12 @@ class MiniAppHttpServer:
     async def _admin_packet_page(self, request: web.Request) -> web.Response:
         _, result = await self._query(request, AdminPacketListOperation.model_validate({
             "action": ActionCode.ADMIN_PACKET_LIST, **request.query,
+        }))
+        return self._gateway_response(result)
+
+    async def _admin_game_page(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, AdminGameListOperation.model_validate({
+            "action": ActionCode.ADMIN_GAME_LIST, **request.query,
         }))
         return self._gateway_response(result)
 

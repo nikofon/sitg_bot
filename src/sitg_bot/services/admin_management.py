@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from sitg_bot.services.author_exposure import burn_author_content
 from sitg_bot.services.author_links import AuthorLinkService
@@ -67,6 +67,15 @@ def split_author_names(name: str) -> list[str]:
     return names if len(names) > 1 else []
 
 
+GAME_SECTION_STATUSES = {
+    "ongoing_games": ("lobby", "active"),
+    "active_lobbies": ("lobby",),
+    "past_games": (
+        "completed", "finalized", "failed_to_start", "cancelled", "abandoned", "invalidated",
+    ),
+}
+
+
 class AdminManagementService:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -75,7 +84,8 @@ class AdminManagementService:
         self, administrator_id: UUID, section: str, *, include_items: bool = True,
     ) -> dict:
         if section not in {
-            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
+            "active_lobbies", "past_games",
         }:
             raise ValueError("Unknown management section")
         async with self.database.sessions() as session:
@@ -133,65 +143,20 @@ class AdminManagementService:
                     "section": section,
                     "items": items,
                 }
-            if section == "ongoing_games":
+            if section in GAME_SECTION_STATUSES:
+                if section == "past_games" and not include_items:
+                    return {
+                        "kind": "admin_management", "state": "ready", "section": section,
+                        "items": [], "games_deferred": True,
+                    }
                 for game in await session.scalars(
                     select(GameRecord)
-                    .where(GameRecord.status.in_(("lobby", "active")))
+                    .where(GameRecord.status.in_(GAME_SECTION_STATUSES[section]))
                     .order_by(GameRecord.created_at.desc(), GameRecord.id.desc())
                 ):
-                    tournament = await session.get(TournamentRecord, game.tournament_id)
-                    policy = await session.get(
-                        TournamentPolicyVersionRecord, game.tournament_policy_version_id
-                    )
-                    host = await session.get(PlayerRecord, game.host_player_id)
-                    type_version = await session.get(
-                        TournamentTypeVersionRecord, game.tournament_type_version_id
-                    )
-                    ruleset_version = await session.get(
-                        GameRulesetVersionRecord, game.game_ruleset_version_id
-                    )
-                    if (
-                        tournament is None
-                        or policy is None
-                        or host is None
-                        or type_version is None
-                        or ruleset_version is None
-                    ):
-                        continue
-                    card = fields(game)
-                    card["name"] = tournament.name
-                    card["tournament"] = {"id": tournament.id, "name": tournament.name}
-                    card["host"] = {
-                        "id": host.id,
-                        "public_nickname": host.public_nickname,
-                    }
-                    card["participants"] = [
-                        {
-                            "id": player.id,
-                            "public_nickname": player.public_nickname,
-                            "seat": participant.seat,
-                            "score": participant.score,
-                            "ready": participant.ready,
-                            "joined": participant.joined,
-                            "active": participant.active,
-                            "is_chair": participant.is_chair,
-                            "abandoned_at": participant.abandoned_at,
-                        }
-                        for participant, player in await session.execute(
-                            select(GameParticipantRecord, PlayerRecord)
-                            .join(
-                                PlayerRecord,
-                                PlayerRecord.id == GameParticipantRecord.player_id,
-                            )
-                            .where(GameParticipantRecord.game_id == game.id)
-                            .order_by(GameParticipantRecord.seat)
-                        )
-                    ]
-                    card["participant_count"] = len(card["participants"])
-                    card["settings"] = fields(policy)
-                    card["type"] = type_version.key
-                    card["ruleset"] = ruleset_version.key
-                    items.append(card)
+                    card = await self._game_card(session, game)
+                    if card is not None:
+                        items.append(card)
                 return {
                     "kind": "admin_management",
                     "state": "ready",
@@ -387,6 +352,98 @@ class AdminManagementService:
                     "items": await self._packet_cards(session, page),
                     "next_cursor": page[-1].id if len(versions) > limit else None,
                 }
+
+    async def game_page(
+        self, administrator_id: UUID, *, cursor: UUID | None = None, limit: int = 25,
+    ) -> dict:
+        if not 1 <= limit <= 25:
+            raise ValueError("Game page size must be between 1 and 25")
+        async with self.database.sessions() as session:
+            await _require_administrator(session, administrator_id)
+            query = (
+                select(GameRecord)
+                .where(GameRecord.status.in_(GAME_SECTION_STATUSES["past_games"]))
+                .order_by(GameRecord.created_at.desc(), GameRecord.id.desc())
+                .limit(limit + 1)
+            )
+            if cursor is not None:
+                anchor = await session.get(GameRecord, cursor)
+                if anchor is None:
+                    return {"items": [], "next_cursor": None}
+                query = query.where(or_(
+                    GameRecord.created_at < anchor.created_at,
+                    and_(
+                        GameRecord.created_at == anchor.created_at,
+                        GameRecord.id < anchor.id,
+                    ),
+                ))
+            games = tuple(await session.scalars(query))
+            page = games[:limit]
+            cards = []
+            for game in page:
+                card = await self._game_card(session, game)
+                if card is not None:
+                    cards.append(card)
+            return {
+                "items": cards,
+                "next_cursor": page[-1].id if len(games) > limit else None,
+            }
+
+    @staticmethod
+    async def _game_card(session, game: GameRecord) -> dict | None:
+        tournament = await session.get(TournamentRecord, game.tournament_id)
+        policy = await session.get(
+            TournamentPolicyVersionRecord, game.tournament_policy_version_id
+        )
+        host = await session.get(PlayerRecord, game.host_player_id)
+        type_version = await session.get(
+            TournamentTypeVersionRecord, game.tournament_type_version_id
+        )
+        ruleset_version = await session.get(
+            GameRulesetVersionRecord, game.game_ruleset_version_id
+        )
+        if (
+            tournament is None
+            or policy is None
+            or host is None
+            or type_version is None
+            or ruleset_version is None
+        ):
+            return None
+        card = fields(game)
+        card["name"] = tournament.name
+        card["tournament"] = {"id": tournament.id, "name": tournament.name}
+        card["host"] = {
+            "id": host.id,
+            "public_nickname": host.public_nickname,
+        }
+        card["participants"] = [
+            {
+                "id": player.id,
+                "public_nickname": player.public_nickname,
+                "seat": participant.seat,
+                "score": participant.score,
+                "ready": participant.ready,
+                "joined": participant.joined,
+                "active": participant.active,
+                "is_chair": participant.is_chair,
+                "abandoned_at": participant.abandoned_at,
+            }
+            for participant, player in await session.execute(
+                select(GameParticipantRecord, PlayerRecord)
+                .join(
+                    PlayerRecord,
+                    PlayerRecord.id == GameParticipantRecord.player_id,
+                )
+                .where(GameParticipantRecord.game_id == game.id)
+                .order_by(GameParticipantRecord.seat)
+            )
+        ]
+        card["participant_count"] = len(card["participants"])
+        card["settings"] = fields(policy)
+        card["type"] = type_version.key
+        card["ruleset"] = ruleset_version.key
+        return card
 
     @staticmethod
     async def _packet_cards(session, versions) -> list[dict]:

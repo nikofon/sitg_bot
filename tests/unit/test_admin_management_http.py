@@ -8,6 +8,7 @@ from test_miniapp_http import FakeAuth, FakeGateway
 
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminGameListOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
     AdminTournamentModerateOperation,
@@ -19,7 +20,9 @@ from sitg_bot.miniapp_http import MiniAppHttpServer
 
 
 @pytest.mark.parametrize(
-    "section", ["tournaments", "authors", "players", "packets", "link_requests"]
+    "section",
+    ["tournaments", "authors", "players", "packets", "link_requests",
+     "ongoing_games", "active_lobbies", "past_games"],
 )
 @pytest.mark.parametrize("include_items", ["true", "false"])
 async def test_management_route_resolves_requested_section(section, include_items):
@@ -69,6 +72,43 @@ async def test_admin_packet_page_is_authenticated_and_uses_version_cursor():
     assert operation.cursor == UUID(int=7) and operation.limit == 25
     policy = ACTION_POLICIES[ActionCode.ADMIN_PACKET_LIST]
     assert policy.authentication_required and policy.cursor_paginated and not policy.mutation
+
+
+async def test_admin_game_page_is_authenticated_and_uses_game_cursor():
+    class RecordingAuth(FakeAuth):
+        async def authorize_request(self, session_token, **values):
+            assert values["method"] == "GET"
+            assert values["action"] == ActionCode.ADMIN_GAME_LIST
+            assert "csrf_token" not in values
+            return await super().authorize_request(session_token, **values)
+
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(RecordingAuth(), gateway)
+    request = make_mocked_request("GET",
+        f"/api/miniapp/admin/management/past_games?cursor={UUID(int=7)}&limit=25", headers={
+            "Origin": "https://mini.example.test", "Cookie": "__Host-sitg_session=test-session",
+        })
+    match = await http.application.router.resolve(request)
+    assert match.handler == http._admin_game_page
+    response = await http._admin_game_page(request)
+    assert response.status == 200
+    operation = gateway.requests[0].operation
+    assert isinstance(operation, AdminGameListOperation)
+    assert operation.cursor == UUID(int=7) and operation.limit == 25
+    policy = ACTION_POLICIES[ActionCode.ADMIN_GAME_LIST]
+    assert policy.authentication_required and policy.cursor_paginated and not policy.mutation
+
+
+@pytest.mark.parametrize("values", [{"limit": 0}, {"limit": 26}, {"cursor": "invalid"}])
+def test_admin_game_page_validation(values):
+    with pytest.raises(ValidationError):
+        AdminGameListOperation(action=ActionCode.ADMIN_GAME_LIST, **values)
+
+
+@pytest.mark.parametrize("values", [{}, {"cursor": None, "limit": 1}])
+def test_admin_game_page_defaults(values):
+    operation = AdminGameListOperation(action=ActionCode.ADMIN_GAME_LIST, **values)
+    assert operation.cursor is None and 1 <= operation.limit <= 25
 
 
 @pytest.mark.parametrize("values", [{"limit": 0}, {"limit": 26}, {"cursor": "invalid"}])

@@ -509,7 +509,7 @@
   "lobby.info.status_ready": "готов",
   "lobby.info.status_unready": "не готов",
   "lobby.info.packets": "Выбранные пакеты:",
-  "lobby.info.settings_prompt": "Просматривать настройки лобби и пакеты может любой участник; изменять их — только владелец.",
+  "lobby.info.settings_prompt": "Просматривать настройки лобби и пакеты может любой участник; изменять их — только владелец.\n<b>Для запуска игры со случайным пакетом</b> прожмите готовность и запустите игру не выбирая пакет",
   "game.info.tournament": "Турнир: {tournament}",
   "game.info.packets": "Пакеты: {packets}",
   "game.info.players": "Игроки: {players}",
