@@ -133,7 +133,18 @@ from sitg_bot.application.contracts import (
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
     TournamentSubscriptionsUpdateOperation,
+    TrainingAccessOperation,
+    TrainingActOperation,
+    TrainingCurrentOperation,
+    TrainingDraftDecideOperation,
+    TrainingDraftOperation,
+    TrainingPacketListOperation,
+    TrainingRetireOperation,
+    TrainingStartOperation,
+    TrainingUploadOperation,
+    TrainingViewOperation,
 )
+from sitg_bot.domain.training import TrainingSettings
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.admin_management import AdminManagementService
 from sitg_bot.services.author_links import AuthorLinkService
@@ -155,6 +166,7 @@ from sitg_bot.services.token_requests import (
 )
 from sitg_bot.services.tournament_profiles import TournamentProfileService
 from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.services.training import TrainingService
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
@@ -272,6 +284,28 @@ BAN_EXEMPT_ACTIONS = frozenset(
 ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
+        ActionCode.TRAINING_PACKETS: ActionPolicy(cursor_paginated=True),
+        ActionCode.TRAINING_CURRENT: ActionPolicy(sensitive_response=True),
+        ActionCode.TRAINING_VIEW: ActionPolicy(sensitive_response=True),
+        ActionCode.TRAINING_DRAFT: ActionPolicy(sensitive_response=True),
+        ActionCode.TRAINING_START: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True,
+        ),
+        ActionCode.TRAINING_ACT: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            sensitive_response=True,
+        ),
+        ActionCode.TRAINING_UPLOAD: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True,
+        ),
+        ActionCode.TRAINING_DRAFT_DECIDE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            sensitive_response=True,
+        ),
+        ActionCode.TRAINING_RETIRE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.TRAINING_ACCESS: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True,
+        ),
         ActionCode.GAME_ACT: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.GAME_OBSERVE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.CHAT_SEND: ActionPolicy(mutation=True, idempotency_required=True),
@@ -518,6 +552,7 @@ class ApplicationGateway:
         admin_authentication: PlatformAdminAuthenticationService | None = None,
         launch_references: LaunchReferenceService | None = None,
         packets: PacketAdminService | None = None,
+        training: TrainingService | None = None,
         minimum_client_version: str = "1.0.0",
         idempotency_lease: timedelta = timedelta(minutes=5),
     ) -> None:
@@ -547,6 +582,7 @@ class ApplicationGateway:
         self.packets = packets or PacketAdminService(database)
         self.packet_blocks = PacketBlockService(database)
         self.library = PacketLibraryService(database)
+        self.training = training or TrainingService(database)
         self.profiles = PlayerProfileService(database)
         self.tournament_profiles = TournamentProfileService(database)
         self.minimum_client_version = minimum_client_version
@@ -1050,6 +1086,51 @@ class ApplicationGateway:
             return await self.packets.upload_eligibility(tournament_id, player_id)
         if isinstance(operation, LibraryListOperation):
             return await self.library.list_packets(player_id)
+        if isinstance(operation, TrainingPacketListOperation):
+            return await self.training.packets.list_packets(
+                player_id, cursor=operation.cursor, limit=operation.limit, name=operation.name,
+            )
+        if isinstance(operation, TrainingCurrentOperation):
+            return await self.training.current(player_id)
+        if isinstance(operation, TrainingViewOperation):
+            return await self.training.view(player_id, operation.session_id)
+        if isinstance(operation, TrainingStartOperation):
+            return await self.training.start(
+                player_id, operation.version_id, confirm=operation.confirm,
+                settings=TrainingSettings.from_mapping(operation.settings),
+            )
+        if isinstance(operation, TrainingActOperation):
+            return await self.training.act(
+                player_id, operation.session_id, operation.command,
+                expected_version=operation.expected_version,
+                question_revision_id=operation.question_revision_id, answer=operation.answer,
+            )
+        if isinstance(operation, TrainingUploadOperation):
+            try:
+                source = base64.b64decode(operation.source_base64, validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise ValueError("Packet upload is not valid base64") from error
+            return await self.training.packets.import_upload(
+                player_id, source, operation.source_filename,
+                question_values=operation.question_values,
+            )
+        if isinstance(operation, TrainingDraftOperation):
+            return await self.training.packets.draft(player_id, operation.draft_id)
+        if isinstance(operation, TrainingDraftDecideOperation):
+            return await self.training.packets.decide_draft(
+                player_id, operation.draft_id, expected_version=operation.expected_version,
+                publish=operation.publish,
+            )
+        if isinstance(operation, TrainingRetireOperation):
+            return await self.training.packets.retire(player_id, operation.version_id)
+        if isinstance(operation, TrainingAccessOperation):
+            return await self.training.packets.access(
+                player_id, operation.version_id, confirm=operation.confirm,
+                download=operation.download,
+                request_key=hashlib.sha256(
+                    (request.metadata.idempotency_key or "").encode(),
+                ).hexdigest(),
+            )
         if isinstance(operation, TournamentPacketListOperation):
             if operation.limit is not None or not operation.include_items:
                 return await self.packet_blocks.list_tournament_packets(
@@ -1546,6 +1627,9 @@ class ApplicationGateway:
                 "exclusive_backend_process",
                 "transactional_outbox",
                 "durable_jobs",
+                "solo_training",
+                "private_training_packets",
+                "training_display_modifiers",
             ),
         )
 

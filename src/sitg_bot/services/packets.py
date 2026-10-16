@@ -107,7 +107,9 @@ class PacketAdminService:
         async with self.database.transaction() as session:
             await self.tournaments._require_manager(session, tournament_id, actor_id)
             await self.tournaments.require_modifiable(session, tournament_id)
-            await session.get(LogicalPacketRecord, packet_id, with_for_update=True)
+            logical = await session.get(LogicalPacketRecord, packet_id, with_for_update=True)
+            if logical is None or logical.scope != "tournament":
+                raise LookupError("Packet not found")
             sources = (await session.scalars(
                 select(TournamentPacketAssignmentRecord)
                 .join(TournamentManagerRecord, TournamentManagerRecord.tournament_id
@@ -825,6 +827,7 @@ class PacketAdminService:
                 )
                 .where(
                     LogicalPacketRecord.retired_at.is_(None),
+                    LogicalPacketRecord.scope == "tournament",
                     PacketVersionRecord.state == "published",
                     collapsed.in_(text_forms),
                 )
@@ -884,6 +887,8 @@ class PacketAdminService:
             draft = await session.get(PacketDraftRecord, draft_id)
             if draft is None:
                 raise LookupError("Packet draft not found")
+            if draft.scope == "training":
+                raise PermissionError("Private drafts require owner authorization")
             return {
                 "id": str(draft.id),
                 "status": draft.status,
@@ -1070,6 +1075,8 @@ class PacketAdminService:
             )
             if draft is None:
                 raise LookupError("Packet draft not found")
+            if draft.scope == "training":
+                raise PermissionError("Private drafts require training operations")
             if actor_id is not None:
                 context = await self.tournaments.context(session, draft.creation_tournament_id)
                 await self._require_draft_access(session, context, draft, actor_id)
@@ -1086,6 +1093,7 @@ class PacketAdminService:
         *,
         administrator_id: UUID | None = None,
         notify_bound_telegram: bool = False,
+        expected_version: int | None = None,
     ) -> StoredPacket:
         async with self.database.transaction() as session:
             draft = await session.scalar(
@@ -1093,6 +1101,17 @@ class PacketAdminService:
             )
             if draft is None:
                 raise LookupError("Packet draft not found")
+            private = draft.scope == "training"
+            if private:
+                from sitg_bot.services.training_access import require_trainee
+
+                if administrator_id != draft.uploader_id:
+                    raise LookupError("Packet draft not found")
+                await require_trainee(session, administrator_id)
+                if expected_version is None:
+                    raise ValueError("Private publication requires an expected version")
+            if expected_version is not None and expected_version != draft.version:
+                raise StaleWriteError("Packet draft has changed")
             if draft.status != "awaiting_confirmation":
                 raise ValueError("Only a validated draft awaiting confirmation can publish")
             if administrator_id is not None and draft.creation_tournament_id is not None:
@@ -1100,10 +1119,10 @@ class PacketAdminService:
                 await self._require_draft_access(session, context, draft, administrator_id)
 
             packet = self._packet_from_content(draft.content)
-            logical_packet = LogicalPacketRecord(uploader_id=draft.uploader_id)
+            logical_packet = LogicalPacketRecord(uploader_id=draft.uploader_id, scope=draft.scope)
             session.add(logical_packet)
             await session.flush()
-            operation_authors, lead_author = await self._resolve_authors(
+            operation_authors, lead_author = ({}, None) if private else await self._resolve_authors(
                 session, packet,
                 {name: UUID(value) for name, value in draft.author_bindings.items()},
                 draft.lead_author_id,
@@ -1127,8 +1146,9 @@ class PacketAdminService:
             await session.flush()
 
             for theme_position, theme in enumerate(packet.themes, 1):
-                theme_authors = [await self._author(session, name, operation_authors)
-                                 for name in theme.authors]
+                theme_authors = [] if private else [
+                    await self._author(session, name, operation_authors) for name in theme.authors
+                ]
                 theme_author_ids = tuple(dict.fromkeys(author.id for author in theme_authors))
                 logical_theme = ThemeRecord(
                     packet_id=logical_packet.id,
@@ -1148,8 +1168,10 @@ class PacketAdminService:
                 session.add(theme_revision)
                 await session.flush()
                 for question_position, question in enumerate(theme.questions, 1):
-                    question_authors = [await self._author(session, name, operation_authors)
-                                        for name in question.authors]
+                    question_authors = [] if private else [
+                        await self._author(session, name, operation_authors)
+                        for name in question.authors
+                    ]
                     question_author_ids = tuple(dict.fromkeys(
                         author.id for author in question_authors
                     )) or theme_author_ids
@@ -1188,6 +1210,12 @@ class PacketAdminService:
             draft.confirmed_by_id = administrator_id
             draft.confirmed_at = datetime.now(UTC)
             draft.published_version_id = version.id
+            if private:
+                draft.version += 1
+                await session.flush()
+                stored = await PostgresPacketRepository().get(session, version.id)
+                assert stored is not None
+                return stored
             intended_tournaments = tuple(
                 (
                     await session.execute(
@@ -1293,6 +1321,8 @@ class PacketAdminService:
             draft = await session.get(PacketDraftRecord, draft_id)
             if draft is None:
                 raise LookupError("Packet draft not found")
+            if draft.scope == "training":
+                raise PermissionError("Private drafts require training operations")
             context = await self.tournaments.context(session, draft.creation_tournament_id)
             manager = await self._require_draft_access(session, context, draft, actor_id)
             if content_access and not manager and draft.status == "published":
@@ -1359,7 +1389,7 @@ class PacketAdminService:
         """Set the manager-controlled packet library release gate."""
         async with self.database.transaction() as session:
             packet = await session.get(LogicalPacketRecord, packet_id)
-            if packet is None:
+            if packet is None or packet.scope != "tournament":
                 raise LookupError("Packet not found")
             administrator = await session.get(PlatformAdministratorRecord, actor_id)
             is_administrator = administrator is not None and administrator.revoked_at is None

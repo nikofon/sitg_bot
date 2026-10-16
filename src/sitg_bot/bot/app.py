@@ -47,6 +47,7 @@ from sitg_bot.bot.middleware import (
 )
 from sitg_bot.bot.router import root_router
 from sitg_bot.bot.state import BotBackend
+from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.config import Settings
 
 
@@ -197,12 +198,16 @@ async def run_polling(settings: Settings) -> None:
                 (await bot.get_me()).username,
             )
             dependencies.backend.game_delivery = game_delivery
+            training_delivery = TrainingDelivery(bot, dependencies.localization, protocol)
+            dependencies.backend.training_delivery = training_delivery
             lobby_delivery = LobbyDelivery(
                 bot, dependencies.localization, protocol, settings.mini_app_base_url,
                 game_delivery.bot_username,
             )
             dependencies.backend.lobby_delivery = lobby_delivery
             handlers = {
+                "training.changed": training_delivery,
+                "telegram.training.document": training_delivery.document,
                 "telegram.lobby.refresh": lobby_delivery,
                 "telegram.library.document": library_document_delivery_handler(bot),
                 "telegram.chat.message": chat_delivery_handler(

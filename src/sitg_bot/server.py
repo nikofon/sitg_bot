@@ -156,6 +156,7 @@ class ConsoleApplicationServer:
             self.jobs,
             {
                 "game.deadline": self._job_game_deadline,
+                "training.deadline": self._job_training_deadline,
                 "appeal.deadline": self._job_appeal_deadline,
                 "lobby.expire": self._job_lobby_expire,
                 "rating.settlement": self._job_rating_settlement,
@@ -377,6 +378,25 @@ class ConsoleApplicationServer:
                 state["launch_reference"] = reference.value
                 state["expires_at"] = reference.expires_at.isoformat()
             return state
+        if action == "telegram.training.document":
+            self._require_adapter(connection, channel="telegram_bot")
+            owner_id = self._uuid(params, "owner_id")
+            result = await self.application_gateway.training.packets.access(
+                owner_id, self._uuid(params, "version_id"), confirm=True, download=False,
+                request_key="delivery",
+            )
+            async with self.database.sessions() as session:
+                player = await session.get(PlayerRecord, owner_id)
+                return {**result, "recipient_telegram_user_id": player.telegram_user_id}
+        if action in {"telegram.training.delivery", "telegram.training.record"}:
+            self._require_adapter(connection, channel="telegram_bot")
+            presentation = params.get("presentation")
+            if action == "telegram.training.record" and not isinstance(presentation, dict):
+                raise ValueError("Invalid training presentation")
+            return await self.application_gateway.training.delivery(
+                self._uuid(params, "owner_id"), self._uuid(params, "session_id"),
+                presentation=presentation if action == "telegram.training.record" else None,
+            )
         if action == "telegram.chat.delivery":
             self._require_adapter(connection, channel="telegram_bot")
             if params["payload"].get("scope") == "tournament_chat":
@@ -1654,6 +1674,9 @@ class ConsoleApplicationServer:
         transition = await self.games.progress_due(game_id)
         if transition.accepted:
             await self._broadcast_game(game_id)
+
+    async def _job_training_deadline(self, payload: dict[str, Any]) -> None:
+        await self.application_gateway.training.tick(UUID(str(payload["session_id"])))
 
     async def _job_appeal_deadline(self, payload: dict[str, Any]) -> None:
         game_id = UUID(str(payload["game_id"]))

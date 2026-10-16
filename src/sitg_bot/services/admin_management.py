@@ -84,7 +84,9 @@ class AdminManagementService:
             if section == "packets":
                 if include_items:
                     versions = tuple(await session.scalars(
-                        select(PacketVersionRecord).order_by(PacketVersionRecord.id)
+                        select(PacketVersionRecord).join(LogicalPacketRecord).where(
+                            LogicalPacketRecord.scope == "tournament"
+                        ).order_by(PacketVersionRecord.id)
                     ))
                     items = await self._packet_cards(session, versions)
                 return {
@@ -377,7 +379,9 @@ class AdminManagementService:
             await _require_administrator(session, administrator_id)
             async with background_packet_batch():
                 query = (
-                    select(PacketVersionRecord).order_by(PacketVersionRecord.id).limit(limit + 1)
+                    select(PacketVersionRecord).join(LogicalPacketRecord).where(
+                        LogicalPacketRecord.scope == "tournament"
+                    ).order_by(PacketVersionRecord.id).limit(limit + 1)
                 )
                 if cursor is not None:
                     query = query.where(PacketVersionRecord.id > cursor)

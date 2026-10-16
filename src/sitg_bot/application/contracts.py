@@ -67,6 +67,16 @@ class ActionCode(StrEnum):
     LIBRARY_LIST = "library.list.v1"
     LIBRARY_VIEW = "library.view.v1"
     LIBRARY_DOWNLOAD = "library.download.v1"
+    TRAINING_PACKETS = "training.packets.list.v1"
+    TRAINING_UPLOAD = "training.packets.upload.v1"
+    TRAINING_DRAFT = "training.drafts.get.v1"
+    TRAINING_DRAFT_DECIDE = "training.drafts.decide.v1"
+    TRAINING_RETIRE = "training.packets.retire.v1"
+    TRAINING_ACCESS = "training.packets.access.v1"
+    TRAINING_START = "training.start.v1"
+    TRAINING_CURRENT = "training.current.v1"
+    TRAINING_VIEW = "training.view.v1"
+    TRAINING_ACT = "training.act.v1"
     PLAYER_LIST = "players.list.v1"
     PLAYER_PROFILE = "players.profile.get.v1"
     PLAYER_GAME_RESULTS = "players.game_results.get.v1"
@@ -220,7 +230,7 @@ class NavigationSnapshotOperation(ContractModel):
 
 class NavigationModeSetOperation(ContractModel):
     action: Literal[ActionCode.NAVIGATION_MODE_SET]
-    mode: Literal["player", "manager", "admin"]
+    mode: Literal["player", "manager", "admin", "training"]
     expected_version: int = Field(ge=0)
 
 
@@ -596,6 +606,71 @@ class TournamentStartOperation(ManagementSnapshotOptions):
     action: Literal[ActionCode.TOURNAMENT_START]
     tournament_id: UUID | None = None
     expected_version: int = Field(ge=1)
+
+
+class TrainingPacketListOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_PACKETS]
+    cursor: UUID | None = None
+    limit: int = Field(default=25, ge=1, le=25)
+    name: str = Field(default="", max_length=200)
+
+
+class TrainingUploadOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_UPLOAD]
+    source_filename: str = Field(min_length=1, max_length=500)
+    source_base64: str = Field(min_length=1, max_length=5_592_408, repr=False)
+    question_values: tuple[int, ...] = (10, 20, 30, 40, 50)
+
+
+class TrainingDraftOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_DRAFT]
+    draft_id: UUID
+
+
+class TrainingDraftDecideOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_DRAFT_DECIDE]
+    draft_id: UUID
+    expected_version: int = Field(ge=1)
+    publish: bool = Field(strict=True)
+
+
+class TrainingRetireOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_RETIRE]
+    version_id: UUID
+
+
+class TrainingAccessOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_ACCESS]
+    version_id: UUID
+    confirm: bool = Field(default=False, strict=True)
+    download: bool = Field(default=False, strict=True)
+
+
+class TrainingStartOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_START]
+    version_id: UUID
+    confirm: bool = Field(default=False, strict=True)
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class TrainingCurrentOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_CURRENT]
+
+
+class TrainingViewOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_VIEW]
+    session_id: UUID
+
+
+class TrainingActOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_ACT]
+    session_id: UUID
+    expected_version: int = Field(ge=1)
+    question_revision_id: UUID
+    command: Literal[
+        "buzz", "answer", "reveal", "skip", "pause", "resume", "stop", "next", "continue"
+    ]
+    answer: str | None = Field(default=None, max_length=4000)
 
 
 class LibraryListOperation(ContractModel):
@@ -1127,6 +1202,16 @@ GatewayOperation = Annotated[
     | TournamentPacketListOperation
     | PacketBlockOperation
     | LibraryListOperation
+    | TrainingPacketListOperation
+    | TrainingUploadOperation
+    | TrainingDraftOperation
+    | TrainingDraftDecideOperation
+    | TrainingRetireOperation
+    | TrainingAccessOperation
+    | TrainingStartOperation
+    | TrainingCurrentOperation
+    | TrainingViewOperation
+    | TrainingActOperation
     | LibraryAccessOperation
     | PlayerListOperation
     | PlayerProfileOperation

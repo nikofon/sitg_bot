@@ -239,3 +239,4 @@ class NavigationState(FrontendState):
     allowed_actions: tuple[str, ...]
     ban_reason: str | None = None
     active_chat: NavigationChatState | None = None
+    active_training_id: UUID | None = None

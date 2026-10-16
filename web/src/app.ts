@@ -53,6 +53,7 @@ import { renderTournamentPackets } from "./ui/tournament-packets";
 import { PacketLoader, type PacketPage } from "./ui/packet-loading";
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
+import { renderTraining } from "./ui/training";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderTournamentProfile } from "./ui/tournament";
 import { renderClassicSeeding } from "./ui/classic-seeding";
@@ -200,6 +201,10 @@ export class MiniAppShell {
   }
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
+    if ("kind" in payload.resource && payload.resource.kind === "training" && this.request) {
+      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal));
+      return;
+    }
     if (route.id === "players" && "kind" in payload.resource && payload.resource.kind === "players") {
       this.renderFrame(route, renderPlayers(
         payload.resource, this.i18n, route.query, (path) => this.router.navigate(path),

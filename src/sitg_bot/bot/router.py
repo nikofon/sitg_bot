@@ -13,12 +13,14 @@ from sitg_bot.bot.handlers import (
     registration,
     tournament_chat,
     tournament_registration,
+    training,
 )
 
 root_router = Router(name="root")
 root_router.include_router(common.router)
 root_router.include_router(navigation.router)
 root_router.include_router(registration.router)
+root_router.include_router(training.router)
 root_router.include_router(chat.commands)
 root_router.include_router(tournament_chat.commands)
 root_router.include_router(game.router)

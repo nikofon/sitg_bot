@@ -645,6 +645,58 @@ export interface PageCursor {
   next?: string;
 }
 
+export interface TrainingSession {
+  id: string;
+  version: number;
+  presentation_version?: number;
+  status: "active" | "paused" | "completed" | "stopped";
+  phase: "reading" | "waiting" | "answering" | "revealed" | "best_buzz";
+  packet_version_id: string;
+  question_revision_id: string;
+  question_index: number;
+  theme: string;
+  value: number;
+  text: string;
+  hidden: boolean;
+  token_cursor: number;
+  deadline: string | null;
+  hidden_deadline: string | null;
+  settings: Record<string, unknown>;
+  answer?: string;
+  commentary?: string;
+  correct?: boolean | null;
+  outcome?: string | null;
+}
+
+export interface TrainingResult {
+  session?: TrainingSession | null;
+  confirmation_required?: boolean;
+  fresh_unit_count?: number;
+  preparation?: string;
+}
+
+export interface TrainingResource extends TrainingResult {
+  kind: "training";
+  state: "ready";
+}
+
+export interface TrainingPacket {
+  id: string;
+  packet_id: string;
+  name: string;
+  year: number | null;
+  scope: "training" | "tournament";
+}
+
+export interface TrainingDraft {
+  draft_id: string;
+  version: number;
+  status: string;
+  packet: Record<string, unknown>;
+  errors: string[];
+  warnings: string[];
+}
+
 export interface LibraryPacket {
   packet_id: string;
   version_id: string;
@@ -890,6 +942,7 @@ export interface RoutePayload {
     | OngoingResource
     | PacketDraftResource
     | LibraryResource
+    | TrainingResource
     | PlayerProfileResource
     | PlayersResource
     | PlayerGameResource

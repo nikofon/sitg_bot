@@ -187,7 +187,7 @@ class PlayerTelegramNavigationRecord(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("interaction_mode IN ('player', 'manager', 'admin')"),
+        CheckConstraint("interaction_mode IN ('player', 'manager', 'admin', 'training')"),
         CheckConstraint("version >= 1"),
     )
 
@@ -892,9 +892,10 @@ class PacketDraftRecord(Base, TimestampMixin):
     validation_errors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     validation_warnings: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
     uploader_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
-    creation_tournament_id: Mapped[UUID] = mapped_column(
-        ForeignKey("tournaments.id"), nullable=False
+    scope: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="tournament", server_default="tournament"
     )
+    creation_tournament_id: Mapped[UUID | None] = mapped_column(ForeignKey("tournaments.id"))
     confirmed_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_version_id: Mapped[UUID | None] = mapped_column(
@@ -917,6 +918,10 @@ class PacketDraftRecord(Base, TimestampMixin):
             "'validation_failed', 'rejected', 'published')"
         ),
         CheckConstraint("version >= 1"),
+        CheckConstraint(
+            "(scope = 'tournament' AND creation_tournament_id IS NOT NULL) OR "
+            "(scope = 'training' AND creation_tournament_id IS NULL AND uploader_id IS NOT NULL)"
+        ),
     )
 
 
@@ -925,8 +930,17 @@ class LogicalPacketRecord(Base, TimestampMixin):
 
     id: Mapped[UUID] = uuid_column()
     uploader_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    scope: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="tournament", server_default="tournament"
+    )
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     statistical_author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('tournament', 'training')"),
+        CheckConstraint("scope <> 'training' OR uploader_id IS NOT NULL"),
+        Index("ix_logical_packets_owner_scope", "uploader_id", "scope", "id"),
+    )
 
 
 class TournamentPacketAssignmentRecord(Base, TimestampMixin):
@@ -1196,6 +1210,91 @@ class PacketQuestionRecord(Base):
         UniqueConstraint("theme_revision_id", "position"),
         UniqueConstraint("theme_revision_id", "value"),
         CheckConstraint("value >= 0"),
+    )
+
+
+class TrainingSessionRecord(Base, TimestampMixin):
+    __tablename__ = "training_sessions"
+
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    packet_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("packet_versions.id"), nullable=False
+    )
+    disclosure_receipt: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    phase: Mapped[str] = mapped_column(String(24), nullable=False, default="reading")
+    question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    presentation_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    hidden_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    text_hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    best_buzz_consumed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    paused_phase: Mapped[str | None] = mapped_column(String(24))
+    paused_remaining: Mapped[float | None] = mapped_column(Numeric)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'paused', 'completed', 'stopped')"),
+        CheckConstraint("phase IN ('reading', 'waiting', 'answering', 'revealed', 'best_buzz')"),
+        CheckConstraint("version >= 1 AND question_index >= 0 AND token_cursor >= 0"),
+        Index(
+            "uq_training_active_owner", "owner_id", unique=True,
+            postgresql_where=text("status IN ('active', 'paused')"),
+        ),
+        Index("ix_training_deadline", "deadline", postgresql_where=text("status = 'active'")),
+    )
+
+
+class TrainingMemberRecord(Base):
+    __tablename__ = "training_members"
+
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("training_sessions.id"), primary_key=True)
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    seat: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    presentation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    __table_args__ = (UniqueConstraint("session_id", "seat"), CheckConstraint("seat = 0"))
+
+
+class TrainingQuestionRecord(Base):
+    __tablename__ = "training_questions"
+
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("training_sessions.id"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    question_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("question_revisions.id"), nullable=False
+    )
+    theme_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("theme_revisions.id"), nullable=False
+    )
+    value: Mapped[int] = mapped_column(Integer, nullable=False)
+    best_buzz: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    __table_args__ = (CheckConstraint("position >= 0"),)
+
+
+class TrainingAttemptRecord(Base, TimestampMixin):
+    __tablename__ = "training_attempts"
+
+    id: Mapped[UUID] = uuid_column()
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("training_sessions.id"), nullable=False)
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    question_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("question_revisions.id"), nullable=False
+    )
+    question_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text)
+    correct: Mapped[bool | None] = mapped_column(Boolean)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_cursor: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "question_index"),
+        CheckConstraint("outcome IN ('answered', 'revealed', 'skipped', 'timeout')"),
     )
 
 

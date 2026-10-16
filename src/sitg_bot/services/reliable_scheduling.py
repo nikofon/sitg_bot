@@ -4,7 +4,12 @@ from sqlalchemy import select
 
 from sitg_bot.services.reliable_delivery import DurableJobQueue
 from sitg_bot.storage.database import Database
-from sitg_bot.storage.models import AppealRecord, GameRecord, PregameLobbyRecord
+from sitg_bot.storage.models import (
+    AppealRecord,
+    GameRecord,
+    PregameLobbyRecord,
+    TrainingSessionRecord,
+)
 
 PERIODIC_JOBS = (
     ("rating.settlement", timedelta(seconds=1), 30),
@@ -29,6 +34,12 @@ class AutomaticJobScheduler:
         now = now or datetime.now(UTC)
         scheduled = 0
         async with self.database.sessions() as session:
+            training = tuple(await session.scalars(select(TrainingSessionRecord).where(
+                (TrainingSessionRecord.status == "active")
+                | ((TrainingSessionRecord.status == "paused")
+                   & TrainingSessionRecord.hidden_deadline.is_not(None)
+                   & TrainingSessionRecord.text_hidden.is_(False)),
+            )))
             games = tuple(
                 (
                     await session.execute(
@@ -60,6 +71,17 @@ class AutomaticJobScheduler:
                 ).scalars()
             )
 
+        for record in training:
+            deadline = min((value for value in (
+                record.deadline,
+                record.hidden_deadline if not record.text_hidden else None,
+            ) if value is not None), default=None)
+            if deadline is not None:
+                await self.queue.schedule(
+                    "training.deadline", self._key("training", record.id, deadline),
+                    {"session_id": str(record.id)}, scheduled_at=deadline, priority=12,
+                )
+                scheduled += 1
         for game in games:
             deadline = self._game_deadline(game)
             if deadline is None:

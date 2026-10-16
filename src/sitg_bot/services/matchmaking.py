@@ -247,6 +247,9 @@ class InvitationMatchmakingService:
                     f"Lobby capacity must be between {type_minimum} and {min(12, type_maximum)}"
                 )
             player = await self._registered_player(session, creator)
+            from sitg_bot.services.training_access import require_no_training
+
+            await require_no_training(session, player.id)
             membership = await session.get(
                 TournamentMembershipRecord, (context.tournament_id, player.id)
             )
@@ -299,6 +302,9 @@ class InvitationMatchmakingService:
                 raise LookupError("Invitation not found")
             await self._require_open(session, lobby)
             player = await self._registered_player(session, player_input)
+            from sitg_bot.services.training_access import require_no_training
+
+            await require_no_training(session, player.id)
             membership = await session.get(
                 TournamentMembershipRecord, (lobby.tournament_id, player.id)
             )

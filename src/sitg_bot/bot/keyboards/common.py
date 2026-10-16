@@ -70,6 +70,13 @@ ADMIN_MENU_ACTIONS = (
     ("mode.switch",),
 )
 
+TRAINING_MENU_ACTIONS = (
+    ("training.train",),
+    ("training.knowledge",),
+    ("training.upload",),
+    ("mode.switch",),
+)
+
 
 def registration_consent_keyboard(
     localization: LocalizationService, locale: str
@@ -109,6 +116,7 @@ def navigation_keyboard(
         "player": PLAYER_MENU_ACTIONS,
         "manager": MANAGER_MENU_ACTIONS,
         "admin": ADMIN_MENU_ACTIONS,
+        "training": TRAINING_MENU_ACTIONS,
     }
     layout = (
         PLAYER_TOURNAMENT_ACTIONS

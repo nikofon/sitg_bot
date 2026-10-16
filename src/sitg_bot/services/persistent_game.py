@@ -20,7 +20,7 @@ from sitg_bot.domain.game_rulesets import (
     GameRulesetRegistry,
     PlayUnit,
 )
-from sitg_bot.domain.game_settings import GameSettings, announcement_tokens
+from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.domain.packet import Question
 from sitg_bot.domain.rating import (
     DEFAULT_CONFIDENCE_MODEL_KEY,
@@ -266,6 +266,9 @@ class PersistentGameService:
                 raise ValueError("Packet version is not adopted by this tournament")
             players = [await self._registered_player(session, item) for item in participants]
             for player in players:
+                from sitg_bot.services.training_access import require_no_training
+
+                await require_no_training(session, player.id)
                 membership = await session.get(
                     TournamentMembershipRecord, (context.tournament_id, player.id)
                 )
@@ -1083,6 +1086,11 @@ class PersistentGameService:
             .limit(1)
         )
         self._require(other_active_game is None, "Player already belongs to another game")
+        from sitg_bot.services.training_access import require_no_training
+
+        # Serialize this entry with training start on the same account row.
+        await session.get(PlayerRecord, participant.player_id, with_for_update=True)
+        await require_no_training(session, participant.player_id)
         participant.active = True
         participant.reconnected_at = datetime.now(UTC)
         if game.phase == "question" and game.current_round_id is not None:
@@ -2546,7 +2554,7 @@ class PersistentGameService:
         assert round_record is not None
         revision = await session.get(QuestionRevisionRecord, round_record.question_revision_id)
         assert revision is not None
-        return announcement_tokens(revision.text, self._settings(game).question_token_target_chars)
+        return self._settings(game).question_tokens(revision.text)
 
     @staticmethod
     async def _next_pending_round(
@@ -3807,9 +3815,7 @@ class PersistentGameService:
                     if buzzer:
                         buzzer_id = await self._telegram_id(session, buzzer.player_id)
                 assert revision is not None and placement is not None
-                tokens = announcement_tokens(
-                    revision.text, self._settings(game).question_token_target_chars
-                )
+                tokens = self._settings(game).question_tokens(revision.text)
                 revealed_token_count = min(game.question_token_index, len(tokens))
                 visible_text = " ".join(tokens[:revealed_token_count])
                 if round_record.status == "completed":
@@ -4121,10 +4127,7 @@ class PersistentGameService:
                     revision = await session.get(
                         QuestionRevisionRecord, current.question_revision_id
                     )
-                    tokens = announcement_tokens(
-                        revision.text,
-                        PersistentGameService._settings(game).question_token_target_chars,
-                    )
+                    tokens = PersistentGameService._settings(game).question_tokens(revision.text)
                     payload["revealed_text"] = " ".join(tokens[: game.question_token_index])
                     payload["fully_announced"] = game.question_token_index >= len(tokens)
                     if kind == "player_buzzed":

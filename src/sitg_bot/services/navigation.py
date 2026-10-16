@@ -26,9 +26,10 @@ from sitg_bot.storage.models import (
     TournamentMembershipRecord,
     TournamentRecord,
     TournamentTypeVersionRecord,
+    TrainingSessionRecord,
 )
 
-INTERACTION_MODES = ("player", "manager", "admin")
+INTERACTION_MODES = ("player", "manager", "admin", "training")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,7 @@ class NavigationSnapshot:
     allowed_actions: tuple[str, ...]
     ban_reason: str | None = None
     active_chat: NavigationChat | None = None
+    active_training_id: UUID | None = None
 
 
 class TelegramNavigationService:
@@ -288,6 +290,10 @@ class TelegramNavigationService:
         )
         active_game = await self._active_game(session, account.player_id)
         active_lobby = await self._active_lobby(session, account.player_id)
+        active_training_id = await session.scalar(select(TrainingSessionRecord.id).where(
+            TrainingSessionRecord.owner_id == account.player_id,
+            TrainingSessionRecord.status.in_(("active", "paused")),
+        ))
 
         active_chat = None
         if (
@@ -310,7 +316,9 @@ class TelegramNavigationService:
             version = navigation.version
             await session.flush()
 
-        if active_game is not None and active_game.active:
+        if active_training_id is not None:
+            active_mode, context = "training", "training"
+        elif active_game is not None and active_game.active:
             active_mode = "player"
             context = "game"
         elif (
@@ -366,6 +374,7 @@ class TelegramNavigationService:
             selected_manager_tournament=selected_manager,
             active_lobby=active_lobby,
             active_game=active_game,
+            active_training_id=active_training_id,
             active_chat=active_chat,
             allowed_actions=lobby_actions
             or self._allowed_actions(
@@ -431,7 +440,7 @@ class TelegramNavigationService:
                 PlatformAdministratorRecord.revoked_at.is_(None),
             )
         )
-        modes = ["player", "manager"]
+        modes = ["player", "manager", "training"]
         if administrator is not None:
             modes.append("admin")
         return tuple(modes)
@@ -644,6 +653,8 @@ class TelegramNavigationService:
                 )
                 if selected_player is not None:
                     actions.extend(item.key for item in selected_player.capability_actions)
+        elif active_mode == "training":
+            actions.extend(("training.train", "training.upload"))
         elif active_mode == "manager":
             if context == "menu":
                 actions.append("notifications")

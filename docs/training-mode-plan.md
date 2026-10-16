@@ -3,8 +3,8 @@
 Scope: Telegram and the Mini App in this repository. Start with solo training;
 retain a path to group training. The independent website is outside this plan.
 Use **trainee** for training interactions. Existing account identifiers such as
-`player_id` remain unchanged. This document proposes implementation; no application
-code changes accompany it.
+`player_id` remain unchanged. Agent A's current backend and adapters are described
+in [training](training.md); shared ports are in [contracts](training-contracts.md).
 
 ## 1. Shared foundation and decisions
 
@@ -54,6 +54,11 @@ here instead of letting agents independently choose behavior:
    custom instructions verbatim until ambiguous dates are clarified.
 
 These decisions can remain pending while independent implementation proceeds.
+For Agent A, the agreed policies are library-confirmation exposure, live permission
+rechecks, and no simultaneous active training and normal play. Reverse word order;
+show hidden-mode text immediately for a trainee-configured duration, then hide it
+for the remaining buzz timer. Hidden and reversed may combine; Best buzz excludes
+all other modifiers for now.
 Group training, exact commercial tiers and normal-game modifier availability are
 deferred. The interfaces must support later decisions without implementing them now.
 

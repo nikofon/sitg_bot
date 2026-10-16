@@ -87,6 +87,15 @@ from sitg_bot.application.contracts import (
     TournamentRegistrationOverrideOperation,
     TournamentStartOperation,
     TournamentSubscriptionsUpdateOperation,
+    TrainingAccessOperation,
+    TrainingActOperation,
+    TrainingCurrentOperation,
+    TrainingDraftDecideOperation,
+    TrainingPacketListOperation,
+    TrainingRetireOperation,
+    TrainingStartOperation,
+    TrainingUploadOperation,
+    TrainingViewOperation,
 )
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.services.launch_references import LaunchReferenceService
@@ -151,7 +160,7 @@ class MiniAppHttpServer:
 
     @property
     def application(self) -> web.Application:
-        app = web.Application(client_max_size=5 * 1024 * 1024, middlewares=[self._headers])
+        app = web.Application(client_max_size=6 * 1024 * 1024, middlewares=[self._headers])
         app.router.add_route("OPTIONS", "/api/{path:.*}", self._options)
         app.router.add_post("/api/miniapp/session", self._create_session)
         app.router.add_post("/api/miniapp/session/refresh", self._refresh_session)
@@ -164,6 +173,10 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/authors", self._search_authors)
         app.router.add_post("/api/miniapp/authors/link", self._create_author_link)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
+        app.router.add_get("/api/miniapp/training/packets", self._training_packets)
+        app.router.add_get("/api/miniapp/training/current", self._training_current)
+        app.router.add_get("/api/miniapp/training/sessions/{session_id}", self._training_view)
+        app.router.add_post("/api/miniapp/training/{command}", self._training_mutation)
         app.router.add_get("/api/miniapp/tournaments/{tournament_id}", self._tournament_info)
         app.router.add_get("/api/miniapp/players/{player_id}", self._player_profile)
         app.router.add_get(
@@ -490,6 +503,16 @@ class MiniAppHttpServer:
         if parsed.scheme or parsed.netloc:
             return self._route_not_found()
         normalized_path = parsed.path.rstrip("/")
+        if normalized_path == "/training":
+            session, result = await self._query(
+                request, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": {"kind": "training", "state": "ready", **result.data},
+            })
         if normalized_path == "/players":
             query = parse_qs(parsed.query)
             operation = PlayerListOperation.model_validate({
@@ -1657,6 +1680,44 @@ class MiniAppHttpServer:
             **body, "action": actions[command], "version_id": request.match_info["version_id"],
         })
         _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
+    async def _training_packets(self, request: web.Request) -> web.Response:
+        operation = TrainingPacketListOperation.model_validate({
+            **request.query, "action": ActionCode.TRAINING_PACKETS,
+        })
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _training_current(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT),
+        )
+        return self._gateway_response(result)
+
+    async def _training_view(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, TrainingViewOperation(
+            action=ActionCode.TRAINING_VIEW, session_id=UUID(request.match_info["session_id"]),
+        ))
+        return self._gateway_response(result)
+
+    async def _training_mutation(self, request: web.Request) -> web.Response:
+        contracts = {
+            "start": (TrainingStartOperation, ActionCode.TRAINING_START),
+            "act": (TrainingActOperation, ActionCode.TRAINING_ACT),
+            "upload": (TrainingUploadOperation, ActionCode.TRAINING_UPLOAD),
+            "draft": (TrainingDraftDecideOperation, ActionCode.TRAINING_DRAFT_DECIDE),
+            "retire": (TrainingRetireOperation, ActionCode.TRAINING_RETIRE),
+            "access": (TrainingAccessOperation, ActionCode.TRAINING_ACCESS),
+        }
+        selected = contracts.get(request.match_info["command"])
+        if selected is None:
+            raise web.HTTPNotFound()
+        contract, action = selected
+        body = await self._json_body(request)
+        _, result = await self._mutation(
+            request, contract.model_validate({**body, "action": action}),
+        )
         return self._gateway_response(result)
 
     async def _admin_management_action(self, request: web.Request) -> web.Response:

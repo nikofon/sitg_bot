@@ -18,7 +18,7 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
         normalized_route
         not in {
             "tournaments", "history", "library", "ongoing", "authors/link", "admin/suspicion",
-            "admin/management", "authors", "players",
+            "admin/management", "authors", "players", "training",
         }
         and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
         and _TOURNAMENT_PROFILE_ROUTE.fullmatch(normalized_route) is None

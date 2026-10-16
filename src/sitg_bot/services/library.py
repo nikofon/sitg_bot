@@ -22,6 +22,7 @@ from sitg_bot.storage.models import (
     AuthorRecord,
     GameRecord,
     GameRulesetVersionRecord,
+    LogicalPacketRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
     PlayerExposureClaimRecord,
@@ -257,6 +258,9 @@ class PacketLibraryService:
             if administrator:
                 version = await session.get(PacketVersionRecord, version_id)
                 if version is None:
+                    raise LookupError("Packet version not found")
+                logical = await session.get(LogicalPacketRecord, version.packet_id)
+                if logical is None or logical.scope != "tournament":
                     raise LookupError("Packet version not found")
                 adapter = SIContentAdapter()
             elif authorized is None:

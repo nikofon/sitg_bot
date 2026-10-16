@@ -129,6 +129,17 @@ class GameSettings:
             raise ValueError(f"Unknown game setting: {sorted(unknown)[0]}")
         return replace(self, **changes)
 
+    def question_tokens(
+        self, source: str, *, modifiers: tuple[str, ...] = (),
+        policy_modifiers: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        from sitg_bot.domain.training import display_text, normal_game_modifiers
+
+        normal_game_modifiers(modifiers, allowed=policy_modifiers)
+        return announcement_tokens(
+            display_text(source, modifiers), self.question_token_target_chars,
+        )
+
     @property
     def ready_delta(self) -> timedelta:
         return timedelta(seconds=self.ready_delay)
