@@ -5,6 +5,8 @@ import { element } from "./dom";
 import { saveReminder } from "./save-reminder";
 import { preserveListPosition } from "./scroll";
 
+const GAME_SECTIONS: readonly string[] = ["ongoing_games", "active_lobbies", "past_games"];
+
 export interface AdminManagementView extends HTMLElement {
   update(items: AdminCard[], loading: boolean): void;
 }
@@ -64,7 +66,8 @@ export function renderAdminManagement(
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
   const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"] as const).map((section) => element("button", {
+    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
+      "active_lobbies", "past_games"] as const).map((section) => element("button", {
       type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
       "aria-current": resource.section === section ? "page" : undefined,
       onclick: (() => navigate(`/admin/management?section=${section}`)) as EventListener,
@@ -97,7 +100,7 @@ export function renderAdminManagement(
       add("edit_author"); add("link"); add("merge");
       if (Array.isArray(item.split_names) && item.split_names.length > 1) add("split");
     }
-    else if (resource.section === "ongoing_games") {
+    else if (GAME_SECTIONS.includes(resource.section)) {
       profile = typeof item.tournament === "object" && item.tournament !== null
         && !Array.isArray(item.tournament)
         && typeof (item.tournament as { id?: unknown }).id === "string"
@@ -138,6 +141,8 @@ export function renderAdminManagement(
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
       link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
       ongoing_games: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "last_activity_at"],
+      active_lobbies: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "join_deadline", "last_activity_at"],
+      past_games: ["id", "tournament", "host", "status", "phase", "participant_count", "participants", "type", "ruleset", "created_at", "completed_at", "finalized_at", "last_activity_at"],
     }[resource.section];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)
@@ -158,8 +163,8 @@ export function renderAdminManagement(
     if (signal?.aborted) return;
     const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
     const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-      : resource.section === "link_requests" ? "created_at:desc"
-      : resource.section === "ongoing_games" ? "created_at:desc" : "name:asc");
+      : resource.section === "link_requests" || GAME_SECTIONS.includes(resource.section)
+        ? "created_at:desc" : "name:asc");
     const [key, direction] = order.split(":");
     const items = currentItems.filter((item) => cache.get(item.id)!.search.includes(search));
     const value = (item: AdminCard): string | number => key === "name" ? name(item) :
@@ -175,9 +180,9 @@ export function renderAdminManagement(
         ? first - second : String(first).localeCompare(String(second), i18n.locale, { numeric: true });
       return comparison * (direction === "desc" ? -1 : 1) || a.id.localeCompare(b.id);
     });
-    const summary = resource.section === "ongoing_games"
+    const summary = GAME_SECTIONS.includes(resource.section)
       ? [element("p", { className: "resource-summary" },
-        `${label("ongoing_games")}: ${currentItems.length}`)]
+        `${label(resource.section)}: ${currentItems.length}`)]
       : [];
     const nodes = [...summary, ...items.map((item) => {
       const entry = cache.get(item.id)!;
@@ -211,12 +216,14 @@ export function renderAdminManagement(
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
     link_requests: ["status", "decided_at"],
     ongoing_games: ["status", "phase", "participant_count", "last_activity_at"],
+    active_lobbies: ["status", "phase", "participant_count", "created_at", "join_deadline", "last_activity_at"],
+    past_games: ["status", "phase", "participant_count", "created_at", "completed_at", "last_activity_at"],
   }[resource.section]];
   const sort = element("select", { "aria-label": label("sort") }, ...sortKeys.flatMap((key) =>
     ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
       `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
   sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-    : resource.section === "link_requests" || resource.section === "ongoing_games"
+    : resource.section === "link_requests" || GAME_SECTIONS.includes(resource.section)
       ? "created_at:desc" : "name:asc");
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
   const update = (items: AdminCard[], nextLoading: boolean): void => {

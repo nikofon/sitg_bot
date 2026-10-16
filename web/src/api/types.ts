@@ -851,7 +851,9 @@ export type AdminSection =
   | "players"
   | "packets"
   | "link_requests"
-  | "ongoing_games";
+  | "ongoing_games"
+  | "active_lobbies"
+  | "past_games";
 export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
 export interface AdminCard {
   id: string;
@@ -863,6 +865,7 @@ export interface AdminManagementResource {
   section: AdminSection;
   items: AdminCard[];
   packets_deferred?: boolean;
+  games_deferred?: boolean;
 }
 
 export interface AdminSuspicionInspectionPayload {

@@ -145,6 +145,41 @@ describe("admin packet loading", () => {
     expect(JSON.parse(String(call[1]!.body))).toEqual({ confirm: false });
   });
 
+  it("loads past game pages progressively through the past_games endpoint", async () => {
+    window.history.replaceState({}, "", "/admin/management?section=past_games");
+    const game = (id: string): AdminCard => ({
+      id, name: "Cup", status: "completed", phase: "finished",
+      tournament: { id: "t1", name: "Cup" }, host: { id: "p1", public_nickname: "Alice" },
+      participant_count: 2,
+    });
+    const page = vi.fn<(url: URL, options?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(response({ items: [game("g1")], next_cursor: "g1" }))
+      .mockResolvedValueOnce(response({ items: [game("g2")], next_cursor: null }));
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, options) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname.endsWith("/session")) return response({
+        csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en",
+      });
+      if (url.pathname.endsWith("/routes/resolve")) {
+        return response({ locale: "en", authorization: { allowed: true }, resource: {
+          kind: "admin_management", state: "ready", section: "past_games", items: [],
+          games_deferred: true,
+        } });
+      }
+      return page(url, options);
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    const router = new Router();
+    shell = new MiniAppShell(root, new ApiClient("signed-init", fetcher), router, new TelegramPlatform(), false);
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelectorAll("article")).toHaveLength(2));
+    expect(String(fetcher.mock.calls[1]![0])).toContain("include_items=false");
+    expect(String(page.mock.calls[0]![0])).toContain("/api/miniapp/admin/management/past_games?limit=25");
+    expect(String(page.mock.calls[1]![0])).toContain("cursor=g1");
+    expect(root.textContent).toContain("Past games: 2");
+  });
+
   it("renders packet relations on demand and reuses cards across unchanged updates", () => {
     const item = { id: "cup", name: "Cup", packets: Array.from({ length: 200 }, (_, i) => ({
       id: `v${i}`, name: `Nested packet ${i}`,

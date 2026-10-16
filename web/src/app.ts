@@ -116,7 +116,8 @@ export class MiniAppShell {
       const path = encodeURIComponent(routeRequestPath(route));
       let requestPath = `/api/miniapp/routes/resolve?path=${path}`;
       if (route.id === "manager_management") requestPath += "&include_player_access=false";
-      if (route.id === "admin_management" && route.query.get("section") === "packets") {
+      if (route.id === "admin_management"
+        && ["packets", "past_games"].includes(route.query.get("section") ?? "")) {
         requestPath += "&include_items=false";
       }
       const payload = await this.api.request<RoutePayload>(
@@ -3258,12 +3259,16 @@ export class MiniAppShell {
       },
       (card, weight, button) => void this.adminTournamentWeight(route, card, weight, button), pageController.signal);
     this.renderFrame(route, content);
-    if (resource.section === "packets" && resource.packets_deferred) {
-      // PacketLoader keys logical packets elsewhere; admin cards identify individual versions.
-      type VersionCard = { packet_id: string; card: AdminCard };
-      const loader = new PacketLoader<VersionCard>(pageController.signal, async (query, pageSignal) => {
+    const deferred = resource.section === "packets" ? resource.packets_deferred
+      : resource.section === "past_games" ? resource.games_deferred : false;
+    if (deferred) {
+      // The loader keys logical packets elsewhere; admin cards identify individual entries.
+      type EntryCard = { packet_id: string; card: AdminCard };
+      const pagePath = resource.section === "packets"
+        ? "/api/miniapp/admin/management/packets" : "/api/miniapp/admin/management/past_games";
+      const loader = new PacketLoader<EntryCard>(pageController.signal, async (query, pageSignal) => {
         const page = await this.api.request<PacketPage<AdminCard>>(
-          `/api/miniapp/admin/management/packets?${query}`, { signal: pageSignal },
+          `${pagePath}?${query}`, { signal: pageSignal },
         );
         return { ...page, items: page.items.map((card) => ({ packet_id: card.id, card })) };
       }, (items, loading) => content.update(items.map((item) => item.card), loading),
