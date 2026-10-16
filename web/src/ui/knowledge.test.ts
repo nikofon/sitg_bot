@@ -42,6 +42,9 @@ const messages: Record<string, string> = {
   "knowledge.sharing.grant": "Share my collection",
   "knowledge.sharing.revoke": "Revoke",
   "knowledge.sharing.revoked": "Revoked",
+  "knowledge.sharing.permanent": "Permanent, independent copies",
+  "knowledge.sharing.count": "{count} facts copied",
+  "knowledge.sharing.received": "Received copies",
   "knowledge.dissection.title": "Packet dissection",
   "knowledge.dissection.packet": "Packet",
   "knowledge.dissection.instructions": "Instructions (optional)",
@@ -97,8 +100,8 @@ const data: KnowledgeViewData = {
   facts,
   sharing: {
     grants: [
-      { id: "grant-1", recipient_name: "Ada", revoked: false },
-      { id: "grant-2", recipient_name: "Bob", revoked: true },
+      { id: "grant-1", recipient_name: "Ada", copied_count: 3 },
+      { id: "grant-2", recipient_name: "Bob", copied_count: 2 },
     ],
   },
   dissection: {
@@ -165,7 +168,7 @@ describe("integrated knowledge editing", () => {
     expect(actions.loadFacts).toHaveBeenCalled();
   });
 
-  it("keeps shared fact details read-only when editing actions are available", async () => {
+  it("hides editing controls for non-owned references", async () => {
     const actions = { loadFacts: vi.fn(), loadFact: vi.fn().mockResolvedValue({
       id: "fact-1", title: "Shared", description: "Read-only", links: [], tags: [],
       origin: "manual", content_version: 1, editable: false, statistics: { status: "none" },
@@ -193,7 +196,8 @@ describe("knowledge library view", () => {
     expect(root.textContent).toContain("Bingo");
     expect(root.textContent).toContain("Pending calibration");
     expect(root.textContent).toContain("Denied");
-    expect(root.textContent).toContain("Revoked");
+    expect(root.textContent).toContain("Permanent, independent copies");
+    expect(root.textContent).toContain("3 facts copied");
   });
 
   it("loads the next page with the cursor and appends its items", async () => {
@@ -245,15 +249,13 @@ describe("knowledge library view", () => {
     expect(document.body.textContent).toContain("Something went wrong.");
   });
 
-  it("shares and revokes through actions", async () => {
+  it("sends permanent copies without offering revocation", async () => {
     const { actions, button, field } = render();
     field<HTMLInputElement>("Recipient name").value = "Carol";
     button("Share my collection").click();
     await flush();
     expect(actions.grant).toHaveBeenCalledWith("Carol");
-    button("Revoke").click();
-    await flush();
-    expect(actions.revoke).toHaveBeenCalledWith("grant-1");
+    expect([...document.querySelectorAll("button")].some((item) => item.textContent === "Revoke")).toBe(false);
     expect(document.body.textContent).not.toContain("Something went wrong.");
   });
 

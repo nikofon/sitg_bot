@@ -46,8 +46,8 @@ here instead of letting agents independently choose behavior:
    of access revoked during a session and active training versus normal play.
 2. Reversed text granularity; hidden-text delay, trigger and redisplay controls;
    allowed modifier combinations, especially reversed text with Best buzz.
-3. Sharing permissions; propose revocable, authenticated read-only library grants.
-   Editing, copying and public links need separate decisions.
+3. Sharing now sends permanent, recipient-owned copies. Both parties edit their
+   own facts independently; later source changes never propagate. Public links remain deferred.
 4. LLM provider/model, population/language assumptions for Common knowledge%,
    category limits/reset periods, cache-hit charging, and private upload limits.
 5. Bingo examples/calibration and the intended era in “before 1500 A.C.”; preserve
@@ -62,8 +62,9 @@ all other modifiers for now.
 Group training, exact commercial tiers and normal-game modifier availability are
 deferred. The interfaces must support later decisions without implementing them now.
 
-Integration has selected revocable read-only sharing, configurable OpenAI structured
-analysis and introductory UTC daily quotas. These defaults, provider configuration
+Integration uses permanent copy sharing and configurable OpenAI structured analysis.
+The basic free plan grants 24 themes/day each for dissection and Best buzz (UTC).
+These defaults, provider configuration
 and explicit Bingo/GotQuestions/date placeholders are recorded in the
 [integration decisions](training-knowledge-integration.md).
 
@@ -179,7 +180,7 @@ discovery. Ship backend capabilities before frontend entry points.
 ### B1. Facts, tags and sharing
 
 Model an owned knowledge collection, facts, ordered source links, trainee-created
-tags, fact/tag associations, sharing grants and statistic snapshots. Facts contain
+tags, fact/tag associations, copy lineage and statistic snapshots. Facts contain
 title, description, links, statistics and tags. Store provenance separately from
 editable text. Index ownership, normalized tag names and pagination keys; enforce
 tag ownership and association uniqueness.
@@ -190,12 +191,12 @@ and computed asynchronously. Content changes version facts and invalidate releva
 statistics without deleting historical snapshots. Editing only tags need not
 repeat statistical analysis.
 
-Implement agreed sharing with service-level recipient authorization, revocation
-and owner-only mutation. Never share private annotations or packet question/answer
-text through source metadata. Shared views expose facts and permitted external
-links, not source packet access. Use optimistic concurrency for edits.
+Sharing creates permanent recipient-owned snapshots with independent tags and
+available statistics. Repeated sends add new facts without overwriting prior copies.
+Never share private annotations or packet question/answer text through source metadata.
+Copies grant no source access. Use optimistic concurrency for owned edits.
 
-**Exit:** CRUD, tag isolation, stale edits, recipient access and revocation pass
+**Exit:** CRUD, tag isolation, stale edits, permanent copy ownership and independent edits pass
 targeted service/HTTP and PostgreSQL tests.
 
 ### B2. Automatic statistics

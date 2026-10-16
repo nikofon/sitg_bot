@@ -352,9 +352,7 @@ async def handle_knowledge_command(
     command = command.split("@")[0].lstrip("/")
     try:
         if command == "sharedfacts":
-            page = await knowledge_backend.facts_page(
-                telegram_update_claim, owner_id=UUID(args.strip())
-            )
+            page = await knowledge_backend.facts_page(telegram_update_claim)
             await send_message_model(message, facts_message(page, localization, locale))
             return
         if command in ("factadd", "factedit"):
@@ -400,12 +398,12 @@ async def handle_knowledge_command(
             )
         elif command == "factgrants":
             operation = KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
-        elif command in ("factshare", "factrevoke"):
+        elif command == "factrevoke":
+            await message.answer(localization.text("knowledge.sharing.permanent", locale))
+            return
+        elif command == "factshare":
             operation = KnowledgeSharingOperation(
-                action=ActionCode.KNOWLEDGE_GRANT
-                if command == "factshare"
-                else ActionCode.KNOWLEDGE_REVOKE,
-                **({"recipient": args} if command == "factshare" else {"grant_id": UUID(args)}),
+                action=ActionCode.KNOWLEDGE_GRANT, recipient=args,
             )
         elif command in ("tagadd", "tagrename", "tagdelete"):
             values = {}

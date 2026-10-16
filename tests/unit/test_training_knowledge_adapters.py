@@ -82,6 +82,10 @@ def test_knowledge_contracts_reject_caller_identity_and_map_quota():
         AnalysisQuotaExceededError("Exhausted"), action=ActionCode.KNOWLEDGE_DISSECT
     )
     assert error.code.value == "quota_exceeded"
+    with pytest.raises(ValidationError):
+        PacketAnalysisOperation(
+            action=ActionCode.KNOWLEDGE_DISSECT, version_id=UUID(int=1), units=1
+        )
 
 
 def test_telegram_statistics_keep_partial_counts_and_estimates_explicit():

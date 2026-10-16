@@ -1731,6 +1731,7 @@ class ApplicationGateway:
                 self.token_requests is not None or not action.value.startswith("tournament_tokens.")
             )
             and (self.admin_authentication is not None or action != ActionCode.ADMIN_AUTHENTICATE)
+            and action != ActionCode.KNOWLEDGE_REVOKE
             and (
                 self.launch_references is not None
                 or action

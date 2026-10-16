@@ -108,7 +108,7 @@ def test_fact_provenance_keeps_dissection_question_attribution():
     assert provenance.origin == "dissection"
 
 
-def test_sharing_grants_are_revocable_and_read_only():
+def test_legacy_grants_no_longer_authorize_source_collection_reads():
     granted_at = datetime(2026, 1, 1, tzinfo=UTC)
     with pytest.raises(ValueError):
         SharingGrant(
@@ -127,7 +127,7 @@ def test_sharing_grants_are_revocable_and_read_only():
     )
     assert not revoked.active()
     assert can_view_collection(OWNER, OWNER, ())
-    assert can_view_collection(RECIPIENT, OWNER, (grant,))
+    assert not can_view_collection(RECIPIENT, OWNER, (grant,))
     assert not can_view_collection(RECIPIENT, OWNER, (revoked,))
     assert not can_view_collection(STRANGER, OWNER, (grant,))
     assert not can_view_collection(STRANGER, OWNER, ())
@@ -346,4 +346,3 @@ def test_dissection_application_tracks_partial_work_for_retry():
     )
     assert clean.status == "succeeded"
     assert clean.applied_fact_ids == frozenset({UUID(int=81)})
-

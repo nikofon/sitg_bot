@@ -57,8 +57,8 @@ export interface KnowledgeFactDetail {
 }
 
 export interface KnowledgeSharing {
-  grants: Array<{ id: string; recipient_name: string; revoked: boolean }>;
-  shared?: Array<{ owner_id: string; owner_name: string }>;
+  grants: Array<{ id: string; recipient_name: string; copied_count: number }>;
+  shared?: Array<{ owner_id: string; owner_name: string; copied_count: number }>;
 }
 
 export interface KnowledgeDissection {
@@ -100,7 +100,6 @@ export interface KnowledgeActions {
   }) => Promise<KnowledgeFactsResource>;
   loadFact: (factId: string) => Promise<KnowledgeFactDetail>;
   grant: (recipient: string) => Promise<void>;
-  revoke: (grantId: string) => Promise<void>;
   dissect: (packetId: string, instructions: string, comment?: string) => Promise<void>;
 }
 
@@ -112,6 +111,9 @@ export interface KnowledgeFactInput {
 }
 
 export const knowledgeMessageKeys = [
+  "knowledge.sharing.permanent",
+  "knowledge.sharing.received",
+  "knowledge.sharing.count",
   "knowledge.create",
   "knowledge.save",
   "knowledge.delete",
@@ -398,18 +400,7 @@ function sharingSection(
   }
   for (const grant of sharing.grants) {
     const row = element("li", { className: "resource-card" }, element("span", {}, grant.recipient_name));
-    if (grant.revoked) {
-      row.append(element("span", { className: "knowledge-revoked" }, i18n.t("knowledge.sharing.revoked")));
-    } else {
-      const revoke = element("button", {
-        type: "button",
-        className: "secondary-button",
-        onclick: (() => {
-          void actions.revoke(grant.id).then(refreshSharing).catch(() => reportError(i18n.t("knowledge.error")));
-        }) as EventListener,
-      }, i18n.t("knowledge.sharing.revoke"));
-      row.append(revoke);
-    }
+    row.append(element("span", {}, i18n.t("knowledge.sharing.count", { count: grant.copied_count })));
     list.append(row);
   }
   const recipient = element("input", { "aria-label": i18n.t("knowledge.sharing.recipient") });
@@ -427,9 +418,15 @@ function sharingSection(
     }) as EventListener,
   }, i18n.t("knowledge.sharing.grant"));
   section.append(
+    element("p", {}, i18n.t("knowledge.sharing.permanent")),
     list,
     element("div", { className: "settings-form" },
       element("label", {}, i18n.t("knowledge.sharing.recipient"), recipient), grantButton),
+  );
+  if (sharing.shared?.length) section.append(
+    element("h4", {}, i18n.t("knowledge.sharing.received")),
+    element("ul", {}, ...sharing.shared.map((item) => element("li", {},
+      `${item.owner_name} · ${i18n.t("knowledge.sharing.count", { count: item.copied_count })}`))),
   );
   return section;
 }
@@ -521,7 +518,6 @@ export function renderKnowledge(
     errorText.textContent = message;
   };
   let search = data.facts.search ?? "";
-  let owner: string | undefined;
   let tagFilter = "";
   let order = data.facts.order;
   const list = element("ul", { className: "resource-list knowledge-list" });
@@ -543,7 +539,7 @@ export function renderKnowledge(
     if (!data.facts.next_cursor || loadMore.disabled) return;
     loadMore.disabled = true;
     void actions.loadFacts({ cursor: data.facts.next_cursor, search, order,
-      ...(owner ? { owner_id: owner } : {}), ...(tagFilter ? { tag: tagFilter } : {}) })
+      ...(tagFilter ? { tag: tagFilter } : {}) })
       .then((page) => {
         appendItems(page.items);
         data.facts.next_cursor = page.next_cursor;
@@ -568,7 +564,7 @@ export function renderKnowledge(
     searchInput.disabled = true;
     orderSelect.disabled = true;
     void actions.loadFacts({ search, order,
-      ...(owner ? { owner_id: owner } : {}), ...(tagFilter ? { tag: tagFilter } : {}) })
+      ...(tagFilter ? { tag: tagFilter } : {}) })
       .then((page) => {
         replaceChildren(list);
         appendItems(page.items);
@@ -605,10 +601,6 @@ export function renderKnowledge(
   }
   const pagination = element("div", { className: "knowledge-pagination" });
   if (data.facts.next_cursor !== null) pagination.append(loadMore);
-  const collection = element("select", { "aria-label": i18n.t("knowledge.shared_collections") },
-    element("option", { value: "" }, i18n.t("knowledge.own")),
-    ...(data.sharing.shared ?? []).map((item) => element("option", { value: item.owner_id }, item.owner_name)));
-  collection.addEventListener("change", () => { owner = collection.value || undefined; reload(); });
   const tagInput = element("input", { "aria-label": i18n.t("knowledge.tag_filter") });
   tagInput.addEventListener("change", () => { tagFilter = tagInput.value; reload(); });
 
@@ -616,7 +608,7 @@ export function renderKnowledge(
     element("h2", {}, i18n.t("knowledge.title")),
     errorText,
     element("div", { className: "knowledge-controls" }, searchInput, orderSelect),
-    collection, tagInput,
+    tagInput,
     element("button", { type: "button", onclick: reload as EventListener }, i18n.t("knowledge.refresh")),
     ...(actions.save ? [factForm(i18n, actions)] : []),
     total,

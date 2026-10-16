@@ -37,7 +37,6 @@ export function renderKnowledgePage(
     },
     tag: async (command, tagId, name) => { await post(command, { tag_id: tagId, ...(name ? { name } : {}) }); },
     grant: async (recipient) => { await post("grant", { recipient }); },
-    revoke: async (grantId) => { await post("revoke", { grant_id: grantId }); },
     dissect: analysis,
     loadDissections: async () => (await api.request<{ items: KnowledgeDissection["requests"] }>(
       "/api/miniapp/knowledge/dissections", { signal })).items,
@@ -55,11 +54,18 @@ export function renderKnowledgePage(
     renderKnowledge(initial, i18n, actions));
   const limits = element("p", { role: "status" });
   root.append(limits);
-  void api.request<{ features: Record<string, { enabled: boolean; remaining: number | null; reset_at: string | null }> }>(
+  void api.request<{ features: Record<string, { enabled: boolean; remaining: number | null; limit: number | null; unit: "themes" | "estimates"; reset_at: string | null }> }>(
     "/api/miniapp/training/entitlements", { signal }).then((data) => {
       if (signal.aborted) return;
       limits.textContent = i18n.t("knowledge.capabilities") + ": " + Object.entries(data.features)
-        .map(([name, feature]) => `${name}: ${feature.enabled ? feature.remaining ?? "∞" : i18n.t("knowledge.ai_unavailable")}`)
+        .map(([name, feature]) => {
+          const label = name === "dissection" ? i18n.t("knowledge.dissection.title")
+            : name === "best_buzz" ? i18n.t("training.best_buzz") : i18n.t("knowledge.common_estimates");
+          const unit = i18n.t(feature.unit === "themes" ? "knowledge.unit.themes" : "knowledge.unit.estimates");
+          const allowance = feature.enabled ? `${feature.remaining ?? "∞"}/${feature.limit ?? "∞"} ${unit}`
+            : i18n.t("knowledge.ai_unavailable");
+          return `${label}: ${allowance}`;
+        })
         .join(" · ");
     }).catch(() => { /* Views remain available while entitlement loading is retried on next visit. */ });
   return root;

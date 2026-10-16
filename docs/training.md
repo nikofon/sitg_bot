@@ -2,7 +2,7 @@
 
 Solo training uses separate session, membership, question-pin and attempt tables.
 It never creates competitive games, rating entries or tournament results.
-Run `alembic upgrade head` (through `0022_training_knowledge_ai`) before deployment.
+Run `alembic upgrade head` (through `0023_copy_sharing_theme_quotas`) before deployment.
 
 ## Access and uploads
 
@@ -61,7 +61,7 @@ is reported explicitly. Normal-game modifier hooks default to disabled.
 
 [Contracts](training-contracts.md) describe source access and Best buzz ports.
 Knowledge library is enabled in Telegram and at `/knowledge` in the Mini App.
-Facts, tags, read-only sharing, automatic dissection application and metered analysis
+Facts, tags, permanent copy sharing, automatic dissection application and metered analysis
 use persistent storage. See the [integration guide](training-knowledge-integration.md)
 for configuration, commands, limits, decisions and remaining placeholders.
 

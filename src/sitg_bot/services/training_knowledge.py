@@ -151,7 +151,7 @@ class KnowledgeApplication:
             features = {
                 feature: {
                     "enabled": True,
-                    "limit": 50 if feature == "common_knowledge" else 10,
+                    "limit": 50 if feature == "common_knowledge" else 24,
                     "reset_period": "daily",
                     "cache_hit_charging": False,
                     "queued_request_cap": 3,
@@ -281,18 +281,20 @@ class KnowledgeApplication:
             return {
                 "grants": [
                     {
-                        "id": row.grant_id,
+                        "id": row.recipient_id,
                         "recipient_id": row.recipient_id,
                         "recipient_name": names.get(row.recipient_id) or str(row.recipient_id),
-                        "revoked": row.revoked_at is not None,
+                        "permanent": True,
+                        "copied_count": row.copied_count,
                     }
                     for row in grants
                 ],
                 "shared": [
                     {
-                        "id": row.grant_id,
+                        "id": row.owner_id,
                         "owner_id": row.owner_id,
                         "owner_name": names.get(row.owner_id) or str(row.owner_id),
+                        "copied_count": row.copied_count,
                     }
                     for row in shared
                 ],
@@ -300,6 +302,20 @@ class KnowledgeApplication:
 
     async def mutate(self, actor, command, values):
         async with self.database.transaction() as session:
+            if command == "grant":
+                await require_trainee(session, actor)
+                recipient = values["recipient"]
+                try:
+                    target = await session.get(PlayerRecord, UUID(recipient))
+                except ValueError:
+                    target = await session.scalar(
+                        select(PlayerRecord).where(PlayerRecord.public_nickname == recipient)
+                    )
+                if target is None:
+                    raise LookupError("Recipient not found")
+                for owner_id in sorted({actor, target.id}):
+                    await require_trainee(session, owner_id, lock=True)
+                return await self.service(session).grant_collection_access(actor, target.id)
             await require_trainee(session, actor, lock=True)
             service = self.service(session)
             if command in ("create", "update"):
@@ -344,18 +360,6 @@ class KnowledgeApplication:
                     session, actor, detail.fact_id, detail.content_version
                 )
                 return self._detail(detail)
-            elif command == "grant":
-                recipient = values["recipient"]
-                try:
-                    recipient_id = UUID(recipient)
-                    target = await session.get(PlayerRecord, recipient_id)
-                except ValueError:
-                    target = await session.scalar(
-                        select(PlayerRecord).where(PlayerRecord.public_nickname == recipient)
-                    )
-                if target is None:
-                    raise LookupError("Recipient not found")
-                return await service.grant_collection_access(actor, target.id)
             elif command == "revoke":
                 return await service.revoke_collection_access(actor, values["grant_id"])
             elif command == "tag_create":
@@ -420,6 +424,9 @@ class KnowledgeApplication:
                 self.analysis.provider, ResponsesAnalysisProvider
             ):
                 raise AnalysisFeatureDisabledError("Training AI provider is not configured")
+            policy = await self.entitlements.policy_for(session, actor, kind)
+            if not policy.enabled:
+                raise AnalysisFeatureDisabledError(f"Feature {kind} is disabled")
             version = await session.get(PacketVersionRecord, version_id)
             player = await session.get(PlayerRecord, actor)
             language = (
@@ -468,6 +475,7 @@ class KnowledgeApplication:
                 idempotency_key=request_id,
                 private=source.scope == "training",
                 content_fingerprint=source.fingerprint,
+                units=len({question.theme_revision_id for question in source.questions}),
             )
             if row is not None:
                 row.analysis_request_id = result.request_id

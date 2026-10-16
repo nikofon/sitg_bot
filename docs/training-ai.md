@@ -73,11 +73,17 @@ and plan purchase flows are deferred.
 ## Application integration
 
 All category, ledger, request and artifact records live in shared
-`storage/models.py`; migration `0022_training_knowledge_ai` creates them.
+`storage/models.py`; migrations through `0023_copy_sharing_theme_quotas` create them.
 `KnowledgeApplication` supplies live packet/fact authorization and automatic fact
 application. Separate analysis and gameplay workers use explicit kind filters.
 Private retirement emits durable cleanup events; hourly maintenance expires
-terminal artifacts after 30 days and reconciles orphaned quota reservations.
+cached results/request records after 30 days and reconciles orphaned reservations.
+Saved facts/copies, packet uploads and pinned training sessions remain intact.
+
+The basic free plan includes separate daily budgets of 24 themes for dissection
+and 24 themes for Best buzz, resetting at midnight UTC. Each packet request reserves
+its distinct theme count; settlement and refunds use that count. Common knowledge
+continues to count individual estimates. Cache hits remain free.
 
 The configured `ResponsesAnalysisProvider` uses strict structured outputs with
 bounded response size, timeouts and concurrency. It records upstream IDs and token

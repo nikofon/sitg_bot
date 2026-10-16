@@ -211,17 +211,21 @@ class AnalysisService:
         private: bool = False,
         content_fingerprint: str | None = None,
         source_context: dict[str, Any] | None = None,
+        units: int = 1,
         now: datetime | None = None,
     ) -> AnalysisRequestView:
         """Authorize, reserve quota, persist and enqueue within one transaction."""
         if not idempotency_key:
             raise ValueError("Analysis idempotency key is required")
+        if type(units) is not int or units < 1:
+            raise ValueError("Analysis quota units must be a positive integer")
         kind = source_kind(source)
         moment = now or datetime.now(UTC)
         normalized = instructions
         descriptor = source_descriptor(source)
         descriptor["private"] = private
         descriptor.update(source_context or {})
+        descriptor["quota_units"] = units
         if content_fingerprint is not None:
             descriptor["content_fingerprint"] = content_fingerprint
         if self.source_loader is not None and hasattr(self.source_loader, "authorize_in_session"):
@@ -272,6 +276,7 @@ class AnalysisService:
             kind=kind,
             idempotency_key=idempotency_key,
             cache_hit=cache_hit,
+            units=units,
             moment=moment,
         )
         if artifact.status in ("failed", "cancelled"):
@@ -317,6 +322,7 @@ class AnalysisService:
         kind: str,
         idempotency_key: str,
         cache_hit: bool,
+        units: int,
         moment: datetime,
     ) -> None:
         """Feature authorization, queued caps, quota and cache-hit charging."""
@@ -354,6 +360,7 @@ class AnalysisService:
                 player_id=owner_player_id,
                 feature=feature,
                 request_id=idempotency_key,
+                units=units,
                 now=moment,
             )
         except FeatureDisabledError as error:
@@ -366,7 +373,7 @@ class AnalysisService:
                 player_id=owner_player_id,
                 feature=feature,
                 request_id=idempotency_key,
-                used_units=1,
+                used_units=units,
                 provider_usage=self._usage_payload(cache_hit=True),
                 now=moment,
             )
@@ -900,7 +907,7 @@ class AnalysisService:
                     player_id=row.owner_player_id,
                     feature=feature,
                     request_id=row.request_id,
-                    used_units=1,
+                    used_units=row.source.get("quota_units", 1),
                     provider_usage=self._usage_payload(),
                     now=moment,
                 )

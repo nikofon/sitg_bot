@@ -1,10 +1,10 @@
 """Trainee knowledge library service (training mode, Agent B).
 
-Facts, tags, sharing and dissection application use cases. The service talks
+Facts, tags, permanent copying and dissection application use cases. The service talks
 to a narrow repository port; ``InMemoryKnowledgeStore`` serves recorded fixtures
 and ``PostgresKnowledgeStore`` persists production collections (see
-docs/training-knowledge-integration.md). Authorization stays
-live: grants and ownership are rechecked on every call, never cached.
+docs/training-knowledge-integration.md). Ownership is rechecked on every call;
+copying never grants access to another trainee's source collection.
 """
 
 from __future__ import annotations
@@ -102,6 +102,22 @@ class GrantView:
 
 
 @dataclass(frozen=True, slots=True)
+class FactCopy:
+    source_fact_id: UUID
+    recipient_id: UUID
+    owner_id: UUID
+    fact_id: UUID
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionCopyView:
+    owner_id: UUID
+    recipient_id: UUID
+    copied_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class StatisticSnapshotView:
     snapshot_id: UUID
     fact_id: UUID
@@ -192,6 +208,16 @@ class InMemoryKnowledgeStore:
         self.grants: dict[UUID, SharingGrant] = {}
         self.requests: dict[UUID, StoredDissectionRequest] = {}
         self.snapshots: dict[UUID, StoredStatisticSnapshot] = {}
+        self.copies: dict[tuple[UUID, UUID], FactCopy] = {}
+
+    async def add_copy(self, copy: FactCopy) -> None:
+        self.copies[(copy.source_fact_id, copy.recipient_id)] = copy
+
+    async def copies_for_owner(self, owner_id: UUID) -> list[FactCopy]:
+        return [copy for copy in self.copies.values() if copy.owner_id == owner_id]
+
+    async def copies_for_recipient(self, recipient_id: UUID) -> list[FactCopy]:
+        return [copy for copy in self.copies.values() if copy.recipient_id == recipient_id]
 
     async def add_fact(self, fact: StoredFact) -> StoredFact:
         self.facts[fact.id] = fact
@@ -325,7 +351,7 @@ def dissection_candidate_from_payload(payload: Mapping[str, object]) -> Dissecti
 
 
 class KnowledgeService:
-    """Owner-scoped facts, tags, sharing grants and dissection application."""
+    """Owned facts, tags, permanent copies and dissection application."""
 
     def __init__(
         self,
@@ -346,9 +372,7 @@ class KnowledgeService:
     async def _require_view_access(self, actor_id: UUID, owner_id: UUID) -> None:
         if actor_id == owner_id:
             return
-        grants = await self.store.grants_for_recipient(actor_id)
-        if not any(grant.owner_id == owner_id and grant.active() for grant in grants):
-            raise PermissionError("Knowledge collection is not shared with this trainee")
+        raise PermissionError("Copies belong to the recipient; source collections remain private")
 
     @staticmethod
     def _require_owner(actor_id: UUID, owner_id: UUID) -> None:
@@ -631,58 +655,77 @@ class KnowledgeService:
 
     async def grant_collection_access(
         self, owner_id: UUID, recipient_id: UUID
-    ) -> GrantView:
-        """Idempotent revocable read-only grant over the whole collection."""
-        now = self._now()
-        grant = SharingGrant(
-            grant_id=uuid4(),
-            owner_id=owner_id,
-            recipient_id=recipient_id,
-            granted_at=now,
-        )
-        existing = await self.store.grants_for_recipient(recipient_id)
-        for candidate in existing:
-            if candidate.owner_id == owner_id and candidate.active():
-                return self._grant_view(candidate)
-        grant = await self.store.add_grant(grant)
-        return self._grant_view(grant)
+    ) -> CollectionCopyView:
+        """Send independent, permanent copies of the current collection.
+
+        The legacy gateway operation name is retained. Repeated sends add only
+        uncopied facts and never overwrite or resurrect a recipient's copy.
+        """
+        if owner_id == recipient_id:
+            raise ValueError("A trainee cannot copy a collection to themselves")
+        if hasattr(self.store, "copy_collection"):
+            count = await self.store.copy_collection(owner_id, recipient_id, self._now())
+            return CollectionCopyView(owner_id, recipient_id, count)
+        copied = {
+            copy.source_fact_id for copy in await self.store.copies_for_recipient(recipient_id)
+        }
+        count = 0
+        for source in await self.store.facts_for_owner(owner_id):
+            if source.deleted_at is not None or source.id in copied:
+                continue
+            tags = await self._tag_views(owner_id, source.tag_ids)
+            detail = await self.create_fact(
+                recipient_id,
+                title=source.content.title,
+                description=source.content.description,
+                links=source.content.links,
+                tag_names=[tag.name for tag in tags],
+            )
+            await self.store.add_copy(
+                FactCopy(source.id, recipient_id, owner_id, detail.fact_id, self._now())
+            )
+            if source.statistic_status == "fresh":
+                snapshots = await self.store.snapshots_for_fact(source.id)
+                current = [
+                    snapshot
+                    for snapshot in snapshots
+                    if snapshot.content_version == source.content_version
+                ]
+                if current:
+                    latest = max(current, key=lambda snapshot: snapshot.created_at)
+                    await self.record_statistics(
+                        recipient_id,
+                        detail.fact_id,
+                        mentions=latest.mentions,
+                        common=latest.common,
+                        bingo=latest.bingo,
+                    )
+            count += 1
+        return CollectionCopyView(owner_id, recipient_id, count)
 
     async def revoke_collection_access(self, owner_id: UUID, grant_id: UUID) -> GrantView:
-        grant = await self.store.get_grant(grant_id)
-        if grant is None:
-            raise LookupError("Sharing grant not found")
-        self._require_owner(owner_id, grant.owner_id)
-        if grant.active():
-            grant = SharingGrant(
-                grant_id=grant.grant_id,
-                owner_id=grant.owner_id,
-                recipient_id=grant.recipient_id,
-                granted_at=grant.granted_at,
-                revoked_at=self._now(),
-            )
-            await self.store.save_grant(grant)
-        return self._grant_view(grant)
-
-    async def list_grants(self, owner_id: UUID) -> tuple[GrantView, ...]:
-        views = [self._grant_view(grant) for grant in await self.store.grants_for_owner(owner_id)]
-        views.sort(key=lambda view: view.granted_at)
-        return tuple(views)
-
-    async def shared_collections(self, recipient_id: UUID) -> tuple[GrantView, ...]:
-        grants = await self.store.grants_for_recipient(recipient_id)
-        active = [self._grant_view(grant) for grant in grants if grant.active()]
-        active.sort(key=lambda view: view.granted_at)
-        return tuple(active)
+        raise PermissionError("Shared copies are permanent and cannot be revoked")
 
     @staticmethod
-    def _grant_view(grant: SharingGrant) -> GrantView:
-        return GrantView(
-            grant_id=grant.grant_id,
-            owner_id=grant.owner_id,
-            recipient_id=grant.recipient_id,
-            granted_at=grant.granted_at,
-            revoked_at=grant.revoked_at,
+    def _copy_summaries(copies: Iterable[FactCopy]) -> tuple[CollectionCopyView, ...]:
+        counts: dict[tuple[UUID, UUID], int] = {}
+        for copy in copies:
+            key = copy.owner_id, copy.recipient_id
+            counts[key] = counts.get(key, 0) + 1
+        return tuple(
+            CollectionCopyView(owner, recipient, count)
+            for (owner, recipient), count in sorted(counts.items())
         )
+
+    async def list_grants(self, owner_id: UUID) -> tuple[CollectionCopyView, ...]:
+        if hasattr(self.store, "copy_summaries"):
+            return await self.store.copy_summaries(owner_id=owner_id)
+        return self._copy_summaries(await self.store.copies_for_owner(owner_id))
+
+    async def shared_collections(self, recipient_id: UUID) -> tuple[CollectionCopyView, ...]:
+        if hasattr(self.store, "copy_summaries"):
+            return await self.store.copy_summaries(recipient_id=recipient_id)
+        return self._copy_summaries(await self.store.copies_for_recipient(recipient_id))
 
     @staticmethod
     def _request_view(row: StoredDissectionRequest) -> DissectionRequestView:
@@ -898,7 +941,3 @@ class KnowledgeService:
             bingo=snapshot.bingo,
             created_at=snapshot.created_at,
         )
-
-
-
-

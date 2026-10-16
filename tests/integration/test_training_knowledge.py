@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import pytest
 from conftest import create_player, seed_category
 from sqlalchemy import event, select
@@ -15,7 +17,7 @@ from sitg_bot.storage.models import KnowledgeDissectionRecord, TrainingAnalysisA
 pytestmark = pytest.mark.integration
 
 
-async def application(database, owner):
+async def application(database, owner, *, limit=100):
     settings = ProviderSettings("fake", "fixture")
     app = KnowledgeApplication(database, settings=settings)
     app.analysis = AnalysisService(
@@ -32,7 +34,7 @@ async def application(database, owner):
         {
             feature: {
                 "enabled": True,
-                "limit": 100,
+                "limit": limit,
                 "reset_period": "daily",
                 "cache_hit_charging": False,
             }
@@ -43,7 +45,7 @@ async def application(database, owner):
     return app
 
 
-async def test_persistent_crud_pagination_and_revocable_sharing(database):
+async def test_persistent_crud_pagination_and_permanent_independent_copies(database):
     owner = await create_player(database, 8101, "owner")
     recipient = await create_player(database, 8102, "reader")
     app = KnowledgeApplication(database)
@@ -66,8 +68,9 @@ async def test_persistent_crud_pagination_and_revocable_sharing(database):
     with pytest.raises(PermissionError):
         await app.detail(recipient, fact_id)
     await app.mutate(owner, "grant", {"recipient": "reader"})
-    shared = await app.detail(recipient, fact_id)
-    assert shared["editable"] is False and "provenance" not in shared
+    copied_id = (await app.facts(recipient))["items"][0]["id"]
+    shared = await app.detail(recipient, copied_id)
+    assert copied_id != fact_id and shared["editable"] is True and "provenance" not in shared
     assert shared["tags"][0]["name"] == "history"
     from sitg_bot.services.concurrency import StaleWriteError
 
@@ -79,11 +82,19 @@ async def test_persistent_crud_pagination_and_revocable_sharing(database):
             owner, "update", {"fact_id": fact_id, "expected_version": 1, "title": "Stale"}
         )
     grants = (await app.sharing(owner))["grants"]
-    await app.mutate(owner, "revoke", {"grant_id": grants[0]["id"]})
+    with pytest.raises(PermissionError, match="permanent"):
+        await app.mutate(owner, "revoke", {"grant_id": grants[0]["id"]})
     with pytest.raises(PermissionError):
         await app.detail(recipient, fact_id)
     await app.mutate(owner, "grant", {"recipient": "reader"})
-    assert (await app.detail(recipient, fact_id))["title"] == "Changed"
+    assert (await app.detail(recipient, copied_id))["title"] == "Alpha"
+    await app.mutate(
+        recipient,
+        "update",
+        {"fact_id": copied_id, "expected_version": 1, "description": "Recipient edit"},
+    )
+    assert (await app.detail(owner, fact_id))["description"] == "<kept> fact"
+    assert (await app.facts(recipient))["total"] == 2
     # Missing provider produces nullable values, not invented zeroes.
     await app.statistics_job({"owner_id": str(owner), "fact_id": str(fact_id), "version": 2})
     statistics = (await app.detail(owner, fact_id))["statistics"]
@@ -183,7 +194,7 @@ async def test_fact_page_query_count_does_not_scale_per_card(database):
         event.remove(database.engine.sync_engine, "before_cursor_execute", count)
 
 
-async def test_gateway_fact_writes_and_live_shared_reads(database):
+async def test_gateway_shares_owned_copies_and_rejects_revocation(database):
     from sitg_bot.application.contracts import ApplicationPrincipal, GatewayRequest
     from sitg_bot.application.gateway import ApplicationGateway
 
@@ -225,7 +236,13 @@ async def test_gateway_fact_writes_and_live_shared_reads(database):
     shared = await execute(
         reader, 8402, {"action": "knowledge.fact.view.v1", "fact_id": fact_id}, None
     )
-    assert shared.ok and shared.data["editable"] is False
+    assert shared.error.code.value == "forbidden"
+    copies = await execute(reader, 8402, {"action": "knowledge.facts.view.v1"}, None)
+    copied_id = copies.data["items"][0]["id"]
+    copied = await execute(
+        reader, 8402, {"action": "knowledge.fact.view.v1", "fact_id": copied_id}, None
+    )
+    assert copied.ok and copied.data["editable"] is True
     grants = await execute(owner, 8401, {"action": "knowledge.sharing.view.v1"}, None)
     revoked = await execute(
         owner,
@@ -233,7 +250,7 @@ async def test_gateway_fact_writes_and_live_shared_reads(database):
         {"action": "knowledge.grant.revoke.v1", "grant_id": grants.data["grants"][0]["id"]},
         "gateway-revoke-fact",
     )
-    assert revoked.ok
+    assert revoked.error.code.value == "forbidden"
     denied = await execute(
         reader, 8402, {"action": "knowledge.fact.view.v1", "fact_id": fact_id}, None
     )
@@ -257,3 +274,127 @@ async def test_application_server_initializes_policies_and_separates_worker_kind
         assert all(not feature.enabled for feature in capabilities.values())
     finally:
         await server.close()
+
+
+async def upload_theme_packet(app, owner, count):
+    import json
+    from uuid import UUID
+
+    result = await app.packets.import_upload(
+        owner,
+        json.dumps(
+            {
+                "name": f"Packet with {count} themes",
+                "themes": [
+                    {
+                        "name": f"Theme {theme}",
+                        "questions": [
+                            {
+                                "value": value,
+                                "text": f"Question for theme {theme} and value {value}",
+                                "answer": "Paris",
+                            }
+                            for value in (10, 20, 30, 40, 50)
+                        ],
+                    }
+                    for theme in range(count)
+                ],
+            }
+        ).encode(),
+        "themes.json",
+    )
+    draft = result["drafts"][0]
+    published = await app.packets.decide_draft(
+        owner, UUID(draft["draft_id"]), expected_version=draft["version"], publish=True
+    )
+    return UUID(published["version_id"])
+
+
+async def test_packet_analysis_charges_themes_with_independent_24_theme_daily_budgets(database):
+    from sitg_bot.services.analysis_jobs import AnalysisQuotaExceededError
+    from sitg_bot.services.training_ai import AnalysisValidationError
+    from sitg_bot.storage.models import TrainingUsagePeriodRecord
+
+    owner = await create_player(database, 8601, "theme-quota")
+    app = await application(database, owner, limit=24)
+    version = await upload_theme_packet(app, owner, 12)
+    over_budget = await upload_theme_packet(app, owner, 13)
+    dissect = await app.request_analysis(
+        owner,
+        version_id=version,
+        kind="dissection",
+        idempotency_key="twelve-themes-dissection",
+        confirm_exposure=True,
+    )
+    buzz = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", idempotency_key="twelve-themes-buzz"
+    )
+    capabilities = await app.entitlements.capabilities(owner)
+    assert capabilities["dissection"].remaining == capabilities["best_buzz"].remaining == 12
+    assert capabilities["dissection"].unit == "themes"
+    with pytest.raises(AnalysisQuotaExceededError):
+        await app.request_analysis(
+            owner,
+            version_id=over_budget,
+            kind="dissection",
+            idempotency_key="cannot-queue-thirteen",
+            confirm_exposure=True,
+        )
+    await app.analysis.cancel(owner_player_id=owner, request_id=buzz["request_id"])
+    assert (await app.entitlements.capabilities(owner))["best_buzz"].remaining == 24
+    worker = DurableJobWorker(
+        app.analysis.jobs,
+        {"training.analysis": app.analysis_job},
+        kinds=("training.analysis",),
+        batch_size=1,
+    )
+    await worker.run_once()
+    assert (
+        await app.analysis.status(owner_player_id=owner, request_id=dissect["request_id"])
+    ).status == "succeeded"
+    await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", idempotency_key="new-buzz"
+    )
+    await worker.run_once()
+    cached = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", idempotency_key="cached-buzz"
+    )
+    assert cached["status"] == "succeeded"
+    async with database.transaction() as session:
+        periods = list(
+            await session.scalars(
+                select(TrainingUsagePeriodRecord).where(
+                    TrainingUsagePeriodRecord.player_id == owner
+                )
+            )
+        )
+        assert {period.feature: (period.settled, period.reserved) for period in periods} == {
+            "dissection": (12, 0),
+            "best_buzz": (12, 0),
+        }
+    small = await upload_theme_packet(app, owner, 2)
+    app.analysis.provider.buzz_failures.append(AnalysisValidationError("Malformed provider output"))
+    failed = await app.request_analysis(
+        owner,
+        version_id=small,
+        kind="best_buzz",
+        idempotency_key="two-themes-fail",
+        confirm_exposure=True,
+    )
+    assert (await app.entitlements.capabilities(owner))["best_buzz"].remaining == 10
+    await worker.run_once()
+    assert (await app.entitlements.capabilities(owner))["best_buzz"].remaining == 12
+    assert (
+        await app.analysis.status(owner_player_id=owner, request_id=failed["request_id"])
+    ).status == "failed"
+
+    # Cache expiration does not remove saved facts, packet revisions or pinned sessions.
+    from datetime import UTC, datetime, timedelta
+
+    training = TrainingService(database, best_buzz=app)
+    started = await training.start(owner, version, settings=TrainingSettings(best_buzz=True))
+    before = (await app.facts(owner))["total"]
+    assert before == 60
+    assert await app.analysis.cleanup(before=datetime.now(UTC) + timedelta(days=1)) > 0
+    assert (await app.facts(owner))["total"] == before
+    assert (await training.view(owner, UUID(started["session"]["id"])))["session"] is not None

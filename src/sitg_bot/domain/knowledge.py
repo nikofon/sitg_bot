@@ -1,6 +1,6 @@
 """Pure rules for the trainee knowledge library (training mode, Agent B).
 
-Facts, tags, revocable read-only sharing grants, mention statistics, Common
+Facts, tags, permanent copy ownership, mention statistics, Common
 knowledge estimates, Bingo scoring and dissection candidate application rules.
 Storage, gateway operations and adapters are integrated centrally by Agent A
 per docs/training-knowledge-integration.md; these rules stay dependency-free.
@@ -169,7 +169,7 @@ class FactProvenance:
 
 @dataclass(frozen=True, slots=True)
 class SharingGrant:
-    """Revocable, read-only access to the owner's whole knowledge collection."""
+    """Historical grant record, retained only for upgrade compatibility."""
 
     grant_id: UUID
     owner_id: UUID
@@ -188,19 +188,12 @@ class SharingGrant:
 def can_view_collection(
     actor_id: UUID, owner_id: UUID, active_grants: Iterable[SharingGrant]
 ) -> bool:
-    """Owners always view; recipients only through an active grant."""
-    if actor_id == owner_id:
-        return True
-    return any(
-        grant.owner_id == owner_id
-        and grant.recipient_id == actor_id
-        and grant.active()
-        for grant in active_grants
-    )
+    """A recipient owns independent copies; source collections stay private."""
+    return actor_id == owner_id
 
 
 def can_mutate_collection(actor_id: UUID, owner_id: UUID) -> bool:
-    """Sharing grants are read-only; only the owner edits their collection."""
+    """Only the owner edits a collection, including independently received copies."""
     return actor_id == owner_id
 
 

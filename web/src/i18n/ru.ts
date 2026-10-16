@@ -1,6 +1,12 @@
 import type { MessageKey } from "./en";
 
 export const ru: Record<MessageKey, string> = {
+  "knowledge.common_estimates": "Общеизвестность",
+  "knowledge.sharing.permanent": "Передаёт постоянные редактируемые копии. Последующие изменения независимы.",
+  "knowledge.sharing.received": "Полученные копии (в вашей библиотеке)",
+  "knowledge.sharing.count": "Скопировано фактов: {count}",
+  "knowledge.unit.themes": "тем",
+  "knowledge.unit.estimates": "оценок",
   "error.feature_disabled": "Эта функция ИИ недоступна вашей категории.",
   "error.quota_exceeded": "Лимит ИИ на текущий период исчерпан.",
   "error.queued_cap_exceeded": "Дождитесь завершения анализа из очереди.",
@@ -33,10 +39,10 @@ export const ru: Record<MessageKey, string> = {
   "knowledge.statistic.mentions_partial": "Упоминаний: не менее {count}",
   "knowledge.statistic.common": "Общеизвестность (оценка ИИ): {value}%",
   "knowledge.statistic.bingo": "Бинго",
-  "knowledge.sharing.title": "Доступ к подборке",
-  "knowledge.sharing.empty": "Подборка никому не доступна.",
+  "knowledge.sharing.title": "Передача копий",
+  "knowledge.sharing.empty": "Копии ещё не отправлялись.",
   "knowledge.sharing.recipient": "Ник или ID получателя",
-  "knowledge.sharing.grant": "Поделиться подборкой",
+  "knowledge.sharing.grant": "Передать копии подборки",
   "knowledge.sharing.revoke": "Отозвать доступ",
   "knowledge.sharing.revoked": "Отозван",
   "knowledge.dissection.title": "Разбор пакетов",

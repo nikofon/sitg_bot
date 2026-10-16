@@ -3,7 +3,7 @@
 import json
 from dataclasses import asdict
 from datetime import date, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -22,6 +22,7 @@ from sitg_bot.domain.knowledge import (
     normalize_tag_name,
 )
 from sitg_bot.services.knowledge import (
+    CollectionCopyView,
     FactListItem,
     FactPage,
     StoredDissectionRequest,
@@ -33,6 +34,7 @@ from sitg_bot.services.knowledge import (
 )
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
+    KnowledgeFactCopyRecord,
     KnowledgeFactRecord,
     KnowledgeFactTagRecord,
     KnowledgeGrantRecord,
@@ -114,6 +116,141 @@ def snapshot_value(row):
 
 
 class PostgresKnowledgeStore:
+    async def copy_summaries(self, *, owner_id=None, recipient_id=None):
+        model = KnowledgeFactCopyRecord
+        condition = (
+            model.owner_id == owner_id
+            if owner_id is not None
+            else model.recipient_id == recipient_id
+        )
+        rows = await self.session.execute(
+            select(model.owner_id, model.recipient_id, func.count())
+            .where(condition)
+            .group_by(model.owner_id, model.recipient_id)
+            .order_by(model.owner_id, model.recipient_id)
+        )
+        return tuple(
+            CollectionCopyView(owner, recipient, count) for owner, recipient, count in rows
+        )
+
+    async def copy_collection(self, owner_id, recipient_id, now):
+        """Copy in bounded batches under the caller's two-account lock."""
+        total = 0
+        cursor = None
+        model = KnowledgeFactRecord
+        while True:
+            statement = select(model).where(
+                model.owner_id == owner_id,
+                model.deleted_at.is_(None),
+                ~select(KnowledgeFactCopyRecord.source_fact_id)
+                .where(
+                    KnowledgeFactCopyRecord.source_fact_id == model.id,
+                    KnowledgeFactCopyRecord.recipient_id == recipient_id,
+                )
+                .exists(),
+            )
+            if cursor is not None:
+                statement = statement.where(model.id > cursor)
+            rows = list(await self.session.scalars(statement.order_by(model.id).limit(100)))
+            if not rows:
+                break
+            cursor = rows[-1].id
+            tags = await self._tags([row.id for row in rows])
+            names = {name for source_tags in tags.values() for _, name in source_tags}
+            if names:
+                await self.session.execute(
+                    insert(KnowledgeTagRecord)
+                    .values(
+                        [
+                            {"id": uuid4(), "owner_id": recipient_id, "name": name}
+                            for name in sorted(names)
+                        ]
+                    )
+                    .on_conflict_do_nothing(index_elements=["owner_id", "name"])
+                )
+            tag_ids = dict(
+                (
+                    await self.session.execute(
+                        select(KnowledgeTagRecord.name, KnowledgeTagRecord.id).where(
+                            KnowledgeTagRecord.owner_id == recipient_id,
+                            KnowledgeTagRecord.name.in_(names),
+                        )
+                    )
+                ).all()
+            )
+            snapshots = {
+                row.fact_id: row
+                for row in await self.session.scalars(
+                    select(KnowledgeSnapshotRecord)
+                    .where(KnowledgeSnapshotRecord.fact_id.in_([row.id for row in rows]))
+                    .distinct(KnowledgeSnapshotRecord.fact_id)
+                    .order_by(
+                        KnowledgeSnapshotRecord.fact_id,
+                        KnowledgeSnapshotRecord.created_at.desc(),
+                        KnowledgeSnapshotRecord.id.desc(),
+                    )
+                )
+            }
+            facts, copies, associations, statistics = [], [], [], []
+            for row in rows:
+                copied_id = uuid4()
+                snapshot = snapshots.get(row.id)
+                fresh = (
+                    row.statistic_status == "fresh"
+                    and snapshot is not None
+                    and snapshot.content_version == row.content_version
+                )
+                facts.append(
+                    {
+                        "id": copied_id,
+                        "owner_id": recipient_id,
+                        "title": row.title,
+                        "title_key": row.title_key,
+                        "description": row.description,
+                        "links": row.links,
+                        "provenance": {"origin": "manual"},
+                        "content_fingerprint": row.content_fingerprint,
+                        "content_version": 1,
+                        "statistic_status": "fresh" if fresh else "none",
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
+                copies.append(
+                    {
+                        "source_fact_id": row.id,
+                        "recipient_id": recipient_id,
+                        "owner_id": owner_id,
+                        "fact_id": copied_id,
+                        "created_at": now,
+                    }
+                )
+                associations.extend(
+                    {"fact_id": copied_id, "tag_id": tag_ids[name], "owner_id": recipient_id}
+                    for _, name in tags.get(row.id, [])
+                )
+                if fresh:
+                    statistics.append(
+                        {
+                            "id": uuid4(),
+                            "fact_id": copied_id,
+                            "owner_id": recipient_id,
+                            "content_version": 1,
+                            "created_at": now,
+                            "mentions": snapshot.mentions,
+                            "common": snapshot.common,
+                            "bingo": snapshot.bingo,
+                        }
+                    )
+            await self.session.execute(insert(KnowledgeFactRecord), facts)
+            await self.session.execute(insert(KnowledgeFactCopyRecord), copies)
+            if associations:
+                await self.session.execute(insert(KnowledgeFactTagRecord), associations)
+            if statistics:
+                await self.session.execute(insert(KnowledgeSnapshotRecord), statistics)
+            total += len(rows)
+        return total
+
     def __init__(self, session):
         self.session = session
 

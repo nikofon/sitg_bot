@@ -1,4 +1,5 @@
 {
+  "knowledge.sharing.permanent": "Переданные факты — постоянные редактируемые копии в библиотеке получателя.",
   "knowledge.statistic.mentions_partial": "Упоминаний: не менее {count}",
   "knowledge.statistic.unavailable": "Статистика недоступна",
   "knowledge.statistic.denied": "Лимит статистики исчерпан или функция недоступна",

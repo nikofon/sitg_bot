@@ -1,15 +1,17 @@
 # Training knowledge and analysis integration
 
 B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
-metadata and migration `0022_training_knowledge_ai`. `PostgresKnowledgeStore`
+metadata and migrations through `0023_copy_sharing_theme_quotas`. `PostgresKnowledgeStore`
 implements B's repository; `KnowledgeApplication` connects persistence, source
 access, automatic fact application, statistics and Best buzz.
 
 ## Integration decisions
 
-- Collection sharing is authenticated, revocable and read-only. Shared facts
-  grant no packet rights and expose no private source metadata. Extracted facts
-  remain the owner's collection after retiring their source packet.
+- Sharing sends permanent, independently editable copies of the current collection
+  to the recipient's own library. Later edits/deletions never propagate. Repeating
+  a send adds only uncopied facts; it never overwrites or resurrects prior copies.
+  Tags and available current statistics are copied without new AI calls. Copies
+  grant no packet rights and expose no private source metadata.
 - The user's confirmed policies apply: library-confirmation exposure, live access
   checks, and no simultaneous normal play and active/paused training. Reverse
   means word order; hidden text appears immediately for a configurable duration,
@@ -19,11 +21,14 @@ access, automatic fact application, statistics and Best buzz.
 - Production uses configurable OpenAI Responses with strict structured outputs.
   No model or credential is assumed. Without configuration, ordinary training,
   manual facts, sharing and uploads remain usable; AI is unavailable.
-- New configured installations receive introductory daily allowances per trainee:
-  10 dissections, 10 Best buzz preparations and 50 Common knowledge estimates.
+- The basic free plan allows 24 themes for dissection and a separate 24 themes for
+  Best buzz per trainee per day; Common knowledge remains 50 estimates per day.
+  Packet requests reserve their distinct theme count, settle that count on success,
+  and refund it on failure/cancellation. Over-budget packets are rejected atomically.
   Reset: midnight UTC. Cache hits are free, with feature authorization still
   enforced. Each feature allows 3 queued requests and 2 concurrent computations;
-  coalesced waiters count as one computation. Existing categories are preserved.
+  coalesced waiters count as one computation. Custom categories are preserved;
+  former free defaults migrate to 24 themes. Recorded usage is not repriced.
 - Common knowledge is an LLM estimate for adults in the relevant language
   community, rather than quiz specialists. Packet language takes precedence;
   otherwise use trainee locale. Manual facts use their owner's locale.
@@ -31,7 +36,11 @@ access, automatic fact application, statistics and Best buzz.
   questions, and at most 200 extracted facts. Calls have a 120-second deadline.
   A separate worker uses an hour-long job lease. Gameplay workers claim only
   their registered kinds.
-- Terminal analysis expires after 30 days. Hourly reconciliation refunds orphan
+- Completed request/status records are pruned after 30 days; old cached AI results
+  are removed once no surviving request references them.
+  Saved facts/copies, uploads, training history and pinned session boundaries remain.
+  Expired preparations require recomputation and can use quota again. This storage
+  management default remains unchanged. Hourly reconciliation refunds orphan
   reservations older than a day, excluding active requests. Private retirement
   denies reads immediately and emits a durable event for payload/checkpoint cleanup.
 - Mentions is unavailable until supported GotQuestions access is established.
@@ -71,7 +80,7 @@ Statistics run separately with quotas; unavailable metrics never prevent saving 
 
 The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit,
 source URLs, tags, delete/merge, tag rename/delete, search, tag filtering, sorting,
-pagination, read-only sharing and dissection with comments. Job polling preserves
+pagination, permanent copy sharing and dissection with comments. Job polling preserves
 form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
@@ -86,9 +95,7 @@ detail callbacks. Native commands:
 /factdelete FACT_ID [confirm]
 /factmerge SOURCE_ID TARGET_ID TARGET_VERSION [confirm]
 /factshare NICKNAME_OR_PLAYER_ID
-/factrevoke GRANT_ID
 /factgrants
-/sharedfacts OWNER_ID
 /tagadd NAME
 /tagrename TAG_ID NAME
 /tagdelete TAG_ID
@@ -114,7 +121,11 @@ Command results retain IDs needed for subsequent edits/status reads.
 | GotQuestions | `<supported programmatic access and count semantics>` |
 | Commercial categories | Introductory defaults above; billing deferred |
 
-Tests cover migration upgrade/downgrade, PostgreSQL CRUD/sharing revocation, bounded
+The upgrade converts existing active shares into recipient-owned copies and disables
+legacy source access. Downgrading retains the copied facts. The deprecated revoke
+operation is rejected; legacy `/sharedfacts` lists the recipient's own library.
+
+Tests cover migration upgrade/downgrade, PostgreSQL CRUD/copy independence, bounded
 query counts, private isolation/cleanup, automatic fact application, Best buzz
 conversion, quotas/refunds/recovery, authenticated contracts and browser views.
 Live Telegram delivery and a configured-provider smoke test remain deployment checks.

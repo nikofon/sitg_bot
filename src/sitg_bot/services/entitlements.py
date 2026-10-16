@@ -132,9 +132,16 @@ def parse_feature_policies(payload: Mapping[str, Any]) -> dict[str, FeaturePolic
     return {feature: FeaturePolicy.from_mapping(payload[feature]) for feature in TRAINING_FEATURES}
 
 
-#: Default policy keeps all training AI features disabled until product tiers exist.
+#: Basic free allowances; provider configuration controls feature availability.
 DEFAULT_POLICY_PAYLOAD: dict[str, Any] = {
-    feature: {"enabled": False, "limit": None, "reset_period": RESET_NONE}
+    feature: {
+        "enabled": False,
+        "limit": 50 if feature == FEATURE_COMMON_KNOWLEDGE else 24,
+        "reset_period": RESET_DAILY,
+        "cache_hit_charging": False,
+        "queued_request_cap": 3,
+        "in_flight_request_cap": 2,
+    }
     for feature in TRAINING_FEATURES
 }
 
@@ -171,6 +178,7 @@ class FeatureStatus:
     cache_hit_charging: bool
     queued_request_cap: int | None
     in_flight_request_cap: int | None
+    unit: str = "themes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +223,7 @@ class EntitlementService:
             if state is None:
                 category = TrainingCategoryRecord(
                     code=DEFAULT_CATEGORY_CODE,
-                    display_name="Default",
+                    display_name="Basic free",
                     is_default=True,
                     policy_version=policy_row.version,
                 )
@@ -335,6 +343,7 @@ class EntitlementService:
                     cache_hit_charging=policy.cache_hit_charging,
                     queued_request_cap=policy.queued_request_cap,
                     in_flight_request_cap=policy.in_flight_request_cap,
+                    unit="estimates" if feature == FEATURE_COMMON_KNOWLEDGE else "themes",
                 )
             return statuses
 
@@ -652,5 +661,3 @@ class EntitlementService:
                 )
             )
         ).scalar_one_or_none()
-
-

@@ -2680,6 +2680,24 @@ class KnowledgeGrantRecord(Base):
     )
 
 
+class KnowledgeFactCopyRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_fact_copies"
+    source_fact_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    recipient_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    fact_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), unique=True)
+    __table_args__ = (
+        CheckConstraint("owner_id <> recipient_id"),
+        Index("ix_knowledge_copies_recipient_owner", "recipient_id", "owner_id"),
+        ForeignKeyConstraint(
+            ["source_fact_id", "owner_id"], ["knowledge_facts.id", "knowledge_facts.owner_id"]
+        ),
+        ForeignKeyConstraint(
+            ["fact_id", "recipient_id"], ["knowledge_facts.id", "knowledge_facts.owner_id"]
+        ),
+    )
+
+
 class KnowledgeDissectionRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_dissection_requests"
     id: Mapped[UUID] = uuid_column()
