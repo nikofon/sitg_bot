@@ -10,6 +10,7 @@ const REFRESH_PATH = "/api/miniapp/session/refresh";
 const REFRESH_WINDOW_MS = 60_000;
 
 const stableCodes = new Set<StableErrorCode>([
+  "feature_disabled", "quota_exceeded", "queued_cap_exceeded",
   "authentication_required",
   "forbidden",
   "not_found",

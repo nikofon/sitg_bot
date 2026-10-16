@@ -160,6 +160,31 @@ export function renderTraining(
       replaceChildren(list, ...packets.map((packet) => element("article", { className: "card" },
         element("h3", {}, packet.name), element("button", { type: "button",
           onclick: (() => void start(packet)) as EventListener }, i18n.t("training.train")),
+        element("button", { type: "button", onclick: (async () => {
+          try {
+            const body = { version_id: packet.id, confirm_exposure: false };
+            let job = await api.request<{ confirmation_required?: boolean; request_id?: string }>(
+              "/api/miniapp/knowledge/best_buzz", { method: "POST", body, signal });
+            if (job.confirmation_required && window.confirm(i18n.t("knowledge.confirm_exposure"))) {
+              job = await api.request("/api/miniapp/knowledge/best_buzz", {
+                method: "POST", body: { ...body, confirm_exposure: true }, signal });
+            }
+            if (job.request_id) {
+              notice.textContent = i18n.t("knowledge.dissection.status.queued");
+              const poll = async (): Promise<void> => {
+                if (signal.aborted) return;
+                try {
+                  const status = await api.request<{ status: string }>(
+                    `/api/miniapp/training/analysis?request_id=${encodeURIComponent(job.request_id ?? "")}`, { signal });
+                  if (signal.aborted) return;
+                  notice.textContent = i18n.t(`knowledge.dissection.status.${status.status}` as MessageKey);
+                  if (["queued", "running"].includes(status.status)) window.setTimeout(() => { void poll(); }, 2000);
+                } catch (error) { failure(error); }
+              };
+              void poll();
+            }
+          } catch (error) { failure(error); }
+        }) as EventListener }, i18n.t("training.prepare")),
         ...[false, true].map((download) => element("button", { type: "button", onclick: (async () => {
           try {
             let result = await post<LibraryAccess>("access", { version_id: packet.id, confirm: false, download });
@@ -217,7 +242,8 @@ export function renderTraining(
       }
     } catch (error) { failure(error); }
   })());
-  root.append(notice, play, settings, element("h2", {}, i18n.t("training.train")), search, list, reader,
+  root.append(element("a", { href: "/knowledge" }, i18n.t("training.knowledge")),
+    notice, play, settings, element("h2", {}, i18n.t("training.train")), search, list, reader,
     element("h2", {}, i18n.t("training.upload")), element("label", {}, i18n.t("training.question_values"), values), file, drafts);
   signal.addEventListener("abort", () => { window.clearTimeout(timer); window.clearTimeout(hideTimer); }, { once: true });
   renderSession(); schedule(); loader.start({});

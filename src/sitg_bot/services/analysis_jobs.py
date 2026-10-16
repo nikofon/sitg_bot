@@ -10,34 +10,20 @@ under compute leases; stale completions are fenced by lease tokens.
 
 import asyncio
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    MetaData,
-    String,
-    Text,
-    UniqueConstraint,
     delete,
     func,
     select,
-    text,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.services.entitlements import (
@@ -53,6 +39,7 @@ from sitg_bot.services.training_ai import (
     ANALYSIS_BEST_BUZZ,
     ANALYSIS_COMMON_KNOWLEDGE,
     ANALYSIS_DISSECTION,
+    PROVIDER_CALL_METADATA,
     BuzzBoundary,
     BuzzRequest,
     CommonKnowledgeRequest,
@@ -74,7 +61,12 @@ from sitg_bot.services.training_ai import (
     validate_fact_candidates,
 )
 from sitg_bot.storage.database import Database
-from sitg_bot.storage.models import DurableJobRecord
+from sitg_bot.storage.models import (
+    Base,
+    DurableJobRecord,
+    TrainingAnalysisArtifactRecord,
+    TrainingAnalysisRequestRecord,
+)
 
 #: Durable job kind claimed only by analysis workers (kind-filtered claims).
 TRAINING_ANALYSIS_JOB_KIND = "training.analysis"
@@ -88,148 +80,8 @@ FEATURE_BY_KIND = {
 REQUEST_ACTIVE_STATUSES = ("queued", "running")
 
 
-def _check_digest(constraint: Any, table: Any) -> str:
-    return sha256(str(constraint.sqltext).encode()).hexdigest()[:12]
-
-
-ANALYSIS_METADATA = MetaData(
-    naming_convention={
-        "ix": "ix_%(column_0_label)s",
-        "ck": "ck_%(table_name)s_%(check_digest)s",
-        "check_digest": _check_digest,
-    }
-)
-
-
-def _uuid_column() -> Mapped[UUID]:
-    return mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-
-
-class AnalysisBase(DeclarativeBase):
-    metadata = ANALYSIS_METADATA
-
-
-class TrainingAnalysisArtifactRecord(AnalysisBase):
-    """An immutable validated analysis artifact, coalesced by unique key.
-
-    ``owner_player_id`` is only null for shared base dissections (empty
-    instructions); custom instructions and every private source stay
-    owner-scoped even when their content hashes match another packet.
-    """
-
-    __tablename__ = "training_analysis_artifacts"
-
-    id: Mapped[UUID] = _uuid_column()
-    artifact_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    kind: Mapped[str] = mapped_column(String(30), nullable=False)
-    shared: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
-    )
-    owner_player_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("players.id")
-    )
-    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    instruction_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    language: Mapped[str] = mapped_column(String(8), nullable=False)
-    model: Mapped[str] = mapped_column(String(100), nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(30), nullable=False)
-    schema_version: Mapped[str] = mapped_column(String(30), nullable=False)
-    tokenizer_version: Mapped[str] = mapped_column(String(30), nullable=False)
-    generation: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default=text("1")
-    )
-    status: Mapped[str] = mapped_column(
-        String(24), nullable=False, default="pending", server_default=text("'pending'")
-    )
-    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    lease_token: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    provider_request_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    provider_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    last_error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        UniqueConstraint("artifact_key", name="uq_training_analysis_artifacts_key"),
-        CheckConstraint("kind IN ('dissection', 'best_buzz', 'common_knowledge')"),
-        CheckConstraint("generation >= 1"),
-        CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'partially_succeeded', "
-            "'failed', 'cancelled')"
-        ),
-        CheckConstraint(
-            "(shared AND owner_player_id IS NULL) OR "
-            "(NOT shared AND owner_player_id IS NOT NULL)"
-        ),
-        CheckConstraint(
-            "(status = 'running' AND lease_token IS NOT NULL "
-            "AND lease_expires_at IS NOT NULL) OR "
-            "(status <> 'running' AND lease_token IS NULL AND lease_expires_at IS NULL)"
-        ),
-        CheckConstraint(
-            "(status IN ('succeeded', 'partially_succeeded') AND completed_at IS NOT NULL "
-            "AND failed_at IS NULL) OR "
-            "(status = 'failed' AND failed_at IS NOT NULL AND completed_at IS NULL) OR "
-            "(status IN ('pending', 'running', 'cancelled') "
-            "AND completed_at IS NULL AND failed_at IS NULL)"
-        ),
-        Index("ix_training_analysis_artifacts_owner", "owner_player_id", "kind", "created_at"),
-    )
-
-
-class TrainingAnalysisRequestRecord(AnalysisBase):
-    """An owner-scoped analysis request with idempotency and instructions."""
-
-    __tablename__ = "training_analysis_requests"
-
-    id: Mapped[UUID] = _uuid_column()
-    request_id: Mapped[str] = mapped_column(String(300), nullable=False)
-    owner_player_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
-    )
-    kind: Mapped[str] = mapped_column(String(30), nullable=False)
-    artifact_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("training_analysis_artifacts.id"),
-        nullable=False,
-    )
-    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    source: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    status: Mapped[str] = mapped_column(
-        String(24), nullable=False, default="queued", server_default=text("'queued'")
-    )
-    error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        UniqueConstraint("request_id", name="uq_training_analysis_requests_request"),
-        CheckConstraint("kind IN ('dissection', 'best_buzz', 'common_knowledge')"),
-        CheckConstraint("length(request_id) > 0"),
-        CheckConstraint(
-            "status IN ('queued', 'running', 'succeeded', 'partially_succeeded', "
-            "'failed', 'cancelled')"
-        ),
-        CheckConstraint(
-            "(status IN ('succeeded', 'partially_succeeded', 'failed', 'cancelled') "
-            "AND completed_at IS NOT NULL) OR "
-            "(status IN ('queued', 'running') AND completed_at IS NULL)"
-        ),
-        Index(
-            "ix_training_analysis_requests_owner",
-            "owner_player_id",
-            "kind",
-            "status",
-        ),
-        Index("ix_training_analysis_requests_artifact", "artifact_id", "status"),
-    )
+ANALYSIS_METADATA = Base.metadata
+AnalysisBase = Base
 
 
 class AnalysisRequestError(Exception):
@@ -344,6 +196,9 @@ class AnalysisService:
         self.source_loader = source_loader
         self.lease_duration = lease_duration
         self.max_job_attempts = max_job_attempts
+        self._provider_metadata: ContextVar[list | None] = ContextVar(
+            "training_job_usage", default=None
+        )
 
     async def request(
         self,
@@ -353,6 +208,9 @@ class AnalysisService:
         source: Any,
         instructions: str = "",
         idempotency_key: str,
+        private: bool = False,
+        content_fingerprint: str | None = None,
+        source_context: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> AnalysisRequestView:
         """Authorize, reserve quota, persist and enqueue within one transaction."""
@@ -360,18 +218,26 @@ class AnalysisService:
             raise ValueError("Analysis idempotency key is required")
         kind = source_kind(source)
         moment = now or datetime.now(UTC)
-        normalized = instructions.strip()
+        normalized = instructions
+        descriptor = source_descriptor(source)
+        descriptor["private"] = private
+        descriptor.update(source_context or {})
+        if content_fingerprint is not None:
+            descriptor["content_fingerprint"] = content_fingerprint
+        if self.source_loader is not None and hasattr(self.source_loader, "authorize_in_session"):
+            await self.source_loader.authorize_in_session(session, owner_player_id, descriptor)
         existing = await self._request_row(session, idempotency_key)
         if existing is not None:
             if existing.owner_player_id != owner_player_id:
                 raise AnalysisIdempotencyConflictError(
                     "Analysis idempotency key already belongs to another trainee"
                 )
+            if existing.instructions != instructions or existing.source != descriptor:
+                raise AnalysisIdempotencyConflictError("Analysis request content changed")
             return self._view(existing, artifact=None)
-        descriptor = source_descriptor(source)
-        fingerprint = source_fingerprint_of(source)
+        fingerprint = text_fingerprint(source_fingerprint_of(source), content_fingerprint or "")
         digest = instruction_digest(normalized)
-        shared = not normalized
+        shared = not normalized and not private
         artifact_owner = None if shared else owner_player_id
         key = analysis_artifact_key(
             kind,
@@ -457,6 +323,9 @@ class AnalysisService:
         if self.entitlements is None:
             return
         feature = FEATURE_BY_KIND[kind]
+        from sitg_bot.storage.models import PlayerRecord
+
+        await session.get(PlayerRecord, owner_player_id, with_for_update=True)
         policy = await self.entitlements.policy_for(session, owner_player_id, feature)
         if not policy.enabled:
             raise AnalysisFeatureDisabledError(f"Feature {feature} is disabled")
@@ -469,7 +338,11 @@ class AnalysisService:
                 TrainingAnalysisRequestRecord.status.in_(REQUEST_ACTIVE_STATUSES),
             )
         )
-        if policy.queued_request_cap is not None and (queued or 0) >= policy.queued_request_cap:
+        if (
+            not cache_hit
+            and policy.queued_request_cap is not None
+            and (queued or 0) >= policy.queued_request_cap
+        ):
             raise AnalysisQueuedCapExceededError(
                 f"Feature {feature} has too much queued or in-flight work"
             )
@@ -507,6 +380,10 @@ class AnalysisService:
             row = await self._request_row(session, request_id)
             if row is None or row.owner_player_id != owner_player_id:
                 return None
+            if self.source_loader is not None and hasattr(
+                self.source_loader, "authorize_in_session"
+            ):
+                await self.source_loader.authorize_in_session(session, owner_player_id, row.source)
             artifact = None
             if row.status in REQUEST_ACTIVE_STATUSES:
                 artifact = await session.get(TrainingAnalysisArtifactRecord, row.artifact_id)
@@ -522,6 +399,10 @@ class AnalysisService:
             row = await self._request_row(session, request_id)
             if row is None or row.owner_player_id != owner_player_id:
                 return None
+            if self.source_loader is not None and hasattr(
+                self.source_loader, "authorize_in_session"
+            ):
+                await self.source_loader.authorize_in_session(session, owner_player_id, row.source)
             if row.status not in ("succeeded", "partially_succeeded"):
                 return None
             artifact = await session.get(TrainingAnalysisArtifactRecord, row.artifact_id)
@@ -617,8 +498,59 @@ class AnalysisService:
                 .scalars()
                 .all()
             )
+            authorized = []
             for row in rows:
+                if self.entitlements is not None:
+                    # Serialize worker admissions without changing packet/account lock order.
+                    await session.execute(
+                        select(
+                            func.pg_advisory_xact_lock(
+                                int(text_fingerprint(str(row.owner_player_id), row.kind)[:15], 16)
+                            )
+                        )
+                    )
+                    policy = await self.entitlements.policy_for(
+                        session, row.owner_player_id, FEATURE_BY_KIND[row.kind]
+                    )
+                    if policy.in_flight_request_cap is not None:
+                        running = await session.scalar(
+                            select(
+                                func.count(func.distinct(TrainingAnalysisRequestRecord.artifact_id))
+                            ).where(
+                                TrainingAnalysisRequestRecord.owner_player_id
+                                == row.owner_player_id,
+                                TrainingAnalysisRequestRecord.kind == row.kind,
+                                TrainingAnalysisRequestRecord.status == "running",
+                                TrainingAnalysisRequestRecord.artifact_id != artifact_id,
+                            )
+                        )
+                        if (running or 0) >= policy.in_flight_request_cap:
+                            raise AnalysisQueuedCapExceededError("In-flight analysis cap reached")
+                if self.source_loader is not None and hasattr(
+                    self.source_loader, "authorize_in_session"
+                ):
+                    try:
+                        await self.source_loader.authorize_in_session(
+                            session, row.owner_player_id, row.source
+                        )
+                    except (PermissionError, LookupError):
+                        row.status, row.completed_at, row.error = (
+                            "cancelled",
+                            moment,
+                            "Source access revoked",
+                        )
+                        if self.entitlements is not None:
+                            await self.entitlements.release(
+                                session,
+                                player_id=row.owner_player_id,
+                                feature=FEATURE_BY_KIND[row.kind],
+                                request_id=row.request_id,
+                                now=moment,
+                            )
+                        continue
                 row.status = "running"
+                authorized.append(row)
+            rows = authorized
             if not rows:
                 await self._abandon(session, artifact_id, lease_token)
                 return
@@ -626,6 +558,8 @@ class AnalysisService:
             descriptor = dict(rows[0].source)
             initiating_owner = rows[0].owner_player_id
             kind = artifact.kind
+            previous_calls = list((artifact.provider_usage or {}).get("calls", []))
+        usage_token = self._provider_metadata.set(previous_calls)
         try:
             if kind == ANALYSIS_COMMON_KNOWLEDGE:
                 await self._run_common_knowledge(
@@ -638,6 +572,17 @@ class AnalysisService:
         except ProviderOutcomeUncertain as error:
             await self._record_uncertain(artifact_id, error)
             raise
+        except Exception:
+            async with self.database.transaction() as session:
+                artifact = await session.get(
+                    TrainingAnalysisArtifactRecord, artifact_id, with_for_update=True
+                )
+                if artifact is not None and artifact.lease_token == lease_token:
+                    artifact.provider_request_ids = self._provider_request_ids()
+                    artifact.provider_usage = self._usage_payload()
+            raise
+        finally:
+            self._provider_metadata.reset(usage_token)
 
     async def _run_common_knowledge(
         self,
@@ -687,6 +632,8 @@ class AnalysisService:
             raise RuntimeError("The analysis source has no authorized question revisions")
         chunks = packet_chunks(questions, max_chunk_characters=self.settings.max_chunk_characters)
         total = len(chunks)
+        if total > 16:
+            raise ValueError("Analysis accepts at most 16 source chunks per packet")
         async with self.database.transaction() as session:
             artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
             assert artifact is not None
@@ -713,6 +660,11 @@ class AnalysisService:
                     self.provider.extract_facts,
                     ExtractionRequest((chunk,), instructions, language),
                 )
+                result = validate_fact_candidates(
+                    result,
+                    allowed_question_revision_ids=chunk.question_revision_ids,
+                    max_output_facts=self.settings.max_output_facts - len(partial),
+                )
                 partial.extend(
                     {
                         "candidate_id": candidate.candidate_id,
@@ -725,7 +677,27 @@ class AnalysisService:
                 )
             else:
                 result = await self._provider_call(
-                    self.provider.best_buzz_boundaries, BuzzRequest((chunk,), language)
+                    self.provider.best_buzz_boundaries,
+                    BuzzRequest(
+                        (chunk,), language, int(descriptor.get("question_token_target_chars", 10))
+                    ),
+                )
+                target_chars = int(descriptor.get("question_token_target_chars", 10))
+                chunk_questions_by_id = {
+                    question.question_revision_id: question
+                    for question in questions
+                    if question.question_revision_id in chunk.question_revision_ids
+                }
+                result = validate_buzz_boundaries(
+                    result,
+                    token_counts={
+                        key: len(announcement_tokens(question.text, target_chars))
+                        for key, question in chunk_questions_by_id.items()
+                    },
+                    text_digests={
+                        key: text_fingerprint(question.text)
+                        for key, question in chunk_questions_by_id.items()
+                    },
                 )
                 partial.extend(
                     {
@@ -791,7 +763,7 @@ class AnalysisService:
                 BuzzBoundary(
                     UUID(item["question_revision_id"]),
                     item["text_digest"],
-                    int(item["token_index"]),
+                    item["token_index"],
                 )
                 for item in partial
             )
@@ -838,6 +810,8 @@ class AnalysisService:
                 )
                 .values(
                     checkpoint=dict(checkpoint),
+                    provider_request_ids=self._provider_request_ids(),
+                    provider_usage=self._usage_payload(),
                     lease_expires_at=datetime.now(UTC) + self.lease_duration,
                 )
             )
@@ -904,13 +878,23 @@ class AnalysisService:
         )
         settle = status in ("succeeded", "partially_succeeded")
         for row in rows:
-            row.status = status
+            allowed = True
+            if self.source_loader is not None and hasattr(
+                self.source_loader, "authorize_in_session"
+            ):
+                try:
+                    await self.source_loader.authorize_in_session(
+                        session, row.owner_player_id, row.source
+                    )
+                except (PermissionError, LookupError):
+                    allowed = False
+            row.status = status if allowed else "cancelled"
             row.error = error[:2000] if error else None
             row.completed_at = moment
             if self.entitlements is None:
                 continue
             feature = FEATURE_BY_KIND[row.kind]
-            if settle:
+            if settle and allowed:
                 await self.entitlements.settle(
                     session,
                     player_id=row.owner_player_id,
@@ -1047,6 +1031,8 @@ class AnalysisService:
 
     async def _provider_call(self, operation: Any, request: Any) -> Any:
         """Run one provider operation with the configured deadline."""
+        metadata = {}
+        token = PROVIDER_CALL_METADATA.set(metadata)
         try:
             return await asyncio.wait_for(
                 operation(request), timeout=self.settings.timeout.total_seconds()
@@ -1055,8 +1041,16 @@ class AnalysisService:
             raise ProviderTimeout(
                 f"Provider exceeded the {self.settings.timeout} deadline"
             ) from error
+        finally:
+            calls = self._provider_metadata.get()
+            if calls is not None and metadata:
+                calls.append(metadata)
+            PROVIDER_CALL_METADATA.reset(token)
 
     def _provider_request_ids(self) -> list[str]:
+        calls = self._provider_metadata.get()
+        if calls:
+            return [call["request_id"] for call in calls if call.get("request_id")]
         return list(getattr(self.provider, "provider_request_ids", ()) or [])
 
     def _usage_payload(self, *, cache_hit: bool = False) -> dict[str, Any]:
@@ -1064,6 +1058,7 @@ class AnalysisService:
             "provider": self.settings.provider,
             "model": self.settings.model,
             "cache_hit": cache_hit,
+            "calls": [] if cache_hit else list(self._provider_metadata.get() or []),
         }
 
     async def _request_row(
@@ -1180,15 +1175,3 @@ class AnalysisJobHandler:
 
     async def __call__(self, payload: dict[str, Any]) -> None:
         await self.service.execute_job(payload)
-
-
-
-
-
-
-
-
-
-
-
-

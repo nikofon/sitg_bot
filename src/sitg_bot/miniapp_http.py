@@ -30,6 +30,7 @@ from sitg_bot.application.contracts import (
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
+    AnalysisStatusOperation,
     AuthorCatalogueOperation,
     AuthorLinkAdminDecideOperation,
     AuthorLinkCreateOperation,
@@ -39,6 +40,14 @@ from sitg_bot.application.contracts import (
     GameObserveOperation,
     GatewayOperation,
     GatewayResponse,
+    KnowledgeDeleteOperation,
+    KnowledgeDissectionsOperation,
+    KnowledgeFactOperation,
+    KnowledgeFactsOperation,
+    KnowledgeMergeOperation,
+    KnowledgeSaveOperation,
+    KnowledgeSharingOperation,
+    KnowledgeTagOperation,
     LibraryAccessOperation,
     LibraryListOperation,
     LobbyEventsOperation,
@@ -52,6 +61,7 @@ from sitg_bot.application.contracts import (
     LobbySimpleMutationOperation,
     NavigationTournamentSetOperation,
     OngoingListOperation,
+    PacketAnalysisOperation,
     PacketBlockOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
@@ -91,6 +101,7 @@ from sitg_bot.application.contracts import (
     TrainingActOperation,
     TrainingCurrentOperation,
     TrainingDraftDecideOperation,
+    TrainingEntitlementsOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
     TrainingStartOperation,
@@ -174,6 +185,13 @@ class MiniAppHttpServer:
         app.router.add_post("/api/miniapp/authors/link", self._create_author_link)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/training/packets", self._training_packets)
+        app.router.add_get("/api/miniapp/knowledge/facts", self._knowledge_facts)
+        app.router.add_get("/api/miniapp/knowledge/facts/{fact_id}", self._knowledge_fact)
+        app.router.add_get("/api/miniapp/knowledge/sharing", self._knowledge_sharing)
+        app.router.add_get("/api/miniapp/knowledge/dissections", self._knowledge_dissections)
+        app.router.add_post("/api/miniapp/knowledge/{command}", self._knowledge_mutation)
+        app.router.add_get("/api/miniapp/training/entitlements", self._training_entitlements)
+        app.router.add_get("/api/miniapp/training/analysis", self._analysis_status)
         app.router.add_get("/api/miniapp/training/current", self._training_current)
         app.router.add_get("/api/miniapp/training/sessions/{session_id}", self._training_view)
         app.router.add_post("/api/miniapp/training/{command}", self._training_mutation)
@@ -503,6 +521,44 @@ class MiniAppHttpServer:
         if parsed.scheme or parsed.netloc:
             return self._route_not_found()
         normalized_path = parsed.path.rstrip("/")
+        if normalized_path == "/knowledge":
+            session, result = await self._query(
+                request,
+                KnowledgeFactsOperation(
+                    action=ActionCode.KNOWLEDGE_FACTS,
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            _, sharing = await self._query(
+                request, KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
+            )
+            _, dissections = await self._query(
+                request, KnowledgeDissectionsOperation(action=ActionCode.KNOWLEDGE_DISSECTIONS)
+            )
+            _, packets = await self._query(
+                request, TrainingPacketListOperation(action=ActionCode.TRAINING_PACKETS)
+            )
+            for part in (sharing, dissections, packets):
+                if not part.ok:
+                    return self._gateway_response(part)
+            return web.json_response(
+                {
+                    "locale": session.preferred_locale,
+                    "authorization": {"allowed": True},
+                    "resource": {
+                        "kind": "knowledge",
+                        "state": "ready",
+                        "facts": result.data,
+                        "sharing": sharing.data,
+                        "dissection": {
+                            "requests": dissections.data["items"],
+                            "packets": packets.data["items"],
+                            "next_cursor": packets.data["next_cursor"],
+                        },
+                    },
+                }
+            )
         if normalized_path == "/training":
             session, result = await self._query(
                 request, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT),
@@ -1682,6 +1738,79 @@ class MiniAppHttpServer:
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 
+    async def _knowledge_facts(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request,
+            KnowledgeFactsOperation.model_validate(
+                {
+                    **request.query,
+                    "action": ActionCode.KNOWLEDGE_FACTS,
+                }
+            ),
+        )
+        return self._gateway_response(result)
+
+    async def _knowledge_fact(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request,
+            KnowledgeFactOperation(
+                action=ActionCode.KNOWLEDGE_FACT, fact_id=UUID(request.match_info["fact_id"])
+            ),
+        )
+        return self._gateway_response(result)
+
+    async def _knowledge_sharing(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request, KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
+        )
+        return self._gateway_response(result)
+
+    async def _knowledge_dissections(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request, KnowledgeDissectionsOperation(action=ActionCode.KNOWLEDGE_DISSECTIONS)
+        )
+        return self._gateway_response(result)
+
+    async def _training_entitlements(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request, TrainingEntitlementsOperation(action=ActionCode.TRAINING_ENTITLEMENTS)
+        )
+        return self._gateway_response(result)
+
+    async def _analysis_status(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request,
+            AnalysisStatusOperation(
+                action=ActionCode.ANALYSIS_STATUS, request_id=request.query.get("request_id", "")
+            ),
+        )
+        return self._gateway_response(result)
+
+    async def _knowledge_mutation(self, request: web.Request) -> web.Response:
+        operations = {
+            "create": (KnowledgeSaveOperation, ActionCode.KNOWLEDGE_CREATE),
+            "update": (KnowledgeSaveOperation, ActionCode.KNOWLEDGE_UPDATE),
+            "delete": (KnowledgeDeleteOperation, ActionCode.KNOWLEDGE_DELETE),
+            "merge": (KnowledgeMergeOperation, ActionCode.KNOWLEDGE_MERGE),
+            "tag_create": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_CREATE),
+            "tag_rename": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_RENAME),
+            "tag_delete": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_DELETE),
+            "grant": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_GRANT),
+            "revoke": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_REVOKE),
+            "dissect": (PacketAnalysisOperation, ActionCode.KNOWLEDGE_DISSECT),
+            "best_buzz": (PacketAnalysisOperation, ActionCode.BEST_BUZZ_PREPARE),
+            "cancel": (AnalysisStatusOperation, ActionCode.ANALYSIS_CANCEL),
+        }
+        choice = operations.get(request.match_info["command"])
+        if choice is None:
+            raise web.HTTPNotFound()
+        contract, action = choice
+        body = await self._json_body(request)
+        _, result = await self._mutation(
+            request, contract.model_validate({**body, "action": action})
+        )
+        return self._gateway_response(result)
+
     async def _training_packets(self, request: web.Request) -> web.Response:
         operation = TrainingPacketListOperation.model_validate({
             **request.query, "action": ActionCode.TRAINING_PACKETS,
@@ -1968,6 +2097,9 @@ class MiniAppHttpServer:
             "stale_write": 409,
             "idempotency_conflict": 409,
             "request_in_progress": 409,
+            "feature_disabled": 403,
+            "quota_exceeded": 429,
+            "queued_cap_exceeded": 429,
         }
         return web.json_response(
             {

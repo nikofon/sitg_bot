@@ -103,8 +103,10 @@ def best_buzz_cursor(
     ):
         raise ValueError("Best buzz analysis does not match the pinned question")
     boundary = analysis.get("source_end")
-    if type(boundary) is not int or not 0 < boundary <= len(source):
+    if type(boundary) is not int or not 0 <= boundary <= len(source):
         raise ValueError("Best buzz source boundary is invalid")
+    if boundary == 0:
+        return 0
     words = list(re.finditer(r"\S+", source))
     if not any(word.end() == boundary for word in words):
         raise ValueError("Best buzz must end at a source word boundary")

@@ -105,6 +105,9 @@ def create_dispatcher(
     middleware(ErrorMappingMiddleware(dependencies.localization))
     dispatcher.include_router(root_router)
     dispatcher["callback_references"] = dependencies.callback_references
+    from sitg_bot.bot.knowledge_backend import KnowledgeTelegramBackend
+
+    dispatcher["knowledge_backend"] = KnowledgeTelegramBackend(dependencies.backend)
     return dispatcher
 
 

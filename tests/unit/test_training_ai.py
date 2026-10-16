@@ -68,10 +68,10 @@ def test_packet_chunks_reject_oversized_single_questions() -> None:
         packet_chunks((QuestionText(uuid4(), "x" * 200),), max_chunk_characters=100)
 
 
-def test_fingerprints_are_stable_and_instruction_digests_normalize() -> None:
+def test_fingerprints_are_stable_and_instruction_digests_preserve_instructions() -> None:
     assert text_fingerprint("a", "b") == text_fingerprint("a", "b")
     assert text_fingerprint("a", "b") != text_fingerprint("b", "a")
-    assert instruction_digest("  spaced  ") == instruction_digest("spaced")
+    assert instruction_digest("  spaced  ") != instruction_digest("spaced")
     assert instruction_digest("") == EMPTY_INSTRUCTION_DIGEST
 
 
@@ -205,4 +205,3 @@ async def test_fake_provider_defaults_calls_and_failures() -> None:
         await provider.extract_facts(ExtractionRequest(chunks, "", "en"))
     assert details.value.provider_request_id == "req-1"
     assert len(provider.provider_request_ids) == 4
-

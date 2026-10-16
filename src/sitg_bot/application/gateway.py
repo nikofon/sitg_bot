@@ -27,6 +27,7 @@ from sitg_bot.application.contracts import (
     AdminSuspicionLedgerOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
+    AnalysisStatusOperation,
     ApplicationPrincipal,
     AuthorCatalogueOperation,
     AuthorLinkAdminDecideOperation,
@@ -50,6 +51,14 @@ from sitg_bot.application.contracts import (
     GatewayError,
     GatewayRequest,
     GatewayResponse,
+    KnowledgeDeleteOperation,
+    KnowledgeDissectionsOperation,
+    KnowledgeFactOperation,
+    KnowledgeFactsOperation,
+    KnowledgeMergeOperation,
+    KnowledgeSaveOperation,
+    KnowledgeSharingOperation,
+    KnowledgeTagOperation,
     LibraryAccessOperation,
     LibraryListOperation,
     LobbyCreateOperation,
@@ -75,6 +84,7 @@ from sitg_bot.application.contracts import (
     NotificationsListOperation,
     NotificationsReadAllOperation,
     OngoingListOperation,
+    PacketAnalysisOperation,
     PacketBlockOperation,
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
@@ -138,6 +148,7 @@ from sitg_bot.application.contracts import (
     TrainingCurrentOperation,
     TrainingDraftDecideOperation,
     TrainingDraftOperation,
+    TrainingEntitlementsOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
     TrainingStartOperation,
@@ -147,6 +158,7 @@ from sitg_bot.application.contracts import (
 from sitg_bot.domain.training import TrainingSettings
 from sitg_bot.services.admin_auth import PlatformAdminAuthenticationService
 from sitg_bot.services.admin_management import AdminManagementService
+from sitg_bot.services.analysis_jobs import AnalysisRequestError
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.author_profiles import AuthorProfileService
 from sitg_bot.services.concurrency import StaleWriteError
@@ -167,6 +179,7 @@ from sitg_bot.services.token_requests import (
 from sitg_bot.services.tournament_profiles import TournamentProfileService
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.services.training import TrainingService
+from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
@@ -285,26 +298,72 @@ ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
         ActionCode.TRAINING_PACKETS: ActionPolicy(cursor_paginated=True),
+        ActionCode.KNOWLEDGE_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_UPDATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_DELETE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_MERGE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_TAG_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_TAG_RENAME: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_TAG_DELETE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_GRANT: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_REVOKE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_DISSECT: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.BEST_BUZZ_PREPARE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.ANALYSIS_CANCEL: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
         ActionCode.TRAINING_CURRENT: ActionPolicy(sensitive_response=True),
         ActionCode.TRAINING_VIEW: ActionPolicy(sensitive_response=True),
         ActionCode.TRAINING_DRAFT: ActionPolicy(sensitive_response=True),
         ActionCode.TRAINING_START: ActionPolicy(
-            mutation=True, idempotency_required=True, sensitive_response=True,
+            mutation=True,
+            idempotency_required=True,
+            sensitive_response=True,
         ),
         ActionCode.TRAINING_ACT: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
             sensitive_response=True,
         ),
         ActionCode.TRAINING_UPLOAD: ActionPolicy(
-            mutation=True, idempotency_required=True, sensitive_response=True,
+            mutation=True,
+            idempotency_required=True,
+            sensitive_response=True,
         ),
         ActionCode.TRAINING_DRAFT_DECIDE: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
             sensitive_response=True,
         ),
         ActionCode.TRAINING_RETIRE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.TRAINING_ACCESS: ActionPolicy(
-            mutation=True, idempotency_required=True, sensitive_response=True,
+            mutation=True,
+            idempotency_required=True,
+            sensitive_response=True,
         ),
         ActionCode.GAME_ACT: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.GAME_OBSERVE: ActionPolicy(mutation=True, idempotency_required=True),
@@ -403,7 +462,9 @@ ACTION_POLICIES.update(
             stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_REGISTRATION_DECIDE: ActionPolicy(
             mutation=True, idempotency_required=True
@@ -417,7 +478,9 @@ ACTION_POLICIES.update(
             stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_START: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.LIBRARY_VIEW: ActionPolicy(
@@ -465,19 +528,21 @@ ACTION_POLICIES.update(
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_UPDATE: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.ADMIN_AUTHOR_SPLIT: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.PLAYER_UNBAN: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.BUG_REPORT_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
-        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(
-            mutation=True, idempotency_required=True
-        ),
+        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.NAVIGATION_CONTEXT_SET: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
@@ -553,6 +618,7 @@ class ApplicationGateway:
         launch_references: LaunchReferenceService | None = None,
         packets: PacketAdminService | None = None,
         training: TrainingService | None = None,
+        knowledge: KnowledgeApplication | None = None,
         minimum_client_version: str = "1.0.0",
         idempotency_lease: timedelta = timedelta(minutes=5),
     ) -> None:
@@ -582,7 +648,8 @@ class ApplicationGateway:
         self.packets = packets or PacketAdminService(database)
         self.packet_blocks = PacketBlockService(database)
         self.library = PacketLibraryService(database)
-        self.training = training or TrainingService(database)
+        self.knowledge = knowledge or KnowledgeApplication(database)
+        self.training = training or TrainingService(database, best_buzz=self.knowledge)
         self.profiles = PlayerProfileService(database)
         self.tournament_profiles = TournamentProfileService(database)
         self.minimum_client_version = minimum_client_version
@@ -1088,7 +1155,72 @@ class ApplicationGateway:
             return await self.library.list_packets(player_id)
         if isinstance(operation, TrainingPacketListOperation):
             return await self.training.packets.list_packets(
-                player_id, cursor=operation.cursor, limit=operation.limit, name=operation.name,
+                player_id,
+                **operation.model_dump(exclude={"action"}),
+            )
+        if isinstance(operation, KnowledgeFactsOperation):
+            return await self.knowledge.facts(player_id, **operation.model_dump(exclude={"action"}))
+        if isinstance(operation, KnowledgeFactOperation):
+            return await self.knowledge.detail(player_id, operation.fact_id)
+        if isinstance(operation, KnowledgeDissectionsOperation):
+            return await self.knowledge.dissections(player_id)
+        if (
+            isinstance(operation, KnowledgeSharingOperation)
+            and action == ActionCode.KNOWLEDGE_SHARING
+        ):
+            return await self.knowledge.sharing(player_id)
+        if isinstance(operation, TrainingEntitlementsOperation):
+            from sitg_bot.services.training_access import require_trainee
+
+            async with self.database.transaction() as session:
+                await require_trainee(session, player_id)
+            return {"features": await self.knowledge.entitlements.capabilities(player_id)}
+        if isinstance(operation, AnalysisStatusOperation):
+            if action == ActionCode.ANALYSIS_CANCEL:
+                return {
+                    "cancelled": await self.knowledge.analysis.cancel(
+                        owner_player_id=player_id, request_id=operation.request_id
+                    )
+                }
+            return await self.knowledge.analysis.status(
+                owner_player_id=player_id, request_id=operation.request_id
+            )
+        if isinstance(operation, PacketAnalysisOperation):
+            return await self.knowledge.request_analysis(
+                player_id,
+                kind="dissection" if action == ActionCode.KNOWLEDGE_DISSECT else "best_buzz",
+                idempotency_key=request.metadata.idempotency_key,
+                **operation.model_dump(exclude={"action"}),
+            )
+        if isinstance(operation, KnowledgeTagOperation) and action == ActionCode.KNOWLEDGE_TAGS:
+            from sitg_bot.services.training_access import require_trainee
+
+            async with self.database.transaction() as session:
+                await require_trainee(session, player_id)
+                return {"items": await self.knowledge.service(session).list_tags(player_id)}
+        if isinstance(
+            operation,
+            (
+                KnowledgeSaveOperation,
+                KnowledgeDeleteOperation,
+                KnowledgeMergeOperation,
+                KnowledgeTagOperation,
+                KnowledgeSharingOperation,
+            ),
+        ):
+            commands = {
+                ActionCode.KNOWLEDGE_CREATE: "create",
+                ActionCode.KNOWLEDGE_UPDATE: "update",
+                ActionCode.KNOWLEDGE_DELETE: "delete",
+                ActionCode.KNOWLEDGE_MERGE: "merge",
+                ActionCode.KNOWLEDGE_TAG_CREATE: "tag_create",
+                ActionCode.KNOWLEDGE_TAG_RENAME: "tag_rename",
+                ActionCode.KNOWLEDGE_TAG_DELETE: "tag_delete",
+                ActionCode.KNOWLEDGE_GRANT: "grant",
+                ActionCode.KNOWLEDGE_REVOKE: "revoke",
+            }
+            return await self.knowledge.mutate(
+                player_id, commands[action], operation.model_dump(exclude={"action"})
             )
         if isinstance(operation, TrainingCurrentOperation):
             return await self.training.current(player_id)
@@ -1630,6 +1762,8 @@ class ApplicationGateway:
                 "solo_training",
                 "private_training_packets",
                 "training_display_modifiers",
+                "knowledge_library",
+                "training_analysis_jobs",
             ),
         )
 
@@ -2050,9 +2184,15 @@ class ApplicationGateway:
             code = ErrorCode.REQUEST_INDETERMINATE
         elif isinstance(error, (_SecretAlreadyDelivered, TokenPlaintextUnavailable)):
             code = ErrorCode.SECRET_ALREADY_DELIVERED
+        elif isinstance(error, AnalysisRequestError):
+            code = ErrorCode(error.code)
         elif isinstance(error, _CapabilityUnavailable):
             code = ErrorCode.CAPABILITY_UNAVAILABLE
-        elif isinstance(error, (ProfileVersionConflict, StaleWriteError)):
+        elif (
+            isinstance(error, (ProfileVersionConflict, StaleWriteError))
+            or isinstance(error, ValueError)
+            and str(error) == "Fact changed since it was read"
+        ):
             code = ErrorCode.STALE_WRITE
         elif isinstance(error, PermissionError):
             code = ErrorCode.FORBIDDEN

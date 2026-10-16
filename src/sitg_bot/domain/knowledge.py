@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 FACT_TITLE_MAX = 200
@@ -60,7 +61,7 @@ def normalize_tag_name(name: str) -> str:
 
 def validate_source_url(url: str) -> str:
     value = url.strip()
-    if not value.startswith(LINK_SCHEMES):
+    if not value.startswith(LINK_SCHEMES) or not urlsplit(value).netloc:
         raise ValueError("Source link must use the http or https scheme")
     if len(value) > SOURCE_URL_MAX or any(character.isspace() for character in value):
         raise ValueError("Source link must be a bounded URL without whitespace")
@@ -367,7 +368,7 @@ def dissection_instruction_digest(instructions: str, comment: str = "") -> str:
 
 def is_base_dissection_request(instructions: str, comment: str = "") -> bool:
     """Only empty instructions and comments use the shared base artifact."""
-    return not instructions.strip() and not comment.strip()
+    return instructions == "" and comment == ""
 
 
 def dissection_candidate_id(
@@ -497,4 +498,3 @@ class DissectionApplication:
         if self.failed_candidate_ids:
             return "partially_succeeded"
         return "succeeded"
-

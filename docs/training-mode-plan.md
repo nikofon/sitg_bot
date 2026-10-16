@@ -62,6 +62,11 @@ all other modifiers for now.
 Group training, exact commercial tiers and normal-game modifier availability are
 deferred. The interfaces must support later decisions without implementing them now.
 
+Integration has selected revocable read-only sharing, configurable OpenAI structured
+analysis and introductory UTC daily quotas. These defaults, provider configuration
+and explicit Bingo/GotQuestions/date placeholders are recorded in the
+[integration decisions](training-knowledge-integration.md).
+
 ### Stage 1: freeze the parallel-development boundary
 
 Agent A owns edits to shared files: `storage/models.py`, migrations,

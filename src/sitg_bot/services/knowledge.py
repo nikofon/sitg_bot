@@ -1,9 +1,9 @@
 """Trainee knowledge library service (training mode, Agent B).
 
 Facts, tags, sharing and dissection application use cases. The service talks
-to a narrow repository port; ``InMemoryKnowledgeStore`` is the recorded fixture
-implementation used until Agent A ships the PostgreSQL adapter with the same
-interface (see docs/training-knowledge-integration.md). Authorization stays
+to a narrow repository port; ``InMemoryKnowledgeStore`` serves recorded fixtures
+and ``PostgresKnowledgeStore`` persists production collections (see
+docs/training-knowledge-integration.md). Authorization stays
 live: grants and ownership are rechecked on every call, never cached.
 """
 
@@ -215,6 +215,11 @@ class InMemoryKnowledgeStore:
 
     async def save_tag(self, tag: StoredTag) -> None:
         self.tags[tag.id] = tag
+
+    async def remove_tag(self, tag_id: UUID) -> None:
+        self.tags.pop(tag_id, None)
+        for fact in self.facts.values():
+            fact.tag_ids.discard(tag_id)
 
     async def tags_for_owner(self, owner_id: UUID) -> list[StoredTag]:
         return [tag for tag in self.tags.values() if tag.owner_id == owner_id]
@@ -525,6 +530,10 @@ class KnowledgeService:
         if order not in SUPPORTED_FACT_ORDERS:
             raise ValueError(f"Unsupported facts order {order!r}")
         page_limit = self.page_size if limit is None else max(1, min(limit, self.page_size))
+        if hasattr(self.store, "fact_page"):
+            return await self.store.fact_page(
+                view_owner, search=search, tag=tag, order=order, cursor=cursor, limit=page_limit
+            )
         rows = [
             fact
             for fact in await self.store.facts_for_owner(view_owner)
@@ -618,11 +627,7 @@ class KnowledgeService:
         tag = await self.store.get_tag(tag_id)
         if tag is None or tag.owner_id != owner_id:
             raise LookupError("Tag not found")
-        for fact in await self.store.facts_for_owner(owner_id):
-            if tag_id in fact.tag_ids:
-                fact.tag_ids.discard(tag_id)
-                await self.store.save_fact(fact)
-        self.store.tags.pop(tag_id, None)
+        await self.store.remove_tag(tag_id)
 
     async def grant_collection_access(
         self, owner_id: UUID, recipient_id: UUID
@@ -639,7 +644,7 @@ class KnowledgeService:
         for candidate in existing:
             if candidate.owner_id == owner_id and candidate.active():
                 return self._grant_view(candidate)
-        await self.store.add_grant(grant)
+        grant = await self.store.add_grant(grant)
         return self._grant_view(grant)
 
     async def revoke_collection_access(self, owner_id: UUID, grant_id: UUID) -> GrantView:
@@ -711,8 +716,6 @@ class KnowledgeService:
         comment: str = "",
     ) -> DissectionRequestView:
         """Record a dissection request; comments produce a new revision."""
-        instructions = instructions.strip()
-        comment = comment.strip()
         if len(instructions) > DISSECTION_INSTRUCTIONS_MAX:
             raise ValueError(
                 f"Dissection instructions must be at most {DISSECTION_INSTRUCTIONS_MAX} characters"
@@ -760,7 +763,7 @@ class KnowledgeService:
             return self._request_view(row)
         applied: dict[str, AppliedCandidate] = {}
         for fact in await self.store.facts_for_owner(owner_id):
-            if fact.applied_candidate_id is None or fact.deleted_at is not None:
+            if fact.applied_candidate_id is None:
                 continue
             applied[fact.applied_candidate_id] = AppliedCandidate(
                 candidate_id=fact.applied_candidate_id,
@@ -895,9 +898,6 @@ class KnowledgeService:
             bingo=snapshot.bingo,
             created_at=snapshot.created_at,
         )
-
-
-
 
 
 

@@ -18,7 +18,8 @@ exposure and analysis-request writes must share the caller's transaction.
 Best buzz playback accepts a validated per-question dictionary:
 `schema_version: 1`, `tokenizer_version: "announcement-v1"`,
 `question_revision_id` (UUID string), `text_digest` (SHA-256 of exact UTF-8 text),
-and `source_end` (exclusive character offset at the end of a source word).
+and `source_end` (exclusive character offset at the end of a source word;
+zero represents a pause before the first word).
 Agent A maps this boundary to `announcement_tokens` using pinned settings.
 Unavailable/pending/failed analyses cannot start Best buzz playback.
 

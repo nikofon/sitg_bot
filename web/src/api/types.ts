@@ -1,6 +1,15 @@
 import type { Locale } from "../i18n";
+import type { KnowledgeViewData } from "../ui/knowledge";
+
+export interface KnowledgeResource extends KnowledgeViewData {
+  kind: "knowledge";
+  state: "ready";
+}
 
 export type StableErrorCode =
+  | "feature_disabled"
+  | "quota_exceeded"
+  | "queued_cap_exceeded"
   | "authentication_required"
   | "forbidden"
   | "not_found"
@@ -943,6 +952,7 @@ export interface RoutePayload {
     | PacketDraftResource
     | LibraryResource
     | TrainingResource
+    | KnowledgeResource
     | PlayerProfileResource
     | PlayersResource
     | PlayerGameResource

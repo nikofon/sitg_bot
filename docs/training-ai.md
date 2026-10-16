@@ -7,8 +7,9 @@ Agent C subsystem of the training mode plan. Modules:
 boundary), [services/analysis_jobs.py](../src/sitg_bot/services/analysis_jobs.py)
 (durable execution and artifact caching),
 [services/entitlements.py](../src/sitg_bot/services/entitlements.py)
-(categories, policies, metering). The concrete provider/model is a pending
-Stage 0 decision; `FakeAnalysisProvider` serves tests and recorded fixtures.
+(categories, policies, metering). The production Responses provider is configured explicitly;
+`FakeAnalysisProvider` serves tests and recorded fixtures. See the
+[integration guide](training-knowledge-integration.md) for defaults and placeholders.
 
 ## Provider boundary
 
@@ -69,37 +70,20 @@ feature authorization applies even on cache hits. `reconcile_abandoned`
 releases reservations orphaned by crashes; schedule it periodically. Billing
 and plan purchase flows are deferred.
 
-## Integration specification for agent A
+## Application integration
 
-Port the records declared on `ENTITLEMENT_METADATA` (6 tables:
-`training_categories`, `training_feature_policies`, `training_policy_state`,
-`training_category_assignments`, `training_usage_periods`,
-`training_usage_ledger`) and `ANALYSIS_METADATA` (2 tables:
-`training_analysis_artifacts`, `training_analysis_requests`) into
-`storage/models.py` with their named unique constraints, check constraints
-and indexes, and add them through one new ordered migration. Foreign keys
-reference `players.id`. Configuration should add provider settings (see
-`ProviderSettings`) to `config.py`; keep the API key server-side. Register a
-second worker in `server.py`:
+All category, ledger, request and artifact records live in shared
+`storage/models.py`; migration `0022_training_knowledge_ai` creates them.
+`KnowledgeApplication` supplies live packet/fact authorization and automatic fact
+application. Separate analysis and gameplay workers use explicit kind filters.
+Private retirement emits durable cleanup events; hourly maintenance expires
+terminal artifacts after 30 days and reconciles orphaned quota reservations.
 
-```python
-analysis_worker = DurableJobWorker(
-    jobs, {TRAINING_ANALYSIS_JOB_KIND: AnalysisJobHandler(analysis_service)},
-    kinds=(TRAINING_ANALYSIS_JOB_KIND,),
-)
-```
-
-Localization needs stable keys for the error codes
-`feature_disabled`, `quota_exceeded`, `queued_cap_exceeded`,
-`idempotency_conflict` and the request statuses `queued`, `running`,
-`succeeded`, `partially_succeeded`, `failed`, `cancelled`. Tests create these
-tables directly in [tests/integration/conftest.py](../tests/integration/conftest.py)
-until the migration lands; switch them to Alembic afterwards.
-
-Dissection application, fact statistics and packet access loaders are agent
-B's and A's sides of the `AnalysisSourceLoader` protocol; one packet
-dissection must not fan out unmetered statistic calls, and every statistic
-request routes through the same entitlement metering.
+The configured `ResponsesAnalysisProvider` uses strict structured outputs with
+bounded response size, timeouts and concurrency. It records upstream IDs and token
+usage separately from trainee quota. Uncertain outcomes become failed, refundable
+requests requiring an explicit retry; no automatic repeated provider charge is assumed.
+Credentials and models are server configuration, with no fake production fallback.
 
 ## Testing
 
@@ -111,4 +95,3 @@ includes fake-provider timeout/malformed-output handling, restart and
 checkpoint resume, expired leases and fencing, cancellation, gameplay-worker
 isolation, coalescing, cache reuse and isolation, owner scoping, concurrent
 quota, rollover, category changes, refunds and crash reconciliation.
-

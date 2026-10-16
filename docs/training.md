@@ -2,7 +2,7 @@
 
 Solo training uses separate session, membership, question-pin and attempt tables.
 It never creates competitive games, rating entries or tournament results.
-Run migration `0021_training` before deploying these capabilities.
+Run `alembic upgrade head` (through `0022_training_knowledge_ai`) before deployment.
 
 ## Access and uploads
 
@@ -24,7 +24,7 @@ after-play rules. Already burnt packets remain trainable. Fresh disclosure needs
 confirmation and permanently burns canonical theme/question claims; active normal
 game reservations prevent disclosure. Rights are checked again on protected reads.
 Private deletion retires access while retaining pinned history. The retirement
-event is the integration hook for Agent C's bounded analysis cleanup.
+event drives durable analysis payload/checkpoint cleanup.
 
 Packet pages contain at most 25 cards, use UUID cursors and apply permissions and
 name filters in SQL. Each page uses three SELECTs, independent of card count;
@@ -57,15 +57,15 @@ boundaries map to the pinned announcement-token stream. Playback pauses once and
 offers inline Continue reading while buzzing remains available. Missing preparation
 is reported explicitly. Normal-game modifier hooks default to disabled.
 
-## Parallel integration
+## Knowledge and AI integration
 
-[Contracts](training-contracts.md) describe Agent A's source-access and Best buzz
-ports. Agent B's knowledge routes and Agent C's analysis/category projections are
-not enabled until their backend integrations are available. The knowledge navigation
-label is reserved but not advertised as an available action. Provider selection,
-category limits, sharing policy and Bingo calibration remain outside this slice.
+[Contracts](training-contracts.md) describe source access and Best buzz ports.
+Knowledge library is enabled in Telegram and at `/knowledge` in the Mini App.
+Facts, tags, read-only sharing, automatic dissection application and metered analysis
+use persistent storage. See the [integration guide](training-knowledge-integration.md)
+for configuration, commands, limits, decisions and remaining placeholders.
 
 Targeted tests: `tests/unit/test_training*.py`, `tests/integration/test_training.py`
 and `web/src/ui/training.test.ts`. PostgreSQL tests require a disposable
 `TEST_DATABASE_URL`. Live Telegram delivery and deployed concurrent-AI performance
-still require validation when Agent C's worker is integrated.
+still require deployment validation. Provider tests use fixtures without live calls.

@@ -10,31 +10,28 @@ atomic and idempotent per request ID.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    MetaData,
-    String,
-    UniqueConstraint,
     func,
     select,
-    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, mapped_column
+from sqlalchemy.orm import aliased
 
 from sitg_bot.storage.database import Database
+from sitg_bot.storage.models import (
+    Base,
+    TrainingAnalysisRequestRecord,
+    TrainingCategoryAssignmentRecord,
+    TrainingCategoryRecord,
+    TrainingFeaturePolicyRecord,
+    TrainingPolicyStateRecord,
+    TrainingUsageLedgerRecord,
+    TrainingUsagePeriodRecord,
+)
 
 FEATURE_DISSECTION = "dissection"
 FEATURE_COMMON_KNOWLEDGE = "common_knowledge"
@@ -54,163 +51,8 @@ LEDGER_RELEASE = "release"
 DEFAULT_CATEGORY_CODE = "default"
 
 
-def _check_digest(constraint: Any, table: Any) -> str:
-    return sha256(str(constraint.sqltext).encode()).hexdigest()[:12]
-
-
-ENTITLEMENT_METADATA = MetaData(
-    naming_convention={
-        "ix": "ix_%(column_0_label)s",
-        "ck": "ck_%(table_name)s_%(check_digest)s",
-        "check_digest": _check_digest,
-    }
-)
-
-
-def _uuid_column() -> Mapped[UUID]:
-    return mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-
-
-class EntitlementBase(DeclarativeBase):
-    metadata = ENTITLEMENT_METADATA
-
-
-class TrainingCategoryRecord(EntitlementBase):
-    """A trainee account category referencing a feature policy version."""
-
-    __tablename__ = "training_categories"
-
-    id: Mapped[UUID] = _uuid_column()
-    code: Mapped[str] = mapped_column(String(50), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    is_default: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
-    )
-    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    __table_args__ = (
-        UniqueConstraint("code", name="uq_training_categories_code"),
-        CheckConstraint("length(code) > 0"),
-        CheckConstraint("length(display_name) > 0"),
-        CheckConstraint("policy_version >= 1"),
-    )
-
-
-class TrainingFeaturePolicyRecord(EntitlementBase):
-    """An immutable, versioned feature/limit policy payload."""
-
-    __tablename__ = "training_feature_policies"
-
-    id: Mapped[UUID] = _uuid_column()
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    __table_args__ = (
-        UniqueConstraint("version", name="uq_training_feature_policies_version"),
-        CheckConstraint("version >= 1"),
-    )
-
-
-class TrainingPolicyStateRecord(EntitlementBase):
-    """Single row holding the default category selection."""
-
-    __tablename__ = "training_policy_state"
-
-    singleton: Mapped[int] = mapped_column(Integer, primary_key=True)
-    default_category_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    __table_args__ = (CheckConstraint("singleton = 1"),)
-
-
-class TrainingCategoryAssignmentRecord(EntitlementBase):
-    """One active category assignment per trainee."""
-
-    __tablename__ = "training_category_assignments"
-
-    player_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("players.id"), primary_key=True
-    )
-    category_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("training_categories.id"),
-        nullable=False,
-        index=True,
-    )
-    assigned_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class TrainingUsagePeriodRecord(EntitlementBase):
-    """Mutable usage counters for one player, feature and reset period."""
-
-    __tablename__ = "training_usage_periods"
-
-    id: Mapped[UUID] = _uuid_column()
-    player_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
-    )
-    feature: Mapped[str] = mapped_column(String(50), nullable=False)
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    reserved: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default=text("0")
-    )
-    settled: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default=text("0")
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "player_id", "feature", "period_start", name="uq_training_usage_periods_scope"
-        ),
-        CheckConstraint("reserved >= 0 AND settled >= 0"),
-        CheckConstraint("period_end > period_start"),
-        Index("ix_training_usage_periods_player", "player_id", "feature", "period_start"),
-    )
-
-
-class TrainingUsageLedgerRecord(EntitlementBase):
-    """Append-only reservation/settlement ledger entry, idempotent per request."""
-
-    __tablename__ = "training_usage_ledger"
-
-    id: Mapped[UUID] = _uuid_column()
-    reservation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    period_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("training_usage_periods.id"),
-        nullable=False,
-        index=True,
-    )
-    player_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
-    )
-    feature: Mapped[str] = mapped_column(String(50), nullable=False)
-    request_id: Mapped[str] = mapped_column(String(300), nullable=False)
-    entry_type: Mapped[str] = mapped_column(String(20), nullable=False)
-    units: Mapped[int] = mapped_column(Integer, nullable=False)
-    provider_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "request_id", "entry_type", name="uq_training_usage_ledger_request_entry"
-        ),
-        CheckConstraint("entry_type IN ('reserve', 'settle', 'release')"),
-        CheckConstraint("units >= 1"),
-        CheckConstraint("length(request_id) > 0"),
-        Index("ix_training_usage_ledger_player", "player_id", "feature", "created_at"),
-    )
+ENTITLEMENT_METADATA = Base.metadata
+EntitlementBase = Base
 
 
 class EntitlementsError(Exception):
@@ -349,7 +191,7 @@ class EntitlementService:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    async def ensure_defaults(self) -> None:
+    async def ensure_defaults(self, *, features: Mapping[str, Any] | None = None) -> None:
         """Create the default disabled policy, category and state idempotently."""
         async with self.database.transaction() as session:
             policy_row = (
@@ -365,7 +207,7 @@ class EntitlementService:
             )
             if policy_row is None:
                 policy_row = TrainingFeaturePolicyRecord(
-                    version=1, features=dict(DEFAULT_POLICY_PAYLOAD)
+                    version=1, features=dict(features or DEFAULT_POLICY_PAYLOAD)
                 )
                 session.add(policy_row)
                 await session.flush()
@@ -688,10 +530,16 @@ class EntitlementService:
                             .where(
                                 TrainingUsageLedgerRecord.entry_type == LEDGER_RESERVE,
                                 TrainingUsageLedgerRecord.created_at < cutoff,
+                                ~select(TrainingAnalysisRequestRecord.id)
+                                .where(
+                                    TrainingAnalysisRequestRecord.request_id
+                                    == TrainingUsageLedgerRecord.request_id,
+                                    TrainingAnalysisRequestRecord.status.in_(("queued", "running")),
+                                )
+                                .exists(),
                                 ~select(settle_entry.id)
                                 .where(
-                                    settle_entry.request_id
-                                    == TrainingUsageLedgerRecord.request_id,
+                                    settle_entry.request_id == TrainingUsageLedgerRecord.request_id,
                                     settle_entry.entry_type == LEDGER_SETTLE,
                                 )
                                 .exists(),
@@ -707,8 +555,7 @@ class EntitlementService:
                             .limit(limit)
                             .with_for_update(skip_locked=True)
                         )
-                    )
-                    .scalars()
+                    ).scalars()
                 )
                 for entry in batch:
                     done = await self.release(
@@ -805,11 +652,5 @@ class EntitlementService:
                 )
             )
         ).scalar_one_or_none()
-
-
-
-
-
-
 
 

@@ -1,6 +1,7 @@
 import type { MessageKey } from "../i18n/en";
 
 export type RouteId =
+  | "knowledge"
   | "training"
   | "tournaments"
   | "tournament_profile"
@@ -46,6 +47,10 @@ interface RouteDefinition {
 }
 
 const routes: RouteDefinition[] = [
+  {
+    id: "knowledge", pattern: /^\/knowledge\/?$/,
+    titleKey: "knowledge.title", emptyKey: "knowledge.empty", isRoot: true,
+  },
   {
     id: "training", pattern: /^\/training\/?$/,
     titleKey: "training.title", emptyKey: "training.empty", isRoot: true,

@@ -162,12 +162,33 @@ async def handle_training_menu(
     locale,
     training_action,
     mini_app_base_url=None,
+    knowledge_backend=None,
 ):
     if training_action == "training.train":
         await handle_train(message, backend, telegram_update_claim, localization, locale)
         return
     if training_action == "training.knowledge":
-        await message.answer(localization.text("error.capability_unavailable", locale))
+        from sitg_bot.bot.handlers.knowledge import facts_message
+        from sitg_bot.bot.knowledge_backend import KnowledgeTelegramBackend
+        from sitg_bot.bot.presenters.render import send_message_model
+
+        adapter = knowledge_backend or KnowledgeTelegramBackend(backend)
+        page = await adapter.facts_page(telegram_update_claim)
+        await send_message_model(message, facts_message(page, localization, locale))
+        if mini_app_base_url:
+            await message.answer(
+                localization.text("training.knowledge", locale),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=localization.text("training.knowledge", locale),
+                                web_app={"url": mini_app_route_url(mini_app_base_url, "knowledge")},
+                            )
+                        ]
+                    ]
+                ),
+            )
         return
     if mini_app_base_url:
         route = "training"

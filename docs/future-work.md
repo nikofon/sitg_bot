@@ -7,7 +7,7 @@ Existing behavior belongs in the linked subsystem guides.
 
 | Area | Remaining work and implementation direction |
 | --- | --- |
-| Training | Solo execution and owner-only packet uploads are implemented. Knowledge, AI/category integration and release gates follow the [training plan](training-mode-plan.md) and [training guide](training.md). |
+| Training | Integrated solo execution, private uploads, knowledge/sharing and metered AI. Remaining: Bingo calibration, supported GotQuestions access, commercial categories and live deployment checks. See [integration decisions](training-knowledge-integration.md). |
 | Historical packet access | Define post-game/post-tournament visibility beyond current library entitlements. See [packets](packet-administration.md). |
 | Upload moderation and retention | Optional review requirements, cross-tournament assignment consent, quotas, copyright handling, and source/draft retention. Opt-in community upload/publication is implemented. |
 | Additional rulesets | Generalize SI-specific execution persistence before registering another ruleset. Define content-schema compatibility and meaningful cross-ruleset statistics; preserve the existing assignment/claim contract. See [game rulesets](game-rulesets.md). |

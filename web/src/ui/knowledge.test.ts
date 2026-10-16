@@ -137,6 +137,48 @@ const flush = async (): Promise<void> => {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();
 };
 
+describe("integrated knowledge editing", () => {
+  it("saves all manual fields and refreshes the fact page", async () => {
+    const detail: KnowledgeFactDetail = {
+      id: "new-fact", title: "Title", description: "Description", links: [], tags: [],
+      origin: "manual", content_version: 1, editable: true, statistics: { status: "pending" },
+    };
+    const actions = {
+      loadFacts: vi.fn().mockResolvedValue(facts), loadFact: vi.fn(),
+      grant: vi.fn(), revoke: vi.fn(), dissect: vi.fn(), save: vi.fn().mockResolvedValue(detail),
+    };
+    const root = renderKnowledge(structuredClone(data), i18n as never, actions);
+    document.body.append(root);
+    const form = root.querySelector("form")!;
+    const inputs = form.querySelectorAll("input");
+    const areas = form.querySelectorAll("textarea");
+    inputs[0]!.value = "Title";
+    inputs[1]!.value = "history, art";
+    areas[0]!.value = "Description";
+    areas[1]!.value = "https://example.org/source | Reference title";
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(actions.save).toHaveBeenCalledWith({ title: "Title", description: "Description",
+      tag_names: ["history", "art"],
+      links: [{ url: "https://example.org/source", title: "Reference title", position: 0 }],
+    }, undefined);
+    expect(actions.loadFacts).toHaveBeenCalled();
+  });
+
+  it("keeps shared fact details read-only when editing actions are available", async () => {
+    const actions = { loadFacts: vi.fn(), loadFact: vi.fn().mockResolvedValue({
+      id: "fact-1", title: "Shared", description: "Read-only", links: [], tags: [],
+      origin: "manual", content_version: 1, editable: false, statistics: { status: "none" },
+    }), grant: vi.fn(), revoke: vi.fn(), dissect: vi.fn(), save: vi.fn() };
+    const root = renderKnowledge(structuredClone(data), i18n as never, actions);
+    document.body.append(root);
+    root.querySelector<HTMLButtonElement>(".knowledge-fact-open")!.click();
+    await flush();
+    expect(root.querySelector(".knowledge-details form")).toBeNull();
+    expect(root.querySelector(".knowledge-readonly")?.textContent).toContain("Read-only");
+  });
+});
+
 afterEach(() => { document.body.replaceChildren(); });
 
 describe("knowledge library view", () => {
@@ -244,4 +286,3 @@ describe("knowledge library view", () => {
     expect(document.body.textContent).toContain("1 facts");
   });
 });
-

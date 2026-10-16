@@ -187,6 +187,17 @@ class ConsoleApplicationServer:
                 else None
             ),
         )
+        self.job_worker.kinds = tuple(self.job_worker.handlers)
+        self.analysis_worker = DurableJobWorker(
+            DurableJobQueue(database, lease_duration=timedelta(hours=1)),
+            {
+                "training.analysis": self.application_gateway.knowledge.analysis_job,
+                "knowledge.statistics": self.application_gateway.knowledge.statistics_job,
+            },
+            kinds=("training.analysis", "knowledge.statistics"),
+            batch_size=1,
+            poll_interval=poll_interval,
+        )
         self._server: asyncio.Server | None = None
         self._connections: set[ClientConnection] = set()
         self._background_tasks: list[asyncio.Task[None]] = []
@@ -206,6 +217,7 @@ class ConsoleApplicationServer:
     async def start(self) -> None:
         if self._server is not None:
             return
+        await self.application_gateway.knowledge.initialize()
         self._server = await asyncio.start_server(
             self._handle_client,
             self.host,
@@ -215,6 +227,7 @@ class ConsoleApplicationServer:
         self._background_tasks = [
             asyncio.create_task(self._job_scheduler_loop(), name="durable-job-scheduler"),
             asyncio.create_task(self._job_worker_loop(), name="durable-job-worker"),
+            asyncio.create_task(self._analysis_worker_loop(), name="training-analysis-worker"),
             asyncio.create_task(self._console_updates_loop(), name="console-updates"),
         ]
         if self.maintenance_enabled:
@@ -1656,6 +1669,29 @@ class ConsoleApplicationServer:
             except Exception:
                 LOGGER.exception("Durable job reconciliation failed; polling will continue")
             await asyncio.sleep(self.poll_interval)
+
+    async def _analysis_worker_loop(self) -> None:
+        cleanup_at = datetime.now(UTC)
+        while not self._closing:
+            try:
+                await self.analysis_worker.run_once()
+                await self.application_gateway.knowledge.reconcile_requests()
+                await self.application_gateway.knowledge.reconcile()
+                await self.application_gateway.knowledge.reconcile_statistics()
+                await self.application_gateway.knowledge.cleanup_retired()
+                if datetime.now(UTC) >= cleanup_at:
+                    await self.application_gateway.knowledge.analysis.cleanup(
+                        before=datetime.now(UTC) - timedelta(days=30)
+                    )
+                    await self.application_gateway.knowledge.entitlements.reconcile_abandoned(
+                        older_than=timedelta(days=1)
+                    )
+                    cleanup_at = datetime.now(UTC) + timedelta(hours=1)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Training analysis worker failed; polling will continue")
+            await asyncio.sleep(max(self.poll_interval, 1))
 
     async def _job_worker_loop(self) -> None:
         while not self._closing:

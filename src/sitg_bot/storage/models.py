@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -2346,4 +2347,367 @@ class SuspicionLedgerRecord(Base):
             "(reason <> 'admin_clearance' AND administrator_id IS NULL AND delta > 0)"
         ),
         Index("ix_suspicion_ledger_player", "player_id", "created_at"),
+    )
+
+
+class TrainingCategoryRecord(Base):
+    """A trainee account category referencing a feature policy version."""
+
+    __tablename__ = "training_categories"
+
+    id: Mapped[UUID] = uuid_column()
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_training_categories_code"),
+        CheckConstraint("length(code) > 0"),
+        CheckConstraint("length(display_name) > 0"),
+        CheckConstraint("policy_version >= 1"),
+    )
+
+
+class TrainingFeaturePolicyRecord(Base):
+    """An immutable, versioned feature/limit policy payload."""
+
+    __tablename__ = "training_feature_policies"
+
+    id: Mapped[UUID] = uuid_column()
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    features: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("version", name="uq_training_feature_policies_version"),
+        CheckConstraint("version >= 1"),
+    )
+
+
+class TrainingPolicyStateRecord(Base):
+    """Single row holding the default category selection."""
+
+    __tablename__ = "training_policy_state"
+
+    singleton: Mapped[int] = mapped_column(Integer, primary_key=True)
+    default_category_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (CheckConstraint("singleton = 1"),)
+
+
+class TrainingCategoryAssignmentRecord(Base):
+    """One active category assignment per trainee."""
+
+    __tablename__ = "training_category_assignments"
+
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), primary_key=True
+    )
+    category_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("training_categories.id"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TrainingUsagePeriodRecord(Base):
+    """Mutable usage counters for one player, feature and reset period."""
+
+    __tablename__ = "training_usage_periods"
+
+    id: Mapped[UUID] = uuid_column()
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
+    )
+    feature: Mapped[str] = mapped_column(String(50), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reserved: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    settled: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "player_id", "feature", "period_start", name="uq_training_usage_periods_scope"
+        ),
+        CheckConstraint("reserved >= 0 AND settled >= 0"),
+        CheckConstraint("period_end > period_start"),
+        Index("ix_training_usage_periods_player", "player_id", "feature", "period_start"),
+    )
+
+
+class TrainingUsageLedgerRecord(Base):
+    """Append-only reservation/settlement ledger entry, idempotent per request."""
+
+    __tablename__ = "training_usage_ledger"
+
+    id: Mapped[UUID] = uuid_column()
+    reservation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    period_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("training_usage_periods.id"),
+        nullable=False,
+        index=True,
+    )
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
+    )
+    feature: Mapped[str] = mapped_column(String(50), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("request_id", "entry_type", name="uq_training_usage_ledger_request_entry"),
+        CheckConstraint("entry_type IN ('reserve', 'settle', 'release')"),
+        CheckConstraint("units >= 1"),
+        CheckConstraint("length(request_id) > 0"),
+        Index("ix_training_usage_ledger_player", "player_id", "feature", "created_at"),
+    )
+
+
+class TrainingAnalysisArtifactRecord(Base):
+    """An immutable validated analysis artifact, coalesced by unique key.
+
+    ``owner_player_id`` is only null for shared base dissections (empty
+    instructions); custom instructions and every private source stay
+    owner-scoped even when their content hashes match another packet.
+    """
+
+    __tablename__ = "training_analysis_artifacts"
+
+    id: Mapped[UUID] = uuid_column()
+    artifact_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    shared: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    owner_player_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id")
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    instruction_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    language: Mapped[str] = mapped_column(String(8), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    tokenizer_version: Mapped[str] = mapped_column(String(30), nullable=False)
+    generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    lease_token: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_request_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    provider_usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("artifact_key", name="uq_training_analysis_artifacts_key"),
+        CheckConstraint("kind IN ('dissection', 'best_buzz', 'common_knowledge')"),
+        CheckConstraint("generation >= 1"),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'partially_succeeded', "
+            "'failed', 'cancelled')"
+        ),
+        CheckConstraint(
+            "(shared AND owner_player_id IS NULL) OR (NOT shared AND owner_player_id IS NOT NULL)"
+        ),
+        CheckConstraint(
+            "(status = 'running' AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'running' AND lease_token IS NULL AND lease_expires_at IS NULL)"
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'partially_succeeded') AND completed_at IS NOT NULL "
+            "AND failed_at IS NULL) OR "
+            "(status = 'failed' AND failed_at IS NOT NULL AND completed_at IS NULL) OR "
+            "(status IN ('pending', 'running', 'cancelled') "
+            "AND completed_at IS NULL AND failed_at IS NULL)"
+        ),
+        Index("ix_training_analysis_artifacts_owner", "owner_player_id", "kind", "created_at"),
+    )
+
+
+class TrainingAnalysisRequestRecord(Base):
+    """An owner-scoped analysis request with idempotency and instructions."""
+
+    __tablename__ = "training_analysis_requests"
+
+    id: Mapped[UUID] = uuid_column()
+    request_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    owner_player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("training_analysis_artifacts.id"),
+        nullable=False,
+    )
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="queued", server_default=text("'queued'")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_training_analysis_requests_request"),
+        CheckConstraint("kind IN ('dissection', 'best_buzz', 'common_knowledge')"),
+        CheckConstraint("length(request_id) > 0"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'partially_succeeded', "
+            "'failed', 'cancelled')"
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'partially_succeeded', 'failed', 'cancelled') "
+            "AND completed_at IS NOT NULL) OR "
+            "(status IN ('queued', 'running') AND completed_at IS NULL)"
+        ),
+        Index(
+            "ix_training_analysis_requests_owner",
+            "owner_player_id",
+            "kind",
+            "status",
+        ),
+        Index("ix_training_analysis_requests_artifact", "artifact_id", "status"),
+    )
+
+
+class KnowledgeFactRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_facts"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    title_key: Mapped[str] = mapped_column(String(400))
+    description: Mapped[str] = mapped_column(Text)
+    links: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    content_fingerprint: Mapped[str] = mapped_column(String(64))
+    content_version: Mapped[int] = mapped_column(Integer, default=1)
+    applied_candidate_id: Mapped[str | None] = mapped_column(String(19))
+    applied_content_version: Mapped[int | None] = mapped_column(Integer)
+    statistic_status: Mapped[str] = mapped_column(String(20), default="none")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    merged_into_id: Mapped[UUID | None] = mapped_column(ForeignKey("knowledge_facts.id"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("id", "owner_id"),
+        CheckConstraint("content_version >= 1"),
+        CheckConstraint(
+            "length(title) BETWEEN 1 AND 200 AND length(description) BETWEEN 1 AND 4000"
+        ),
+        CheckConstraint("statistic_status IN ('none', 'pending', 'fresh', 'stale')"),
+        Index("ix_knowledge_facts_owner_title", "owner_id", "title_key", "id"),
+        Index("ix_knowledge_facts_owner_updated", "owner_id", "updated_at", "id"),
+        Index("ix_knowledge_facts_owner_created", "owner_id", "created_at", "id"),
+        Index("ix_knowledge_facts_owner_candidate", "owner_id", "applied_candidate_id"),
+    )
+
+
+class KnowledgeTagRecord(Base):
+    __tablename__ = "knowledge_tags"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
+    name: Mapped[str] = mapped_column(String(64))
+    __table_args__ = (UniqueConstraint("owner_id", "name"), UniqueConstraint("id", "owner_id"))
+
+
+class KnowledgeFactTagRecord(Base):
+    __tablename__ = "knowledge_fact_tags"
+    fact_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    tag_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["fact_id", "owner_id"],
+            ["knowledge_facts.id", "knowledge_facts.owner_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tag_id", "owner_id"],
+            ["knowledge_tags.id", "knowledge_tags.owner_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_knowledge_fact_tags_tag", "tag_id", "fact_id"),
+    )
+
+
+class KnowledgeGrantRecord(Base):
+    __tablename__ = "knowledge_sharing_grants"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    recipient_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("owner_id", "recipient_id"),
+        CheckConstraint("owner_id <> recipient_id"),
+    )
+
+
+class KnowledgeDissectionRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_dissection_requests"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    packet_id: Mapped[UUID] = mapped_column(ForeignKey("logical_packets.id"))
+    packet_revision: Mapped[str] = mapped_column(String(36))
+    instructions: Mapped[str] = mapped_column(Text)
+    comment: Mapped[str] = mapped_column(Text)
+    instruction_digest: Mapped[str] = mapped_column(String(16))
+    base: Mapped[bool] = mapped_column(Boolean)
+    status: Mapped[str] = mapped_column(String(30))
+    application: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    analysis_request_id: Mapped[str | None] = mapped_column(String(300), index=True)
+    __table_args__ = (
+        UniqueConstraint("owner_id", "packet_id", "packet_revision", "instruction_digest"),
+        CheckConstraint("status IN ('pending', 'succeeded', 'partially_succeeded', 'failed')"),
+    )
+
+
+class KnowledgeSnapshotRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_statistic_snapshots"
+    id: Mapped[UUID] = uuid_column()
+    fact_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_facts.id"))
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
+    content_version: Mapped[int] = mapped_column(Integer)
+    mentions: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    common: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    bingo: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    __table_args__ = (
+        Index("ix_knowledge_snapshots_fact_version", "fact_id", "content_version", "created_at"),
     )

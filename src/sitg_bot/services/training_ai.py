@@ -11,7 +11,8 @@ are always data, never tools or authorization.
 import asyncio
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any, Protocol
@@ -29,6 +30,9 @@ DEFAULT_POPULATION = "general"
 
 class AnalysisError(Exception):
     """Base class for analysis-boundary failures with stable semantics."""
+
+
+PROVIDER_CALL_METADATA: ContextVar[dict | None] = ContextVar("training_provider_call", default=None)
 
 
 class SourceTooLarge(AnalysisError):
@@ -68,7 +72,7 @@ class ProviderSettings:
     prompt_version: str = "1"
     schema_version: str = "1"
     tokenizer_version: str = "announcement-v1"
-    api_key: str | None = None
+    api_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.provider or not self.model:
@@ -108,7 +112,7 @@ def text_fingerprint(*parts: str) -> str:
 
 def instruction_digest(instructions: str) -> str:
     """Digest normalized instruction text; empty instructions are shared."""
-    return text_fingerprint(instructions.strip())
+    return text_fingerprint(instructions)
 
 
 EMPTY_INSTRUCTION_DIGEST = instruction_digest("")
@@ -129,6 +133,7 @@ class SourceChunk:
     index: int
     question_revision_ids: tuple[UUID, ...]
     text: str
+    questions: tuple[QuestionText, ...] = ()
 
 
 def packet_chunks(
@@ -145,6 +150,7 @@ def packet_chunks(
     chunks: list[SourceChunk] = []
     blocks: list[str] = []
     identifiers: list[UUID] = []
+    batch: list[QuestionText] = []
     length = 0
     for question in questions:
         block = f"[{question.question_revision_id}]\n{question.text}"
@@ -154,13 +160,19 @@ def packet_chunks(
                 f"{max_chunk_characters}-character chunk bound"
             )
         if blocks and length + len(block) + 2 > max_chunk_characters:
-            chunks.append(SourceChunk(len(chunks), tuple(identifiers), "\n\n".join(blocks)))
+            chunks.append(
+                SourceChunk(len(chunks), tuple(identifiers), "\n\n".join(blocks), tuple(batch))
+            )
             blocks, identifiers, length = [], [], 0
+            batch = []
         blocks.append(block)
         identifiers.append(question.question_revision_id)
+        batch.append(question)
         length += len(block) + 2
     if blocks:
-        chunks.append(SourceChunk(len(chunks), tuple(identifiers), "\n\n".join(blocks)))
+        chunks.append(
+            SourceChunk(len(chunks), tuple(identifiers), "\n\n".join(blocks), tuple(batch))
+        )
     return tuple(chunks)
 
 
@@ -211,6 +223,7 @@ class ExtractionRequest:
 class BuzzRequest:
     chunks: tuple[SourceChunk, ...]
     language: str
+    target_chars: int = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +403,7 @@ def validate_fact_candidates(
             raise AnalysisValidationError(
                 "Fact candidates require a title and a description"
             )
-        if len(title) > 300 or len(description) > 4000:
+        if len(title) > 200 or len(description) > 4000 or len(candidate.links) > 16:
             raise AnalysisValidationError("Fact candidate text exceeds the length bound")
         if candidate.question_revision_id not in allowed_question_revision_ids:
             raise AnalysisValidationError(
@@ -437,7 +450,11 @@ def validate_buzz_boundaries(
             raise AnalysisValidationError(
                 f"Best buzz boundary digest does not match question revision {revision_id}"
             )
-        if not 0 <= boundary.token_index <= token_counts[revision_id]:
+        if (
+            isinstance(boundary.token_index, bool)
+            or not isinstance(boundary.token_index, int)
+            or not 0 <= boundary.token_index <= token_counts[revision_id]
+        ):
             raise AnalysisValidationError(
                 f"Best buzz boundary index {boundary.token_index} is outside the "
                 f"{token_counts[revision_id]}-token question stream"
@@ -452,11 +469,17 @@ def validate_buzz_boundaries(
 
 def validate_common_knowledge(value: int) -> int:
     """Validate a common-knowledge estimate as an integer percentage."""
-    if not isinstance(value, int) or not 0 <= value <= 100:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
         raise AnalysisValidationError(
             f"Common knowledge estimate {value!r} is outside the 0-100 range"
         )
     return value
+
+
+def chunk_questions(chunk: SourceChunk) -> tuple[tuple[UUID, str], ...]:
+    if chunk.questions:
+        return tuple((question.question_revision_id, question.text) for question in chunk.questions)
+    return tuple(_parse_question_blocks(chunk.text))
 
 
 def _parse_question_blocks(text: str) -> list[tuple[UUID, str]]:
@@ -540,7 +563,7 @@ class FakeAnalysisProvider:
                 return self.fact_response(request)
             candidates: list[FactCandidate] = []
             for chunk in request.chunks:
-                for index, (revision_id, _) in enumerate(_parse_question_blocks(chunk.text)):
+                for index, (revision_id, _) in enumerate(chunk_questions(chunk)):
                     title = f"Fact {index}"
                     description = f"Derived fact for question {revision_id}"
                     links = (f"https://example.org/facts/{index}",)
@@ -569,7 +592,7 @@ class FakeAnalysisProvider:
                 return self.buzz_response(request)
             boundaries: list[BuzzBoundary] = []
             for chunk in request.chunks:
-                for revision_id, text in _parse_question_blocks(chunk.text):
+                for revision_id, text in chunk_questions(chunk):
                     boundaries.append(BuzzBoundary(revision_id, text_fingerprint(text), 0))
             return tuple(boundaries)
         finally:
@@ -590,6 +613,3 @@ class FakeAnalysisProvider:
             return CommonKnowledgeEstimate(50)
         finally:
             self._exit()
-
-
-

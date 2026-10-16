@@ -6,6 +6,7 @@ from sitg_bot.bot.handlers import (
     common,
     fallback,
     game,
+    knowledge,
     lobby,
     manager,
     navigation,
@@ -27,6 +28,7 @@ root_router.include_router(game.router)
 root_router.include_router(lobby.router)
 root_router.include_router(tournament_registration.router)
 root_router.include_router(player.router)
+root_router.include_router(knowledge.router)
 root_router.include_router(manager.router)
 root_router.include_router(admin.router)
 root_router.include_router(chat.router)

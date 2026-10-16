@@ -77,6 +77,25 @@ class ActionCode(StrEnum):
     TRAINING_CURRENT = "training.current.v1"
     TRAINING_VIEW = "training.view.v1"
     TRAINING_ACT = "training.act.v1"
+    KNOWLEDGE_FACTS = "knowledge.facts.view.v1"
+    KNOWLEDGE_FACT = "knowledge.fact.view.v1"
+    KNOWLEDGE_CREATE = "knowledge.fact.create.v1"
+    KNOWLEDGE_UPDATE = "knowledge.fact.update.v1"
+    KNOWLEDGE_DELETE = "knowledge.fact.delete.v1"
+    KNOWLEDGE_MERGE = "knowledge.facts.merge.v1"
+    KNOWLEDGE_TAGS = "knowledge.tags.view.v1"
+    KNOWLEDGE_TAG_CREATE = "knowledge.tag.create.v1"
+    KNOWLEDGE_TAG_RENAME = "knowledge.tag.rename.v1"
+    KNOWLEDGE_TAG_DELETE = "knowledge.tag.delete.v1"
+    KNOWLEDGE_SHARING = "knowledge.sharing.view.v1"
+    KNOWLEDGE_GRANT = "knowledge.grant.create.v1"
+    KNOWLEDGE_REVOKE = "knowledge.grant.revoke.v1"
+    KNOWLEDGE_DISSECTIONS = "knowledge.dissection.status.v1"
+    KNOWLEDGE_DISSECT = "knowledge.dissection.request.v1"
+    ANALYSIS_STATUS = "training.analysis.status.v1"
+    ANALYSIS_CANCEL = "training.analysis.cancel.v1"
+    TRAINING_ENTITLEMENTS = "training.entitlements.view.v1"
+    BEST_BUZZ_PREPARE = "training.best_buzz.prepare.v1"
     PLAYER_LIST = "players.list.v1"
     PLAYER_PROFILE = "players.profile.get.v1"
     PLAYER_GAME_RESULTS = "players.game_results.get.v1"
@@ -152,6 +171,9 @@ class ActionCode(StrEnum):
 
 
 class ErrorCode(StrEnum):
+    FEATURE_DISABLED = "feature_disabled"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    QUEUED_CAP_EXCEEDED = "queued_cap_exceeded"
     AUTHENTICATION_REQUIRED = "authentication_required"
     FORBIDDEN = "forbidden"
     NOT_FOUND = "not_found"
@@ -176,6 +198,92 @@ class RequestMetadata(ContractModel):
     client_name: str = Field(min_length=1, max_length=80)
     client_version: str = Field(min_length=1, max_length=40)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=200, repr=False)
+
+
+class KnowledgeFactsOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_FACTS]
+    owner_id: UUID | None = None
+    cursor: str | None = Field(default=None, max_length=1000)
+    search: str | None = Field(default=None, max_length=300)
+    tag: str | None = Field(default=None, max_length=64)
+    order: Literal["title_asc", "title_desc", "updated_desc", "created_desc"] = "title_asc"
+    limit: int = Field(default=25, ge=1, le=25)
+
+
+class KnowledgeFactOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_FACT]
+    fact_id: UUID
+
+
+class KnowledgeLink(ContractModel):
+    url: str = Field(max_length=2000)
+    title: str = Field(default="", max_length=200)
+    position: int = Field(default=0, ge=0)
+
+
+class KnowledgeSaveOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_CREATE, ActionCode.KNOWLEDGE_UPDATE]
+    fact_id: UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    links: list[KnowledgeLink] | None = Field(default=None, max_length=16)
+    tag_names: list[str] | None = Field(default=None, max_length=32)
+
+
+class KnowledgeDeleteOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_DELETE]
+    fact_id: UUID
+    confirm_dissection_origin: bool = False
+
+
+class KnowledgeMergeOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_MERGE]
+    source_fact_id: UUID
+    target_fact_id: UUID
+    expected_target_version: int = Field(ge=1)
+    confirm_source_delete: bool = False
+
+
+class KnowledgeTagOperation(ContractModel):
+    action: Literal[
+        ActionCode.KNOWLEDGE_TAGS,
+        ActionCode.KNOWLEDGE_TAG_CREATE,
+        ActionCode.KNOWLEDGE_TAG_RENAME,
+        ActionCode.KNOWLEDGE_TAG_DELETE,
+    ]
+    tag_id: UUID | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class KnowledgeSharingOperation(ContractModel):
+    action: Literal[
+        ActionCode.KNOWLEDGE_SHARING, ActionCode.KNOWLEDGE_GRANT, ActionCode.KNOWLEDGE_REVOKE
+    ]
+    recipient: str | None = Field(default=None, min_length=1, max_length=200)
+    grant_id: UUID | None = None
+
+
+class KnowledgeDissectionsOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_DISSECTIONS]
+
+
+class PacketAnalysisOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_DISSECT, ActionCode.BEST_BUZZ_PREPARE]
+    version_id: UUID
+    instructions: str = Field(default="", max_length=4000)
+    comment: str = Field(default="", max_length=4000)
+    confirm_exposure: bool = False
+    token_target_chars: int = Field(default=18, ge=1, le=200)
+
+
+class AnalysisStatusOperation(ContractModel):
+    action: Literal[ActionCode.ANALYSIS_STATUS, ActionCode.ANALYSIS_CANCEL]
+    request_id: str = Field(min_length=1, max_length=300)
+
+
+class TrainingEntitlementsOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_ENTITLEMENTS]
 
 
 class CapabilitiesOperation(ContractModel):
@@ -1152,6 +1260,17 @@ class AdminSuspicionClearOperation(ContractModel):
 
 GatewayOperation = Annotated[
     CapabilitiesOperation
+    | KnowledgeFactsOperation
+    | KnowledgeFactOperation
+    | KnowledgeSaveOperation
+    | KnowledgeDeleteOperation
+    | KnowledgeMergeOperation
+    | KnowledgeTagOperation
+    | KnowledgeSharingOperation
+    | KnowledgeDissectionsOperation
+    | PacketAnalysisOperation
+    | AnalysisStatusOperation
+    | TrainingEntitlementsOperation
     | AdminAuthenticateOperation
     | AccountLookupOperation
     | RegistrationStartOperation

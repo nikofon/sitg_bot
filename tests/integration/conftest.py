@@ -1,8 +1,7 @@
 """Shared fixtures for agent C's training AI integration tests.
 
 Creates a disposable PostgreSQL database with the shared schema (via Alembic)
-plus agent C's isolated table metadata, mirroring what agent A will port into
-`storage/models.py` and a future migration.
+including the integrated knowledge and analysis migrations.
 """
 
 import asyncio
@@ -17,8 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from sitg_bot.services.analysis_jobs import ANALYSIS_METADATA
-from sitg_bot.services.entitlements import ENTITLEMENT_METADATA, EntitlementService
+from sitg_bot.services.entitlements import EntitlementService
 from sitg_bot.storage.database import Database, normalize_database_url
 from sitg_bot.storage.models import PlayerRecord
 
@@ -46,31 +44,6 @@ def training_database(monkeypatch):
     try:
         command.upgrade(config, "head")
 
-        async def create_agent_tables():
-            from sqlalchemy import Table
-
-            def create(connection):
-                for metadata in (ENTITLEMENT_METADATA, ANALYSIS_METADATA):
-                    # Reflect the shared players table so cross-boundary
-                    # foreign keys resolve during isolated create_all.
-                    Table("players", metadata, autoload_with=connection)
-                    metadata.create_all(
-                        connection,
-                        tables=[
-                            table
-                            for table in metadata.sorted_tables
-                            if table.name != "players"
-                        ],
-                    )
-
-            engine = create_async_engine(url)
-            try:
-                async with engine.begin() as connection:
-                    await connection.run_sync(create)
-            finally:
-                await engine.dispose()
-
-        asyncio.run(create_agent_tables())
         yield url
     finally:
         asyncio.run(manage(f'DROP DATABASE "{name}"'))

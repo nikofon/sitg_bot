@@ -266,7 +266,8 @@ def test_dissection_candidates_use_deterministic_identity():
 
 
 def test_instruction_identity_separates_base_from_comment_revisions():
-    assert is_base_dissection_request("   ", "")
+    assert not is_base_dissection_request("   ", "")
+    assert is_base_dissection_request("", "")
     assert not is_base_dissection_request("focus on navy", "")
     assert dissection_instruction_digest("same") != dissection_instruction_digest(
         "same", "comment"
@@ -345,5 +346,4 @@ def test_dissection_application_tracks_partial_work_for_retry():
     )
     assert clean.status == "succeeded"
     assert clean.applied_fact_ids == frozenset({UUID(int=81)})
-
 

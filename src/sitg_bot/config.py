@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         validation_alias="SITG_TOKEN_DELIVERY_KEY",
     )
     application_client_version: str = "0.1.0"
+    training_ai_api_key: SecretStr | None = Field(
+        default=None, validation_alias="SITG_TRAINING_AI_API_KEY"
+    )
+    training_ai_model: str | None = Field(default=None, validation_alias="SITG_TRAINING_AI_MODEL")
     telegram_environment: Literal["production", "test"] = "production"
     application_security_key: SecretStr | None = None
     mini_app_base_url: str | None = None

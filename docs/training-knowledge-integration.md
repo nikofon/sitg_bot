@@ -1,139 +1,120 @@
-# Training mode: Agent B knowledge integration spec
+# Training knowledge and analysis integration
 
-What Agent A needs to integrate the knowledge library slice into shared files.
-Product context and agent boundaries are in [the training mode plan](training-mode-plan.md).
-Agent B owns the modules below; A owns every shared file this document touches.
+B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
+metadata and migration `0022_training_knowledge_ai`. `PostgresKnowledgeStore`
+implements B's repository; `KnowledgeApplication` connects persistence, source
+access, automatic fact application, statistics and Best buzz.
 
-## Implemented modules (owner: B)
+## Integration decisions
 
-| Module | Contents |
+- Collection sharing is authenticated, revocable and read-only. Shared facts
+  grant no packet rights and expose no private source metadata. Extracted facts
+  remain the owner's collection after retiring their source packet.
+- The user's confirmed policies apply: library-confirmation exposure, live access
+  checks, and no simultaneous normal play and active/paused training. Reverse
+  means word order; hidden text appears immediately for a configurable duration,
+  then disappears until reveal. Hidden/reverse combine; Best buzz excludes both.
+- Private analysis caches are owner-scoped. Instructions/comments remain verbatim,
+  including whitespace and ambiguous dates such as “before 1500 A.C.”.
+- Production uses configurable OpenAI Responses with strict structured outputs.
+  No model or credential is assumed. Without configuration, ordinary training,
+  manual facts, sharing and uploads remain usable; AI is unavailable.
+- New configured installations receive introductory daily allowances per trainee:
+  10 dissections, 10 Best buzz preparations and 50 Common knowledge estimates.
+  Reset: midnight UTC. Cache hits are free, with feature authorization still
+  enforced. Each feature allows 3 queued requests and 2 concurrent computations;
+  coalesced waiters count as one computation. Existing categories are preserved.
+- Common knowledge is an LLM estimate for adults in the relevant language
+  community, rather than quiz specialists. Packet language takes precedence;
+  otherwise use trainee locale. Manual facts use their owner's locale.
+- Analysis accepts at most 16 chunks of 12,000 characters, never splitting
+  questions, and at most 200 extracted facts. Calls have a 120-second deadline.
+  A separate worker uses an hour-long job lease. Gameplay workers claim only
+  their registered kinds.
+- Terminal analysis expires after 30 days. Hourly reconciliation refunds orphan
+  reservations older than a day, excluding active requests. Private retirement
+  denies reads immediately and emits a durable event for payload/checkpoint cleanup.
+- Mentions is unavailable until supported GotQuestions access is established.
+  Bingo is `pending_calibration`; missing values never become zero. Extracted
+  source URLs must already occur in the pinned source.
+
+## Configuration and persistence
+
+Run `alembic upgrade head`. Set these on the application server:
+
+```text
+SITG_TRAINING_AI_API_KEY=<provider credential>
+SITG_TRAINING_AI_MODEL=<chosen structured-output-capable model>
+```
+
+Credentials stay server-side. Production never substitutes the fake provider.
+The implementation follows the official
+[structured outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
+Tests make no live provider calls.
+
+Default policies are installed once. For an existing disabled installation, create
+a policy with `EntitlementService.create_policy` and update the selected category's
+`policy_version`; configuration does not replace administrator choices. Policies
+support disabled, finite/unlimited, daily/monthly/no reset and cache-hit charging.
+
+Facts keep content and provenance in separate fields. Ordered links, provenance,
+application outcomes and immutable statistic snapshots use JSONB; tags and
+ownership-enforced associations are relational. SQL filters, keyset cursors and
+batched tags/statistics bound fact pages to 25 cards without per-card reads.
+
+Dissection applies automatically after another source-access check. Deterministic
+candidate mappings prevent duplicates, manual overwrites and resurrection of
+deleted/merged imports. Follow-up comments create another analysis revision.
+Statistics run separately with quotas; unavailable metrics never prevent saving facts.
+
+## Adapters
+
+The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit,
+source URLs, tags, delete/merge, tag rename/delete, search, tag filtering, sorting,
+pagination, read-only sharing and dissection with comments. Job polling preserves
+form input. Each training card offers Best buzz preparation.
+HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
+conventions, including edits and deletion.
+
+Telegram exposes Knowledge library in the Training menu and `/facts` with lazy
+detail callbacks. Native commands:
+
+```text
+/facts [search text] | [tag] | [title_asc, title_desc, updated_desc]
+/factadd Title | Description | tag1, tag2 | https://source.example
+/factedit FACT_ID CONTENT_VERSION Title | Description | tags | URLs
+/factdelete FACT_ID [confirm]
+/factmerge SOURCE_ID TARGET_ID TARGET_VERSION [confirm]
+/factshare NICKNAME_OR_PLAYER_ID
+/factrevoke GRANT_ID
+/factgrants
+/sharedfacts OWNER_ID
+/tagadd NAME
+/tagrename TAG_ID NAME
+/tagdelete TAG_ID
+/dissect VERSION_ID [confirm] [instructions]
+/bestbuzz VERSION_ID [confirm]
+/analysis REQUEST_ID
+/analysiscancel REQUEST_ID
+/traininglimits
+```
+
+Deleting a dissection import or merging away a manual fact requires confirmation.
+Exposure prompts require repeating the analysis command with `confirm`.
+Command results retain IDs needed for subsequent edits/status reads.
+
+## Placeholders awaiting input
+
+| Item | Placeholder |
 | --- | --- |
-| `src/sitg_bot/domain/knowledge.py` | Pure rules: fact content validation and fingerprints, tag normalization, source links, revocable read-only sharing grants, Mentions semantics (dedup across aliases/pages, capped never complete), Common knowledge% validation, versioned Bingo scoring (`pending_calibration` until calibrated), deterministic dissection candidate IDs and idempotent application planning. |
-| `src/sitg_bot/services/knowledge.py` | `KnowledgeService` over a narrow repository port; `InMemoryKnowledgeStore` is the fixture implementation. CRUD, tags, search/filter/sort with stable keyset cursors (25/page), optimistic concurrency via `expected_version`, sharing grants, dissection request/apply/retry with duplicate suppression and manual-edit preservation, statistic snapshots. |
-| `src/sitg_bot/services/knowledge_statistics.py` | `GotQuestionsConnector` and `CommonKnowledgePort` protocols, recorded fixture implementations (no network), `KnowledgeStatisticsService` with per-query page caps, mention TTL cache, estimate validation. |
-| `src/sitg_bot/bot/handlers/knowledge.py` | Isolated aiogram router (`/facts`, `klib:*` callbacks) behind a `KnowledgeBackend` port; presenters build `MessageModel`s with escaped parameters and ≤64-byte callback data. |
-| `web/src/ui/knowledge.ts` | Mini App view with its own types and `KnowledgeI18n` key contract; paginated list, lazy detail loading, sharing and dissection sections, pending/quota/unavailable/error states. |
+| Provider | Deployment model and credential above |
+| Bingo examples | `<high-bingo fact, Mentions, Common knowledge estimate, desired score>` |
+| Bingo formula | `<calibrated versioned formula>` |
+| Ambiguous dates | `<meaning of A.C.>`; passed through verbatim |
+| GotQuestions | `<supported programmatic access and count semantics>` |
+| Commercial categories | Introductory defaults above; billing deferred |
 
-Tests: `tests/unit/test_knowledge_{domain,service,statistics,bot}.py` and
-`web/src/ui/knowledge.test.ts` (43 Python + 7 browser tests, all green).
-PostgreSQL integration tests are added by A together with the adapter below.
-
-## Storage schema (A: `storage/models.py` + one ordered migration)
-
-All tables reference `players.id` for ownership. Authorization stays in the
-service; storage enforces integrity only.
-
-- `knowledge_facts`: `id` UUID PK, `owner_id` FK, `title` varchar(200),
-  `description` text, `content_fingerprint` char(64), `content_version` int ≥ 1,
-  `origin` IN (`manual`, `dissection`), `packet_id`/`question_id`/`request_id`
-  UUID NULL, `question_revision` varchar NULL, `applied_candidate_id`
-  varchar(19) NULL, `applied_content_version` int NULL, `statistic_status` IN
-  (`none`, `pending`, `fresh`, `stale`), `deleted_at`/`merged_into_id` NULL,
-  `created_at`/`updated_at`. CHECK: dissection origin requires packet,
-  question, revision and request; content limits from `domain/knowledge.py`.
-  Indexes: `(owner_id, deleted_at)`, `(owner_id, applied_candidate_id)`,
-  `(owner_id, title)` for title ordering.
-- `knowledge_fact_links`: `fact_id` FK, `position` int, `url` varchar(2000),
-  `title` varchar(200), `origin` IN (`manual`, `dissection`); unique
-  `(fact_id, url)`. URL scheme validation is domain-level.
-- `knowledge_tags`: `id` UUID PK, `owner_id` FK, `name` varchar(64); unique
-  `(owner_id, name)` on the normalized (casefolded) form.
-- `knowledge_fact_tags`: PK (`fact_id`, `tag_id`), both FKs.
-- `knowledge_sharing_grants`: `id` UUID PK, `owner_id`/`recipient_id` FKs,
-  `granted_at`, `revoked_at` NULL; unique `(owner_id, recipient_id)`; CHECK
-  recipient ≠ owner. Revocation updates the same row.
-- `knowledge_dissection_requests`: `id` UUID PK, `owner_id` FK, `packet_id`,
-  `packet_revision` varchar, `instructions`/`comment` text, 
-  `instruction_digest` char(16), `base` boolean, `status` IN (`pending`,
-  `succeeded`, `partially_succeeded`, `failed`), `created_at`; unique
-  `(owner_id, packet_id, packet_revision, instruction_digest)` — this is the
-  service's request idempotency key.
-- `knowledge_dissection_applications`: `request_id` FK PK, `packet_id`,
-  `instruction_digest`, `base`, `outcomes` JSONB (candidate ID, outcome,
-  fact ID), `applied_at`. Immutable once written.
-- `knowledge_statistic_snapshots`: `id` UUID PK, `fact_id`/`owner_id` FKs,
-  `content_version`, `mentions`/`common`/`bingo` JSONB NULL, `created_at`.
-  Append-only; never rewritten by refreshes.
-
-## Repository port (A: SQLAlchemy adapter)
-
-Implement the exact async method surface of `InMemoryKnowledgeStore` in
-`services/knowledge.py` against PostgreSQL: `add_fact`, `get_fact`,
-`save_fact`, `facts_for_owner`, `add_tag`, `get_tag`, `save_tag`,
-`tags_for_owner`, `add_grant`, `get_grant`, `save_grant`,
-`grants_for_recipient`, `grants_for_owner`, `add_request`, `get_request`,
-`save_request`, `requests_for_owner`, `add_snapshot`, `snapshots_for_fact`.
-Keep grants uncached and live. `list_facts` filtering, ordering and keyset
-cursors move into SQL (cursor format stays the service's opaque base64 of
-`order_key\0fact_id`); each page must remain bounded with no per-card queries.
-Query-count regression checks follow the existing loading practices
-([packet loading](packet-loading.md)).
-
-## Gateway operations (A: `application/contracts.py` + dispatch)
-
-Typed operations with stable errors; service exceptions map as
-`PermissionError → forbidden`, `LookupError → not_found`,
-`ValueError → validation_failed` / version mismatch → `stale_write`.
-
-| Operation | Kind | Idempotency | Notes |
-| --- | --- | --- | --- |
-| `knowledge.facts.view` | query | — | Page parameters: `owner_id?`, `cursor?`, `search?`, `tag?`, `order`, `limit`. |
-| `knowledge.fact.view` | query | — | Owner gets full detail; recipients get `editable: false`. |
-| `knowledge.fact.create` | mutation | required | Returns the created projection. |
-| `knowledge.fact.update` | mutation | required | Requires `expected_version`; content changes bump the version and mark statistics stale. |
-| `knowledge.fact.delete` | mutation | required | Requires `confirm_dissection_origin` for dissection facts. |
-| `knowledge.facts.merge` | mutation | required | Requires `expected_target_version` and `confirm_source_delete` for manual sources. |
-| `knowledge.tag.create` / `rename` / `delete` | mutation | required | Owner-scoped normalized names. |
-| `knowledge.grant.create` / `revoke` | mutation | required | Idempotent active grant per `(owner, recipient)`. |
-| `knowledge.dissection.request` | mutation | required | Body: packet access reference, `packet_revision`, `instructions`, `comment`. Enforces packet access/disclosure boundary before recording. |
-| `knowledge.dissection.apply` | mutation | required | Consumes C's validated candidates; retries are idempotent. |
-| `knowledge.dissection.status` | query | — | Per request or per packet list. |
-
-Projections use the JSON shapes already consumed by
-`bot/handlers/knowledge.py` and `web/src/ui/knowledge.ts` (see their tests);
-`LocalizationService.text` escapes every string parameter.
-
-## HTTP routes (A: `miniapp_http.py`, browser client, routing)
-
-- `GET /api/miniapp/knowledge/facts` — cursor pagination (25/page),
-  `search`, `tag`, `order`; embeds statistic states.
-- `GET /api/miniapp/knowledge/facts/{fact_id}` — lazy detail.
-- `POST /api/miniapp/knowledge/facts`, `PATCH|DELETE .../facts/{fact_id}`,
-  `POST .../facts/{fact_id}/merge` — CSRF-protected.
-- `GET|POST /api/miniapp/knowledge/sharing/grants`,
-  `DELETE .../sharing/grants/{grant_id}`, `GET .../sharing/shared-with-me`.
-- `GET|POST /api/miniapp/knowledge/dissection/requests`.
-Browser wiring passes the view's `loadFacts`/`loadFact`/`grant`/`revoke`/
-`dissect` actions to the authenticated client and re-renders on fresh data.
-
-## Localization (A: catalogs)
-
-Bot `locales/ru.json` + `locales/en.json`: the `knowledge.*` keys used in
-`tests/unit/test_knowledge_bot.py` (EN/RU pairs are ready there; placeholders
-must match across locales). Web `i18n/en.ts` + `ru.ts`: the keys exported by
-`knowledgeMessageKeys` in `web/src/ui/knowledge.ts`; once merged, the shared
-`I18n` satisfies `KnowledgeI18n` structurally. Proposed EN/RU values are in
-`web/src/ui/knowledge.test.ts`.
-
-## Telegram wiring (A: `bot/app.py`, `bot/router.py`)
-
-1. Build a `KnowledgeBackend` implementation over the gateway and register it
-   as the `knowledge_backend` workflow dependency.
-2. `root_router.include_router(knowledge.router)` after the player router.
-3. `/facts` lists the owner's collection; `klib:page:<n>` page numbers must be
-   resolved server-side to the service's keyset cursors (callback data stays
-   ≤ 64 bytes); `klib:fact:<uuid>` opens the detail. Every read re-authorizes
-   in the service; revoked access degrades to `not_found`/`forbidden` messages.
-
-## Deferred decisions
-
-- Real GotQuestions connector: verify a supported programmatic access method
-  and response/count semantics against the official FAQ before shipping; the
-  fixture connector stays the test boundary. Respect throttling.
-- Bingo formula: calibrate against the supplied examples, then inject the
-  formula and bump `BINGO_SCORING_VERSION`; until then all values are
-  `pending_calibration`, never zero.
-- Common knowledge population assumptions, provider/model and cache-hit
-  charging (Agent C), plus sharing edit/copy/public-link semantics remain open
-  in the plan's Stage 0 list.
-
+Tests cover migration upgrade/downgrade, PostgreSQL CRUD/sharing revocation, bounded
+query counts, private isolation/cleanup, automatic fact application, Best buzz
+conversion, quotas/refunds/recovery, authenticated contracts and browser views.
+Live Telegram delivery and a configured-provider smoke test remain deployment checks.
