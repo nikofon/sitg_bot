@@ -7,6 +7,7 @@ Existing behavior belongs in the linked subsystem guides.
 
 | Area | Remaining work and implementation direction |
 | --- | --- |
+| Training mode | The [training mode plan](training-mode-plan.md) splits solo training, knowledge library and AI work across three agents. Agent B's knowledge slice (facts, tags, sharing, statistics, dissection application) is implemented against fixtures and awaits central integration per the [knowledge integration spec](training-knowledge-integration.md). |
 | Historical packet access | Define post-game/post-tournament visibility beyond current library entitlements. See [packets](packet-administration.md). |
 | Upload moderation and retention | Optional review requirements, cross-tournament assignment consent, quotas, copyright handling, and source/draft retention. Opt-in community upload/publication is implemented. |
 | Additional rulesets | Generalize SI-specific execution persistence before registering another ruleset. Define content-schema compatibility and meaningful cross-ruleset statistics; preserve the existing assignment/claim contract. See [game rulesets](game-rulesets.md). |
