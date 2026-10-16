@@ -7,6 +7,7 @@ Existing behavior belongs in the linked subsystem guides.
 
 | Area | Remaining work and implementation direction |
 | --- | --- |
+| Training mode | Implementing per the [training mode plan](training-mode-plan.md). Agent C's AI analysis, caching and entitlements are built in [training AI](training-ai.md); training execution, knowledge library and adapter wiring remain. LLM provider/model, limits and calibration are pending Stage 0 decisions. |
 | Historical packet access | Define post-game/post-tournament visibility beyond current library entitlements. See [packets](packet-administration.md). |
 | Upload moderation and retention | Optional review requirements, cross-tournament assignment consent, quotas, copyright handling, and source/draft retention. Opt-in community upload/publication is implemented. |
 | Additional rulesets | Generalize SI-specific execution persistence before registering another ruleset. Define content-schema compatibility and meaningful cross-ruleset statistics; preserve the existing assignment/claim contract. See [game rulesets](game-rulesets.md). |

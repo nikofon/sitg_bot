@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -369,41 +369,79 @@ class DurableJobQueue:
         priority: int = 100,
         max_attempts: int = 12,
     ) -> UUID:
+        async with self.database.transaction() as session:
+            return await self.schedule_in_session(
+                session,
+                kind,
+                deduplication_key,
+                payload,
+                scheduled_at=scheduled_at,
+                priority=priority,
+                max_attempts=max_attempts,
+            )
+
+    @staticmethod
+    async def schedule_in_session(
+        session: AsyncSession,
+        kind: str,
+        deduplication_key: str,
+        payload: Mapping[str, Any],
+        *,
+        scheduled_at: datetime | None = None,
+        priority: int = 100,
+        max_attempts: int = 12,
+    ) -> UUID:
+        """Enqueue a durable job inside the caller's transaction.
+
+        The job becomes visible atomically with the caller's state changes, so
+        reservation and request persistence cannot diverge from execution.
+        """
         if not kind or not deduplication_key:
             raise ValueError("Job kind and deduplication key are required")
         if max_attempts < 1:
             raise ValueError("Job max attempts must be positive")
-        async with self.database.transaction() as session:
-            job_id = uuid4()
-            inserted_id = await session.scalar(
-                pg_insert(DurableJobRecord)
-                .values(
-                    id=job_id,
-                    kind=kind,
-                    deduplication_key=deduplication_key,
-                    payload=dict(payload),
-                    scheduled_at=scheduled_at or datetime.now(UTC),
-                    priority=priority,
-                    max_attempts=max_attempts,
-                )
-                .on_conflict_do_nothing(index_elements=["deduplication_key"])
-                .returning(DurableJobRecord.id)
+        job_id = uuid4()
+        inserted_id = await session.scalar(
+            pg_insert(DurableJobRecord)
+            .values(
+                id=job_id,
+                kind=kind,
+                deduplication_key=deduplication_key,
+                payload=dict(payload),
+                scheduled_at=scheduled_at or datetime.now(UTC),
+                priority=priority,
+                max_attempts=max_attempts,
             )
-            if inserted_id is not None:
-                return inserted_id
-            existing_id = await session.scalar(
-                select(DurableJobRecord.id).where(
-                    DurableJobRecord.deduplication_key == deduplication_key
-                )
+            .on_conflict_do_nothing(index_elements=["deduplication_key"])
+            .returning(DurableJobRecord.id)
+        )
+        if inserted_id is not None:
+            return inserted_id
+        existing_id = await session.scalar(
+            select(DurableJobRecord.id).where(
+                DurableJobRecord.deduplication_key == deduplication_key
             )
-            assert existing_id is not None
-            return existing_id
+        )
+        assert existing_id is not None
+        return existing_id
 
     async def claim(
-        self, *, limit: int = 20, now: datetime | None = None
+        self,
+        *,
+        limit: int = 20,
+        now: datetime | None = None,
+        kinds: Sequence[str] | None = None,
     ) -> tuple[ClaimedJob, ...]:
+        """Claim runnable jobs, optionally restricted to specific kinds.
+
+        Separate gameplay and analysis workers use the kind filter so slow
+        analysis work is never claimed by workers without its handlers and
+        never occupies gameplay deadlines.
+        """
         if limit < 1 or limit > 500:
             raise ValueError("Job claim limit must be between 1 and 500")
+        if kinds is not None and not kinds:
+            raise ValueError("Job claim kinds filter cannot be empty")
         now = now or datetime.now(UTC)
         async with self.database.transaction() as session:
             await session.execute(
@@ -433,6 +471,11 @@ class DurableJobQueue:
                                 (DurableJobRecord.status == "running")
                                 & (DurableJobRecord.lease_expires_at <= now),
                             ),
+                            *(
+                                [DurableJobRecord.kind.in_(kinds)]
+                                if kinds is not None
+                                else []
+                            ),
                         )
                         .order_by(
                             DurableJobRecord.priority,
@@ -461,6 +504,15 @@ class DurableJobQueue:
                     )
                 )
             return tuple(jobs)
+
+    async def cancel(self, job_id: UUID) -> bool:
+        """Cancel a still queued durable job; running jobs are fenced by leases."""
+        async with self.database.transaction() as session:
+            record = await session.get(DurableJobRecord, job_id, with_for_update=True)
+            if record is None or record.status != "queued":
+                return False
+            record.status = "cancelled"
+            return True
 
     async def succeed(self, job_id: UUID, lease_token: UUID) -> None:
         async with self.database.transaction() as session:
@@ -513,6 +565,7 @@ class DurableJobWorker:
         *,
         poll_interval: float = 0.25,
         batch_size: int = 20,
+        kinds: Sequence[str] | None = None,
     ) -> None:
         if poll_interval <= 0:
             raise ValueError("Job worker poll interval must be positive")
@@ -520,9 +573,10 @@ class DurableJobWorker:
         self.handlers = dict(handlers)
         self.poll_interval = poll_interval
         self.batch_size = batch_size
+        self.kinds = tuple(kinds) if kinds is not None else None
 
     async def run_once(self) -> int:
-        jobs = await self.queue.claim(limit=self.batch_size)
+        jobs = await self.queue.claim(limit=self.batch_size, kinds=self.kinds)
         for job in jobs:
             handler = self.handlers.get(job.kind)
             if handler is None:
