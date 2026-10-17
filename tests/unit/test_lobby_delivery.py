@@ -246,6 +246,77 @@ async def test_already_presented_version_needs_no_telegram_calls_or_writes_after
     bot.delete_message.assert_not_awaited()
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("supports_random_packet", [True, False])
+async def test_settings_prompt_mentions_random_packets_only_when_supported(
+    locale, supports_random_packet,
+):
+    state = {
+        "active": True, "version": 1, "messages": {},
+        "lobby": {"supports_random_packet": supports_random_packet},
+        "launch_reference": "opaque-lobby", "expires_at": "2099-01-01",
+    }
+    protocol = SimpleNamespace(request=AsyncMock(return_value=state))
+    bot = SimpleNamespace(send_message=AsyncMock(side_effect=[
+        SimpleNamespace(message_id=index) for index in (1, 2, 3)
+    ]))
+    localization = LocalizationService()
+    delivery = LobbyDelivery(bot, localization, protocol, "https://mini.test", "bot")
+    await delivery.show(42, "lobby", locale, keyboard=ReplyKeyboardModel(rows=(("Menu",),)))
+
+    prompt = bot.send_message.await_args.args[1]
+    base = localization.text("lobby.info.settings_prompt_no_random_packet", locale)
+    if supports_random_packet:
+        assert prompt == localization.text("lobby.info.settings_prompt", locale)
+        assert prompt.startswith(base + "\n")
+    else:
+        assert prompt == base
+    markup = bot.send_message.await_args.kwargs["reply_markup"]
+    assert "section=settings" in markup.inline_keyboard[0][0].web_app.url
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("kind", [
+    "settings_changed", "packet_selected", "packet_removed", "readiness_changed",
+])
+@pytest.mark.parametrize("mode,context,action", [
+    ("player", "lobby", "lobby.ready"),
+    ("player", "lobby", "lobby.unready"),
+    ("player", "lobby", "lobby.info"),
+    ("player", "tournament", "player.tournament.create_lobby"),
+    ("manager", "menu", "manager.tournament.select"),
+])
+async def test_lobby_change_notice_installs_current_navigation_keyboard(
+    locale, kind, mode, context, action,
+):
+    localization = LocalizationService()
+    protocol = SimpleNamespace(request=AsyncMock(return_value={
+        "account": {
+            "player_id": str(UUID(int=1)), "telegram_user_id": 42,
+            "public_nickname": "Alice", "preferred_locale": locale,
+            "registration_status": "active", "registration_completed_at": "2026-01-01",
+            "profile_version": 1,
+        },
+        "available_modes": ["player", "manager"], "active_mode": mode,
+        "context": context, "navigation_version": 3,
+        "selected_player_tournament": None, "selected_manager_tournament": None,
+        "active_lobby": None, "active_game": None, "allowed_actions": [action],
+    }))
+    bot = SimpleNamespace(send_message=AsyncMock())
+    deliver = lobby_notice_delivery_handler(bot, localization, protocol=protocol)
+    await deliver({
+        "kind": kind, "recipient_telegram_user_id": 42, "locale": locale,
+        "changes": {"theme_count": 2}, "packet_name": "Packet",
+        "player_name": "Alice", "ready": True, "ready_count": 1, "player_count": 2,
+    })
+
+    protocol.request.assert_awaited_once_with("telegram.navigation.snapshot", telegram_user_id=42)
+    markup = bot.send_message.await_args.kwargs["reply_markup"]
+    assert [[button.text for button in row] for row in markup.keyboard] == [
+        [localization.text(f"button.{action}", locale)],
+    ]
+
+
 async def test_failed_summary_edit_does_not_mark_new_version_delivered():
     from aiogram.exceptions import TelegramRetryAfter
 

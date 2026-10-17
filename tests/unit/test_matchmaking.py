@@ -389,10 +389,14 @@ async def test_search_presentation_shares_summary_and_skips_unchanged_versions(m
     await service.telegram_presentation(lobby.id, 43)
     assert service._telegram_summary.await_count == 1
     member.telegram_messages = {
-        "summary": 1, "summary_text": "Summary", "summary_version": 1,
+        "summary": 1, "settings": 2, "summary_text": "Summary", "summary_version": 1,
         "search_status": first["search_status"],
     }
     assert "lobby" not in await service.telegram_presentation(lobby.id, 42)
+    # A retry after saving the summary still needs capabilities for the settings prompt.
+    del member.telegram_messages["settings"]
+    assert "lobby" in await service.telegram_presentation(lobby.id, 42)
+    member.telegram_messages["settings"] = 2
     now[0] += timedelta(minutes=1)
     elapsed = await service.telegram_presentation(lobby.id, 42)
     assert elapsed["lobby"]["search_elapsed_minutes"] == 3

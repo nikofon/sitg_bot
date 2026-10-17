@@ -2448,6 +2448,22 @@ async def test_search_status_batches_queries_and_skips_unchanged_deliveries(
         await database.close()
 
 
+@pytest.mark.parametrize("type_key", ["ladder", "classic"])
+async def test_lobby_presentation_reports_random_packet_support(database_url: str, type_key: str):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(
+            database, player_count=1, type_key=type_key,
+            hybrid_matchmaking_enabled=type_key == "ladder",
+        )
+        service = InvitationMatchmakingService(database)
+        lobby = await service.create_lobby(fixture.inputs[0], tournament_id=fixture.tournament_id)
+        state = await service.telegram_presentation(lobby.id, fixture.inputs[0].telegram_user_id)
+        assert state["lobby"]["supports_random_packet"] is (type_key != "classic")
+    finally:
+        await database.close()
+
+
 async def test_lobby_summary_skips_catalogue_and_already_delivered_versions(
     database_url: str,
 ) -> None:

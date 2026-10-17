@@ -65,6 +65,7 @@ from sitg_bot.storage.models import (
     TournamentPacketAssignmentRecord,
     TournamentPolicyVersionRecord,
     TournamentRecord,
+    TournamentTypeVersionRecord,
 )
 
 
@@ -435,6 +436,7 @@ class InvitationMatchmakingService:
             if messages is None and state["active"] and (
                 force or saved.get("summary_version") != lobby.version
                 or "summary" not in saved or "summary_text" not in saved
+                or "settings" not in saved
                 or saved.get("search_status") != state["search_status"]
             ):
                 cached = self._search_summaries.get(lobby.id) if lobby.searching else None
@@ -560,9 +562,14 @@ class InvitationMatchmakingService:
     @staticmethod
     async def _telegram_summary(session: AsyncSession, lobby: PregameLobbyRecord) -> dict:
         """Read only displayed fields, never packet suggestions or exposure history."""
-        tournament_name = await session.scalar(
-            select(TournamentRecord.name).where(TournamentRecord.id == lobby.tournament_id)
-        )
+        tournament_name, type_key = (await session.execute(
+            select(TournamentRecord.name, TournamentTypeVersionRecord.key)
+            .join(
+                TournamentTypeVersionRecord,
+                TournamentTypeVersionRecord.id == lobby.tournament_type_version_id,
+            )
+            .where(TournamentRecord.id == lobby.tournament_id)
+        )).one()
         creator_telegram_id = await session.scalar(
             select(PlayerRecord.telegram_user_id).where(PlayerRecord.id == lobby.creator_player_id)
         )
@@ -605,6 +612,7 @@ class InvitationMatchmakingService:
         )
         return {
             "tournament_name": tournament_name,
+            "supports_random_packet": type_key != "classic",
             "creator_telegram_user_id": creator_telegram_id,
             "invitation_code": lobby.invitation_code,
             "expires_at": lobby.expires_at.isoformat(),

@@ -509,6 +509,7 @@
   "lobby.info.status_unready": "not ready",
   "lobby.info.packets": "Selected packets:",
   "lobby.info.settings_prompt": "Any participant can view the lobby settings and packets; only the owner can change them.\n<b>To start the game with a random packet</b> make sure everyone is ready and start the game without selecting a packet",
+  "lobby.info.settings_prompt_no_random_packet": "Any participant can view the lobby settings and packets; only the owner can change them.",
   "game.info.tournament": "Tournament: {tournament}",
   "game.info.packets": "Packets: {packets}",
   "game.info.players": "Players: {players}",

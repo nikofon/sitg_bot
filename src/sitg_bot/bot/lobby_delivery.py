@@ -127,8 +127,13 @@ class LobbyDelivery:
                     state["launch_reference"], datetime.fromisoformat(state["expires_at"]),
                 )
                 url = mini_app_launch_url(self.base_url, "lobbies", reference) + "&section=settings"
+                prompt_key = (
+                    "lobby.info.settings_prompt"
+                    if state.get("lobby", {}).get("supports_random_packet")
+                    else "lobby.info.settings_prompt_no_random_packet"
+                )
                 sent = await self.bot.send_message(
-                    chat, self.localization.text("lobby.info.settings_prompt", locale),
+                    chat, self.localization.text(prompt_key, locale),
                     reply_markup=telegram_keyboard(InlineKeyboardModel(rows=((InlineButtonModel(
                         self.localization.text("button.lobby.settings", locale), web_app_url=url,
                     ),),))),
@@ -400,6 +405,18 @@ def lobby_notice_delivery_handler(
                 text += "\n" + localization.text(
                     key, locale, players=", ".join(payload["classic_players"])
                 )
+        if protocol is not None and kind in {
+            "settings_changed", "packet_selected", "packet_removed", "readiness_changed",
+        }:
+            # Summary edits cannot update Telegram's reply keyboard. Install the
+            # current controls on the notice, including after a readiness reset.
+            navigation = await protocol.request(
+                "telegram.navigation.snapshot",
+                telegram_user_id=int(payload["recipient_telegram_user_id"]),
+            )
+            keyboard = telegram_keyboard(menu_message(
+                NavigationState.model_validate(navigation), localization, locale,
+            ).keyboard)
         try:
             await bot.send_message(
                 int(payload["recipient_telegram_user_id"]),
