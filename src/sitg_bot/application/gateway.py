@@ -320,6 +320,16 @@ ACTION_POLICIES.update(
         ActionCode.KNOWLEDGE_TAG_DELETE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
+        ActionCode.KNOWLEDGE_SHARING: ActionPolicy(sensitive_response=True),
+        ActionCode.KNOWLEDGE_LINK_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_LINK_DEACTIVATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_IMPORT: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
         ActionCode.KNOWLEDGE_GRANT: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -1220,10 +1230,14 @@ class ApplicationGateway:
                 ActionCode.KNOWLEDGE_TAG_DELETE: "tag_delete",
                 ActionCode.KNOWLEDGE_GRANT: "grant",
                 ActionCode.KNOWLEDGE_REVOKE: "revoke",
+                ActionCode.KNOWLEDGE_LINK_CREATE: "link_create",
+                ActionCode.KNOWLEDGE_LINK_DEACTIVATE: "link_deactivate",
+                ActionCode.KNOWLEDGE_IMPORT: "import",
             }
-            return await self.knowledge.mutate(
-                player_id, commands[action], operation.model_dump(exclude={"action"})
-            )
+            values = operation.model_dump(exclude={"action"})
+            if action == ActionCode.KNOWLEDGE_LINK_CREATE:
+                values["creation_key"] = request.metadata.idempotency_key
+            return await self.knowledge.mutate(player_id, commands[action], values)
         if isinstance(operation, TrainingLobbyOperation):
             return await self.training.lobby(
                 player_id, operation.command, expected_version=operation.expected_version,

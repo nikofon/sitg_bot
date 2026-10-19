@@ -38,6 +38,7 @@ from sitg_bot.storage.models import (
     KnowledgeFactRecord,
     KnowledgeFactTagRecord,
     KnowledgeGrantRecord,
+    KnowledgeImportHashRecord,
     KnowledgeSnapshotRecord,
     KnowledgeTagRecord,
 )
@@ -155,14 +156,42 @@ class PostgresKnowledgeStore:
             if not rows:
                 break
             cursor = rows[-1].id
+            # A durable unique recipient/hash claim is the concurrency boundary.
+            # The caller also serializes account mutations using sorted account locks.
+            hashes = {row.content_fingerprint for row in rows}
+            existing = set(await self.session.scalars(
+                select(model.content_fingerprint).where(
+                    model.owner_id == recipient_id, model.content_fingerprint.in_(hashes)
+                )
+            ))
+            claimed = set(await self.session.scalars(
+                insert(KnowledgeImportHashRecord).values([
+                    {"recipient_id": recipient_id, "content_fingerprint": digest}
+                    for digest in sorted(hashes)
+                ]).on_conflict_do_nothing().returning(KnowledgeImportHashRecord.content_fingerprint)
+            ))
+            selected = []
+            for row in rows:
+                if row.content_fingerprint in claimed and row.content_fingerprint not in existing:
+                    selected.append(row)
+                    claimed.remove(row.content_fingerprint)
+            rows = selected
+            if not rows:
+                continue
             tags = await self._tags([row.id for row in rows])
             names = {name for source_tags in tags.values() for _, name in source_tags}
             if names:
+                colours = dict((await self.session.execute(
+                    select(KnowledgeTagRecord.name, KnowledgeTagRecord.colour).where(
+                        KnowledgeTagRecord.owner_id == owner_id, KnowledgeTagRecord.name.in_(names)
+                    )
+                )).all())
                 await self.session.execute(
                     insert(KnowledgeTagRecord)
                     .values(
                         [
-                            {"id": uuid4(), "owner_id": recipient_id, "name": name}
+                            {"id": uuid4(), "owner_id": recipient_id, "name": name,
+                             "colour": colours[name]}
                             for name in sorted(names)
                         ]
                     )
@@ -435,17 +464,19 @@ class PostgresKnowledgeStore:
         )
 
     async def add_tag(self, tag):
-        self.session.add(KnowledgeTagRecord(id=tag.id, owner_id=tag.owner_id, name=tag.name))
+        self.session.add(KnowledgeTagRecord(
+            id=tag.id, owner_id=tag.owner_id, name=tag.name, colour=tag.colour
+        ))
         await self.session.flush()
         return tag
 
     async def get_tag(self, tag_id):
         row = await self.session.get(KnowledgeTagRecord, tag_id)
-        return StoredTag(row.id, row.owner_id, row.name) if row else None
+        return StoredTag(row.id, row.owner_id, row.name, row.colour) if row else None
 
     async def save_tag(self, tag):
         row = await self.session.get(KnowledgeTagRecord, tag.id)
-        row.name = tag.name
+        row.name, row.colour = tag.name, tag.colour
         await self.session.flush()
 
     async def remove_tag(self, tag_id):
@@ -455,7 +486,7 @@ class PostgresKnowledgeStore:
 
     async def tags_for_owner(self, owner_id):
         return [
-            StoredTag(row.id, row.owner_id, row.name)
+            StoredTag(row.id, row.owner_id, row.name, row.colour)
             for row in await self.session.scalars(
                 select(KnowledgeTagRecord).where(KnowledgeTagRecord.owner_id == owner_id)
             )

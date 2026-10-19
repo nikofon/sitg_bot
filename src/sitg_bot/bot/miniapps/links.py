@@ -32,6 +32,23 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(launch_query), ""))
 
 
+def knowledge_import_app_url(base_url: str, token: str) -> str:
+    """Inline WebApp launch: authenticate in Telegram, keep import capability off HTTP logs."""
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+        raise ValueError("Invalid knowledge sharing token")
+    parsed = urlsplit(mini_app_route_url(base_url, "knowledge"))
+    return urlunsplit(parsed._replace(fragment=f"import={token}"))
+
+
+def knowledge_import_bot_url(username: str, token: str) -> str:
+    """Ordinary bot /start links do not require a configured Mini App short name."""
+    if re.fullmatch(r"[A-Za-z0-9_]+", username) is None:
+        raise ValueError("Invalid bot username")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+        raise ValueError("Invalid knowledge sharing token")
+    return f"https://t.me/{username}?start=kl_{token}"
+
+
 def mini_app_launch_url(base_url: str, route: str, reference: LaunchReference) -> str:
     """Build a Mini App URL containing only the service-issued opaque launch reference."""
 

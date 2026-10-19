@@ -2640,6 +2640,7 @@ class KnowledgeFactRecord(Base, TimestampMixin):
         Index("ix_knowledge_facts_owner_updated", "owner_id", "updated_at", "id"),
         Index("ix_knowledge_facts_owner_created", "owner_id", "created_at", "id"),
         Index("ix_knowledge_facts_owner_candidate", "owner_id", "applied_candidate_id"),
+        Index("ix_knowledge_facts_owner_fingerprint", "owner_id", "content_fingerprint"),
     )
 
 
@@ -2648,7 +2649,11 @@ class KnowledgeTagRecord(Base):
     id: Mapped[UUID] = uuid_column()
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
     name: Mapped[str] = mapped_column(String(64))
-    __table_args__ = (UniqueConstraint("owner_id", "name"), UniqueConstraint("id", "owner_id"))
+    colour: Mapped[str] = mapped_column(String(7), default="#64748b", server_default="#64748b")
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name"), UniqueConstraint("id", "owner_id"),
+        CheckConstraint("colour ~ '^#[0-9a-f]{6}$'", name="ck_knowledge_tag_colour"),
+    )
 
 
 class KnowledgeFactTagRecord(Base):
@@ -2684,6 +2689,25 @@ class KnowledgeGrantRecord(Base):
     )
 
 
+class KnowledgeShareLinkRecord(Base):
+    __tablename__ = "knowledge_share_links"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True)
+    creation_key_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("owner_id", "creation_key_hash"),)
+
+
+class KnowledgeImportHashRecord(Base):
+    """Durable recipient/content claims, retained after edits and soft deletion."""
+
+    __tablename__ = "knowledge_import_hashes"
+    recipient_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+
 class KnowledgeFactCopyRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_fact_copies"
     source_fact_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
@@ -2702,6 +2726,19 @@ class KnowledgeFactCopyRecord(Base, TimestampMixin):
     )
 
 
+class TrainingBestBuzzCompletionRecord(Base):
+    """Non-content calculation history, independent of expiring analysis caches."""
+
+    __tablename__ = "training_best_buzz_completions"
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    packet_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("packet_versions.id"), primary_key=True
+    )
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class KnowledgeDissectionRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_dissection_requests"
     id: Mapped[UUID] = uuid_column()
@@ -2715,6 +2752,7 @@ class KnowledgeDissectionRecord(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30))
     application: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     analysis_request_id: Mapped[str | None] = mapped_column(String(300), index=True)
+    theme_revision_ids: Mapped[list[str] | None] = mapped_column(JSONB)
     __table_args__ = (
         UniqueConstraint("owner_id", "packet_id", "packet_revision", "instruction_digest"),
         CheckConstraint("status IN ('pending', 'succeeded', 'partially_succeeded', 'failed')"),

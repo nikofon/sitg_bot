@@ -1,13 +1,15 @@
 """Production wiring for knowledge storage, packet authorization and analysis."""
 
+import hashlib
 import json
 import os
 import re
+import secrets
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, select
+from sqlalchemy import String, delete, func, select
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -19,7 +21,7 @@ from sitg_bot.services.analysis_jobs import (
 )
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
-from sitg_bot.services.knowledge import KnowledgeService
+from sitg_bot.services.knowledge import DEFAULT_TAG_COLOUR, KnowledgeService
 from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.reliable_delivery import DurableJobQueue, TransactionalOutbox
 from sitg_bot.services.training_access import require_trainee
@@ -37,8 +39,10 @@ from sitg_bot.services.training_provider import ResponsesAnalysisProvider
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     KnowledgeFactRecord,
+    KnowledgeShareLinkRecord,
     KnowledgeSnapshotRecord,
     LogicalPacketRecord,
+    PacketQuestionRecord,
     PacketVersionRecord,
     PlayerRecord,
     QuestionRevisionRecord,
@@ -251,7 +255,9 @@ class KnowledgeApplication:
             "title": detail.content.title,
             "description": detail.content.description,
             "links": [asdict(link) for link in detail.content.links],
-            "tags": [{"id": tag.tag_id, "name": tag.name} for tag in detail.tags],
+            "tags": [
+                {"id": tag.tag_id, "name": tag.name, "colour": tag.colour} for tag in detail.tags
+            ],
             "origin": detail.provenance.origin,
             "content_version": detail.content_version,
             "editable": detail.editable,
@@ -278,7 +284,12 @@ class KnowledgeApplication:
                 if ids
                 else {}
             )
+            links = await session.scalars(
+                select(KnowledgeShareLinkRecord).where(KnowledgeShareLinkRecord.owner_id == actor)
+                .order_by(KnowledgeShareLinkRecord.created_at.desc(), KnowledgeShareLinkRecord.id)
+            )
             return {
+                "links": [self._link_view(row) for row in links],
                 "grants": [
                     {
                         "id": row.recipient_id,
@@ -300,8 +311,43 @@ class KnowledgeApplication:
                 ],
             }
 
+    @staticmethod
+    def _link_view(row):
+        return {
+            "id": row.id, "token": row.token, "url": f"/knowledge#import={row.token}",
+            "created_at": row.created_at, "deactivated_at": row.deactivated_at,
+            "active": row.deactivated_at is None,
+        }
+
+    async def _import_link(self, session, actor, token):
+        if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+            raise ValueError("Invalid sharing token")
+        row = await session.scalar(select(KnowledgeShareLinkRecord).where(
+            KnowledgeShareLinkRecord.token == token
+        ))
+        if row is None or row.deactivated_at is not None:
+            raise LookupError("Sharing link is unavailable")
+        if actor == row.owner_id:
+            raise ValueError("A trainee cannot import their own collection")
+        # Use the same account-lock order as direct copying. Then recheck link
+        # under lock so deactivation and import have a single linearization point.
+        for owner_id in sorted({actor, row.owner_id}):
+            await require_trainee(session, owner_id, lock=True)
+        await session.refresh(row, with_for_update=True)
+        if row.deactivated_at is not None:
+            raise LookupError("Sharing link is unavailable")
+        total = await session.scalar(select(func.count()).select_from(KnowledgeFactRecord).where(
+            KnowledgeFactRecord.owner_id == row.owner_id, KnowledgeFactRecord.deleted_at.is_(None)
+        ))
+        copied = await self.service(session).grant_collection_access(row.owner_id, actor)
+        return {"owner_id": row.owner_id, "recipient_id": actor,
+                "imported_count": copied.copied_count, "skipped_count": total - copied.copied_count}
+
     async def mutate(self, actor, command, values):
         async with self.database.transaction() as session:
+            if command == "import":
+                await require_trainee(session, actor)
+                return await self._import_link(session, actor, values.get("token"))
             if command == "grant":
                 await require_trainee(session, actor)
                 recipient = values["recipient"]
@@ -318,6 +364,33 @@ class KnowledgeApplication:
                 return await self.service(session).grant_collection_access(actor, target.id)
             await require_trainee(session, actor, lock=True)
             service = self.service(session)
+            if command == "link_create":
+                key = values.get("creation_key")
+                key_hash = hashlib.sha256(key.encode()).hexdigest() if key else None
+                if key_hash:
+                    existing = await session.scalar(select(KnowledgeShareLinkRecord).where(
+                        KnowledgeShareLinkRecord.owner_id == actor,
+                        KnowledgeShareLinkRecord.creation_key_hash == key_hash,
+                    ))
+                    if existing is not None:
+                        return self._link_view(existing)
+                row = KnowledgeShareLinkRecord(
+                    id=uuid4(), owner_id=actor, token=secrets.token_urlsafe(32),
+                    creation_key_hash=key_hash, created_at=datetime.now(UTC),
+                )
+                session.add(row)
+                await session.flush()
+                return self._link_view(row)
+            if command == "link_deactivate":
+                row = await session.scalar(select(KnowledgeShareLinkRecord).where(
+                    KnowledgeShareLinkRecord.id == values.get("link_id"),
+                    KnowledgeShareLinkRecord.owner_id == actor,
+                ).with_for_update())
+                if row is None:
+                    raise LookupError("Sharing link not found")
+                if row.deactivated_at is None:
+                    row.deactivated_at = datetime.now(UTC)
+                return self._link_view(row)
             if command in ("create", "update"):
                 fields = {
                     key: values[key]
@@ -363,9 +436,13 @@ class KnowledgeApplication:
             elif command == "revoke":
                 return await service.revoke_collection_access(actor, values["grant_id"])
             elif command == "tag_create":
-                return await service.create_tag(actor, values["name"])
+                return await service.create_tag(
+                    actor, values["name"], values.get("colour") or DEFAULT_TAG_COLOUR
+                )
             elif command == "tag_rename":
-                return await service.rename_tag(actor, values["tag_id"], values["name"])
+                return await service.rename_tag(
+                    actor, values["tag_id"], values["name"], values.get("colour")
+                )
             elif command == "tag_delete":
                 await service.delete_tag(actor, values["tag_id"])
             else:
@@ -575,6 +652,14 @@ class KnowledgeApplication:
                 }
             )
         view = await self.service(session).apply_dissection_result(row.owner_id, row.id, candidates)
+        if request.status == "succeeded" and view.status == "succeeded":
+            # Keep non-content coverage after the expiring request/cache is pruned.
+            row.theme_revision_ids = sorted({str(value) for value in await session.scalars(
+                select(PacketQuestionRecord.theme_revision_id).where(
+                    PacketQuestionRecord.packet_version_id == UUID(row.packet_revision),
+                    PacketQuestionRecord.question_revision_id.in_(ids),
+                )
+            )})
         for fact_id in view.applied_fact_ids:
             await self._schedule_statistics(session, row.owner_id, fact_id, 1)
 
