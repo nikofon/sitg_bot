@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     delete,
     func,
+    literal,
     select,
     update,
 )
@@ -64,8 +65,10 @@ from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     Base,
     DurableJobRecord,
+    PacketVersionRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
+    TrainingBestBuzzCompletionRecord,
 )
 
 #: Durable job kind claimed only by analysis workers (kind-filtered claims).
@@ -302,6 +305,7 @@ class AnalysisService:
         if cache_hit:
             row.status = artifact.status
             row.completed_at = moment
+            await self._record_packet_completion(session, row, moment)
         else:
             await DurableJobQueue.schedule_in_session(
                 session,
@@ -862,6 +866,19 @@ class AnalysisService:
                 raise RuntimeError("Stale analysis compute lease")
             await self._complete_requests(session, artifact_id, status, error, moment)
 
+    @staticmethod
+    async def _record_packet_completion(session, row, moment):
+        if row.kind != ANALYSIS_BEST_BUZZ or row.status != "succeeded":
+            return
+        # The analysis service also supports virtual fixture sources. Only
+        # persisted catalogue versions have a corresponding card/history row.
+        await session.execute(pg_insert(TrainingBestBuzzCompletionRecord).from_select(
+            ["owner_id", "packet_version_id", "calculated_at"],
+            select(literal(row.owner_player_id), PacketVersionRecord.id, literal(moment)).where(
+                PacketVersionRecord.id == UUID(row.source["packet_revision_id"])
+            ),
+        ).on_conflict_do_nothing())
+
     async def _complete_requests(
         self,
         session: AsyncSession,
@@ -898,6 +915,7 @@ class AnalysisService:
             row.status = status if allowed else "cancelled"
             row.error = error[:2000] if error else None
             row.completed_at = moment
+            await self._record_packet_completion(session, row, moment)
             if self.entitlements is None:
                 continue
             feature = FEATURE_BY_KIND[row.kind]

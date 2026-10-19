@@ -109,6 +109,7 @@ from sitg_bot.application.contracts import (
     TrainingViewOperation,
 )
 from sitg_bot.application.gateway import ApplicationGateway
+from sitg_bot.bot.miniapps.links import knowledge_import_bot_url
 from sitg_bot.services.launch_references import LaunchReferenceService
 from sitg_bot.services.miniapp_auth import (
     MiniAppAuthenticationError,
@@ -188,6 +189,7 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/knowledge/facts", self._knowledge_facts)
         app.router.add_get("/api/miniapp/knowledge/facts/{fact_id}", self._knowledge_fact)
         app.router.add_get("/api/miniapp/knowledge/sharing", self._knowledge_sharing)
+        app.router.add_get("/api/miniapp/knowledge/tags", self._knowledge_tags)
         app.router.add_get("/api/miniapp/knowledge/dissections", self._knowledge_dissections)
         app.router.add_post("/api/miniapp/knowledge/{command}", self._knowledge_mutation)
         app.router.add_get("/api/miniapp/training/entitlements", self._training_entitlements)
@@ -533,6 +535,7 @@ class MiniAppHttpServer:
             _, sharing = await self._query(
                 request, KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
             )
+            sharing = await self._knowledge_link_urls(sharing)
             _, dissections = await self._query(
                 request, KnowledgeDissectionsOperation(action=ActionCode.KNOWLEDGE_DISSECTIONS)
             )
@@ -1759,11 +1762,43 @@ class MiniAppHttpServer:
         )
         return self._gateway_response(result)
 
+    async def _knowledge_tags(self, request: web.Request) -> web.Response:
+        _, result = await self._query(
+            request, KnowledgeTagOperation(action=ActionCode.KNOWLEDGE_TAGS)
+        )
+        return self._gateway_response(result)
+
+    async def _knowledge_link_urls(self, result: GatewayResponse) -> GatewayResponse:
+        if not result.ok or not isinstance(result.data, dict):
+            return result
+        data = dict(result.data)
+        links = data.get("links") if "links" in data else [data] if "token" in data else []
+        if not links:
+            return result
+        username = None
+        if self.selection_notifier is not None:
+            try:
+                username = await self.selection_notifier.bot_username()
+                if re.fullmatch(r"[A-Za-z0-9_]+", username) is None:
+                    username = None
+            except Exception:
+                # Never log bearer links or Telegram exceptions containing credentials.
+                LOGGER.warning("Knowledge share launch bot identity is unavailable")
+        decorated = [{
+            **link, "app_url": link["url"], "launch_available": username is not None,
+            "url": knowledge_import_bot_url(username, link["token"]) if username else None,
+        } for link in links]
+        if "links" in data:
+            data["links"] = decorated
+        else:
+            data = decorated[0]
+        return result.model_copy(update={"data": data})
+
     async def _knowledge_sharing(self, request: web.Request) -> web.Response:
         _, result = await self._query(
             request, KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
         )
-        return self._gateway_response(result)
+        return self._gateway_response(await self._knowledge_link_urls(result))
 
     async def _knowledge_dissections(self, request: web.Request) -> web.Response:
         _, result = await self._query(
@@ -1795,6 +1830,9 @@ class MiniAppHttpServer:
             "tag_create": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_CREATE),
             "tag_rename": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_RENAME),
             "tag_delete": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_DELETE),
+            "link_create": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_LINK_CREATE),
+            "link_deactivate": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_LINK_DEACTIVATE),
+            "import": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_IMPORT),
             "grant": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_GRANT),
             "revoke": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_REVOKE),
             "dissect": (PacketAnalysisOperation, ActionCode.KNOWLEDGE_DISSECT),
@@ -1809,6 +1847,8 @@ class MiniAppHttpServer:
         _, result = await self._mutation(
             request, contract.model_validate({**body, "action": action})
         )
+        if action in (ActionCode.KNOWLEDGE_LINK_CREATE, ActionCode.KNOWLEDGE_LINK_DEACTIVATE):
+            result = await self._knowledge_link_urls(result)
         return self._gateway_response(result)
 
     async def _training_packets(self, request: web.Request) -> web.Response:

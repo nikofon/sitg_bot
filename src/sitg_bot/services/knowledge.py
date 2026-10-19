@@ -10,6 +10,7 @@ copying never grants access to another trainee's source collection.
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -49,6 +50,15 @@ DissectionRequestStatus = Literal["pending", "succeeded", "partially_succeeded",
 StatisticStatus = Literal["none", "pending", "fresh", "stale"]
 
 
+DEFAULT_TAG_COLOUR = "#64748b"
+
+
+def tag_colour(value: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"#[0-9a-fA-F]{6}", value) is None:
+        raise ValueError("Tag colour must be a six-digit RGB hex colour")
+    return value.lower()
+
+
 def utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -57,6 +67,7 @@ def utcnow() -> datetime:
 class TagView:
     tag_id: UUID
     name: str
+    colour: str = DEFAULT_TAG_COLOUR
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +177,7 @@ class StoredTag:
     id: UUID
     owner_id: UUID
     name: str
+    colour: str = DEFAULT_TAG_COLOUR
 
 
 @dataclass
@@ -209,6 +221,7 @@ class InMemoryKnowledgeStore:
         self.requests: dict[UUID, StoredDissectionRequest] = {}
         self.snapshots: dict[UUID, StoredStatisticSnapshot] = {}
         self.copies: dict[tuple[UUID, UUID], FactCopy] = {}
+        self.import_hashes: set[tuple[UUID, str]] = set()
 
     async def add_copy(self, copy: FactCopy) -> None:
         self.copies[(copy.source_fact_id, copy.recipient_id)] = copy
@@ -396,7 +409,7 @@ class KnowledgeService:
     async def _tag_views(self, owner_id: UUID, tag_ids: set[UUID]) -> tuple[TagView, ...]:
         tags = [tag for tag in await self.store.tags_for_owner(owner_id) if tag.id in tag_ids]
         tags.sort(key=lambda tag: tag.name)
-        return tuple(TagView(tag.id, tag.name) for tag in tags)
+        return tuple(TagView(tag.id, tag.name, tag.colour) for tag in tags)
 
     async def _fact_view(self, fact: StoredFact, *, editable: bool) -> FactView:
         return FactView(
@@ -617,15 +630,18 @@ class KnowledgeService:
             items=tuple(items), total=total, next_cursor=next_cursor, order=order
         )
 
-    async def create_tag(self, owner_id: UUID, name: str) -> TagView:
+    async def create_tag(
+        self, owner_id: UUID, name: str, colour: str = DEFAULT_TAG_COLOUR
+    ) -> TagView:
         normalized = normalize_tag_name(name)
+        colour = tag_colour(colour)
         existing = await self.store.tags_for_owner(owner_id)
         if any(tag.name == normalized for tag in existing):
             raise ValueError("Tag already exists")
         tag = await self.store.add_tag(
-            StoredTag(id=uuid4(), owner_id=owner_id, name=normalized)
+            StoredTag(id=uuid4(), owner_id=owner_id, name=normalized, colour=colour)
         )
-        return TagView(tag.id, tag.name)
+        return TagView(tag.id, tag.name, tag.colour)
 
     async def list_tags(
         self, actor_id: UUID, *, owner_id: UUID | None = None
@@ -633,9 +649,11 @@ class KnowledgeService:
         view_owner = owner_id or actor_id
         await self._require_view_access(actor_id, view_owner)
         tags = sorted(await self.store.tags_for_owner(view_owner), key=lambda tag: tag.name)
-        return tuple(TagView(tag.id, tag.name) for tag in tags)
+        return tuple(TagView(tag.id, tag.name, tag.colour) for tag in tags)
 
-    async def rename_tag(self, owner_id: UUID, tag_id: UUID, new_name: str) -> TagView:
+    async def rename_tag(
+        self, owner_id: UUID, tag_id: UUID, new_name: str, colour: str | None = None
+    ) -> TagView:
         tag = await self.store.get_tag(tag_id)
         if tag is None or tag.owner_id != owner_id:
             raise LookupError("Tag not found")
@@ -644,8 +662,10 @@ class KnowledgeService:
         if any(other.name == normalized and other.id != tag.id for other in existing):
             raise ValueError("Tag already exists")
         tag.name = normalized
+        if colour is not None:
+            tag.colour = tag_colour(colour)
         await self.store.save_tag(tag)
-        return TagView(tag.id, tag.name)
+        return TagView(tag.id, tag.name, tag.colour)
 
     async def delete_tag(self, owner_id: UUID, tag_id: UUID) -> None:
         tag = await self.store.get_tag(tag_id)
@@ -669,11 +689,26 @@ class KnowledgeService:
         copied = {
             copy.source_fact_id for copy in await self.store.copies_for_recipient(recipient_id)
         }
+        existing = {
+            fact.content.fingerprint() for fact in await self.store.facts_for_owner(recipient_id)
+        }
         count = 0
         for source in await self.store.facts_for_owner(owner_id):
             if source.deleted_at is not None or source.id in copied:
                 continue
+            fingerprint = source.content.fingerprint()
+            claim = recipient_id, fingerprint
+            if claim in self.store.import_hashes:
+                continue
+            self.store.import_hashes.add(claim)
+            if fingerprint in existing:
+                continue
+            existing.add(fingerprint)
             tags = await self._tag_views(owner_id, source.tag_ids)
+            recipient_tags = {tag.name for tag in await self.store.tags_for_owner(recipient_id)}
+            for tag in tags:
+                if tag.name not in recipient_tags:
+                    await self.create_tag(recipient_id, tag.name, tag.colour)
             detail = await self.create_fact(
                 recipient_id,
                 title=source.content.title,
