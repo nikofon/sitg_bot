@@ -86,7 +86,11 @@ export interface KnowledgeFactDetail {
 export interface ShareLink {
   id: string;
   token: string;
-  url: string;
+  /** Shareable Telegram bot /start URL; null when the launch identity is unavailable. */
+  url: string | null;
+  /** In-session fragment route only; never presented as an externally usable share link. */
+  app_url: string;
+  launch_available: boolean;
   created_at: string;
   deactivated_at: string | null;
   active: boolean;
@@ -167,7 +171,6 @@ export interface KnowledgeActions {
   deactivateLink?: (linkId: string) => Promise<ShareLink | void>;
   importLibrary?: (token: string) => Promise<KnowledgeImportResult>;
   consumeImportToken?: () => void;
-  resolveShareUrl?: (url: string) => string;
   loadPackets?: (query: URLSearchParams, signal: AbortSignal) => Promise<{
     items: KnowledgePacketCard[];
     next_cursor: string | null;
@@ -264,6 +267,7 @@ export const knowledgeMessageKeys = [
   "knowledge.sharing.confirm_deactivate",
   "knowledge.sharing.direct",
   "knowledge.sharing.empty_links",
+  "knowledge.sharing.launch_unavailable",
   "knowledge.tags.new",
   "knowledge.tags.create",
   "knowledge.tags.name",
@@ -746,28 +750,36 @@ function shareLinkRow(
   reportError: (message: string) => void,
   refresh: () => void,
 ): HTMLElement {
-  const resolved = actions.resolveShareUrl
-    ? actions.resolveShareUrl(link.url)
-    : new URL(link.url, window.location.href).toString();
+  if (!active) {
+    return element("li", { className: "knowledge-link-row resource-card knowledge-link-row-inactive" },
+      element("span", { className: "knowledge-link-state" }, i18n.t("knowledge.sharing.deactivated")));
+  }
+  if (!link.launch_available || link.url === null) {
+    return element("li", { className: "knowledge-link-row resource-card" },
+      element("p", { className: "knowledge-fact-meta" },
+        i18n.t("knowledge.sharing.launch_unavailable")));
+  }
+  // Share the actual returned Telegram bot URL unchanged; never substitute app_url.
+  const shared = link.url;
   const url = element("input", {
     type: "text",
     readonly: true,
     className: "knowledge-link-url",
-    value: resolved,
+    value: shared,
     "aria-label": i18n.t("knowledge.sharing.link_url"),
   });
   const copy = element("button", {
     type: "button",
     className: "secondary-button",
     onclick: (() => {
-      void (navigator.clipboard?.writeText(resolved) ?? Promise.reject())
+      void (navigator.clipboard?.writeText(shared) ?? Promise.reject())
         .then(() => { copy.textContent = i18n.t("knowledge.sharing.copied"); })
         .catch(() => { url.select(); });
     }) as EventListener,
   }, i18n.t("knowledge.sharing.copy"));
-  const row = element("li", { className: "knowledge-link-row resource-card" },
+  return element("li", { className: "knowledge-link-row resource-card" },
     element("div", { className: "knowledge-link-url-row" }, url, copy),
-    active ? element("button", {
+    element("button", {
       type: "button",
       className: "danger-button",
       onclick: (() => {
@@ -776,9 +788,7 @@ function shareLinkRow(
           .then(refresh)
           .catch(() => reportError(i18n.t("knowledge.error")));
       }) as EventListener,
-    }, i18n.t("knowledge.sharing.deactivate"))
-      : element("span", { className: "knowledge-link-state" }, i18n.t("knowledge.sharing.deactivated")));
-  return row;
+    }, i18n.t("knowledge.sharing.deactivate")));
 }
 
 function openShareDialog(

@@ -63,6 +63,7 @@ const messages: Record<string, string> = {
   "knowledge.sharing.title": "Sharing",
   "knowledge.sharing.empty": "No copies sent yet.",
   "knowledge.sharing.empty_links": "No active links yet.",
+  "knowledge.sharing.launch_unavailable": "Sharing links are unavailable right now: the bot launch identity is not configured. Try again later.",
   "knowledge.sharing.permanent": "Permanent, independent copies",
   "knowledge.sharing.received": "Received copies",
   "knowledge.sharing.count": "{count} facts copied",
@@ -232,7 +233,6 @@ function actions(overrides: Partial<KnowledgeActions> = {}): KnowledgeActions {
     deactivateLink: vi.fn().mockResolvedValue(undefined),
     importLibrary: vi.fn(),
     consumeImportToken: vi.fn(),
-    resolveShareUrl: (url: string) => `https://mini.example.test${url}`,
     dissect: vi.fn().mockResolvedValue({}),
     loadDissections: vi.fn().mockResolvedValue(data.dissection.requests),
     cancel: vi.fn().mockResolvedValue(undefined),
@@ -484,12 +484,16 @@ describe("tags with colours", () => {
 });
 
 describe("sharing links", () => {
-  const link = (id: string, active = true): ShareLink => ({
-    id, token: `token-${id}`, url: `/knowledge#import=token-${id}`,
+  const link = (id: string, active = true, overrides: Partial<ShareLink> = {}): ShareLink => ({
+    id, token: `token-${id}`,
+    url: `https://t.me/sitg_bot?start=kl_token-${id}`,
+    app_url: `/knowledge#import=token-${id}`,
+    launch_available: true,
     created_at: "2026-10-01T00:00:00Z", deactivated_at: active ? null : "2026-10-02T00:00:00Z", active,
+    ...overrides,
   });
 
-  it("opens a Share library dialog, creates a link and shows the resolved URL", async () => {
+  it("opens a Share library dialog, creates a link and shows the actual bot share URL unchanged", async () => {
     const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1")] };
     const actionList = actions({
       loadSharing: vi.fn().mockResolvedValue(withLinks),
@@ -502,7 +506,7 @@ describe("sharing links", () => {
     expect(dialog.textContent).toContain("Anyone with an active link can import.");
     expect(actionList.loadSharing).toHaveBeenCalledTimes(1);
     const url = dialog.querySelector<HTMLInputElement>("[aria-label='Import link']")!;
-    expect(url.value).toBe("https://mini.example.test/knowledge#import=token-link-1");
+    expect(url.value).toBe("https://t.me/sitg_bot?start=kl_token-link-1");
 
     button("Create link", dialog)!.click();
     await flush();
@@ -541,8 +545,35 @@ describe("sharing links", () => {
     const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
     button("Copy", dialog)!.click();
     await flush();
-    expect(writeText).toHaveBeenCalledWith("https://mini.example.test/knowledge#import=token-link-1");
+    expect(writeText).toHaveBeenCalledWith("https://t.me/sitg_bot?start=kl_token-link-1");
     expect(button("Copied", dialog)).toBeDefined();
+  });
+
+  it("shows a localized unavailable message instead of a copyable link without a launch identity", async () => {
+    const unavailable: KnowledgeSharing = {
+      ...sharing,
+      links: [link("link-1", true, { url: null, launch_available: false, app_url: "/knowledge#import=token-link-1" })],
+    };
+    const actionList = actions({ loadSharing: vi.fn().mockResolvedValue(unavailable) });
+    const { button } = render(structuredClone(data), actionList);
+    button("Share library")!.click();
+    await flush();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.textContent).toContain("Sharing links are unavailable right now");
+    expect(dialog.querySelector("[aria-label='Import link']")).toBeNull();
+    expect([...dialog.querySelectorAll("button")].some((item) => item.textContent === "Copy")).toBe(false);
+  });
+
+  it("deactivated links never offer a copyable URL", async () => {
+    const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1", false)] };
+    const actionList = actions({ loadSharing: vi.fn().mockResolvedValue(withLinks) });
+    const { button } = render(structuredClone(data), actionList);
+    button("Share library")!.click();
+    await flush();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.textContent).toContain("Deactivated");
+    expect(dialog.querySelector("[aria-label='Import link']")).toBeNull();
+    expect([...dialog.querySelectorAll("button")].some((item) => item.textContent === "Copy")).toBe(false);
   });
 
   it("keeps direct permanent-copy grants inside the sharing dialog", async () => {

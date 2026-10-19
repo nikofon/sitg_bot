@@ -83,7 +83,7 @@ describe("recipient import link launch evidence", () => {
     expect(window.location.hash).toBe("#import=token-1");
   });
 
-  it("completes the import when the same URL is launched as a Mini App with initData", async () => {
+  it("completes the recipient transition when the bot WebApp button launches /knowledge with the import fragment", async () => {
     const fetcher = authenticatedFetcher();
     window.history.replaceState({}, "", "/knowledge#import=token-1");
     const root = document.createElement("div");

@@ -97,6 +97,7 @@ export const en = {
   "knowledge.sharing.confirm_deactivate": "Deactivate this link? Recipients will no longer be able to import from it.",
   "knowledge.sharing.direct": "Send copies directly",
   "knowledge.sharing.empty_links": "No active links yet.",
+  "knowledge.sharing.launch_unavailable": "Sharing links are unavailable right now: the bot launch identity is not configured. Try again later.",
   "knowledge.tags.new": "New tag",
   "knowledge.tags.create": "Create tag",
   "knowledge.tags.name": "Tag name",

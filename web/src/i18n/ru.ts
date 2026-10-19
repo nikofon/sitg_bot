@@ -99,6 +99,7 @@ export const ru: Record<MessageKey, string> = {
   "knowledge.sharing.confirm_deactivate": "Отключить эту ссылку? Получатели больше не смогут делать импорт по ней.",
   "knowledge.sharing.direct": "Отправить копии напрямую",
   "knowledge.sharing.empty_links": "Активных ссылок пока нет.",
+  "knowledge.sharing.launch_unavailable": "Ссылки для обмена сейчас недоступны: у бота не настроен Telegram-запуск. Попробуйте позже.",
   "knowledge.tags.new": "Новый тег",
   "knowledge.tags.create": "Создать тег",
   "knowledge.tags.name": "Название тега",

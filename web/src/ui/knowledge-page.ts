@@ -74,7 +74,6 @@ export function renderKnowledgePage(
     deactivateLink: async (linkId) => { await post("link_deactivate", { link_id: linkId }); },
     importLibrary: (token) => post<KnowledgeImportResult>("import", { token }),
     consumeImportToken,
-    resolveShareUrl: (url) => new URL(url, window.location.href).toString(),
     loadPackets: loadPacketPage,
     dissect,
     loadDissections: async () => (await api.request<{ items: KnowledgeDissection["requests"] }>(
