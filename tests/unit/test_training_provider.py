@@ -1,6 +1,5 @@
 import json
 import re
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -9,6 +8,7 @@ from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.services.training_ai import (
     AnalysisValidationError,
     BuzzRequest,
+    CommonKnowledgeRequest,
     ExtractionRequest,
     ProviderSettings,
     QuestionText,
@@ -18,7 +18,7 @@ from sitg_bot.services.training_ai import (
 from sitg_bot.services.training_provider import ResponsesAnalysisProvider
 
 
-def provider(monkeypatch, output, *, status="completed"):
+def provider(monkeypatch, output, *, status="completed", chunk_size=17, response_size=None):
     calls = []
     response = {
         "status": status,
@@ -26,6 +26,19 @@ def provider(monkeypatch, output, *, status="completed"):
             {"type": "message", "content": [{"type": "output_text", "text": json.dumps(output)}]}
         ],
     }
+
+    body = json.dumps(response).encode()
+    if response_size is not None:
+        body += b" " * (response_size - len(body))
+    offset = 0
+
+    class Content:
+        async def read(self, size):
+            nonlocal offset
+            end = min(offset + size, offset + chunk_size, len(body))
+            chunk = body[offset:end]
+            offset = end
+            return chunk
 
     class Context:
         async def __aenter__(self):
@@ -40,9 +53,7 @@ def provider(monkeypatch, output, *, status="completed"):
 
         headers = {"x-request-id": "upstream-test"}
         status = 200
-        content = type(
-            "Content", (), {"read": AsyncMock(return_value=json.dumps(response).encode())}
-        )()
+        content = Content()
 
     monkeypatch.setattr(
         "sitg_bot.services.training_provider.aiohttp.ClientSession", lambda **kwargs: Context()
@@ -115,6 +126,25 @@ async def test_provider_maps_source_word_offsets_to_the_real_announcement_stream
     )
     with pytest.raises(AnalysisValidationError, match="source word"):
         await instance.best_buzz_boundaries(BuzzRequest(chunks, "en"))
+
+
+async def test_common_knowledge_accepts_fragmented_provider_response(monkeypatch):
+    instance, _ = provider(monkeypatch, {"value": 42}, chunk_size=1)
+    result = await instance.estimate_common_knowledge(CommonKnowledgeRequest("A fact", "en", "adults"))
+    assert result.value == 42
+
+
+@pytest.mark.parametrize("response_size", [1024 * 1024, 1024 * 1024 + 1])
+async def test_provider_response_limit_across_network_chunks(monkeypatch, response_size):
+    instance, _ = provider(
+        monkeypatch, {"candidates": []}, chunk_size=65536, response_size=response_size,
+    )
+    request = ExtractionRequest((), "", "en")
+    if response_size > 1024 * 1024:
+        with pytest.raises(AnalysisValidationError, match="exceeds size limit"):
+            await instance.extract_facts(request)
+    else:
+        assert await instance.extract_facts(request) == ()
 
 
 async def test_incomplete_provider_output_is_an_error_not_an_empty_result(monkeypatch):
