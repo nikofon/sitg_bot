@@ -92,7 +92,7 @@ export function renderTraining(
     window.clearTimeout(hideTimer);
     play.replaceChildren();
     settingsFieldset.disabled = state !== null && ["active", "paused"].includes(state.status);
-    save.disabled = !lobby || !!state;
+    save.disabled = !lobby || !selectedId || !!state;
     if (!state) return;
     const current = state;
     const question = element("p", { className: "training-question", "aria-live": "polite" },
@@ -161,6 +161,7 @@ export function renderTraining(
       replaceChildren(card.badges, ...enabled.map((key) =>
         element("li", { className: "training-modifier-badge" }, i18n.t(modifierLabelKey(key)))));
     }
+    save.disabled = !lobby || !selectedId || !!state;
   };
 
   // Modifiers group: pick a modifier from the dropdown, then enable it and tune
@@ -216,6 +217,13 @@ export function renderTraining(
   const form = element("form", { className: "settings-form" });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (hidden.checked && !seconds.checkValidity()) {
+      modifierView = "hidden";
+      modifierPicker.value = "hidden";
+      renderModifierConfig();
+      seconds.reportValidity();
+      return;
+    }
     if (busy || !lobby || !selectedId || !form.reportValidity()) return;
     busy = true;
     save.disabled = true;
@@ -234,7 +242,7 @@ export function renderTraining(
         lobby = result.lobby ?? null;
         notice.textContent = i18n.t("training.saved");
       } catch (error) { failure(error); }
-      finally { busy = false; save.disabled = !lobby || !!state; }
+      finally { busy = false; save.disabled = !lobby || !selectedId || !!state; }
     })();
   });
   form.addEventListener("change", (event) => {
@@ -420,6 +428,9 @@ export function renderTraining(
     yearRange("lobby.packet_year", "year_from", "year_to"),
     yearRange("lobby.packet_publication_year", "publication_from", "publication_to"),
     reset);
+  bubble.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault();
+  });
   const packetsPanel = element("section", { className: "stack training-packets" },
     element("h2", {}, i18n.t("lobby.packets")),
     bubble,
