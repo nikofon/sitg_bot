@@ -38,7 +38,7 @@ from sitg_bot.services.training_ai import (
     fact_candidate_id,
     text_fingerprint,
 )
-from sitg_bot.storage.models import DurableJobRecord
+from sitg_bot.storage.models import DurableJobRecord, TrainingUsagePeriodRecord
 
 pytestmark = pytest.mark.integration
 
@@ -285,6 +285,89 @@ async def test_terminal_artifact_reconciles_stranded_waiter(database):
         artifact.last_error = "Historical terminal write without settlement"
     assert (await stack.service.status(owner_player_id=owner, request_id="stranded")).status == "failed"
     assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
+
+
+@pytest.mark.parametrize("insert_conflict", [False, True])
+async def test_waiter_registration_serializes_with_terminal_completion(
+    database, monkeypatch, insert_conflict,
+):
+    owner_a = await create_player(database, 9201, "terminal-a")
+    owner_b = await create_player(database, 9202, "terminal-b")
+    stack = await make_stack(database, [owner_a, owner_b])
+    revision_id = stack.loader.add("A concurrent shared fact.")
+    source = DissectionSource(uuid4(), (revision_id,))
+    lease_token = uuid4()
+    missing, continue_lookup = asyncio.Event(), asyncio.Event()
+    selected, finish_registration = asyncio.Event(), asyncio.Event()
+    original_lookup = stack.service._artifact_for_key
+    waiter_task = None
+
+    class PausedLookup:
+        def __init__(self, session):
+            self.session = session
+
+        async def scalar(self, statement):
+            result = await self.session.scalar(statement)
+            if result is None:
+                missing.set()
+                await continue_lookup.wait()
+            return result
+
+        async def execute(self, statement):
+            return await self.session.execute(statement)
+
+    async def lookup(waiter_session, key, **values):
+        if asyncio.current_task() is not waiter_task:
+            return await original_lookup(waiter_session, key, **values)
+        artifact = await original_lookup(PausedLookup(waiter_session), key, **values)
+        selected.set()
+        await finish_registration.wait()
+        return artifact
+
+    monkeypatch.setattr(stack.service, "_artifact_for_key", lookup)
+
+    async def start_artifact():
+        await submit(stack.service, owner_a, source, "terminal-first")
+        artifact_id = await artifact_id_of(database, "terminal-first")
+        async with database.transaction() as transaction:
+            artifact = await transaction.get(TrainingAnalysisArtifactRecord, artifact_id)
+            artifact.status = "running"
+            artifact.lease_token = lease_token
+            artifact.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        return artifact_id
+
+    if not insert_conflict:
+        artifact_id = await start_artifact()
+    waiter_task = asyncio.create_task(submit(stack.service, owner_b, source, "terminal-waiter"))
+    terminal_task = None
+    try:
+        if insert_conflict:
+            await asyncio.wait_for(missing.wait(), timeout=5)
+            artifact_id = await start_artifact()
+            continue_lookup.set()
+        await asyncio.wait_for(selected.wait(), timeout=5)
+        terminal_task = asyncio.create_task(stack.service._write_terminal(
+            artifact_id, lease_token, status="succeeded", payload={"candidates": []},
+        ))
+        done, _ = await asyncio.wait({terminal_task}, timeout=0.25)
+        assert not done
+    finally:
+        continue_lookup.set()
+        finish_registration.set()
+        await asyncio.gather(waiter_task, *([terminal_task] if terminal_task else []))
+
+    async with database.sessions() as transaction:
+        requests = list(await transaction.scalars(select(TrainingAnalysisRequestRecord)))
+        assert len(requests) == 2
+        assert all(row.status == "succeeded" and row.completed_at for row in requests)
+        periods = list(await transaction.scalars(select(TrainingUsagePeriodRecord).where(
+            TrainingUsagePeriodRecord.feature == FEATURE_DISSECTION,
+        )))
+        assert len(periods) == 2
+        assert all(row.reserved == 0 and row.settled == 1 for row in periods)
+    assert (await stack.service.result(owner_player_id=owner_b, request_id="terminal-waiter")) == {
+        "candidates": [],
+    }
 
 
 async def test_custom_instructions_and_owners_isolate_artifacts(database):

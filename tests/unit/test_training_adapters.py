@@ -13,8 +13,10 @@ from test_miniapp_http import FakeAuth, FakeGateway
 from test_telegram_frontend import navigation
 
 from sitg_bot.application.contracts import ActionCode
+from sitg_bot.bot.handlers import knowledge, training
 from sitg_bot.bot.handlers.training import handle_training_action, router
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.presenters import render
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.miniapp_http import MiniAppHttpServer
@@ -188,3 +190,102 @@ async def test_hidden_telegram_recovery_clears_every_persisted_question_chunk():
     ]
     assert all(call.args[0] == "…" for call in bot.edit_message_text.await_args_list[1:])
     bot.send_message.assert_not_awaited()
+
+
+def training_message(text):
+    return Message.model_validate({
+        "message_id": 1, "date": datetime.now(UTC),
+        "chat": {"id": 42, "type": "private"},
+        "from": {"id": 42, "is_bot": False, "first_name": "Trainee"},
+        "text": text,
+    })
+
+
+@pytest.mark.parametrize("command", [
+    "/facts", "/factadd Title | Description", "/factedit", "/factdelete", "/factmerge",
+    "/factshare", "/factrevoke", "/factgrants", "/sharedfacts", "/tagadd", "/tagrename",
+    "/tagdelete", "/dissect",
+    "/bestbuzz", "/analysis", "/analysiscancel", "/traininglimits",
+])
+@pytest.mark.parametrize("answering", [True, False])
+async def test_training_text_router_leaves_commands_for_their_handlers(command, answering):
+    backend = SimpleNamespace(_execute=AsyncMock(return_value=SimpleNamespace(
+        data={"session": {"phase": "answering"} if answering else None},
+    )))
+    result = await training.router.propagate_event(
+        "message", training_message(command), bot=SimpleNamespace(), backend=backend,
+        telegram_update_claim=object(), localization=LocalizationService(), locale="en",
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    assert result is UNHANDLED
+    backend._execute.assert_not_awaited()
+
+
+async def test_facts_command_reaches_knowledge_after_training_router(monkeypatch):
+    send = AsyncMock()
+    monkeypatch.setattr(knowledge, "send_message_model", send)
+    adapter = SimpleNamespace(facts_page=AsyncMock(return_value={"items": [], "total": 0}))
+    message, claim = training_message("/facts"), object()
+    dependencies = dict(
+        bot=SimpleNamespace(), backend=SimpleNamespace(_execute=AsyncMock()),
+        knowledge_backend=adapter, telegram_update_claim=claim,
+        localization=LocalizationService(), locale="en",
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    assert await training.router.propagate_event("message", message, **dependencies) is UNHANDLED
+    await knowledge.router.propagate_event("message", message, **dependencies)
+    adapter.facts_page.assert_awaited_once_with(claim)
+    send.assert_awaited_once()
+
+
+async def test_training_router_still_submits_an_ordinary_answer():
+    state = {"id": str(UUID(int=1)), "version": 7, "phase": "answering",
+             "question_revision_id": str(UUID(int=2))}
+    backend = SimpleNamespace(
+        _execute=AsyncMock(return_value=SimpleNamespace(data={"session": state})),
+    )
+    await training.router.propagate_event(
+        "message", training_message("Paris"), bot=SimpleNamespace(), backend=backend,
+        telegram_update_claim=object(), localization=LocalizationService(), locale="en",
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    assert backend._execute.await_count == 2
+    operation = backend._execute.await_args.args[1]
+    assert operation.action == ActionCode.TRAINING_ACT
+    assert operation.command == "answer" and operation.answer == "Paris"
+    assert operation.expected_version == 7
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize(("action", "route"), [
+    ("training.knowledge", "knowledge"), ("training.upload", "training"),
+])
+@pytest.mark.parametrize("configured", [True, False])
+async def test_training_menu_uses_polling_launch_dependency(
+    monkeypatch, locale, action, route, configured,
+):
+    answer, send = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(Message, "answer", answer)
+    monkeypatch.setattr(render, "send_message_model", send)
+    localization = LocalizationService()
+    adapter = SimpleNamespace(facts_page=AsyncMock(return_value={"items": [], "total": 0}))
+    await training.router.propagate_event(
+        "message", training_message(localization.text(f"button.{action}", locale)),
+        bot=SimpleNamespace(), backend=SimpleNamespace(_execute=AsyncMock()),
+        knowledge_backend=adapter, telegram_update_claim=object(),
+        localization=localization, locale=locale,
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=(action,)),
+        launch_links="https://mini.example.test/nested/" if configured else None,
+    )
+    if action == "training.knowledge":
+        adapter.facts_page.assert_awaited_once()
+        send.assert_awaited_once()
+    if configured:
+        markup = answer.await_args.kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].web_app.url == (
+            f"https://mini.example.test/nested/{route}?_launch=1"
+        )
+    elif action == "training.upload":
+        answer.assert_awaited_once_with(localization.text("training.document_prompt", locale))
+    else:
+        answer.assert_not_awaited()

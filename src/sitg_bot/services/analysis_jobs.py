@@ -398,7 +398,9 @@ class AnalysisService:
                 await self.source_loader.authorize_in_session(session, owner_player_id, row.source)
             artifact = None
             if row.status in REQUEST_ACTIVE_STATUSES:
-                artifact = await session.get(TrainingAnalysisArtifactRecord, row.artifact_id)
+                artifact = await session.get(
+                    TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
+                )
                 if artifact is not None:
                     await self._reconcile_artifact(session, artifact, moment)
                     await session.refresh(row)
@@ -433,6 +435,10 @@ class AnalysisService:
             row = await self._request_row(session, request_id)
             if row is None or row.owner_player_id != owner_player_id:
                 return False
+            artifact = await session.get(
+                TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
+            )
+            await session.refresh(row)
             if row.status not in REQUEST_ACTIVE_STATUSES:
                 return False
             artifact = await session.get(
