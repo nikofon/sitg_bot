@@ -224,7 +224,7 @@ async def test_knowledge_callback_rejects_stale_or_unknown_references(localizati
     malformed.answer.assert_awaited_once_with("Not found.")
 
 
-def test_knowledge_router_declares_facts_command():
+def test_knowledge_router_does_not_register_slash_commands():
     from aiogram.filters import Command
 
     commands = [
@@ -233,7 +233,7 @@ def test_knowledge_router_declares_facts_command():
         for wrapped in handler.filters
         if isinstance(wrapped.callback, Command)
     ]
-    assert commands and commands[0].commands == ("facts",)
+    assert commands == []
     assert handlers.router.name.endswith("knowledge")
 
 

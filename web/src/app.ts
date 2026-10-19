@@ -207,7 +207,7 @@ export class MiniAppShell {
       return;
     }
     if ("kind" in payload.resource && payload.resource.kind === "training" && this.request) {
-      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal));
+      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal, route.query.get("view") === "upload"));
       return;
     }
     if (route.id === "players" && "kind" in payload.resource && payload.resource.kind === "players") {

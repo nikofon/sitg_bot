@@ -73,6 +73,7 @@ class ActionCode(StrEnum):
     TRAINING_DRAFT_DECIDE = "training.drafts.decide.v1"
     TRAINING_RETIRE = "training.packets.retire.v1"
     TRAINING_ACCESS = "training.packets.access.v1"
+    TRAINING_LOBBY = "training.lobby.v1"
     TRAINING_START = "training.start.v1"
     TRAINING_CURRENT = "training.current.v1"
     TRAINING_VIEW = "training.view.v1"
@@ -754,8 +755,17 @@ class TrainingAccessOperation(ContractModel):
     download: bool = Field(default=False, strict=True)
 
 
+class TrainingLobbyOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_LOBBY]
+    command: Literal["create", "save", "quit"]
+    expected_version: int | None = Field(default=None, ge=1)
+    version_id: UUID | None = None
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class TrainingStartOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_START]
+    lobby_version: int | None = Field(default=None, ge=1)
     version_id: UUID
     confirm: bool = Field(default=False, strict=True)
     settings: dict[str, JsonValue] = Field(default_factory=dict)
@@ -1327,6 +1337,7 @@ GatewayOperation = Annotated[
     | TrainingDraftDecideOperation
     | TrainingRetireOperation
     | TrainingAccessOperation
+    | TrainingLobbyOperation
     | TrainingStartOperation
     | TrainingCurrentOperation
     | TrainingViewOperation

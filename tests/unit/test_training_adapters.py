@@ -20,14 +20,14 @@ from sitg_bot.miniapp_http import MiniAppHttpServer
 def test_training_menu_recovers_even_with_a_finished_normal_game_view():
     state = navigation(
         active_mode="training", context="training", active_training_id=UUID(int=7),
-        allowed_actions=("training.train", "training.upload"),
+        allowed_actions=("training.quit",),
         active_game={"id": UUID(int=8), "tournament_id": UUID(int=9),
                      "status": "finalized", "phase": "completed", "version": 1,
                      "joined": True, "active": True, "can_reconnect": False},
     )
     model = menu_message(state, LocalizationService(), "en")
     assert model.text == "Training"
-    assert ("Train",) in model.keyboard.rows
+    assert model.keyboard.rows == (("Quit",),)
 
 
 async def test_training_http_requires_authenticated_csrf_mutation_and_rejects_actor_override():

@@ -5,11 +5,20 @@ import type { MessageKey } from "../i18n/en";
 import { element, replaceChildren } from "./dom";
 import { PacketLoader, type PacketPage } from "./packet-loading";
 import { renderLibraryReader } from "./library";
+import { saveReminder } from "./save-reminder";
 
 export function renderTraining(
-  initial: TrainingResult, api: ApiClient, i18n: I18n, signal: AbortSignal,
+  initial: TrainingResult, api: ApiClient, i18n: I18n, signal: AbortSignal, uploadOnly = false,
 ): HTMLElement {
-  const root = element("section", { className: "stack" });
+  const root = element("section", { className: "route-content lobby-content training-lobby" });
+  let lobby = initial.lobby ?? null;
+  let selectedId = lobby?.version_id ?? null;
+  let selectedName = lobby?.packet_name ?? null;
+  const selection = element("p", { className: "resource-card" });
+  const updateSelection = (): void => {
+    selection.textContent = selectedName ?? i18n.t("training.select_packet");
+  };
+  updateSelection();
   const notice = element("p", { role: "status", "aria-live": "polite" });
   const play = element("div", { className: "stack" });
   const list = element("div", { className: "stack" });
@@ -19,12 +28,19 @@ export function renderTraining(
   const hidden = element("input", { type: "checkbox" });
   const seconds = element("input", { type: "number", min: "0.1", max: "3599", step: "0.1", value: "3" });
   const buzzSeconds = element("input", { type: "number", min: "1", max: "3600", value: "10" });
+  const answerSeconds = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "15", required: true });
+  const tokenDelay = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "0.6", required: true });
+  const tokenChars = element("input", { type: "number", min: "1", max: "200", step: "1", value: "18", required: true });
+  seconds.required = buzzSeconds.required = true;
   const bestBuzz = element("input", { type: "checkbox" });
-  const settings = element("fieldset", {}, element("legend", {}, i18n.t("training.settings")),
+  const settings = element("fieldset", { className: "settings-form resource-card" }, element("legend", {}, i18n.t("training.settings")),
     element("label", {}, reversed, i18n.t("training.reversed")),
     element("label", {}, hidden, i18n.t("training.hidden")),
     element("label", {}, i18n.t("training.hidden_seconds"), seconds),
     element("label", {}, i18n.t("training.buzz_seconds"), buzzSeconds),
+    element("label", {}, i18n.t("training.answer_seconds"), answerSeconds),
+    element("label", {}, i18n.t("training.token_delay"), tokenDelay),
+    element("label", {}, i18n.t("training.token_chars"), tokenChars),
     element("label", {}, bestBuzz, i18n.t("training.best_buzz")));
   const compatibility = (): void => {
     bestBuzz.disabled = reversed.checked || hidden.checked;
@@ -33,6 +49,15 @@ export function renderTraining(
     seconds.disabled = !hidden.checked;
   };
   [reversed, hidden, bestBuzz].forEach((input) => input.addEventListener("change", compatibility));
+  const saved = lobby?.settings ?? {};
+  reversed.checked = saved.reversed === true;
+  hidden.checked = typeof saved.hidden_after === "number";
+  seconds.value = String(saved.hidden_after ?? 3);
+  buzzSeconds.value = String(saved.buzz_timeout ?? 10);
+  answerSeconds.value = String(saved.answer_timeout ?? 15);
+  tokenDelay.value = String(saved.token_delay ?? 0.6);
+  tokenChars.value = String(saved.token_target_chars ?? 18);
+  bestBuzz.checked = saved.best_buzz === true;
   compatibility();
   let state = initial.session ?? null;
   let busy = false;
@@ -129,25 +154,31 @@ export function renderTraining(
     }
     button("stop", "training.stop");
   };
-  const start = async (packet: TrainingPacket): Promise<void> => {
-    if (busy) return;
+  const save = element("button", { type: "submit", className: "primary-button" }, i18n.t("lobby.settings_save"));
+  const form = element("form", { className: "settings-form" });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (busy || !lobby || !selectedId || !form.reportValidity()) return;
     busy = true;
-    const options = {
-      reversed: reversed.checked, hidden_after: hidden.checked ? Number(seconds.value) : null,
-      buzz_timeout: Number(buzzSeconds.value), best_buzz: bestBuzz.checked,
-    };
-    try {
-      let result = await post<TrainingResult>("start", { version_id: packet.id, settings: options, confirm: false });
-      if (signal.aborted) return;
-      if (result.confirmation_required) {
-        if (!window.confirm(i18n.t("library.confirm"))) return;
-        result = await post<TrainingResult>("start", { version_id: packet.id, settings: options, confirm: true });
-      }
-      if (result.preparation) notice.textContent = i18n.t("training.preparation_unavailable");
-      else { notice.textContent = ""; show(result); }
-    } catch (error) { failure(error); }
-    finally { busy = false; schedule(); }
-  };
+    save.disabled = true;
+    void (async () => {
+      try {
+        const result = await post<TrainingResult>("lobby", {
+          command: "save", expected_version: lobby.version, version_id: selectedId,
+          settings: { ...lobby.settings,
+            reversed: reversed.checked, hidden_after: hidden.checked ? Number(seconds.value) : null,
+            buzz_timeout: Number(buzzSeconds.value), best_buzz: bestBuzz.checked,
+            answer_timeout: Number(answerSeconds.value), token_delay: Number(tokenDelay.value),
+            token_target_chars: Number(tokenChars.value),
+          },
+        });
+        if (signal.aborted) return;
+        lobby = result.lobby ?? null;
+        notice.textContent = i18n.t("training.saved");
+      } catch (error) { failure(error); }
+      finally { busy = false; save.disabled = false; }
+    })();
+  });
   const loader = new PacketLoader<TrainingPacket>(signal,
     async (query, pageSignal) => {
       const page = await api.request<PacketPage<TrainingPacket>>(
@@ -157,9 +188,16 @@ export function renderTraining(
     },
     (packets, loading) => {
       if (signal.aborted) return;
-      replaceChildren(list, ...packets.map((packet) => element("article", { className: "card" },
+      replaceChildren(list, ...packets.map((packet) => element("article", { className: "resource-card" },
         element("h3", {}, packet.name), element("button", { type: "button",
-          onclick: (() => void start(packet)) as EventListener }, i18n.t("training.train")),
+          className: selectedId === packet.id ? "primary-button" : "secondary-button",
+          disabled: !lobby || !!state,
+          onclick: ((event: Event) => {
+            selectedId = packet.id; selectedName = packet.name; updateSelection();
+            list.querySelectorAll("button[data-select]").forEach((button) => { button.className = "secondary-button"; });
+            (event.currentTarget as HTMLButtonElement).className = "primary-button";
+            notice.textContent = i18n.t("training.unsaved");
+          }) as EventListener, "data-select": packet.id }, i18n.t("training.select")),
         element("button", { type: "button", onclick: (async () => {
           try {
             const body = { version_id: packet.id, confirm_exposure: false };
@@ -227,7 +265,7 @@ export function renderTraining(
       });
       if (signal.aborted) return;
       for (const draft of result.drafts) {
-        const card = element("article", { className: "card" },
+        const card = element("article", { className: "resource-card" },
           element("pre", {}, JSON.stringify(draft.packet, null, 2)),
           ...draft.errors.map((error) => element("p", {}, error)));
         for (const publish of draft.errors.length ? [false] : [true, false]) {
@@ -242,10 +280,36 @@ export function renderTraining(
       }
     } catch (error) { failure(error); }
   })());
-  root.append(element("a", { href: "/knowledge" }, i18n.t("training.knowledge")),
-    notice, play, settings, element("h2", {}, i18n.t("training.train")), search, list, reader,
-    element("h2", {}, i18n.t("training.upload")), element("label", {}, i18n.t("training.question_values"), values), file, drafts);
+  const packetsPanel = element("section", { className: "stack" },
+    element("h2", {}, i18n.t("lobby.packets")), search, list, reader);
+  const optionsPanel = element("section", { className: "stack" }, settings);
+  const overview = element("section", { className: "lobby-overview stack" },
+    element("h2", {}, i18n.t("training.lobby")),
+    element("p", {}, i18n.t(lobby ? "training.lobby_hint" : "training.create_hint")));
+  const tabs = element("nav", { className: "settings-actions", "aria-label": i18n.t("lobby.sections") });
+  const panels = [overview, packetsPanel, optionsPanel];
+  const tabButtons: HTMLButtonElement[] = [];
+  (["lobby.overview", "lobby.packets", "lobby.options"] as const).forEach((key, index) => {
+    const button = element("button", { type: "button", className: index === 0 ? "primary-button" : "secondary-button",
+      onclick: (() => {
+        panels.forEach((panel, position) => { panel.hidden = position !== index; });
+        tabButtons.forEach((tab, position) => { tab.className = position === index ? "primary-button" : "secondary-button"; });
+      }) as EventListener }, i18n.t(key));
+    tabButtons.push(button); tabs.append(button);
+  });
+  panels.forEach((panel, index) => { panel.hidden = index !== 0; });
+  form.append(saveReminder(i18n), selection, ...panels, save);
+  save.disabled = !lobby || !!state;
+  form.addEventListener("change", () => { notice.textContent = i18n.t("training.unsaved"); });
+  root.append(notice);
+  if (uploadOnly) {
+    root.append(element("h2", {}, i18n.t("training.upload")),
+      element("label", {}, i18n.t("training.question_values"), values), file, drafts);
+  } else {
+    root.append(play, tabs, form);
+  }
   signal.addEventListener("abort", () => { window.clearTimeout(timer); window.clearTimeout(hideTimer); }, { once: true });
-  renderSession(); schedule(); loader.start({});
+  renderSession(); schedule();
+  if (!uploadOnly) loader.start({});
   return root;
 }

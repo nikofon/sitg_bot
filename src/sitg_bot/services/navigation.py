@@ -316,8 +316,11 @@ class TelegramNavigationService:
             version = navigation.version
             await session.flush()
 
+        player = await session.get(PlayerRecord, account.player_id)
         if active_training_id is not None:
             active_mode, context = "training", "training"
+        elif active_mode == "training" and player.training_lobby is not None:
+            context = "training_lobby"
         elif active_game is not None and active_game.active:
             active_mode = "player"
             context = "game"
@@ -341,6 +344,10 @@ class TelegramNavigationService:
             context = "menu"
 
         lobby_actions: tuple[str, ...] = ()
+        if context == "training_lobby":
+            lobby_actions = ("training.settings", "training.start", "training.quit")
+        elif context == "training":
+            lobby_actions = ("training.quit",)
         if context in {"lobby", "lobby_other"} and active_lobby is not None:
             from sitg_bot.services.tournaments import TournamentService
 

@@ -33,6 +33,19 @@ describe("MiniAppShell", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows the reported expiry symptom for a reply-keyboard WebApp without initData", async () => {
+    window.history.replaceState({}, "", "/training?_launch=1");
+    const root = document.createElement("div");
+    document.body.append(root);
+    const fetcher = vi.fn<typeof fetch>();
+    const platform: MiniAppPlatform = { ...new FakePlatform(), initData: "" };
+    shell = new MiniAppShell(root, new ApiClient(platform.initData, fetcher), new Router(), platform, false);
+    shell.start();
+    // Before authentication the shell uses its default Russian locale.
+    await vi.waitFor(() => expect(root.textContent).toContain("Сессия истекла"));
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   const lobby = {
     kind: "lobby", state: "ready", id: "lobby-id", version: 7,
     tournament_id: "cup-id", tournament_name: "Autumn Cup", invitation_code: "invite-code",

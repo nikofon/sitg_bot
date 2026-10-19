@@ -85,30 +85,15 @@ form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
 
-Telegram exposes Knowledge library in the Training menu and `/facts` with lazy
-detail callbacks. Native commands:
-
-```text
-/facts [search text] | [tag] | [title_asc, title_desc, updated_desc]
-/factadd Title | Description | tag1, tag2 | https://source.example
-/factedit FACT_ID CONTENT_VERSION Title | Description | tags | URLs
-/factdelete FACT_ID [confirm]
-/factmerge SOURCE_ID TARGET_ID TARGET_VERSION [confirm]
-/factshare NICKNAME_OR_PLAYER_ID
-/factgrants
-/tagadd NAME
-/tagrename TAG_ID NAME
-/tagdelete TAG_ID
-/dissect VERSION_ID [confirm] [instructions]
-/bestbuzz VERSION_ID [confirm]
-/analysis REQUEST_ID
-/analysiscancel REQUEST_ID
-/traininglimits
-```
+Telegram exposes Knowledge library through the Training keyboard, launching the
+knowledge Mini App. When the Mini App is not configured, the keyboard falls back
+to the read-only Telegram library with lazy detail callbacks. Training and
+knowledge slash commands are no longer registered; editing, tags, sharing,
+analysis preparation/status, and entitlements use Mini App controls instead.
 
 Deleting a dissection import or merging away a manual fact requires confirmation.
-Exposure prompts require repeating the analysis command with `confirm`.
-Command results retain IDs needed for subsequent edits/status reads.
+Exposure prompts use explicit confirmation controls. See [training.md](training.md)
+for the keyboard-driven training lobby and settings flow.
 
 ## Placeholders awaiting input
 

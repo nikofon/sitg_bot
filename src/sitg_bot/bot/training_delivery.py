@@ -6,13 +6,19 @@ from collections import defaultdict
 from uuid import UUID
 
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from sitg_bot.application.protocol import (
     ApplicationProtocolError,
     RetryableDeliveryError,
     TerminalDeliveryError,
 )
+from sitg_bot.bot.keyboards.common import TRAINING_MENU_ACTIONS
 from sitg_bot.bot.library_delivery import library_document_delivery_handler
 from sitg_bot.bot.presenters.game import plain_chunks
 
@@ -133,6 +139,28 @@ class TrainingDelivery:
                         "telegram.training.record",
                         **payload,
                         presentation={"ids": ids},
+                    )
+                if state.get("show_menu"):
+                    await self.bot.send_message(
+                        chat,
+                        self.localization.text("training.finished", locale),
+                        reply_markup=ReplyKeyboardMarkup(
+                            keyboard=[
+                                [
+                                    KeyboardButton(
+                                        text=self.localization.text(
+                                            "button.training.mode_switch"
+                                            if action == "mode.switch"
+                                            else f"button.{action}",
+                                            locale,
+                                        )
+                                    )
+                                    for action in row
+                                ]
+                                for row in TRAINING_MENU_ACTIONS
+                            ],
+                            resize_keyboard=True,
+                        ),
                     )
                 await self.protocol.request(
                     "telegram.training.record",
