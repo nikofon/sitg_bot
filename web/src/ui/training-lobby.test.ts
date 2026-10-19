@@ -217,6 +217,70 @@ describe("training lobby", () => {
     expect(root.querySelector(".training-overview .lobby-packet-selected")).toBeNull();
   });
 
+  it("prevents Enter in every packet-filter input from saving the lobby", async () => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    tab(root, 1);
+    const inputs = root.querySelectorAll<HTMLInputElement>(".training-packet-filters input");
+    expect(inputs).toHaveLength(6);
+    for (const input of inputs) {
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      input.dispatchEvent(enter);
+      expect(enter.defaultPrevented).toBe(true);
+      // jsdom does not implement implicit form submission. Exercise the browser's
+      // default-action boundary explicitly: only an uncancelled Enter submits.
+      if (!enter.defaultPrevented) input.form?.requestSubmit();
+      const letter = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+      input.dispatchEvent(letter);
+      expect(letter.defaultPrevented).toBe(false);
+    }
+    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
+  });
+
+  it.each(["", "0", "3600"])("validates detached hidden time %j before saving", async (value) => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    tab(root, 2);
+    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    const seconds = root.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
+    seconds.value = value;
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.contains(seconds)).toBe(false);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(picker.value).toBe("hidden");
+    expect(root.contains(seconds)).toBe(true);
+    expect(seconds.validity.valid).toBe(false);
+    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
+    seconds.value = "5";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/lobby", expect.objectContaining({ body: expect.objectContaining({
+        settings: expect.objectContaining({ hidden_after: 5 }),
+      }) })));
+  });
+
+  it("disables Save after retiring the selected packet and re-enables it on selection", async () => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    const save = root.querySelector<HTMLButtonElement>('.training-options button[type="submit"]')!;
+    expect(save.disabled).toBe(false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    packetCards(root)[0]!.querySelector<HTMLButtonElement>(".danger-button")!.click();
+    await vi.waitFor(() => expect(save.disabled).toBe(true));
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
+      .toBe("No packet selected");
+    save.click();
+    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
+    root.querySelector<HTMLButtonElement>('button[data-select="two"]')!.click();
+    expect(save.disabled).toBe(false);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/lobby", expect.objectContaining({ body: expect.objectContaining({ version_id: "two" }) })));
+  });
+
   it("shows upload controls separately without loading the packet picker", () => {
     const { root, request } = create(true);
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
