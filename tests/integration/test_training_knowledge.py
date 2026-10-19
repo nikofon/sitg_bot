@@ -102,6 +102,38 @@ async def test_persistent_crud_pagination_and_permanent_independent_copies(datab
     assert statistics["bingo"]["status"] == "pending_calibration"
 
 
+async def test_cancelled_dissection_retry_applies_facts(database):
+    owner = await create_player(database, 8202, "retry-trainee")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="dissection",
+        idempotency_key="cancelled-dissection", confirm_exposure=True,
+    )
+    await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    await app.reconcile()
+    async with database.transaction() as session:
+        assert (await session.get(KnowledgeDissectionRecord, first["dissection_id"])).status == "failed"
+    retry = await app.request_analysis(
+        owner, version_id=version, kind="dissection", idempotency_key="retry-dissection",
+    )
+    assert retry["dissection_id"] == first["dissection_id"]
+    assert retry["request_id"] != first["request_id"]
+    async with database.transaction() as session:
+        assert (await session.get(KnowledgeDissectionRecord, retry["dissection_id"])).status == "pending"
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job},
+        kinds=("training.analysis",), batch_size=1,
+    )
+    await worker.run_once()
+    await app.reconcile()
+    assert (await app.facts(owner))["total"] == 5
+    async with database.transaction() as session:
+        assert (await session.get(KnowledgeDissectionRecord, retry["dissection_id"])).status == "succeeded"
+    await app.reconcile()
+    assert (await app.facts(owner))["total"] == 5
+
+
 async def test_dissection_automatic_application_and_best_buzz_bridge(database):
     owner = await create_player(database, 8201, "trainee")
     app = await application(database, owner)

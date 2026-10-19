@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   KnowledgeFactDetail,
@@ -261,21 +262,30 @@ afterEach(() => {
 
 describe("knowledge tabs", () => {
   it("starts on the Library tab and switches to Packets and back", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync("src/styles.css", "utf8");
+    document.body.append(style);
     const { root, button } = render();
     const library = root.querySelector<HTMLElement>('[data-panel="library"]')!;
     const packets = root.querySelector<HTMLElement>('[data-panel="packets"]')!;
     expect(library.hidden).toBe(false);
     expect(packets.hidden).toBe(true);
+    expect(getComputedStyle(library).display).toBe("grid");
+    expect(getComputedStyle(packets).display).toBe("none");
     expect(root.querySelector(".knowledge-tabs")?.textContent).toContain("Library");
     expect(root.querySelector(".knowledge-tabs")?.textContent).toContain("Packets");
 
     button("Packets")!.click();
     expect(library.hidden).toBe(true);
     expect(packets.hidden).toBe(false);
+    expect(getComputedStyle(library).display).toBe("none");
+    expect(getComputedStyle(packets).display).toBe("grid");
 
     button("Library")!.click();
     expect(library.hidden).toBe(false);
     expect(packets.hidden).toBe(true);
+    expect(getComputedStyle(library).display).toBe("grid");
+    expect(getComputedStyle(packets).display).toBe("none");
   });
 
   it("preserves packet filters and loaded cards across tab switches", async () => {
@@ -607,6 +617,28 @@ describe("importing a shared library", () => {
     expect(actionList.importLibrary).toHaveBeenCalledWith("token-1");
     expect(actionList.consumeImportToken).toHaveBeenCalled();
     expect(dialog.textContent).toContain("Imported 5 facts, skipped 2 already-known facts.");
+  });
+
+  it("refreshes an empty recipient library and tag pool after importing", async () => {
+    const view = structuredClone(data);
+    view.facts = { ...view.facts, items: [], total: 0, next_cursor: null };
+    view.import_token = "token-1";
+    const actionList = actions({
+      importLibrary: vi.fn().mockResolvedValue({ imported_count: 1, skipped_count: 0 }),
+      loadTags: vi.fn().mockResolvedValueOnce({ items: [] }).mockResolvedValue(tagPool),
+    });
+    const { root, button, field } = render(view, actionList);
+    await flush();
+    expect(root.textContent).toContain("0 facts");
+    button("Import")!.click();
+    await vi.waitFor(() => {
+      expect(root.querySelector(".knowledge-total")?.textContent).toBe(`${facts.total} facts`);
+      expect(root.querySelector(".knowledge-list")?.textContent).toContain(facts.items[0]!.title);
+      expect(field<HTMLSelectElement>("Filter by tag").options.length).toBe(tagPool.items.length + 1);
+      expect(document.querySelector(".knowledge-dialog")?.textContent).toContain("Imported 1 facts");
+    });
+    expect(actionList.loadFacts).toHaveBeenCalledOnce();
+    expect(actionList.loadTags).toHaveBeenCalledTimes(2);
   });
 
   it("dismisses the import offer without importing", () => {

@@ -41,10 +41,13 @@ export function renderKnowledgePage(
     versionId: string, instructions: string, comment = "", confirmExposure = false,
   ): Promise<KnowledgeDissectOutcome> =>
     post("dissect", { version_id: versionId, instructions, comment, confirm_exposure: confirmExposure });
-  const loadPacketPage = (
+  const loadPacketPage = async (
     query: URLSearchParams, requestSignal: AbortSignal,
-  ): Promise<{ items: KnowledgePacketCard[]; next_cursor: string | null }> =>
-    api.request(`/api/miniapp/training/packets?${query}`, { signal: requestSignal });
+  ): Promise<{ items: KnowledgePacketCard[]; next_cursor: string | null }> => {
+    const page = await api.request<{ items: KnowledgePacketCard[]; next_cursor: string | null }>(
+      `/api/miniapp/training/packets?${query}`, { signal: requestSignal });
+    return { ...page, items: page.items.map((packet) => ({ ...packet, packet_id: packet.id })) };
+  };
   const actions: KnowledgeActions = {
     signal,
     loadSharing: () => api.request<KnowledgeSharing>("/api/miniapp/knowledge/sharing", { signal }),

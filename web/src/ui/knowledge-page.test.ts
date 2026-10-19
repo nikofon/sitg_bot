@@ -31,6 +31,8 @@ function setup(overrides: Record<string, unknown> = {}) {
     });
     if (path in overrides) return reply(overrides[path]);
     if (path.endsWith("/entitlements")) return reply({ features: {} });
+    if (path.endsWith("/facts")) return reply(initial.facts);
+    if (path.endsWith("/dissections")) return reply({ items: [] });
     if (path.endsWith("/tags")) return reply({ items: [
       { tag_id: "tag-1", name: "history", colour: "#1565c0" },
     ] });
@@ -87,6 +89,33 @@ describe("Knowledge page direct HTTP payload contract", () => {
       const mutation = fetcher.mock.calls.find(([url]) => String(url).endsWith("/import"))!;
       expect(JSON.parse(String(mutation[1]?.body))).toEqual({ token });
       expect(window.location.hash).toBe("");
+    } finally { controller.abort(); }
+  });
+
+  it("keeps both versions of a logical packet and dissects each version", async () => {
+    const items = ["version-1", "version-2"].map((id) => ({
+      id, packet_id: "logical-packet", name: id, year: 2026, scope: "tournament",
+      authors: [], tournaments: [], total_theme_count: 1, fresh_theme_count: 1,
+      dissected_theme_count: 0, dissected: false, best_buzz_calculated: false,
+    }));
+    const { root, fetcher, controller } = setup({
+      "/api/miniapp/training/packets": { items, next_cursor: null },
+      "/api/miniapp/knowledge/dissect": {},
+    });
+    try {
+      expect(fetcher.mock.calls.some(([url]) => String(url).includes("/training/packets"))).toBe(false);
+      button("Packets").click();
+      await vi.waitFor(() => expect(root.querySelectorAll(".knowledge-packet-card").length).toBe(2));
+      for (const [index, packet] of items.entries()) {
+        root.querySelectorAll<HTMLElement>(".knowledge-packet-card")[index]!
+          .querySelector<HTMLButtonElement>("button")!.click();
+        document.querySelector<HTMLButtonElement>('[data-confirm="false"]')!.click();
+        await vi.waitFor(() => expect(fetcher.mock.calls.filter(([url]) =>
+          String(url).endsWith("/dissect")).length).toBe(index + 1));
+        const mutation = fetcher.mock.calls.filter(([url]) => String(url).endsWith("/dissect"))[index]!;
+        expect(JSON.parse(String(mutation[1]?.body)).version_id).toBe(packet.id);
+        await vi.waitFor(() => expect(document.querySelector(".knowledge-dialog")).toBeNull());
+      }
     } finally { controller.abort(); }
   });
 

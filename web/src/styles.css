@@ -1745,6 +1745,10 @@ p {
   margin-block: 0.25rem;
 }
 
+.knowledge-panel[hidden] {
+  display: none;
+}
+
 /* One clearly distinct "bubble" for search/sort/filter controls. */
 .knowledge-controls {
   display: flex;

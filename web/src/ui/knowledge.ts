@@ -894,6 +894,7 @@ function openImportDialog(
   token: string,
   i18n: KnowledgeI18n,
   actions: KnowledgeActions,
+  imported: () => Promise<void>,
 ): void {
   const { dialog, body } = dialogFrame(i18n.t("knowledge.import.title"), i18n);
   const error = element("p", { className: "error-text", role: "alert" });
@@ -905,7 +906,9 @@ function openImportDialog(
       if (!actions.importLibrary || confirm.disabled) return;
       confirm.disabled = true;
       void actions.importLibrary(token)
-        .then((result) => {
+        .then(async (result) => {
+          actions.consumeImportToken?.();
+          await imported();
           replaceChildren(body, element("p", {}, i18n.t("knowledge.import.done", {
             imported: result.imported_count,
             skipped: result.skipped_count,
@@ -914,7 +917,6 @@ function openImportDialog(
             className: "secondary-button",
             onclick: (() => { closeDialog(dialog); }) as EventListener,
           }, i18n.t("common.close")));
-          actions.consumeImportToken?.();
         })
         .catch(() => {
           error.textContent = i18n.t("knowledge.error");
@@ -1034,9 +1036,9 @@ export function renderKnowledge(
   };
   const state: KnowledgeState = { tagPool: new Map() };
 
-  const reloadTagPool = (): void => {
-    if (!actions.loadTags) return;
-    void actions.loadTags().then((pool) => {
+  const reloadTagPool = (): Promise<void> => {
+    if (!actions.loadTags) return Promise.resolve();
+    return actions.loadTags().then((pool) => {
       if (actions.signal?.aborted) return;
       state.tagPool = new Map(pool.items.map((tag) => [tag.name, tag]));
       refreshTagFilterOptions();
@@ -1116,11 +1118,11 @@ export function renderKnowledge(
       .finally(() => { loadMore.disabled = false; });
   });
 
-  const reload = (): void => {
-    if (searchInput.disabled || orderSelect.disabled) return;
+  const reload = (): Promise<void> => {
+    if (searchInput.disabled || orderSelect.disabled) return Promise.resolve();
     searchInput.disabled = true;
     orderSelect.disabled = true;
-    void actions.loadFacts({ search, order,
+    return actions.loadFacts({ search, order,
       ...(tagFilter ? { tag: tagFilter } : {}) })
       .then((page) => {
         data.facts.items = page.items;
@@ -1289,7 +1291,6 @@ export function renderKnowledge(
     }
   };
   const packetNames = new Map<string, string>();
-  for (const packet of data.dissection.packets) packetNames.set(packet.id, packet.name);
   renderJobs(data.dissection.requests);
 
   let jobsTimer: number | undefined;
@@ -1298,6 +1299,7 @@ export function renderKnowledge(
     try {
       const items = await actions.loadDissections() ?? [];
       if (!packetsActive || actions.signal?.aborted) return;
+      data.dissection.requests = items;
       renderJobs(items);
     } catch { /* Keep the current job projection visible until the next read. */ }
   };
@@ -1320,6 +1322,7 @@ export function renderKnowledge(
     packetLoading.hidden = !loading;
     packetList.setAttribute("aria-busy", String(loading));
     for (const packet of items) packetNames.set(packet.id, packet.name);
+    renderJobs(data.dissection.requests);
     replaceChildren(packetList, ...items.map((packet) => packetCard(packet, i18n, actions)));
     if (!items.length && !loading) {
       packetList.append(element("p", {}, i18n.t(
@@ -1378,7 +1381,11 @@ export function renderKnowledge(
 
   renderList();
   reloadTagPool();
-  if (data.import_token && actions.importLibrary) openImportDialog(data.import_token, i18n, actions);
+  if (data.import_token && actions.importLibrary) {
+    openImportDialog(data.import_token, i18n, actions, async () => {
+      await Promise.all([reload(), reloadTagPool()]);
+    });
+  }
 
   root.append(
     element("h2", { className: "knowledge-title" }, i18n.t("knowledge.title")),

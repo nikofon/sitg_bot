@@ -117,7 +117,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0023_copy_sharing_theme_quotas"
+                "0025_knowledge_catalogue"
             )
             types = (
                 await connection.execute(
@@ -148,7 +148,7 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
                     "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0023_copy_sharing_theme_quotas"]
+                ))).scalars().all() == ["0025_knowledge_catalogue"]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(
@@ -273,7 +273,7 @@ def test_swiss_migration_refuses_to_discard_existing_swiss_stages(baseline_datab
                 assert view["stages"][0]["players_per_game"] == 4
                 assert len(view["stages"][0]["rounds"]) == 3
                 assert await session.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "0023_copy_sharing_theme_quotas"
+                    "0025_knowledge_catalogue"
                 )
         finally:
             await database.close()

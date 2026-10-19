@@ -556,6 +556,7 @@ class KnowledgeApplication:
             )
             if row is not None:
                 row.analysis_request_id = result.request_id
+                row.status = "pending"
                 await self._apply_ready(session, row)
             return {**asdict(result), "dissection_id": row.id if row else None}
 
