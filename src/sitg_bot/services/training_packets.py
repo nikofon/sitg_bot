@@ -27,6 +27,7 @@ from sitg_bot.services.training_catalogue import (
     enrich_packet_cards,
     packet_cursor,
     packet_order,
+    private_packet_authors,
 )
 from sitg_bot.storage.authorship import packet_author_rows
 from sitg_bot.storage.database import Database
@@ -299,7 +300,15 @@ class TrainingPacketService:
                 matching = select(pairs.c.packet_version_id).join(
                     AuthorRecord, AuthorRecord.id == pairs.c.author_id
                 ).where(func.strpos(func.lower(AuthorRecord.display_name), filters["author"]) > 0)
-                query = query.where(PacketVersionRecord.id.in_(matching))
+                private_matching = [
+                    version_id
+                    for version_id, names in (await private_packet_authors(session, player_id)).items()
+                    if any(filters["author"] in name.lower() for name in names)
+                ]
+                query = query.where(or_(
+                    PacketVersionRecord.id.in_(matching),
+                    PacketVersionRecord.id.in_(private_matching),
+                ))
             for field, start, end in (
                 (PacketVersionRecord.year, year_from, year_to),
                 (func.extract("year", PacketVersionRecord.published_at),

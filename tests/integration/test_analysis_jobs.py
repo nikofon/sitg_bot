@@ -225,6 +225,68 @@ async def test_shared_base_requests_coalesce_into_one_computation(database):
         assert remaining == 9
 
 
+async def test_registration_serializes_with_terminal_settlement(database, monkeypatch):
+    first = await create_player(database, 230, "race-first")
+    second = await create_player(database, 231, "race-second")
+    stack = await make_stack(database, [first, second])
+    source = DissectionSource(uuid4(), (stack.loader.add("A shared fact."),))
+    await submit(stack.service, first, source, "race-first")
+    selected = asyncio.Event()
+    release = asyncio.Event()
+    terminal_ready = asyncio.Event()
+    allow_terminal = asyncio.Event()
+    terminal_entered = asyncio.Event()
+    terminal_finished = asyncio.Event()
+    authorize = stack.service._authorize_request
+    terminal = stack.service._write_terminal
+
+    async def pause_registration(session, **kwargs):
+        if kwargs["owner_player_id"] == second:
+            selected.set()
+            await release.wait()
+        return await authorize(session, **kwargs)
+
+    async def observe_terminal(*args, **kwargs):
+        terminal_ready.set()
+        await allow_terminal.wait()
+        terminal_entered.set()
+        await terminal(*args, **kwargs)
+        terminal_finished.set()
+
+    monkeypatch.setattr(stack.service, "_authorize_request", pause_registration)
+    monkeypatch.setattr(stack.service, "_write_terminal", observe_terminal)
+    worker = asyncio.create_task(stack.worker.run_once())
+    await asyncio.wait_for(terminal_ready.wait(), 5)
+    registration = asyncio.create_task(submit(stack.service, second, source, "race-second"))
+    await asyncio.wait_for(selected.wait(), 5)
+    allow_terminal.set()
+    try:
+        await asyncio.wait_for(terminal_entered.wait(), 5)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(terminal_finished.wait(), 0.2)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(registration, worker), 10)
+    for owner, key in ((first, "race-first"), (second, "race-second")):
+        assert (await stack.service.status(owner_player_id=owner, request_id=key)).status == "succeeded"
+        assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 9
+
+
+async def test_terminal_artifact_reconciles_stranded_waiter(database):
+    owner = await create_player(database, 232, "stranded")
+    stack = await make_stack(database, [owner])
+    source = DissectionSource(uuid4(), (stack.loader.add("A completed fact."),))
+    await submit(stack.service, owner, source, "stranded")
+    async with database.transaction() as session:
+        artifact = await session.get(
+            TrainingAnalysisArtifactRecord, await artifact_id_of(database, "stranded")
+        )
+        artifact.status = "failed"
+        artifact.last_error = "Historical terminal write without settlement"
+    assert (await stack.service.status(owner_player_id=owner, request_id="stranded")).status == "failed"
+    assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
+
+
 async def test_custom_instructions_and_owners_isolate_artifacts(database):
     owner_a = await create_player(database, 204, "custom-a")
     owner_b = await create_player(database, 205, "custom-b")

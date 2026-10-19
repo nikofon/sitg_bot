@@ -102,6 +102,42 @@ async def test_persistent_crud_pagination_and_permanent_independent_copies(datab
     assert statistics["bingo"]["status"] == "pending_calibration"
 
 
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+async def test_dissection_retry_applies_replacement_result(database, outcome):
+    from sitg_bot.services.training_ai import AnalysisValidationError
+
+    owner = await create_player(database, 8203, "retry-trainee")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="dissection", instructions="Keep history",
+        idempotency_key="first", confirm_exposure=True,
+    )
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    if outcome == "cancelled":
+        await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    else:
+        app.analysis.provider.extract_failures.append(AnalysisValidationError("Invalid result"))
+        await worker.run_once()
+    await app.reconcile()
+    assert (await app.dissections(owner))["items"][0]["status"] == "failed"
+    assert (await app.facts(owner))["total"] == 0
+    second = await app.request_analysis(
+        owner, version_id=version, kind="dissection", instructions="Keep history",
+        idempotency_key="replacement",
+    )
+    assert second["dissection_id"] == first["dissection_id"]
+    assert second["request_id"] != first["request_id"]
+    await worker.run_once()
+    await app.reconcile()
+    assert (await app.dissections(owner))["items"][0]["status"] == "succeeded"
+    assert (await app.facts(owner))["total"] == 5
+    await app.reconcile()
+    assert (await app.facts(owner))["total"] == 5
+
+
 async def test_dissection_automatic_application_and_best_buzz_bridge(database):
     owner = await create_player(database, 8201, "trainee")
     app = await application(database, owner)

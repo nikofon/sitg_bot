@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, select
+from sqlalchemy import String, delete, func, or_, select
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -555,6 +555,7 @@ class KnowledgeApplication:
                 units=len({question.theme_revision_id for question in source.questions}),
             )
             if row is not None:
+                row.status = "pending"
                 row.analysis_request_id = result.request_id
                 await self._apply_ready(session, row)
             return {**asdict(result), "dissection_id": row.id if row else None}
@@ -606,6 +607,7 @@ class KnowledgeApplication:
             artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
             if artifact is not None:
                 await self.analysis._reconcile_artifact(session, artifact, datetime.now(UTC))
+                await session.refresh(request)
         if request.status in ("failed", "cancelled"):
             row.status = "failed"
             return
@@ -759,6 +761,7 @@ class KnowledgeApplication:
                         )
                     )
                     for artifact in artifacts:
+                        await session.refresh(artifact, with_for_update=True)
                         await self.analysis._complete_requests(
                             session, artifact.id, "cancelled", "Source retired", datetime.now(UTC)
                         )
@@ -787,7 +790,13 @@ class KnowledgeApplication:
         async with self.database.transaction() as session:
             rows = await session.scalars(
                 select(TrainingAnalysisArtifactRecord)
-                .where(TrainingAnalysisArtifactRecord.status.in_(("pending", "running")))
+                .where(or_(
+                    TrainingAnalysisArtifactRecord.status.in_(("pending", "running")),
+                    select(TrainingAnalysisRequestRecord.id).where(
+                        TrainingAnalysisRequestRecord.artifact_id == TrainingAnalysisArtifactRecord.id,
+                        TrainingAnalysisRequestRecord.status.in_(("queued", "running")),
+                    ).exists(),
+                ))
                 .order_by(TrainingAnalysisArtifactRecord.created_at)
                 .limit(100)
             )

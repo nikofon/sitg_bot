@@ -226,15 +226,29 @@ describe("training lobby", () => {
     for (const input of inputs) {
       const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
       input.dispatchEvent(enter);
-      expect(enter.defaultPrevented).toBe(true);
-      // jsdom does not implement implicit form submission. Exercise the browser's
-      // default-action boundary explicitly: only an uncancelled Enter submits.
+      expect(input.form).toBeNull();
       if (!enter.defaultPrevented) input.form?.requestSubmit();
       const letter = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
       input.dispatchEvent(letter);
       expect(letter.defaultPrevented).toBe(false);
     }
     expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
+  });
+
+  it("saves valid settings independently of invalid catalogue year bounds", async () => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    tab(root, 1);
+    const bounds = root.querySelectorAll<HTMLInputElement>('.training-packet-filters input[type="number"]');
+    expect(bounds).toHaveLength(4);
+    bounds.forEach((input) => { input.value = "999"; expect(input.checkValidity()).toBe(false); });
+    tab(root, 2);
+    const form = root.querySelector<HTMLFormElement>(".training-options form")!;
+    expect(form.checkValidity()).toBe(true);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/lobby", expect.objectContaining({ method: "POST" }),
+    ));
   });
 
   it.each(["", "0", "3600"])("validates detached hidden time %j before saving", async (value) => {

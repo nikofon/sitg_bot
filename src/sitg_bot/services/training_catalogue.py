@@ -13,6 +13,7 @@ from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     LogicalPacketRecord,
     PacketQuestionRecord,
+    PacketDraftRecord,
     PacketVersionRecord,
     ThemeRevisionRecord,
     TournamentPacketAssignmentRecord,
@@ -20,6 +21,32 @@ from sitg_bot.storage.models import (
     TrainingAnalysisRequestRecord,
     TrainingBestBuzzCompletionRecord,
 )
+
+
+async def private_packet_authors(session, player_id, version_ids=None):
+    from sitg_bot.services.packets import PacketAdminService
+
+    query = (
+        select(PacketVersionRecord.id, PacketDraftRecord.content)
+        .join(LogicalPacketRecord, LogicalPacketRecord.id == PacketVersionRecord.packet_id)
+        .join(PacketDraftRecord, PacketDraftRecord.id == PacketVersionRecord.source_draft_id)
+        .where(
+            LogicalPacketRecord.scope == "training",
+            LogicalPacketRecord.uploader_id == player_id,
+            LogicalPacketRecord.retired_at.is_(None),
+            PacketVersionRecord.state == "published",
+            PacketDraftRecord.scope == "training",
+            PacketDraftRecord.uploader_id == player_id,
+        )
+    )
+    if version_ids is not None:
+        query = query.where(PacketVersionRecord.id.in_(version_ids))
+    return {
+        version_id: PacketAdminService._detected_authors(
+            PacketAdminService._packet_from_content(content)
+        )
+        for version_id, content in await session.execute(query)
+    }
 
 
 async def enrich_packet_cards(session, player_id, items, readable_assignments):
@@ -35,6 +62,9 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
         .order_by(AuthorRecord.display_name, AuthorRecord.id)
     ):
         authors[version_id].append({"id": author_id, "name": name})
+
+    for version_id, names in (await private_packet_authors(session, player_id, ids)).items():
+        authors[version_id] = [{"id": None, "name": name} for name in sorted(names)]
 
     tournaments = defaultdict(list)
     assignment = aliased(TournamentPacketAssignmentRecord)

@@ -55,6 +55,34 @@ describe("training", () => {
     expect(request.mock.calls.length).toBe(count);
   });
 
+  it("preserves focused answers across presentation updates and resets for a new question", async () => {
+    vi.useFakeTimers();
+    const current = { ...state, phase: "answering" as const, presentation_version: 1 };
+    const { root, request } = create(current);
+    document.body.append(root);
+    const answer = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]')!;
+    answer.focus();
+    answer.value = "Partially typed";
+    answer.setSelectionRange(3, 7);
+    request.mockImplementation(async () => ({ session: {
+      ...current, presentation_version: 2, hidden: true,
+    } }));
+    await vi.advanceTimersByTimeAsync(650);
+    expect(root.querySelector('input[aria-label="Submit answer"]')).toBe(answer);
+    expect(document.activeElement).toBe(answer);
+    expect(answer.value).toBe("Partially typed");
+    expect(answer.selectionStart).toBe(3);
+    expect(root.querySelector(".training-question")?.textContent).toBe("Question text is hidden.");
+    request.mockImplementation(async () => ({ session: {
+      ...current, version: 2, question_revision_id: "next-question",
+    } }));
+    await vi.advanceTimersByTimeAsync(650);
+    const next = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]')!;
+    expect(next).not.toBe(answer);
+    expect(next.value).toBe("");
+    root.remove();
+  });
+
   it("allows hidden plus reversed and excludes Best buzz", () => {
     const { root } = create(null);
     root.querySelectorAll<HTMLButtonElement>("nav button")[2]!.click(); // Options

@@ -56,8 +56,15 @@ export function renderTraining(
     const next = result.session ?? null;
     const changed = state?.id !== next?.id || state?.version !== next?.version
       || state?.presentation_version !== next?.presentation_version;
+    const keepAnswer = state?.id === next?.id
+      && state?.question_revision_id === next?.question_revision_id
+      && state?.phase === "answering" && next?.phase === "answering"
+      && state?.status === "active" && next?.status === "active";
     state = next;
-    if (changed) renderSession();
+    if (changed) {
+      if (keepAnswer) updateQuestion();
+      else renderSession();
+    }
     schedule();
   };
   const refresh = async (): Promise<void> => {
@@ -88,6 +95,17 @@ export function renderTraining(
       }
     } finally { busy = false; schedule(); }
   };
+  const updateQuestion = (): void => {
+    window.clearTimeout(hideTimer);
+    const question = play.querySelector<HTMLElement>(".training-question");
+    if (!state || !question) return;
+    question.textContent = state.hidden ? i18n.t("training.text_hidden") : state.text;
+    if (state.hidden_deadline && !state.hidden && state.phase !== "revealed") {
+      const delay = Date.parse(state.hidden_deadline) - Date.now();
+      if (delay <= 0) question.textContent = i18n.t("training.text_hidden");
+      else hideTimer = window.setTimeout(() => { question.textContent = i18n.t("training.text_hidden"); }, delay);
+    }
+  };
   const renderSession = (): void => {
     window.clearTimeout(hideTimer);
     play.replaceChildren();
@@ -102,11 +120,7 @@ export function renderTraining(
       controls.append(element("button", { type: "button", onclick: (() => void act(command)) as EventListener }, i18n.t(key)));
     };
     play.append(element("h2", {}, `${current.question_index + 1}. ${current.theme} · ${current.value}`), question, controls);
-    if (current.hidden_deadline && !current.hidden && current.phase !== "revealed") {
-      const delay = Date.parse(current.hidden_deadline) - Date.now();
-      if (delay <= 0) question.textContent = i18n.t("training.text_hidden");
-      else hideTimer = window.setTimeout(() => { question.textContent = i18n.t("training.text_hidden"); }, delay);
-    }
+    updateQuestion();
     if (["completed", "stopped"].includes(current.status)) {
       play.append(element("p", {}, i18n.t("training.finished")));
       return;
@@ -428,9 +442,6 @@ export function renderTraining(
     yearRange("lobby.packet_year", "year_from", "year_to"),
     yearRange("lobby.packet_publication_year", "publication_from", "publication_to"),
     reset);
-  bubble.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && event.target instanceof HTMLInputElement) event.preventDefault();
-  });
   const packetsPanel = element("section", { className: "stack training-packets" },
     element("h2", {}, i18n.t("lobby.packets")),
     bubble,
@@ -452,13 +463,14 @@ export function renderTraining(
     tabButtons.push(button); tabs.append(button);
   });
   panels.forEach((panel, index) => { panel.hidden = index !== 0; });
-  form.append(...panels);
+  optionsPanel.append(form);
+  form.append(settingsFieldset, save);
   root.append(notice);
   if (uploadOnly) {
     root.append(element("h2", {}, i18n.t("training.upload")),
       settingLabel("training.question_values", values), file, drafts);
   } else {
-    root.append(play, tabs, form);
+    root.append(play, tabs, ...panels);
   }
   signal.addEventListener("abort", () => { window.clearTimeout(timer); window.clearTimeout(hideTimer); }, { once: true });
   compatibility();

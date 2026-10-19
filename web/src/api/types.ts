@@ -706,7 +706,7 @@ export interface TrainingPacket {
   /** Catalogue metadata per the training/Knowledge backend contract v1
    * (sitg-knowledge-data). Optional here so the UI degrades to "—" rows
    * until the catalogue projection lands; never fabricated client-side. */
-  authors?: Array<{ id: string; name: string }>;
+  authors?: Array<{ id: string | null; name: string }>;
   tournaments?: Array<{ id: string; name: string }>;
   total_theme_count?: number;
   fresh_theme_count?: number;
