@@ -1729,3 +1729,104 @@ p {
 
 .player-directory-link { display: grid; gap: 0.5rem; color: var(--tg-theme-link-color); text-decoration: none; }
 .player-directory-link span { color: var(--tg-theme-hint-color); }
+
+/* Training lobby redesign — training-* namespace, scoped to the training lobby. */
+.training-lobby .training-overview-hint {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+}
+
+.training-selection {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.training-selection h3,
+.training-selection-packet,
+.training-modifier-badges {
+  margin: 0;
+}
+
+.training-selection-packet {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.training-modifier-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.training-modifier-badge {
+  padding: 0.3rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 35%, transparent);
+  border-radius: 1.25rem;
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 12%, transparent);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.training-lobby .training-modifier-group {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.training-modifier-picker {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.training-modifier-config {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px dashed color-mix(in srgb, var(--tg-theme-hint-color) 40%, transparent);
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--tg-theme-section-bg-color) 60%, transparent);
+  margin: 0;
+}
+
+.training-modifier-config:empty {
+  display: none;
+}
+
+/* The training packets filter bubble gets its own padded surface so search and
+   sorting read as one clearly distinct section. */
+.training-lobby .training-packet-filters {
+  margin-block: 0.25rem 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 30%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 5%, transparent);
+}
+
+.training-lobby .training-packet-filters select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 28%, transparent);
+  border-radius: 0.7rem;
+  background: var(--tg-theme-bg-color);
+  color: var(--tg-theme-text-color);
+}
+
+.training-lobby .training-packet-card {
+  gap: 0.85rem;
+}
+
+.training-lobby .training-packet-card .settings-actions {
+  margin-top: 0.35rem;
+}
+
+@media (max-width: 34rem) {
+  .training-lobby .training-packet-filters {
+    padding: 0.75rem;
+  }
+
+  .training-modifier-badges {
+    gap: 0.4rem;
+  }
+}

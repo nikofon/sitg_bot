@@ -57,12 +57,29 @@ describe("training", () => {
 
   it("allows hidden plus reversed and excludes Best buzz", () => {
     const { root } = create(null);
-    const boxes = root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    boxes[0]!.checked = true; boxes[0]!.dispatchEvent(new Event("change"));
-    boxes[1]!.checked = true; boxes[1]!.dispatchEvent(new Event("change"));
-    expect(boxes[0]!.disabled).toBe(false);
-    expect(boxes[1]!.disabled).toBe(false);
-    expect(boxes[2]!.disabled).toBe(true);
-    expect(root.querySelector<HTMLInputElement>('input[type="number"]')?.disabled).toBe(false);
+    root.querySelectorAll<HTMLButtonElement>("nav button")[2]!.click(); // Options
+    const options = root.querySelector<HTMLElement>(".training-options")!;
+    const picker = options.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    const config = () => options.querySelector<HTMLInputElement>('.training-modifier-config input[type="checkbox"]')!;
+    const enable = (): void => {
+      config().checked = true;
+      config().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(config().checked).toBe(true);
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(config().disabled).toBe(false);
+    const seconds = options.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
+    expect(seconds.disabled).toBe(false);
+    picker.value = "best_buzz";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().disabled).toBe(true);
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(true);
   });
 });
