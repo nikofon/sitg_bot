@@ -43,6 +43,11 @@ function authenticatedFetcher(): ReturnType<typeof vi.fn> {
     }
     if (path.includes("/routes/resolve")) return response(knowledgePayload);
     if (path.endsWith("/knowledge/tags")) return response({ items: [] });
+    if (path.startsWith("/api/miniapp/knowledge/facts?")) return response({
+      state: "ready", items: [{ id: "imported", title: "Imported fact", tag_names: [],
+        origin: "manual", statistics: { status: "none" }, updated_at: "2026-10-01" }],
+      total: 1, order: "title_asc", next_cursor: null,
+    });
     if (path.endsWith("/training/entitlements")) return response({ features: {} });
     if (path.endsWith("/knowledge/import") && options?.method === "POST") {
       return response({ owner_id: "owner-1", recipient_id: "me", imported_count: 2, skipped_count: 1 });

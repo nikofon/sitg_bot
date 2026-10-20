@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import stylesheet from "../styles.css?raw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   KnowledgeFactDetail,
@@ -263,7 +263,7 @@ afterEach(() => {
 describe("knowledge tabs", () => {
   it("starts on the Library tab and switches to Packets and back", () => {
     const style = document.createElement("style");
-    style.textContent = readFileSync("src/styles.css", "utf8");
+    style.textContent = stylesheet;
     document.body.append(style);
     const { root, button } = render();
     const library = root.querySelector<HTMLElement>('[data-panel="library"]')!;

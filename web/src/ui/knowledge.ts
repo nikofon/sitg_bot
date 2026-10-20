@@ -396,9 +396,9 @@ function statisticLines(
   return lines;
 }
 
-/** Combined tag outline: one colour per tag, cycling when a card has many tags. */
+/** Keep even a single-tag outline a valid gradient and include every selected tag. */
 function tagBorderGradient(colours: string[]): string {
-  const stops = colours.length <= 1 ? colours : colours.slice(0, 6);
+  const stops = colours.length === 1 ? [colours[0], colours[0]] : colours;
   return `linear-gradient(120deg, ${stops.join(", ")})`;
 }
 
@@ -484,14 +484,15 @@ function factCard(
     }
     header.setAttribute("aria-expanded", "true");
     body.hidden = false;
-    if (body.dataset.loaded !== "true") {
+    if (body.dataset.loaded !== "true" && body.dataset.loading !== "true") {
+      body.dataset.loading = "true";
       void actions.loadFact(fact.id).then((detail) => {
         if (body.dataset.loaded === "true") return;
         body.dataset.loaded = "true";
         renderFactDetail(detail, i18n, state, actions, body, onChanged, fact.id, refreshTags);
       }).catch(() => {
         replaceChildren(body, element("p", { className: "error-text" }, i18n.t("knowledge.error")));
-      });
+      }).finally(() => { delete body.dataset.loading; });
     }
   });
   card.append(header, body);
@@ -1036,19 +1037,23 @@ export function renderKnowledge(
   };
   const state: KnowledgeState = { tagPool: new Map() };
 
-  const reloadTagPool = (): Promise<void> => {
+  const reloadTagPool = (propagateError = false): Promise<void> => {
     if (!actions.loadTags) return Promise.resolve();
     return actions.loadTags().then((pool) => {
       if (actions.signal?.aborted) return;
       state.tagPool = new Map(pool.items.map((tag) => [tag.name, tag]));
       refreshTagFilterOptions();
       applyTagOutlines();
-    }).catch(() => { /* the pool is retried on the next page visit */ });
+    }).catch((error: unknown) => {
+      if (propagateError) throw error;
+      reportError(i18n.t("knowledge.error"));
+    });
   };
 
   let search = data.facts.search ?? "";
   let tagFilter = "";
   let order = data.facts.order;
+  let queryRevision = 0;
 
   // Tabs
   const libraryPanel = element("section", { className: "knowledge-panel", "data-panel": "library" });
@@ -1107,9 +1112,12 @@ export function renderKnowledge(
   loadMore.addEventListener("click", () => {
     if (!data.facts.next_cursor || loadMore.disabled) return;
     loadMore.disabled = true;
+    const revision = queryRevision;
     void actions.loadFacts({ cursor: data.facts.next_cursor, search, order,
       ...(tagFilter ? { tag: tagFilter } : {}) })
       .then((page) => {
+        if (revision !== queryRevision || actions.signal?.aborted) return;
+        data.facts.items.push(...page.items);
         appendItems(page.items);
         data.facts.next_cursor = page.next_cursor;
         if (page.next_cursor === null) loadMore.remove();
@@ -1118,14 +1126,13 @@ export function renderKnowledge(
       .finally(() => { loadMore.disabled = false; });
   });
 
-  const reload = (): Promise<void> => {
-    if (searchInput.disabled || orderSelect.disabled) return Promise.resolve();
-    searchInput.disabled = true;
-    orderSelect.disabled = true;
+  const reload = (propagateError = false): Promise<void> => {
+    const revision = ++queryRevision;
     return actions.loadFacts({ search, order,
       ...(tagFilter ? { tag: tagFilter } : {}) })
       .then((page) => {
-        data.facts.items = page.items;
+        if (revision !== queryRevision || actions.signal?.aborted) return;
+        data.facts.items = [...page.items];
         data.facts.next_cursor = page.next_cursor;
         data.facts.total = page.total;
         renderList();
@@ -1134,13 +1141,11 @@ export function renderKnowledge(
         if (page.next_cursor !== null && !loadMore.isConnected) pagination.append(loadMore);
       })
       .catch((error: unknown) => {
+        if (revision !== queryRevision || actions.signal?.aborted) return;
         reportError(
           (error as { quota?: boolean })?.quota ? i18n.t("knowledge.quota") : i18n.t("knowledge.error"),
         );
-      })
-      .finally(() => {
-        searchInput.disabled = false;
-        orderSelect.disabled = false;
+        if (propagateError) throw error;
       });
   };
 
@@ -1169,12 +1174,12 @@ export function renderKnowledge(
   });
 
   searchInput.addEventListener("input", () => { search = searchInput.value; });
-  searchInput.addEventListener("change", reload);
+  searchInput.addEventListener("change", () => { void reload(); });
   orderSelect.addEventListener("change", () => {
     order = orderSelect.value as KnowledgeOrder;
     reload();
   });
-  root.addEventListener("knowledge:changed", reload);
+  root.addEventListener("knowledge:changed", () => { void reload(); });
 
   const pagination = element("div", { className: "knowledge-pagination" });
   if (data.facts.next_cursor !== null) pagination.append(loadMore);
@@ -1206,7 +1211,7 @@ export function renderKnowledge(
       searchInput, orderSelect, tagFilterSelect,
       element("button", {
         type: "button", className: "secondary-button",
-        onclick: reload as EventListener,
+        onclick: (() => { void reload(); }) as EventListener,
       }, i18n.t("knowledge.refresh"))),
     element("div", { className: "settings-actions knowledge-library-actions" },
       shareButton, addButton),
@@ -1383,7 +1388,7 @@ export function renderKnowledge(
   reloadTagPool();
   if (data.import_token && actions.importLibrary) {
     openImportDialog(data.import_token, i18n, actions, async () => {
-      await Promise.all([reload(), reloadTagPool()]);
+      await Promise.all([reload(true), reloadTagPool(true)]);
     });
   }
 
