@@ -264,8 +264,6 @@ class AnalysisService:
             owner_player_id=artifact_owner,
         )
         if self.entitlements is not None:
-            from sitg_bot.storage.models import PlayerRecord
-
             await session.get(PlayerRecord, owner_player_id, with_for_update=True)
         artifact = await self._artifact_for_key(
             session,

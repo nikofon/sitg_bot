@@ -283,6 +283,7 @@ async def test_terminal_artifact_reconciles_stranded_waiter(database):
             TrainingAnalysisArtifactRecord, await artifact_id_of(database, "stranded")
         )
         artifact.status = "failed"
+        artifact.failed_at = datetime.now(UTC)
         artifact.last_error = "Historical terminal write without settlement"
     assert (await stack.service.status(owner_player_id=owner, request_id="stranded")).status == "failed"
     assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10

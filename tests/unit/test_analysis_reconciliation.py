@@ -7,7 +7,14 @@ from uuid import uuid4
 import pytest
 
 from sitg_bot.services.analysis_jobs import AnalysisRequestView, AnalysisService, analysis_job_key
-from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
+from sitg_bot.services.training_ai import (
+    BestBuzzSource,
+    CommonKnowledgeSource,
+    DissectionSource,
+    FakeAnalysisProvider,
+    ProviderSettings,
+    source_descriptor,
+)
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.models import (
     DurableJobRecord,
@@ -16,6 +23,81 @@ from sitg_bot.storage.models import (
     PlayerRecord,
     TrainingAnalysisArtifactRecord,
 )
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("kind", ["dissection", "best_buzz", "common_knowledge"])
+async def test_production_request_admits_entitled_requests_and_replays(monkeypatch, kind, replay):
+    owner, packet, question = uuid4(), uuid4(), uuid4()
+    source = {
+        "dissection": DissectionSource(packet, (question,)),
+        "best_buzz": BestBuzzSource(packet, (question,)),
+        "common_knowledge": CommonKnowledgeSource("A test fact"),
+    }[kind]
+    moment = datetime.now(UTC)
+    descriptor = source_descriptor(source) | {"private": False, "quota_units": 1}
+    existing = SimpleNamespace(
+        request_id="admission", owner_player_id=owner, instructions="", source=descriptor,
+        kind=kind, status="queued", error=None, created_at=moment, completed_at=None,
+    )
+    added = []
+
+    async def flush():
+        for row in added:
+            row.status = "queued"
+
+    session = SimpleNamespace(
+        get=AsyncMock(), scalar=AsyncMock(return_value=0), add=added.append,
+        flush=AsyncMock(side_effect=flush),
+    )
+    entitlements = SimpleNamespace(
+        policy_for=AsyncMock(return_value=SimpleNamespace(enabled=True, queued_request_cap=5)),
+        authorize=AsyncMock(),
+    )
+    loader = SimpleNamespace(authorize_in_session=AsyncMock())
+    provider = FakeAnalysisProvider()
+    service = AnalysisService(
+        object(), object(), provider, ProviderSettings("fake", "m"),
+        entitlements=entitlements, source_loader=loader,
+    )
+    service._request_row = AsyncMock(return_value=existing if replay else None)
+    artifact = SimpleNamespace(id=uuid4(), status="pending", generation=1)
+    service._artifact_for_key = AsyncMock(return_value=artifact)
+    schedule = AsyncMock()
+    monkeypatch.setattr(
+        "sitg_bot.services.analysis_jobs.DurableJobQueue.schedule_in_session", schedule,
+    )
+
+    result = await service.request(
+        session, owner_player_id=owner, source=source, idempotency_key="admission", now=moment,
+    )
+
+    assert (result.request_id, result.kind, result.status) == ("admission", kind, "queued")
+    loader.authorize_in_session.assert_awaited_once_with(session, owner, descriptor)
+    assert session.get.await_args_list[0].args == (PlayerRecord, owner)
+    assert session.get.await_args_list[0].kwargs == {
+        "with_for_update": {"key_share": True}, "populate_existing": True,
+    }
+    assert all(call.args == (PlayerRecord, owner) for call in session.get.await_args_list)
+    if replay:
+        assert added == []
+        service._artifact_for_key.assert_not_awaited()
+        entitlements.authorize.assert_not_awaited()
+        schedule.assert_not_awaited()
+        session.flush.assert_not_awaited()
+    else:
+        assert len(added) == 1
+        assert added[0].owner_player_id == owner and added[0].source == descriptor
+        entitlements.authorize.assert_awaited_once_with(
+            session, player_id=owner, feature=kind, request_id="admission", units=1, now=moment,
+        )
+        schedule.assert_awaited_once()
+        assert schedule.await_args.args[2:] == (
+            analysis_job_key(artifact.id, 1),
+            {"artifact_id": str(artifact.id), "generation": 1},
+        )
+        session.flush.assert_awaited_once()
+    assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
 
 
 @pytest.mark.parametrize("current_status", ["pending", "running", "succeeded", "cancelled"])

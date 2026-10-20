@@ -185,3 +185,24 @@ The combined redesign still depends on that owner delivering and validating:
 These are explicit delivery dependencies, not backend acceptance claims. The outer
 executor owns PR publication and should carry this scope distinction and the actual
 verification limitations into the PR evidence.
+
+## Admission regression and deferred identity limitation
+
+The redundant function-local `PlayerRecord` import shadowed the existing module
+import before the first account lookup in production `AnalysisService.request`.
+Removing that duplicate leaves the locking protocol unchanged. Isolated admission
+regressions execute that method for dissection, Best buzz and common knowledge,
+including idempotent replay, with fake persistence, entitlement and queue seams.
+They require no database, Telegram or live provider. The stranded-waiter integration
+fixture now supplies `failed_at` when marking its artifact failed, leaving the
+active waiter and quota-settlement assertions intact; PostgreSQL execution remains
+the outer executor's responsibility.
+
+The supplied `scope-base-result.txt` and `scope-current-result.txt` under
+`/home/nikofon/firstmate/data/sitg-knowledge-data/` both report r23 digests
+`67d88afe537b31cf` for the two field arrangements, `r23_same_request: true`, and
+`r23_request_count: 1`. MAIN identifies these as original `5a9c99b` and backend
+`0a5fff57`, with zero domain diff. This is evidence of the same pre-existing
+instructions/comment boundary collision, not a new redesign regression. It remains
+an explicitly deferred follow-up: distinct arrangements can reuse a request.
+No persisted key format, compatibility handling or data migration is changed here.
