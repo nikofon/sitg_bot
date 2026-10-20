@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -394,6 +395,43 @@ async def test_stale_reconciliation_cannot_fail_a_replacement_generation(databas
     assert await stack.worker.run_once() == 1
     result = await stack.service.result(owner_player_id=owner_b, request_id="generation-replacement")
     assert result is not None and len(result["candidates"]) == 1
+
+
+@pytest.mark.parametrize("field", ["model", "prompt_version", "schema_version", "tokenizer_version"])
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_incompatible_execution_profile_refunds_reservations_without_computation(
+    database, field, checkpointed,
+):
+    owner = await create_player(database, 9221, "profile-owner")
+    stack = await make_stack(database, [owner])
+    revision = stack.loader.add("The artifact belongs to its recorded execution profile.")
+    source = DissectionSource(uuid4(), (revision,))
+    await submit(stack.service, owner, source, "profile-request")
+    artifact_id = await artifact_id_of(database, "profile-request")
+    if checkpointed:
+        async with database.transaction() as session:
+            artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+            artifact.status = "running"
+            artifact.lease_token = uuid4()
+            artifact.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            artifact.checkpoint = {"chunks_done": 0, "partial": []}
+    settings = replace(stack.settings, **{field: getattr(stack.settings, field) + "-changed"})
+    provider = FakeAnalysisProvider()
+    restarted = AnalysisService(
+        database, stack.jobs, provider, settings,
+        entitlements=stack.entitlements, source_loader=stack.loader,
+    )
+    await restarted.execute_job({"artifact_id": str(artifact_id), "generation": 1})
+    view = await restarted.status(owner_player_id=owner, request_id="profile-request")
+    assert view.status == "failed" and view.error == "Analysis execution profile changed"
+    assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
+    assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
+    async with database.sessions() as session:
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert len(periods) == 1 and periods[0].reserved == periods[0].settled == 0
+        artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        assert getattr(artifact, field) == getattr(stack.settings, field)
+        assert artifact.payload is None
 
 
 async def test_custom_instructions_and_owners_isolate_artifacts(database):

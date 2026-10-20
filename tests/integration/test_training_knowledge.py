@@ -328,6 +328,80 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         assert len(list(await session.scalars(select(TrainingBestBuzzCompletionRecord)))) == 1
 
 
+async def test_exact_dissection_identity_survives_bounded_persisted_history(database):
+    from sitg_bot.storage.models import PacketVersionRecord
+
+    owner = await create_player(database, 8241, "history-owner")
+    version, _ = await upload(database, owner)
+    app = KnowledgeApplication(database)
+    async with database.transaction() as session:
+        packet = await session.get(PacketVersionRecord, version)
+        service = app.service(session)
+        first = await service.request_dissection(
+            owner, packet_id=packet.packet_id, packet_revision=str(version),
+        )
+        applied = await service.apply_dissection_result(owner, first.request_id, [])
+        for index in range(101):
+            await service.request_dissection(
+                owner, packet_id=packet.packet_id, packet_revision=str(version),
+                comment=f"History revision {index}",
+            )
+        history = await service.store.requests_for_owner(owner, packet_id=packet.packet_id)
+        assert len(history) == 100 and first.request_id not in {row.id for row in history}
+        retry = await service.request_dissection(
+            owner, packet_id=packet.packet_id, packet_revision=str(version),
+        )
+        assert retry == applied
+        assert len(list(await session.scalars(select(KnowledgeDissectionRecord)))) == 102
+
+
+async def test_statistics_lock_owners_in_the_same_order_as_collection_imports(database, monkeypatch):
+    from dataclasses import replace
+
+    from sitg_bot.services import training_knowledge
+    from sitg_bot.storage.models import KnowledgeSnapshotRecord, TrainingCategoryRecord
+
+    owner = await create_player(database, 8251, "statistics-owner")
+    other = await create_player(database, 8252, "statistics-other")
+    app = await application(database, owner)
+    async with database.transaction() as session:
+        category = await session.scalar(select(TrainingCategoryRecord))
+        await app.entitlements.assign_category(session, player_id=other, category_id=category.id)
+    for actor in sorted([owner, other], reverse=True):
+        fact = await app.mutate(actor, "create", {"title": str(actor), "description": "Fact"})
+        await app.statistics_job({"owner_id": str(actor), "fact_id": str(fact["id"]), "version": 1})
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    for _ in range(3):
+        await worker.run_once()
+    app.settings = replace(app.settings, model="new-runtime-model", prompt_version="new-prompt")
+    acquired = []
+    guard = training_knowledge.require_trainee
+
+    async def recording_guard(session, player_id, *, lock=False):
+        result = await guard(session, player_id, lock=lock)
+        if lock:
+            acquired.append(player_id)
+        return result
+
+    monkeypatch.setattr(training_knowledge, "require_trainee", recording_guard)
+    await app.reconcile_statistics()
+    assert acquired == sorted([owner, other])
+    async with database.sessions() as session:
+        snapshots = list(await session.scalars(select(KnowledgeSnapshotRecord)))
+        assert len(snapshots) == 2
+        assert all(row.common["model"] == "fixture" and row.common["prompt_version"] == "1"
+                   for row in snapshots)
+    link = await app.mutate(owner, "link_create", {})
+    acquired.clear()
+    await app.mutate(other, "import", {"token": link["token"]})
+    assert acquired == sorted([owner, other])
+    acquired.clear()
+    await app.mutate(owner, "grant", {"recipient": str(other)})
+    assert acquired == sorted([owner, other])
+
+
 async def test_fact_page_query_count_does_not_scale_per_card(database):
     owner = await create_player(database, 8301, "page-owner")
     app = KnowledgeApplication(database)

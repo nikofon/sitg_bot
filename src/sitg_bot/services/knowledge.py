@@ -289,6 +289,15 @@ class InMemoryKnowledgeStore:
     async def save_request(self, request: StoredDissectionRequest) -> None:
         self.requests[request.id] = request
 
+    async def request_for_identity(
+        self, owner_id: UUID, packet_id: UUID, packet_revision: str, instruction_digest: str
+    ) -> StoredDissectionRequest | None:
+        return next((
+            row for row in self.requests.values()
+            if (row.owner_id, row.packet_id, row.packet_revision, row.instruction_digest)
+            == (owner_id, packet_id, packet_revision, instruction_digest)
+        ), None)
+
     async def requests_for_owner(
         self, owner_id: UUID, *, packet_id: UUID | None = None
     ) -> list[StoredDissectionRequest]:
@@ -538,7 +547,10 @@ class KnowledgeService:
             description=target.content.description,
             links=merged_links,
         )
-        target.tag_ids |= source.tag_ids
+        merged_tags = target.tag_ids | source.tag_ids
+        if len(merged_tags) > FACT_TAGS_MAX:
+            raise ValueError(f"A fact allows at most {FACT_TAGS_MAX} tags")
+        target.tag_ids = merged_tags
         if merged_content.changed(target.content):
             target.content = merged_content
             target.content_version += 1
@@ -805,9 +817,9 @@ class KnowledgeService:
         if not packet_revision.strip():
             raise ValueError("Packet revision must not be empty")
         digest = dissection_instruction_digest(instructions, comment)
-        for row in await self.store.requests_for_owner(owner_id, packet_id=packet_id):
-            if row.instruction_digest == digest and row.packet_revision == packet_revision:
-                return self._request_view(row)
+        row = await self.store.request_for_identity(owner_id, packet_id, packet_revision, digest)
+        if row is not None:
+            return self._request_view(row)
         row = StoredDissectionRequest(
             id=uuid4(),
             owner_id=owner_id,

@@ -88,6 +88,8 @@ The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
 on rename preserves it. Fact detail tags add `colour` while fact lists keep
 `tag_names`. Fact create/update still accept selected `tag_names` for compatibility.
 The Mini App should select from this palette, with explicit new-tag creation.
+The existing 32-tag fact limit also applies to merged tag unions; an oversized
+merge is rejected without changing or retiring either fact.
 
 `GET /api/miniapp/knowledge/sharing` retains historical `grants` and `shared`
 copy summaries and adds the creator's `links`. POST `knowledge/link_create`
@@ -132,7 +134,10 @@ and reset them on filter/order changes. Legacy UUID cursors remain valid with
 
 Each card retains version `id`, logical `packet_id`, name/year/scope and adds:
 
-- `authors:[{id,name}]`: batched lead/content author attribution.
+- `authors:[{id,name}]`: batched lead/content author attribution. Own private
+  uploads include lead, theme and question names from the owner-authorized draft,
+  with `id:null`; these names also participate in author filtering but never enter
+  public author catalogues.
 - `tournaments:[{id,name}]`: only currently readable associations for this user.
 - `total_theme_count`, `fresh_theme_count`: existing SI content-adapter freshness,
   including reserved/burnt question/theme identities and user packet blocks.
@@ -149,7 +154,17 @@ before upgrade cannot be reconstructed. Per-user analysis state is never inferre
 from another user's shared cache. All metadata loads are page-batched, never
 per-card HTTP or SQL fetches. Listing does not disclose/consume exposures or run
 analysis. Existing dissection instructions/comments, explicit exposure confirmation,
-quotas and cancellation remain unchanged.
+quotas and cancellation remain unchanged. Dissection identity lookup is exact even
+when the request is older than the bounded 100-row history listing.
+
+Queued or expired/checkpointed analysis is rejected and its reservations released
+if the recorded model, prompt, schema or tokenizer version differs from the worker
+configuration. A compatible completed artifact remains readable through the existing
+access checks. New statistic snapshots use the producing artifact's model and
+versions, not the current application configuration. This does not migrate old
+metadata, promise compatibility across arbitrary restarts, or alter Best-buzz
+position representation. Statistics batches acquire accounts in UUID order, matching
+collection imports and direct copying.
 
 ## Adapters
 

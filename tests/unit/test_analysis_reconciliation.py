@@ -150,6 +150,83 @@ async def test_obsolete_worker_error_cannot_fail_or_expire_the_current_generatio
     app.analysis._fail_artifact.assert_not_awaited()
 
 
+@pytest.mark.parametrize("field", [
+    None, "model", "prompt_version", "schema_version", "tokenizer_version",
+])
+@pytest.mark.parametrize("status", ["pending", "running"])
+@pytest.mark.parametrize("kind", ["dissection", "best_buzz", "common_knowledge"])
+async def test_execution_profile_is_checked_before_provider_computation(field, status, kind):
+    settings = ProviderSettings("fake", "model-b")
+    artifact = SimpleNamespace(
+        id=uuid4(), generation=1, status=status, kind=kind, provider_usage=None,
+        lease_expires_at=datetime.now(UTC) if status == "running" else None,
+        lease_token=uuid4() if status == "running" else None,
+        checkpoint={"chunks_done": 0, "partial": []},
+        **{name: getattr(settings, name) for name in (
+            "model", "prompt_version", "schema_version", "tokenizer_version",
+        )},
+    )
+    if field is not None:
+        setattr(artifact, field, "prior-profile")
+    request = SimpleNamespace(owner_player_id=uuid4(), instructions="", source={}, status="queued")
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=artifact),
+        execute=AsyncMock(return_value=SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [request]),
+        )),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    provider = FakeAnalysisProvider()
+    service = AnalysisService(SimpleNamespace(transaction=transaction), object(), provider, settings)
+    service._complete_requests = AsyncMock()
+    service._run_packet_scan = AsyncMock()
+    service._run_common_knowledge = AsyncMock()
+    await service.execute_job({"artifact_id": str(artifact.id), "generation": 1})
+    if field is None:
+        assert artifact.status == "running" and request.status == "running"
+        service._complete_requests.assert_not_awaited()
+        if kind == "common_knowledge":
+            service._run_common_knowledge.assert_awaited_once()
+        else:
+            service._run_packet_scan.assert_awaited_once()
+        return
+    assert artifact.status == "failed" and artifact.lease_token is None
+    assert artifact.last_error == "Analysis execution profile changed"
+    assert service._complete_requests.await_args.args[1:3] == (artifact.id, "failed")
+    assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
+    service._run_packet_scan.assert_not_awaited()
+    service._run_common_knowledge.assert_not_awaited()
+
+
+async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):
+    request = SimpleNamespace(status="succeeded", source={"content_version": 1}, artifact_id=uuid4())
+    fact = SimpleNamespace(owner_id=uuid4(), id=uuid4(), content_version=1,
+                           statistic_status="pending", deleted_at=None)
+    artifact = SimpleNamespace(payload={"value": 25}, model="producing-model",
+                               prompt_version="producing-prompt", schema_version="producing-schema")
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=[(request, fact)]), refresh=AsyncMock(),
+        get=AsyncMock(return_value=artifact),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    app = KnowledgeApplication(SimpleNamespace(transaction=transaction))
+    record = AsyncMock()
+    app.service = lambda session: SimpleNamespace(record_statistics=record)
+    monkeypatch.setattr("sitg_bot.services.training_knowledge.require_trainee", AsyncMock())
+    await app.reconcile_statistics()
+    common = record.await_args.kwargs["common"]
+    assert common.value == 25 and common.model == "producing-model"
+    assert common.prompt_version == "producing-prompt" and common.schema_version == "producing-schema"
+
+
 async def test_applied_dissection_is_not_reset_or_requeued_by_an_explicit_retry():
     row = SimpleNamespace(status="succeeded", analysis_request_id="original", application=object())
     app = KnowledgeApplication(object())

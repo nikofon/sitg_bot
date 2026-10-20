@@ -907,6 +907,8 @@ class KnowledgeApplication:
                         KnowledgeFactRecord.statistic_status == "pending",
                         KnowledgeFactRecord.deleted_at.is_(None),
                     )
+                    .order_by(KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
+                              TrainingAnalysisRequestRecord.id)
                     .limit(100)
                 )
             )
@@ -927,9 +929,9 @@ class KnowledgeApplication:
                 common = CommonKnowledgeEstimate(
                     status="available" if available else "failed",
                     value=artifact.payload["value"] if available else None,
-                    model=self.settings.model,
-                    prompt_version=self.settings.prompt_version,
-                    schema_version=self.settings.schema_version,
+                    model=artifact.model if artifact else None,
+                    prompt_version=artifact.prompt_version if artifact else None,
+                    schema_version=artifact.schema_version if artifact else None,
                     population=POPULATION,
                     estimated_at=datetime.now(UTC) if available else None,
                 )

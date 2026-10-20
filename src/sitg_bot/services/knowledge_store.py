@@ -589,6 +589,15 @@ class PostgresKnowledgeStore:
         row.application = json_data(request.application) if request.application else None
         await self.session.flush()
 
+    async def request_for_identity(self, owner_id, packet_id, packet_revision, instruction_digest):
+        row = await self.session.scalar(select(KnowledgeDissectionRecord).where(
+            KnowledgeDissectionRecord.owner_id == owner_id,
+            KnowledgeDissectionRecord.packet_id == packet_id,
+            KnowledgeDissectionRecord.packet_revision == packet_revision,
+            KnowledgeDissectionRecord.instruction_digest == instruction_digest,
+        ))
+        return self._request(row) if row else None
+
     async def requests_for_owner(self, owner_id, *, packet_id=None):
         statement = select(KnowledgeDissectionRecord).where(
             KnowledgeDissectionRecord.owner_id == owner_id

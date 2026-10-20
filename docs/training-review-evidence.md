@@ -104,6 +104,68 @@ No full-suite, lint, frontend, live Telegram/provider, deployment, PR or CI phas
 was run. Final combined delivery and remaining database validation belong to the
 outer executor and training task.
 
+## Catalogue and data follow-up: r16–r20
+
+Baseline comparison used the submitted base `15073a0`, pre-redesign `5a9c99b`,
+original data commit `e8b0a54`, and accepted fix head `f40c983`. The training
+knowledge/analysis modules are absent at the submitted base. Within the training
+branch, r17's unchecked execution profile/current-configuration attribution,
+r18's unordered statistics batch, r19's bounded identity lookup and r20's unchecked
+merge union already existed before the data redesign. They are fixed here only
+at the boundaries required by this deliverable, not as unrelated baseline cleanup:
+
+- r16 was introduced by the new card projection/author filter. One owner-scoped,
+  draft-backed query supplies lead/theme/question attribution to both consumers.
+  Projection remains page-batched; private names have null IDs and are never
+  published to global author tables. Both logical-packet and draft ownership and
+  training scope are required. The referenced integration-owner commits `18fdd1a`
+  and `aa0e612` are unavailable in this worktree's history; no other clone was read.
+- r17 uses only the existing four recorded profile fields to reject incompatible
+  queued/expired work before computation, with the existing failure/refund path.
+  This prevents new model/version misattribution; new statistics use the producing
+  artifact's fields. No persisted representation, historical metadata or Best-buzz
+  position changes, replay framework or cross-restart compatibility promise is added.
+- r18 closes the concrete omitted statistics caller with a deterministic UUID
+  ordering before account acquisition, identical to sorted import/grant locking.
+  No scheduler, lock abstraction or new reconciliation subsystem is introduced.
+- r19 separates exact four-field persisted identity lookup from the bounded history
+  list in both stores. The accepted retry path can reach old requests without
+  losing application state; history remains limited to 100 rows in PostgreSQL.
+- r20 preserves the existing 32-tag limit at the palette/edit round-trip boundary:
+  validate the merged union before any mutation, rather than truncating tags or
+  retiring a source that cannot be represented by ordinary fact editing.
+
+New executable regressions cover matching/incompatible profiles for all three
+analysis kinds, producing-artifact snapshot metadata, old applied identities beyond
+100 revisions, and atomic oversized-merge rejection/32-tag edit round trips.
+Disposable PostgreSQL cases cover private author projection/search and isolation,
+profile refunds, exact persisted identity, and statistics/import/grant account order.
+Actual database and concurrency evidence remains unavailable without an isolated
+`TEST_DATABASE_URL`. r21 delivery is intentionally untouched; the final integration
+owner already owns that solution.
+
+### r16–r20 focused results
+
+The supplied task interpreter imported this gate's `src`. With the historical
+`f40c983` method implementations rebound to the same dependency globals, the new
+profile, snapshot, old-identity and merge checks produced **27 expected failures,
+7 passing controls**. This is behavioral method-level reproduction, not a claim
+that an entire historical checkout or database was tested.
+
+The first current-code collection was blocked by the repository's duplicate
+unit/integration `test_knowledge_catalogue.py` module names. Reissuing the same
+focused selection with `--import-mode=importlib` succeeded: **136 passed,
+50 skipped**. Files selected were the unit reconciliation, knowledge service,
+catalogue, knowledge adapter and mutation retry files, plus integration analysis,
+catalogue, training knowledge and gateway retry files. No source changes were made
+between those two current-code collection attempts.
+
+All PostgreSQL cases remain skipped because no isolated `TEST_DATABASE_URL` is
+configured. In particular, private-author SQL execution/owner isolation, persisted
+profile refunds, exact historical identity and actual statistics/import lock order
+are not claimed as executed PostgreSQL evidence. No full-suite, lint, frontend,
+live provider/Telegram, deployment, PR or CI phase was performed.
+
 ## Frontend delivery dependencies for the outer executor's PR
 
 This backend review does not complete or modify the separately owned frontend.

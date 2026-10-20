@@ -105,7 +105,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
     results = iter(
         [
             [(first, author, "Author")],
-            [],  # No owner-private draft attribution in this mixed-page fixture.
+            [(third, "Alice")],
             [(first, tournament, "Cup")],
             [(first, theme_a), (second, theme_b)],
             [(first, question, theme_a)],
@@ -140,7 +140,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
     await enrich_packet_cards(
         session, OWNER, cards, TrainingPacketService._library_assignments(OWNER)
     )
-    assert len(statements) == 7  # Includes one batched owner-private attribution query.
+    assert len(statements) == 7
     assert cards[0] == {
         "id": first,
         "authors": [{"id": author, "name": "Author"}],
@@ -154,6 +154,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
     assert cards[1]["dissected_theme_count"] is None and cards[1]["dissected"]
     assert cards[2]["dissected_theme_count"] == 0 and not cards[2]["dissected"]
     assert not cards[2]["best_buzz_calculated"]
+    assert cards[2]["authors"] == [{"id": None, "name": "Alice"}]
     assert fresh.await_args.args[-1] == [OWNER]
     # Owner predicates bind this user, never another trainee's results.
     assert OWNER in statements[-1].params.values()
@@ -194,9 +195,6 @@ async def test_list_service_forwards_filters_and_keyset_and_enriches_only_page(m
     enrich = AsyncMock()
     monkeypatch.setattr("sitg_bot.services.training_packets.require_trainee", guard)
     monkeypatch.setattr("sitg_bot.services.training_packets.enrich_packet_cards", enrich)
-    monkeypatch.setattr(
-        "sitg_bot.services.training_packets.private_packet_authors", AsyncMock(return_value={})
-    )
     service = TrainingPacketService(SimpleNamespace(sessions=sessions))
     page = await service.list_packets(
         OWNER,
@@ -284,10 +282,8 @@ async def test_saved_dissection_coverage_and_best_buzz_survive_missing_analysis_
 ):
     version, theme = UUID(int=7), UUID(int=8)
     results = iter(
-        [
-            [], [], [], [(version, theme)], [],
-            [(str(version), "succeeded", None, [str(theme)], None)],
-        ]
+        [[], [], [], [(version, theme)], [],
+         [(str(version), "succeeded", None, [str(theme)], None)]]
     )
     session = SimpleNamespace(
         execute=AsyncMock(side_effect=lambda _: next(results)),

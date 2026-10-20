@@ -1,3 +1,4 @@
+from copy import deepcopy
 from uuid import UUID
 
 import pytest
@@ -239,6 +240,63 @@ async def test_recipient_lists_copies_without_source_collection_access():
     assert [item.title for item in page.items] == ["Shared fact"]
     with pytest.raises(PermissionError):
         await knowledge.list_facts(RECIPIENT, owner_id=STRANGER)
+
+
+@pytest.mark.parametrize("target_start", [15, 17])
+async def test_merge_tag_union_remains_editable_or_rejects_without_mutation(target_start):
+    knowledge = service()
+    source = await knowledge.create_fact(
+        OWNER, title="Source", description="Source fact",
+        tag_names=[f"tag-{index}" for index in range(17)],
+    )
+    target = await knowledge.create_fact(
+        OWNER, title="Target", description="Target fact",
+        tag_names=[f"tag-{index}" for index in range(target_start, target_start + 17)],
+    )
+    before = deepcopy((knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]))
+    if target_start == 17:
+        with pytest.raises(ValueError, match="at most 32 tags"):
+            await knowledge.merge_facts(
+                OWNER, source.fact_id, target.fact_id,
+                expected_target_version=target.content_version, confirm_source_delete=True,
+            )
+        assert (knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]) == before
+        return
+    merged = await knowledge.merge_facts(
+        OWNER, source.fact_id, target.fact_id,
+        expected_target_version=target.content_version, confirm_source_delete=True,
+    )
+    assert len(merged.tags) == 32
+    saved = await knowledge.update_fact(
+        OWNER, merged.fact_id, expected_version=merged.content_version,
+        tag_names=[tag.name for tag in merged.tags],
+    )
+    assert saved.tags == merged.tags
+
+
+async def test_old_dissection_identity_does_not_depend_on_the_history_window():
+    class BoundedHistory(InMemoryKnowledgeStore):
+        async def requests_for_owner(self, owner_id, *, packet_id=None):
+            return (await super().requests_for_owner(owner_id, packet_id=packet_id))[-100:]
+
+    knowledge = KnowledgeService(BoundedHistory())
+    first = await knowledge.request_dissection(OWNER, packet_id=PACKET, packet_revision="rev-1")
+    applied = await knowledge.apply_dissection_result(
+        OWNER, first.request_id, [payload(QUESTION, "Old applied fact")],
+    )
+    fact_id = next(iter(applied.applied_fact_ids))
+    await knowledge.delete_fact(OWNER, fact_id, confirm_dissection_origin=True)
+    for index in range(101):
+        await knowledge.request_dissection(
+            OWNER, packet_id=PACKET, packet_revision="rev-1", comment=f"Revision {index}",
+        )
+    assert first.request_id not in {
+        row.id for row in await knowledge.store.requests_for_owner(OWNER, packet_id=PACKET)
+    }
+    retry = await knowledge.request_dissection(OWNER, packet_id=PACKET, packet_revision="rev-1")
+    assert retry == applied
+    assert len(knowledge.store.requests) == 102
+    assert knowledge.store.facts[fact_id].deleted_at is not None
 
 
 async def test_dissection_requests_are_idempotent_and_comments_create_revisions():

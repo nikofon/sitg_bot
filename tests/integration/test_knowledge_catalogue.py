@@ -1,6 +1,7 @@
 """Real transaction coverage; runs only in the fixture's disposable PostgreSQL DB."""
 
 import asyncio
+from uuid import UUID
 
 import pytest
 from conftest import create_player
@@ -177,6 +178,51 @@ async def test_packet_metadata_private_visibility_and_no_analysis_execution(data
         await packets.disclose(session, owner, version_id, confirm=True)
     card = (await packets.list_packets(owner))["items"][0]
     assert card["fresh_theme_count"] == 0
+
+
+async def test_private_authors_are_projected_and_searchable_only_for_the_owner(database):
+    import json
+
+    from sitg_bot.storage.models import AuthorRecord
+
+    owner = await create_player(database, 9143, "private-writer-owner")
+    other = await create_player(database, 9144, "private-writer-other")
+    packets = TrainingPacketService(database)
+    versions = []
+    for index in range(2):
+        content = {
+            "name": f"Private attribution {index}", "lead_author": "Alice",
+            "themes": [{"name": "Theme", "authors": ["Alice", "Theme Writer"], "questions": [
+                {"value": value, "text": "Private question", "answer": "Paris",
+                 "authors": ["Question Writer"]}
+                for value in (10, 20, 30, 40, 50)
+            ]}],
+        }
+        uploaded = await packets.import_upload(owner, json.dumps(content).encode(), "private.json")
+        draft = uploaded["drafts"][0]
+        assert draft["errors"] == []
+        published = await packets.decide_draft(
+            owner, UUID(draft["draft_id"]), expected_version=draft["version"], publish=True,
+        )
+        versions.append(UUID(published["version_id"]))
+    first = await packets.list_packets(owner, author=" aLiCe ", order="name_asc", limit=1)
+    second = await packets.list_packets(
+        owner, author="alice", order="name_asc", limit=1, cursor=first["next_cursor"],
+    )
+    assert [page["items"][0]["id"] for page in (first, second)] == versions
+    assert second["next_cursor"] is None
+    assert first["items"][0]["authors"] == [
+        {"id": None, "name": name} for name in ("Alice", "Question Writer", "Theme Writer")
+    ]
+    for author in ("Alice", "Theme Writer", "Question Writer"):
+        assert len((await packets.list_packets(owner, author=author))["items"]) == 2
+        assert (await packets.list_packets(other, author=author))["items"] == []
+    async with database.sessions() as session:
+        assert list(await session.scalars(select(AuthorRecord))) == []
+    await packets.retire(owner, versions[0])
+    assert [item["id"] for item in (await packets.list_packets(owner, author="Alice"))["items"]] == [
+        versions[1],
+    ]
 
 
 async def test_calculation_and_dissection_metadata_survive_analysis_cache_cleanup(database):

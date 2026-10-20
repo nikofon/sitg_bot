@@ -512,6 +512,14 @@ class AnalysisService:
                 and artifact.lease_token is not None
             ):
                 raise RuntimeError("Analysis compute lease is still held by another worker")
+            if any(
+                getattr(artifact, field) != getattr(self.settings, field)
+                for field in ("model", "prompt_version", "schema_version", "tokenizer_version")
+            ):
+                await self._fail_artifact(
+                    session, artifact, "Analysis execution profile changed", moment
+                )
+                return
             artifact.status = "running"
             artifact.lease_token = uuid4()
             artifact.lease_expires_at = moment + self.lease_duration

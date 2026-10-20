@@ -3,7 +3,8 @@
 from collections import defaultdict
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import cast, func, select, true
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.orm import aliased
 
 from sitg_bot.services.ruleset_content import PacketSelection, SIContentAdapter
@@ -12,8 +13,8 @@ from sitg_bot.storage.models import (
     AuthorRecord,
     KnowledgeDissectionRecord,
     LogicalPacketRecord,
-    PacketQuestionRecord,
     PacketDraftRecord,
+    PacketQuestionRecord,
     PacketVersionRecord,
     ThemeRevisionRecord,
     TournamentPacketAssignmentRecord,
@@ -23,30 +24,35 @@ from sitg_bot.storage.models import (
 )
 
 
-async def private_packet_authors(session, player_id, version_ids=None):
-    from sitg_bot.services.packets import PacketAdminService
-
-    query = (
-        select(PacketVersionRecord.id, PacketDraftRecord.content)
+def private_packet_authors(player_id, version_ids):
+    drafts = (
+        select(PacketVersionRecord.id.label("packet_version_id"), PacketDraftRecord.content)
         .join(LogicalPacketRecord, LogicalPacketRecord.id == PacketVersionRecord.packet_id)
         .join(PacketDraftRecord, PacketDraftRecord.id == PacketVersionRecord.source_draft_id)
         .where(
+            PacketVersionRecord.id.in_(version_ids),
             LogicalPacketRecord.scope == "training",
             LogicalPacketRecord.uploader_id == player_id,
-            LogicalPacketRecord.retired_at.is_(None),
-            PacketVersionRecord.state == "published",
             PacketDraftRecord.scope == "training",
             PacketDraftRecord.uploader_id == player_id,
         )
+        .subquery()
     )
-    if version_ids is not None:
-        query = query.where(PacketVersionRecord.id.in_(version_ids))
-    return {
-        version_id: PacketAdminService._detected_authors(
-            PacketAdminService._packet_from_content(content)
+    values = func.jsonb_path_query_array(
+        drafts.c.content, cast("$.themes[*].authors[*]", JSONPATH)
+    ).op("||")(
+        func.jsonb_path_query_array(
+            drafts.c.content, cast("$.themes[*].questions[*].authors[*]", JSONPATH)
         )
-        for version_id, content in await session.execute(query)
-    }
+    ).op("||")(func.jsonb_build_array(drafts.c.content["lead_author"]))
+    names = func.jsonb_array_elements_text(values).table_valued("value").lateral()
+    name = func.trim(names.c.value)
+    return (
+        select(drafts.c.packet_version_id, name.label("name"))
+        .select_from(drafts.join(names, true()))
+        .where(name != "")
+        .distinct()
+    )
 
 
 async def enrich_packet_cards(session, player_id, items, readable_assignments):
@@ -62,9 +68,11 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
         .order_by(AuthorRecord.display_name, AuthorRecord.id)
     ):
         authors[version_id].append({"id": author_id, "name": name})
-
-    for version_id, names in (await private_packet_authors(session, player_id, ids)).items():
-        authors[version_id] = [{"id": None, "name": name} for name in sorted(names)]
+    private = private_packet_authors(player_id, ids).subquery()
+    for version_id, name in await session.execute(
+        select(private.c.packet_version_id, private.c.name).order_by(private.c.name)
+    ):
+        authors[version_id].append({"id": None, "name": name})
 
     tournaments = defaultdict(list)
     assignment = aliased(TournamentPacketAssignmentRecord)
