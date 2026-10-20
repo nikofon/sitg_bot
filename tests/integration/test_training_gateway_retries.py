@@ -27,7 +27,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
     async def twice(action, values, key):
         request = GatewayRequest.model_validate({
             "metadata": {"channel": "mini_app", "client_name": "retry-test",
-                         "client_version": "1", "idempotency_key": key},
+                         "client_version": "1", "idempotency_key": f"gateway-retry:{key}"},
             "operation": {"action": action, **values},
         })
         requests[key] = request

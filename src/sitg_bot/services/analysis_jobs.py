@@ -66,6 +66,7 @@ from sitg_bot.storage.models import (
     Base,
     DurableJobRecord,
     PacketVersionRecord,
+    PlayerRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
     TrainingBestBuzzCompletionRecord,
@@ -233,6 +234,11 @@ class AnalysisService:
             descriptor["content_fingerprint"] = content_fingerprint
         if self.source_loader is not None and hasattr(self.source_loader, "authorize_in_session"):
             await self.source_loader.authorize_in_session(session, owner_player_id, descriptor)
+        if self.entitlements is not None:
+            await session.get(
+                PlayerRecord, owner_player_id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
         existing = await self._request_row(session, idempotency_key)
         if existing is not None:
             if existing.owner_player_id != owner_player_id:
@@ -398,9 +404,7 @@ class AnalysisService:
                 await self.source_loader.authorize_in_session(session, owner_player_id, row.source)
             artifact = None
             if row.status in REQUEST_ACTIVE_STATUSES:
-                artifact = await session.get(
-                    TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
-                )
+                artifact = await session.get(TrainingAnalysisArtifactRecord, row.artifact_id)
                 if artifact is not None:
                     await self._reconcile_artifact(session, artifact, moment)
                     await session.refresh(row)
@@ -435,8 +439,13 @@ class AnalysisService:
             row = await self._request_row(session, request_id)
             if row is None or row.owner_player_id != owner_player_id:
                 return False
+            await session.get(
+                PlayerRecord, owner_player_id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
             artifact = await session.get(
-                TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
+                TrainingAnalysisArtifactRecord, row.artifact_id,
+                with_for_update={"key_share": True}, populate_existing=True,
             )
             await session.refresh(row)
             if row.status not in REQUEST_ACTIVE_STATUSES:
@@ -486,7 +495,8 @@ class AnalysisService:
         generation = int(payload.get("generation", 1))
         async with self.database.transaction() as session:
             artifact = await session.get(
-                TrainingAnalysisArtifactRecord, artifact_id, with_for_update=True
+                TrainingAnalysisArtifactRecord, artifact_id,
+                with_for_update={"key_share": True}, populate_existing=True,
             )
             if artifact is None:
                 raise LookupError(f"Analysis artifact {artifact_id} is missing")
@@ -597,7 +607,8 @@ class AnalysisService:
         except Exception:
             async with self.database.transaction() as session:
                 artifact = await session.get(
-                    TrainingAnalysisArtifactRecord, artifact_id, with_for_update=True
+                    TrainingAnalysisArtifactRecord, artifact_id,
+                    with_for_update={"key_share": True}, populate_existing=True,
                 )
                 if artifact is not None and artifact.lease_token == lease_token:
                     artifact.provider_request_ids = self._provider_request_ids()
@@ -956,7 +967,14 @@ class AnalysisService:
         moment: datetime,
     ) -> None:
         """Fence stale computations whose durable job can no longer finish."""
-        await session.refresh(artifact, with_for_update=True)
+        artifact = await session.scalar(
+            select(TrainingAnalysisArtifactRecord)
+            .where(TrainingAnalysisArtifactRecord.id == artifact.id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        if artifact is None:
+            return
         if artifact.status not in ("pending", "running"):
             await self._complete_requests(
                 session, artifact.id, artifact.status, artifact.last_error, moment
@@ -1118,7 +1136,7 @@ class AnalysisService:
         record = await session.scalar(
             select(TrainingAnalysisArtifactRecord).where(
                 TrainingAnalysisArtifactRecord.artifact_key == key
-            ).with_for_update().execution_options(populate_existing=True)
+            ).with_for_update(key_share=True).execution_options(populate_existing=True)
         )
         if record is not None:
             return record
@@ -1130,7 +1148,7 @@ class AnalysisService:
         record = await session.scalar(
             select(TrainingAnalysisArtifactRecord).where(
                 TrainingAnalysisArtifactRecord.artifact_key == key
-            ).with_for_update().execution_options(populate_existing=True)
+            ).with_for_update(key_share=True).execution_options(populate_existing=True)
         )
         assert record is not None
         return record
@@ -1187,7 +1205,9 @@ class AnalysisService:
                                 )
                                 .exists(),
                             )
+                            .order_by(TrainingAnalysisArtifactRecord.id)
                             .limit(limit)
+                            .with_for_update(skip_locked=True)
                         )
                     )
                     .scalars()

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select
+from sqlalchemy import String, delete, func, or_, select, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -518,12 +518,14 @@ class KnowledgeApplication:
                     comment=comment,
                 )
                 row = await session.get(KnowledgeDissectionRecord, view.request_id)
-                if row.analysis_request_id and row.status != "failed":
-                    return {
-                        "request_id": row.analysis_request_id,
-                        "dissection_id": row.id,
-                        "status": row.status,
-                    }
+                if row.analysis_request_id:
+                    await self._apply_ready(session, row)
+                    if row.status != "failed" or row.application is not None:
+                        return {
+                            "request_id": row.analysis_request_id,
+                            "dissection_id": row.id,
+                            "status": row.status,
+                        }
                 typed = DissectionSource(
                     version_id, tuple(q.revision_id for q in source.questions), language=language
                 )
@@ -557,6 +559,7 @@ class KnowledgeApplication:
             if row is not None:
                 row.status = "pending"
                 row.analysis_request_id = result.request_id
+                row.status = "pending"
                 await self._apply_ready(session, row)
             return {**asdict(result), "dissection_id": row.id if row else None}
 
@@ -666,26 +669,39 @@ class KnowledgeApplication:
             await self._schedule_statistics(session, row.owner_id, fact_id, 1)
 
     async def reconcile(self):
-        async with self.database.transaction() as session:
-            rows = list(
-                await session.scalars(
-                    select(KnowledgeDissectionRecord)
-                    .where(
-                        KnowledgeDissectionRecord.status == "pending",
-                        KnowledgeDissectionRecord.analysis_request_id.is_not(None),
-                    )
-                    .order_by(KnowledgeDissectionRecord.created_at)
-                    .limit(100)
-                    .with_for_update(skip_locked=True)
+        async with self.database.sessions() as session:
+            rows = list(await session.execute(
+                select(KnowledgeDissectionRecord.id, KnowledgeDissectionRecord.owner_id,
+                       KnowledgeDissectionRecord.packet_revision)
+                .where(
+                    KnowledgeDissectionRecord.status == "pending",
+                    KnowledgeDissectionRecord.analysis_request_id.is_not(None),
                 )
-            )
-            for row in rows:
+                .order_by(KnowledgeDissectionRecord.created_at)
+                .limit(100)
+            ))
+        for candidate in rows:
+            async with self.database.transaction() as session:
                 try:
-                    await self.packets.lock_access(session, row.owner_id, UUID(row.packet_revision))
-                    await require_trainee(session, row.owner_id, lock=True)
-                    await self._apply_ready(session, row)
+                    await self.packets.lock_access(
+                        session, candidate.owner_id, UUID(candidate.packet_revision)
+                    )
+                    await require_trainee(session, candidate.owner_id, lock=True)
+                    row = await session.scalar(
+                        select(KnowledgeDissectionRecord)
+                        .where(KnowledgeDissectionRecord.id == candidate.id,
+                               KnowledgeDissectionRecord.status == "pending")
+                        .with_for_update(skip_locked=True)
+                    )
+                    if row is not None:
+                        await self._apply_ready(session, row)
                 except (LookupError, PermissionError):
-                    row.status = "failed"
+                    await session.execute(
+                        update(KnowledgeDissectionRecord)
+                        .where(KnowledgeDissectionRecord.id == candidate.id,
+                               KnowledgeDissectionRecord.status == "pending")
+                        .values(status="failed")
+                    )
 
     async def analysis_job(self, payload):
         from sitg_bot.services.training_ai import (
@@ -708,9 +724,12 @@ class KnowledgeApplication:
                 artifact = await session.get(
                     TrainingAnalysisArtifactRecord,
                     UUID(payload["artifact_id"]),
-                    with_for_update=True,
+                    with_for_update={"key_share": True}, populate_existing=True,
                 )
-                if artifact is not None and artifact.status == "running":
+                if (
+                    artifact is not None and artifact.status == "running"
+                    and artifact.generation == int(payload.get("generation", 1))
+                ):
                     await self.analysis._fail_artifact(
                         session, artifact, str(error), datetime.now(UTC)
                     )
@@ -720,9 +739,12 @@ class KnowledgeApplication:
                 artifact = await session.get(
                     TrainingAnalysisArtifactRecord,
                     UUID(payload["artifact_id"]),
-                    with_for_update=True,
+                    with_for_update={"key_share": True}, populate_existing=True,
                 )
-                if artifact is not None and artifact.status == "running":
+                if (
+                    artifact is not None and artifact.status == "running"
+                    and artifact.generation == int(payload.get("generation", 1))
+                ):
                     artifact.lease_expires_at = datetime.now(UTC)
             raise
         await self.reconcile()
@@ -736,6 +758,10 @@ class KnowledgeApplication:
                     packet_id, owner = (
                         UUID(event.payload["packet_id"]),
                         UUID(event.payload["owner_id"]),
+                    )
+                    await session.get(
+                        PlayerRecord, owner,
+                        with_for_update={"key_share": True}, populate_existing=True,
                     )
                     packet = await session.get(LogicalPacketRecord, packet_id)
                     if packet is None or packet.retired_at is None or packet.scope != "training":
@@ -760,8 +786,13 @@ class KnowledgeApplication:
                             .distinct()
                         )
                     )
-                    for artifact in artifacts:
-                        await session.refresh(artifact, with_for_update=True)
+                    for artifact in sorted(artifacts, key=lambda item: item.id):
+                        artifact = await session.get(
+                            TrainingAnalysisArtifactRecord, artifact.id,
+                            with_for_update={"key_share": True}, populate_existing=True,
+                        )
+                        if artifact is None:
+                            continue
                         await self.analysis._complete_requests(
                             session, artifact.id, "cancelled", "Source retired", datetime.now(UTC)
                         )
@@ -787,9 +818,9 @@ class KnowledgeApplication:
                 )
 
     async def reconcile_requests(self):
-        async with self.database.transaction() as session:
-            rows = await session.scalars(
-                select(TrainingAnalysisArtifactRecord)
+        async with self.database.sessions() as session:
+            ids = list(await session.scalars(
+                select(TrainingAnalysisArtifactRecord.id)
                 .where(or_(
                     TrainingAnalysisArtifactRecord.status.in_(("pending", "running")),
                     select(TrainingAnalysisRequestRecord.id).where(
@@ -799,9 +830,12 @@ class KnowledgeApplication:
                 ))
                 .order_by(TrainingAnalysisArtifactRecord.created_at)
                 .limit(100)
-            )
-            for artifact in rows:
-                await self.analysis._reconcile_artifact(session, artifact, datetime.now(UTC))
+            ))
+        for artifact_id in ids:
+            async with self.database.transaction() as session:
+                artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+                if artifact is not None:
+                    await self.analysis._reconcile_artifact(session, artifact, datetime.now(UTC))
 
     async def statistics_job(self, payload):
         unavailable_status = "unavailable"

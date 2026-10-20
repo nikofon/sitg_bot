@@ -370,6 +370,32 @@ async def test_waiter_registration_serializes_with_terminal_completion(
     }
 
 
+async def test_stale_reconciliation_cannot_fail_a_replacement_generation(database):
+    owner_a = await create_player(database, 9211, "generation-a")
+    owner_b = await create_player(database, 9212, "generation-b")
+    stack = await make_stack(database, [owner_a, owner_b])
+    revision_id = stack.loader.add("An explicitly retried shared fact.")
+    source = DissectionSource(uuid4(), (revision_id,))
+    await submit(stack.service, owner_a, source, "generation-first")
+    artifact_id = await artifact_id_of(database, "generation-first")
+    async with database.transaction() as session:
+        stale = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        assert stale.generation == 1 and stale.status == "pending"
+        assert await stack.service.cancel(owner_player_id=owner_a, request_id="generation-first")
+        await submit(stack.service, owner_b, source, "generation-replacement")
+        await stack.service._reconcile_artifact(session, stale, datetime.now(UTC))
+        assert stale.generation == 2 and stale.status == "pending"
+    async with database.sessions() as session:
+        replacement = await stack.service._request_row(session, "generation-replacement")
+        assert replacement.status == "queued" and replacement.completed_at is None
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert sum(row.reserved for row in periods) == 1
+        assert sum(row.settled for row in periods) == 0
+    assert await stack.worker.run_once() == 1
+    result = await stack.service.result(owner_player_id=owner_b, request_id="generation-replacement")
+    assert result is not None and len(result["candidates"]) == 1
+
+
 async def test_custom_instructions_and_owners_isolate_artifacts(database):
     owner_a = await create_player(database, 204, "custom-a")
     owner_b = await create_player(database, 205, "custom-b")
