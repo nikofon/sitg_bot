@@ -9,23 +9,41 @@ messages with authenticated inline navigation.
 
 from __future__ import annotations
 
-from html import escape
+from dataclasses import replace
+from html import escape, unescape
 from typing import Protocol
 from uuid import UUID
 
 from aiogram import Router
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.presenters.game import plain_chunks
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
     InlineKeyboardModel,
     MessageModel,
 )
-from sitg_bot.bot.presenters.render import send_message_model
+from sitg_bot.bot.presenters.render import send_message_model as _send_message_model
 from sitg_bot.domain.knowledge import FACT_PAGE_SIZE
 
 router = Router(name=__name__)
+
+
+async def send_message_model(message: Message, model: MessageModel) -> None:
+    """Knowledge projections contain escaped plain text, not HTML markup."""
+    chunks = list(plain_chunks(unescape(model.text)))
+    for index, chunk in enumerate(chunks):
+        await _send_message_model(
+            message,
+            replace(
+                model,
+                text=chunk,
+                keyboard=model.keyboard if index == len(chunks) - 1 else None,
+            ),
+        )
+
 
 FACTS_CALLBACK_PREFIX = "klib"
 STATISTIC_LABELS = {
@@ -238,6 +256,7 @@ def _error_message(
     return MessageModel(localization.text("knowledge.error.invalid", locale))
 
 
+@router.message(Command("facts"))
 async def handle_facts(
     message: Message,
     knowledge_backend: KnowledgeBackend,
@@ -300,3 +319,161 @@ async def handle_knowledge_callback(
         await callback.answer(localization.text("knowledge.error.not_found", locale))
         return
     await _answer_callback(callback, model)
+
+
+@router.message(
+    Command(
+        "factadd",
+        "factedit",
+        "factdelete",
+        "factmerge",
+        "factshare",
+        "factrevoke",
+        "factgrants",
+        "tagadd",
+        "tagrename",
+        "tagdelete",
+        "dissect",
+        "bestbuzz",
+        "analysis",
+        "analysiscancel",
+        "traininglimits",
+        "sharedfacts",
+    )
+)
+async def handle_knowledge_command(
+    message: Message, backend, knowledge_backend, localization, locale, telegram_update_claim
+):
+    import html
+    import json
+
+    from sitg_bot.application.contracts import (
+        ActionCode,
+        AnalysisStatusOperation,
+        KnowledgeDeleteOperation,
+        KnowledgeMergeOperation,
+        KnowledgeSaveOperation,
+        KnowledgeSharingOperation,
+        KnowledgeTagOperation,
+        PacketAnalysisOperation,
+        TrainingEntitlementsOperation,
+    )
+    from sitg_bot.bot.state import GatewayCallError
+
+    command, _, args = (message.text or "").partition(" ")
+    command = command.split("@")[0].lstrip("/")
+    try:
+        if command == "sharedfacts":
+            page = await knowledge_backend.facts_page(telegram_update_claim)
+            await send_message_model(message, facts_message(page, localization, locale))
+            return
+        if command in ("factadd", "factedit"):
+            content = args
+            values = {}
+            if command == "factedit":
+                identity, version, content = args.split(" ", 2)
+                values = {"fact_id": UUID(identity), "expected_version": int(version)}
+            fields = content.split(" | ")
+            if len(fields) < 2:
+                raise ValueError("Use title | description | tags | URLs")
+            operation = KnowledgeSaveOperation(
+                action=ActionCode.KNOWLEDGE_CREATE
+                if command == "factadd"
+                else ActionCode.KNOWLEDGE_UPDATE,
+                title=fields[0],
+                description=fields[1],
+                tag_names=[tag.strip() for tag in fields[2].split(",") if tag.strip()]
+                if len(fields) > 2
+                else [],
+                links=[
+                    {"url": url, "position": index} for index, url in enumerate(fields[3].split())
+                ]
+                if len(fields) > 3
+                else [],
+                **values,
+            )
+        elif command == "factdelete":
+            identity, _, confirm = args.partition(" ")
+            operation = KnowledgeDeleteOperation(
+                action=ActionCode.KNOWLEDGE_DELETE,
+                fact_id=UUID(identity),
+                confirm_dissection_origin=confirm == "confirm",
+            )
+        elif command == "factmerge":
+            source, target, version, *flags = args.split()
+            operation = KnowledgeMergeOperation(
+                action=ActionCode.KNOWLEDGE_MERGE,
+                source_fact_id=UUID(source),
+                target_fact_id=UUID(target),
+                expected_target_version=int(version),
+                confirm_source_delete="confirm" in flags,
+            )
+        elif command == "factgrants":
+            operation = KnowledgeSharingOperation(action=ActionCode.KNOWLEDGE_SHARING)
+        elif command == "factrevoke":
+            await message.answer(localization.text("knowledge.sharing.permanent", locale))
+            return
+        elif command == "factshare":
+            operation = KnowledgeSharingOperation(
+                action=ActionCode.KNOWLEDGE_GRANT,
+                recipient=args,
+            )
+        elif command in ("tagadd", "tagrename", "tagdelete"):
+            values = {}
+            if command != "tagadd":
+                identity, _, args = args.partition(" ")
+                values["tag_id"] = UUID(identity)
+            operation = KnowledgeTagOperation(
+                action={
+                    "tagadd": ActionCode.KNOWLEDGE_TAG_CREATE,
+                    "tagrename": ActionCode.KNOWLEDGE_TAG_RENAME,
+                    "tagdelete": ActionCode.KNOWLEDGE_TAG_DELETE,
+                }[command],
+                name=args if command != "tagdelete" else None,
+                **values,
+            )
+        elif command in ("dissect", "bestbuzz"):
+            identity, _, instructions = args.partition(" ")
+            confirm = instructions == "confirm" or instructions.startswith("confirm ")
+            if confirm:
+                instructions = instructions.removeprefix("confirm").removeprefix(" ")
+            operation = PacketAnalysisOperation(
+                action=ActionCode.KNOWLEDGE_DISSECT
+                if command == "dissect"
+                else ActionCode.BEST_BUZZ_PREPARE,
+                version_id=UUID(identity),
+                instructions=instructions,
+                confirm_exposure=confirm,
+            )
+        elif command == "traininglimits":
+            operation = TrainingEntitlementsOperation(action=ActionCode.TRAINING_ENTITLEMENTS)
+        else:
+            operation = AnalysisStatusOperation(
+                action=ActionCode.ANALYSIS_STATUS
+                if command == "analysis"
+                else ActionCode.ANALYSIS_CANCEL,
+                request_id=args.strip(),
+            )
+        response = await backend._execute(telegram_update_claim, operation)
+        if isinstance(response.data, dict) and response.data.get("confirmation_required"):
+            await message.answer(localization.text("knowledge.confirm_exposure", locale))
+            return
+        if (
+            isinstance(response.data, dict)
+            and "title" in response.data
+            and "description" in response.data
+        ):
+            await send_message_model(
+                message, fact_detail_message(response.data, localization, locale)
+            )
+            await message.answer(f"ID: {response.data['id']} · v{response.data['content_version']}")
+            return
+        # Identifiers in command results are needed for subsequent edits/status reads.
+        from sitg_bot.bot.presenters.game import plain_chunks
+
+        for chunk in plain_chunks(json.dumps(response.data, ensure_ascii=False, indent=2)):
+            await message.answer(html.escape(chunk))
+    except GatewayCallError as error:
+        await message.answer(localization.text(error.error.message_key, locale))
+    except (ValueError, LookupError, PermissionError):
+        await message.answer(localization.text("knowledge.error.invalid", locale))

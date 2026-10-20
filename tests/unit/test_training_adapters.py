@@ -1,20 +1,56 @@
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+from aiogram.dispatcher.event.bases import UNHANDLED
+from aiogram.types import Chat, Message
 from aiohttp.test_utils import make_mocked_request
 from pydantic import ValidationError
 from test_miniapp_http import FakeAuth, FakeGateway
 from test_telegram_frontend import navigation
 
 from sitg_bot.application.contracts import ActionCode
-from sitg_bot.bot.handlers.training import handle_training_action
+from sitg_bot.bot.handlers.training import handle_training_action, router
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.miniapp_http import MiniAppHttpServer
+
+
+@pytest.mark.parametrize("text", ["/facts", "/fact_create Title", "/unknown"])
+@pytest.mark.parametrize("answering", [False, True])
+async def test_training_answer_routing_leaves_commands_unhandled(text, answering):
+    backend = SimpleNamespace(_execute=AsyncMock(return_value=SimpleNamespace(data={
+        "session": {"phase": "answering"} if answering else None,
+    })))
+    result = await router.propagate_event(
+        "message", Message(message_id=1, date=datetime.now(UTC),
+                           chat=Chat(id=1, type="private"), text=text),
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+        backend=backend, telegram_update_claim=object(),
+        localization=LocalizationService(), locale="en",
+    )
+    assert result is UNHANDLED
+    backend._execute.assert_not_awaited()
+
+
+async def test_training_answer_routing_still_submits_non_command_text():
+    state = {"id": str(UUID(int=1)), "phase": "answering", "version": 2,
+             "question_revision_id": str(UUID(int=2))}
+    backend = SimpleNamespace(_execute=AsyncMock(return_value=SimpleNamespace(data={"session": state})))
+    await router.propagate_event(
+        "message", Message(message_id=1, date=datetime.now(UTC),
+                           chat=Chat(id=1, type="private"), text="ordinary answer"),
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+        backend=backend, telegram_update_claim=object(),
+        localization=LocalizationService(), locale="en",
+    )
+    operation = backend._execute.await_args.args[1]
+    assert operation.action == ActionCode.TRAINING_ACT
+    assert operation.answer == "ordinary answer"
 
 
 def test_training_menu_recovers_even_with_a_finished_normal_game_view():

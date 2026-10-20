@@ -16,6 +16,8 @@ export default defineConfig(({ mode }) => {
       },
     },
     test: {
+      // Exercise the actual stylesheet in Knowledge visibility regressions.
+      css: { include: /styles\.css/ },
       environment: "jsdom",
       include: ["src/**/*.test.ts"],
       restoreMocks: true,

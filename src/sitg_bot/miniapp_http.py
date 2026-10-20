@@ -540,10 +540,7 @@ class MiniAppHttpServer:
             _, dissections = await self._query(
                 request, KnowledgeDissectionsOperation(action=ActionCode.KNOWLEDGE_DISSECTIONS)
             )
-            _, packets = await self._query(
-                request, TrainingPacketListOperation(action=ActionCode.TRAINING_PACKETS)
-            )
-            for part in (sharing, dissections, packets):
+            for part in (sharing, dissections):
                 if not part.ok:
                     return self._gateway_response(part)
             return web.json_response(
@@ -557,8 +554,8 @@ class MiniAppHttpServer:
                         "sharing": sharing.data,
                         "dissection": {
                             "requests": dissections.data["items"],
-                            "packets": packets.data["items"],
-                            "next_cursor": packets.data["next_cursor"],
+                            "packets": [],
+                            "next_cursor": None,
                         },
                     },
                 }

@@ -96,6 +96,36 @@ async def test_registered_reads_require_session_and_do_not_mutate(path):
         assert len(gateway.requests) == 1
 
 
+async def test_knowledge_route_defers_packet_catalogue_until_explicit_read():
+    class KnowledgeGateway(FakeGateway):
+        async def execute(self, principal, request):
+            result = await super().execute(principal, request)
+            payloads = {
+                ActionCode.KNOWLEDGE_FACTS: {"items": [], "total": 0},
+                ActionCode.KNOWLEDGE_SHARING: {"grants": [], "links": []},
+                ActionCode.KNOWLEDGE_DISSECTIONS: {"items": []},
+                ActionCode.TRAINING_PACKETS: {"items": [], "next_cursor": None},
+            }
+            return result.model_copy(update={"data": payloads[request.operation.action]})
+
+    auth, gateway = BoundaryAuth(), KnowledgeGateway()
+    http = MiniAppHttpServer(auth, gateway)
+    async with TestClient(TestServer(http.application)) as client:
+        response = await client.get(
+            "/api/miniapp/routes/resolve", params={"path": "/knowledge"}, headers=HEADERS,
+        )
+        assert response.status == 200
+        assert (await response.json())["resource"]["dissection"]["packets"] == []
+        assert [request.operation.action for request in gateway.requests] == [
+            ActionCode.KNOWLEDGE_FACTS, ActionCode.KNOWLEDGE_SHARING,
+            ActionCode.KNOWLEDGE_DISSECTIONS,
+        ]
+        response = await client.get("/api/miniapp/training/packets", headers=HEADERS)
+        assert response.status == 200
+        assert gateway.requests[-1].operation.action == ActionCode.TRAINING_PACKETS
+        assert all(call["method"] == "GET" for call in auth.calls)
+
+
 async def test_import_never_mutates_on_get_or_without_csrf_or_with_actor_override():
     auth, gateway = BoundaryAuth(), FakeGateway()
     http = MiniAppHttpServer(auth, gateway)

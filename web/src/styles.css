@@ -1830,3 +1830,427 @@ p {
     gap: 0.4rem;
   }
 }
+
+/* Knowledge library mini app (namespaced: knowledge-*) */
+.knowledge-library {
+  display: grid;
+  gap: 1rem;
+}
+
+.knowledge-title {
+  margin: 0;
+}
+
+.knowledge-tabs {
+  margin-block: 0.25rem;
+}
+
+.knowledge-tab {
+  flex: 1 1 auto;
+}
+
+.knowledge-panel {
+  display: grid;
+  gap: 1rem;
+  margin-block: 0.25rem;
+}
+
+.knowledge-panel[hidden] {
+  display: none;
+}
+
+/* One clearly distinct "bubble" for search/sort/filter controls. */
+.knowledge-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  border-radius: 1rem;
+  background: var(--tg-theme-section-bg-color);
+  box-shadow: 0 0.5rem 1.8rem color-mix(in srgb, var(--tg-theme-text-color) 6%, transparent);
+}
+
+.knowledge-controls label,
+.knowledge-controls select,
+.knowledge-controls input {
+  min-width: 0;
+}
+
+.knowledge-controls select {
+  flex: 1 1 10rem;
+}
+
+.knowledge-controls input[type="search"],
+.knowledge-controls input[type="text"] {
+  flex: 2 1 12rem;
+}
+
+.knowledge-controls fieldset {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.knowledge-controls > button {
+  flex: 1 1 auto;
+}
+
+.knowledge-controls .lobby-packet-year-range {
+  border-color: color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  background: color-mix(in srgb, var(--tg-theme-section-bg-color) 92%, var(--tg-theme-bg-color));
+}
+
+.knowledge-library-actions {
+  margin: 0;
+}
+
+.knowledge-total {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed fact cards: only the name is shown until expanded. */
+.knowledge-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.knowledge-fact {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-fact-header {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border: 0;
+  border-radius: 0.9rem;
+  background: transparent;
+  color: var(--tg-theme-text-color);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.knowledge-fact-title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+.knowledge-fact-chevron {
+  color: var(--tg-theme-hint-color);
+  transition: transform 0.15s ease;
+}
+
+.knowledge-fact-header[aria-expanded="true"] .knowledge-fact-chevron {
+  transform: rotate(180deg);
+}
+
+.knowledge-fact-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.25rem 1rem 1rem;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 18%, transparent);
+}
+
+.knowledge-fact-body[hidden] {
+  display: none;
+}
+
+.knowledge-fact-body > *,
+.knowledge-fact-body ul {
+  margin: 0;
+}
+
+.knowledge-fact-description {
+  white-space: pre-line;
+}
+
+.knowledge-fact-links {
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.knowledge-fact-meta {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+  font-size: 0.9rem;
+}
+
+.knowledge-readonly {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.knowledge-fact-body .settings-actions {
+  margin: 0.25rem 0 0;
+}
+
+/* Combined tag-colour outline: a thin gradient ring around tagged cards. */
+.knowledge-fact-tagged {
+  border: 0;
+  padding: 2px;
+  background: var(--knowledge-tag-border, var(--tg-theme-section-bg-color));
+}
+
+.knowledge-fact-tagged > * {
+  border-radius: calc(1rem - 3px);
+  background: var(--tg-theme-section-bg-color);
+}
+
+.knowledge-fact-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.knowledge-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: 99rem;
+  background: color-mix(in srgb, currentColor 10%, var(--tg-theme-section-bg-color));
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.knowledge-tag-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.knowledge-tag-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.knowledge-tag-button {
+  min-height: 1.9rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.6rem;
+  font-size: 0.85rem;
+}
+
+.knowledge-tag-select {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  border-radius: 1rem;
+}
+
+.knowledge-tag-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.knowledge-tag-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.knowledge-tag-options p {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+}
+
+/* Share/import dialogs */
+.tournament-dialog.knowledge-dialog {
+  display: grid;
+  gap: 0.85rem;
+}
+
+dialog[open].knowledge-dialog {
+  display: grid;
+}
+
+.knowledge-dialog-body {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.knowledge-dialog-body h3 {
+  margin: 0;
+}
+
+.knowledge-dialog-body .settings-form {
+  margin: 0;
+}
+
+.knowledge-link-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.knowledge-link-row {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.85rem;
+}
+
+.knowledge-link-url-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.knowledge-link-url {
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--tg-theme-section-bg-color) 92%, var(--tg-theme-bg-color));
+  color: var(--tg-theme-link-color);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-link-row > button {
+  justify-self: start;
+}
+
+.knowledge-link-state {
+  color: var(--tg-theme-hint-color);
+  font-weight: 700;
+}
+
+.knowledge-link-list-inactive {
+  opacity: 0.75;
+}
+
+.knowledge-grant-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.knowledge-share-legacy {
+  padding-top: 0.6rem;
+  border-top: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 18%, transparent);
+}
+
+.knowledge-share-legacy summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.knowledge-share-legacy > * {
+  margin-block: 0.6rem;
+}
+
+.knowledge-share-legacy h4 {
+  margin-block: 0.6rem 0.2rem;
+}
+
+.knowledge-share-legacy .knowledge-controls {
+  box-shadow: none;
+}
+
+/* Packets tab */
+.knowledge-packet-card h3 {
+  font-size: 1.02rem;
+}
+
+.knowledge-scope-badge,
+.knowledge-dissected-badge {
+  justify-self: start;
+  padding: 0.18rem 0.65rem;
+  border-radius: 99rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.knowledge-scope-badge {
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 35%, transparent);
+  color: var(--tg-theme-hint-color);
+}
+
+.knowledge-dissected-badge {
+  border: 0;
+  background: color-mix(in srgb, var(--tg-theme-button-color) 16%, transparent);
+  color: var(--tg-theme-link-color);
+}
+
+.knowledge-jobs-section {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.5rem;
+}
+
+.knowledge-jobs-section h3 {
+  margin: 0;
+}
+
+.knowledge-jobs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.knowledge-job {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 0.85rem;
+}
+
+.knowledge-job > button {
+  min-height: 2.1rem;
+  padding: 0.25rem 0.7rem;
+  margin-left: auto;
+}
+
+.knowledge-dissection-status {
+  color: var(--tg-theme-hint-color);
+  font-weight: 700;
+}
+
+.knowledge-dissection-warning {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #d5a321;
+  border-radius: 0.75rem;
+  background: #fff0b3;
+  color: #664d03;
+  font-weight: 600;
+}
+
+.knowledge-back {
+  justify-self: start;
+}
+
+.knowledge-empty {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+}
