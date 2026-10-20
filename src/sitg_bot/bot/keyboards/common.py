@@ -129,6 +129,10 @@ def navigation_keyboard(
     )
     if navigation.active_mode == "player" and navigation.context in {"lobby", "lobby_other"}:
         layout = LOBBY_ACTIONS
+    if navigation.active_mode == "training" and navigation.context == "training_lobby":
+        layout = (("training.settings",), ("training.start",), ("training.quit",))
+    elif navigation.active_mode == "training" and navigation.context == "training":
+        layout = (("training.quit",),)
     if navigation.context == "game":
         return ReplyKeyboardModel(rows=(("+",), ("||", "!")), persistent=True)
     allowed = set(navigation.allowed_actions)
@@ -144,7 +148,15 @@ def navigation_keyboard(
                         descriptor.descriptor_version,
                     )
     rows = tuple(
-        tuple(localization.text(f"button.{action}", locale) for action in row if action in allowed)
+        tuple(
+            localization.text(
+                "button.training.mode_switch"
+                if navigation.active_mode == "training" and action == "mode.switch"
+                else f"button.{action}",
+                locale,
+            )
+            for action in row if action in allowed
+        )
         for row in layout
     )
     return ReplyKeyboardModel(rows=tuple(row for row in rows if row))

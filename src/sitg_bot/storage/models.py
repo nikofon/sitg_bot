@@ -78,6 +78,10 @@ class PlayerRecord(Base, TimestampMixin):
     reputation: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     suspicion: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     game_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    training_lobby: Mapped[dict | None] = mapped_column(JSONB)
+    training_lobby_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="registration", server_default=text("'registration'")
     )

@@ -677,7 +677,15 @@ export interface TrainingSession {
   outcome?: string | null;
 }
 
+export interface TrainingLobby {
+  version: number;
+  version_id: string | null;
+  packet_name: string | null;
+  settings: Record<string, unknown>;
+}
+
 export interface TrainingResult {
+  lobby?: TrainingLobby | null;
   session?: TrainingSession | null;
   confirmation_required?: boolean;
   fresh_unit_count?: number;

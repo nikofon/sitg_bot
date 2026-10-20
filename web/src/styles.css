@@ -1026,6 +1026,16 @@ p {
   min-width: 0;
 }
 
+.training-lobby .stack {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.training-lobby [hidden] {
+  display: none;
+}
+
 .lobby-tournament-title {
   margin-block: 0.75rem 1rem;
   padding-block: 0.5rem;

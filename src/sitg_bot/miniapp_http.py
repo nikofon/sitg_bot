@@ -102,6 +102,7 @@ from sitg_bot.application.contracts import (
     TrainingCurrentOperation,
     TrainingDraftDecideOperation,
     TrainingEntitlementsOperation,
+    TrainingLobbyOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
     TrainingStartOperation,
@@ -1832,6 +1833,7 @@ class MiniAppHttpServer:
 
     async def _training_mutation(self, request: web.Request) -> web.Response:
         contracts = {
+            "lobby": (TrainingLobbyOperation, ActionCode.TRAINING_LOBBY),
             "start": (TrainingStartOperation, ActionCode.TRAINING_START),
             "act": (TrainingActOperation, ActionCode.TRAINING_ACT),
             "upload": (TrainingUploadOperation, ActionCode.TRAINING_UPLOAD),

@@ -237,7 +237,7 @@ async def handle_language_callback(
         )
 
 
-@router.message(F.text.in_({"Сменить режим", "Switch mode"}))
+@router.message(F.text.in_({"Сменить режим", "Switch mode", "Change mode"}))
 async def handle_mode_prompt(
     message: Message,
     localization: LocalizationService,

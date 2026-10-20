@@ -1,24 +1,33 @@
+"""Keyboard-driven solo training lobby and question controls."""
+
 import base64
 from uuid import UUID
 
 from aiogram import F, Router
-from aiogram.filters import Command, Filter
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.filters import Filter, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from sitg_bot.application.contracts import (
     ActionCode,
     TrainingActOperation,
     TrainingCurrentOperation,
     TrainingDraftDecideOperation,
-    TrainingPacketListOperation,
+    TrainingLobbyOperation,
     TrainingStartOperation,
     TrainingUploadOperation,
     TrainingViewOperation,
 )
 from sitg_bot.bot.miniapps import mini_app_route_url
-from sitg_bot.bot.presenters.game import plain_chunks
+from sitg_bot.bot.presenters.common import menu_message
+from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import GatewayCallError
-from sitg_bot.domain.training import TrainingSettings
+from sitg_bot.bot.state.settings import TrainingUploadState
 
 router = Router(name=__name__)
 
@@ -27,7 +36,14 @@ class TrainingMenuAction(Filter):
     async def __call__(self, message, navigation, localization):
         if navigation is None or navigation.active_mode != "training" or not message.text:
             return False
-        for action in ("training.train", "training.upload", "training.knowledge"):
+        for action in (
+            "training.train",
+            "training.upload",
+            "training.knowledge",
+            "training.settings",
+            "training.start",
+            "training.quit",
+        ):
             if action in navigation.allowed_actions and any(
                 message.text == localization.text(f"button.{action}", locale)
                 for locale in localization.catalogs
@@ -40,61 +56,59 @@ async def call(backend, claim, operation):
     return (await backend._execute(claim, operation)).data
 
 
-async def packets(message, backend, claim, localization, locale, cursor=None):
-    result = await call(
-        backend,
-        claim,
-        TrainingPacketListOperation(
-            action=ActionCode.TRAINING_PACKETS,
-            cursor=cursor,
+async def show_menu(message, backend, claim, localization, locale):
+    navigation = await backend.navigation(claim)
+    # Reply-keyboard WebApps receive no signed initData. Keep this a text action;
+    # the settings handler supplies the authenticated inline WebApp launch.
+    await send_message_model(message, menu_message(navigation, localization, locale))
+
+
+async def open_app(message, localization, locale, base_url, action):
+    if not base_url:
+        await message.answer(localization.text("training.miniapp_unavailable", locale))
+        return
+    route = "knowledge" if action == "training.knowledge" else "training"
+    url = mini_app_route_url(base_url, route)
+    await message.answer(
+        localization.text(action, locale),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=localization.text(action, locale), web_app={"url": url})]
+            ]
         ),
     )
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=packet["name"][:100],
-                callback_data=f"ts:{UUID(packet['id']).hex}:0:0:0",
-            )
-        ]
-        for packet in result["items"]
-    ]
-    if result["next_cursor"]:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=localization.text("training.more", locale),
-                    callback_data=f"tp:{UUID(result['next_cursor']).hex}",
-                )
-            ]
-        )
-    await message.answer(
-        localization.text("training.help" if rows else "training.empty", locale),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+
+
+async def start_lobby(
+    message, backend, claim, localization, locale, *, confirm=False, expected_version=None
+):
+    result = await call(
+        backend, claim, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT)
     )
-
-
-async def start(message, backend, claim, localization, locale, version_id, settings, confirm=False):
+    lobby = result.get("lobby")
+    if not lobby or not lobby.get("version_id"):
+        await message.answer(localization.text("training.select_packet", locale))
+        return
+    version = expected_version if expected_version is not None else lobby["version"]
     result = await call(
         backend,
         claim,
         TrainingStartOperation(
             action=ActionCode.TRAINING_START,
-            version_id=version_id,
-            settings=settings.to_dict(),
+            version_id=UUID(lobby["version_id"]),
+            lobby_version=version,
             confirm=confirm,
         ),
     )
     if result.get("confirmation_required"):
-        data = f"tc:{version_id.hex}:{int(settings.reversed)}:{settings.hidden_after or 0}:"
-        data += str(int(settings.best_buzz))
         await message.answer(
             localization.text("training.confirm", locale),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text=localization.text("training.train", locale),
-                            callback_data=data,
+                            text=localization.text("button.training.start", locale),
+                            callback_data=f"tl:start:{version}",
                         )
                     ]
                 ]
@@ -102,55 +116,8 @@ async def start(message, backend, claim, localization, locale, version_id, setti
         )
     elif result.get("preparation"):
         await message.answer(localization.text("training.preparation_unavailable", locale))
-    # Successful starts are delivered by the transactional outbox.
-
-
-@router.message(Command("train"))
-async def handle_train(message: Message, backend, telegram_update_claim, localization, locale):
-    args = (message.text or "").split()[1:]
-    try:
-        if not args:
-            result = await call(
-                backend,
-                telegram_update_claim,
-                TrainingCurrentOperation(
-                    action=ActionCode.TRAINING_CURRENT,
-                ),
-            )
-            if result.get("session"):
-                state = result["session"]
-                navigation = await backend.navigation(telegram_update_claim)
-                await backend.training_delivery(
-                    {
-                        "owner_id": str(navigation.account.player_id),
-                        "session_id": state["id"],
-                        "force": True,
-                    }
-                )
-            else:
-                await packets(message, backend, telegram_update_claim, localization, locale)
-            return
-        options = {}
-        for option in args[1:]:
-            if option == "reverse":
-                options["reversed"] = True
-            elif option == "bestbuzz":
-                options["best_buzz"] = True
-            elif option.startswith("hidden="):
-                options["hidden_after"] = float(option.split("=", 1)[1])
-            else:
-                raise ValueError("Unknown training option")
-        await start(
-            message,
-            backend,
-            telegram_update_claim,
-            localization,
-            locale,
-            UUID(args[0]),
-            TrainingSettings(**options),
-        )
-    except (ValueError, GatewayCallError):
-        await message.answer(localization.text("training.unavailable", locale))
+    else:
+        await show_menu(message, backend, claim, localization, locale)
 
 
 @router.message(TrainingMenuAction())
@@ -161,89 +128,89 @@ async def handle_training_menu(
     localization,
     locale,
     training_action,
-    mini_app_base_url=None,
+    launch_links: str | None = None,
     knowledge_backend=None,
+    state: FSMContext | None = None,
 ):
-    if training_action == "training.train":
-        await handle_train(message, backend, telegram_update_claim, localization, locale)
-        return
-    if training_action == "training.knowledge":
-        from sitg_bot.bot.handlers.knowledge import facts_message
-        from sitg_bot.bot.knowledge_backend import KnowledgeTelegramBackend
-        from sitg_bot.bot.presenters.render import send_message_model
-
-        adapter = knowledge_backend or KnowledgeTelegramBackend(backend)
-        page = await adapter.facts_page(telegram_update_claim)
-        await send_message_model(message, facts_message(page, localization, locale))
-        if mini_app_base_url:
-            await message.answer(
-                localization.text("training.knowledge", locale),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text=localization.text("training.knowledge", locale),
-                                web_app={"url": mini_app_route_url(mini_app_base_url, "knowledge")},
-                            )
-                        ]
-                    ]
-                ),
+    try:
+        if state is not None:
+            await state.clear()
+        if training_action == "training.upload":
+            if state is None:
+                raise RuntimeError("Training upload conversation state is unavailable")
+            await state.set_state(TrainingUploadState.waiting_document)
+            await message.answer(localization.text("training.document_prompt", locale))
+        elif training_action == "training.train":
+            await call(
+                backend,
+                telegram_update_claim,
+                TrainingLobbyOperation(action=ActionCode.TRAINING_LOBBY, command="create"),
             )
-        return
-    if mini_app_base_url:
-        route = "training"
-        await message.answer(
-            localization.text(training_action, locale),
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=localization.text(training_action, locale),
-                            web_app={"url": mini_app_route_url(mini_app_base_url, route)},
-                        )
-                    ]
-                ]
-            ),
-        )
-    else:
-        await message.answer(localization.text("training.document_prompt", locale))
+            await show_menu(message, backend, telegram_update_claim, localization, locale)
+        elif training_action == "training.start":
+            await start_lobby(message, backend, telegram_update_claim, localization, locale)
+        elif training_action == "training.quit":
+            current = await call(
+                backend,
+                telegram_update_claim,
+                TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT),
+            )
+            if current.get("session"):
+                session_state = current["session"]
+                await call(
+                    backend,
+                    telegram_update_claim,
+                    TrainingActOperation(
+                        action=ActionCode.TRAINING_ACT,
+                        session_id=UUID(session_state["id"]),
+                        expected_version=session_state["version"],
+                        question_revision_id=UUID(session_state["question_revision_id"]),
+                        command="stop",
+                    ),
+                )
+            elif current.get("lobby"):
+                await call(
+                    backend,
+                    telegram_update_claim,
+                    TrainingLobbyOperation(
+                        action=ActionCode.TRAINING_LOBBY,
+                        command="quit",
+                        expected_version=current["lobby"]["version"],
+                    ),
+                )
+            await show_menu(message, backend, telegram_update_claim, localization, locale)
+        elif training_action == "training.knowledge" and not launch_links:
+            from sitg_bot.bot.handlers.knowledge import facts_message
+            from sitg_bot.bot.knowledge_backend import KnowledgeTelegramBackend
+
+            adapter = knowledge_backend or KnowledgeTelegramBackend(backend)
+            page = await adapter.facts_page(telegram_update_claim)
+            await send_message_model(message, facts_message(page, localization, locale))
+        else:
+            await open_app(
+                message,
+                localization,
+                locale,
+                launch_links,
+                training_action,
+            )
+    except (ValueError, GatewayCallError):
+        await message.answer(localization.text("training.unavailable", locale))
 
 
-@router.callback_query(F.data.startswith("tp:"))
-async def handle_training_page(
-    callback: CallbackQuery, backend, telegram_update_claim, localization, locale
-):
-    await callback.answer()
-    await packets(
-        callback.message,
-        backend,
-        telegram_update_claim,
-        localization,
-        locale,
-        UUID(callback.data.split(":", 1)[1]),
-    )
-
-
-@router.callback_query(F.data.startswith("ts:") | F.data.startswith("tc:"))
+@router.callback_query(F.data.startswith("tl:start:"))
 async def handle_training_start(
     callback: CallbackQuery, backend, telegram_update_claim, localization, locale
 ):
     try:
-        prefix, version, reversed_, hidden, best_buzz = callback.data.split(":")
-        settings = TrainingSettings(
-            reversed=bool(int(reversed_)),
-            hidden_after=float(hidden) or None,
-            best_buzz=bool(int(best_buzz)),
-        )
-        await start(
+        await start_lobby(
             callback.message,
             backend,
             telegram_update_claim,
             localization,
             locale,
-            UUID(version),
-            settings,
-            confirm=prefix == "tc",
+            confirm=True,
+            expected_version=int(callback.data.split(":")[-1]),
         )
         await callback.answer()
     except (ValueError, GatewayCallError):
@@ -259,10 +226,7 @@ async def handle_training_action(
         result = await call(
             backend,
             telegram_update_claim,
-            TrainingViewOperation(
-                action=ActionCode.TRAINING_VIEW,
-                session_id=UUID(identifier),
-            ),
+            TrainingViewOperation(action=ActionCode.TRAINING_VIEW, session_id=UUID(identifier)),
         )
         state = result["session"]
         await call(
@@ -276,6 +240,8 @@ async def handle_training_action(
                 command=command,
             ),
         )
+        if command == "stop":
+            await show_menu(callback.message, backend, telegram_update_claim, localization, locale)
         await callback.answer()
     except (ValueError, GatewayCallError):
         await callback.answer(localization.text("training.unavailable", locale), show_alert=True)
@@ -308,31 +274,76 @@ class TrainingContext(Filter):
         return navigation is not None and navigation.active_mode == "training"
 
 
-@router.message(TrainingContext(), F.document)
+@router.message(TrainingContext(), StateFilter(TrainingUploadState.waiting_document), F.document)
 async def handle_training_upload(
     message: Message, backend, telegram_update_claim, localization, locale
 ):
     document = message.document
-    if document.file_size is not None and document.file_size > 4 * 1024 * 1024:
-        await message.answer(localization.text("training.unavailable", locale))
+    assert document is not None
+    maximum_bytes = 4 * 1024 * 1024
+    filename = (document.file_name or "").strip()
+    if not filename.casefold().endswith((".docx", ".pdf", ".json")):
+        await message.answer(localization.text("training.file_invalid", locale))
+        return
+
+    async def too_large():
+        await message.answer(
+            localization.text("packet_upload.file_too_large", locale, maximum_mb=4)
+        )
+
+    if document.file_size is not None and document.file_size > maximum_bytes:
+        await too_large()
         return
     downloaded = await message.bot.download(document)
     if downloaded is None:
+        await message.answer(localization.text("training.unavailable", locale))
         return
-    result = await call(
-        backend,
-        telegram_update_claim,
-        TrainingUploadOperation(
-            action=ActionCode.TRAINING_UPLOAD,
-            source_filename=document.file_name or "training.json",
-            source_base64=base64.b64encode(downloaded.read()).decode(),
-        ),
-    )
+    downloaded.seek(0)
+    source = downloaded.read(maximum_bytes + 1)
+    if len(source) > maximum_bytes:
+        await too_large()
+        return
+    try:
+        result = await call(
+            backend,
+            telegram_update_claim,
+            TrainingUploadOperation(
+                action=ActionCode.TRAINING_UPLOAD,
+                source_filename=filename,
+                source_base64=base64.b64encode(source).decode(),
+            ),
+        )
+    except (ValueError, GatewayCallError):
+        await message.answer(localization.text("training.unavailable", locale))
+        return
+    # Like tournament uploads, retain the prompt for multiple files/albums until
+    # /cancel or another action. The training operation derives private ownership
+    # from the authenticated principal and never asks for a tournament.
+    def diagnostics(items):
+        # Bound even HTML-escaped parser diagnostics below Telegram's message
+        # limit, like the tournament upload summary. Report omitted items.
+        displayed = [f"• {item[:80]}" for item in items[:2]]
+        if len(items) > len(displayed):
+            displayed.append(
+                localization.text("packet_upload.more", locale, count=len(items) - len(displayed))
+            )
+        return "\n".join(displayed) or "—"
+
     for draft in result["drafts"]:
-        text = str(draft["packet"]) + "\n" + "\n".join(draft["errors"])
-        chunks = plain_chunks(text, size=600)
-        for chunk in chunks[:-1]:
-            await message.answer(chunk)
+        packet = draft["packet"]
+        themes = packet.get("themes", [])
+        text = localization.text(
+            "packet_upload.result", locale,
+            name=(packet.get("name") or filename)[:80],
+            ruleset="si",
+            themes=len(themes),
+            questions=sum(len(theme.get("questions", [])) for theme in themes),
+            authors=(packet.get("lead_author") or "—")[:60],
+            warning_count=len(draft.get("warnings", [])),
+            error_count=len(draft["errors"]),
+            warnings=diagnostics(draft.get("warnings", [])),
+            errors=diagnostics(draft["errors"]),
+        )
         rows = [
             [
                 InlineKeyboardButton(
@@ -345,8 +356,13 @@ async def handle_training_upload(
             for publish in ([False] if draft["errors"] else [True, False])
         ]
         await message.answer(
-            chunks[-1] if chunks else "…", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+            text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
         )
+
+
+@router.message(TrainingContext(), StateFilter(TrainingUploadState.waiting_document))
+async def handle_training_document_expected(message: Message, localization, locale):
+    await message.answer(localization.text("training.document_prompt", locale))
 
 
 @router.message(TrainingContext(), F.text)
@@ -354,14 +370,15 @@ async def handle_training_answer(
     message: Message, backend, telegram_update_claim, localization, locale
 ):
     result = await call(
-        backend,
-        telegram_update_claim,
-        TrainingCurrentOperation(
-            action=ActionCode.TRAINING_CURRENT,
-        ),
+        backend, telegram_update_claim, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT)
     )
     state = result.get("session")
     if state is None or state["phase"] != "answering":
+        await message.answer(localization.text("training.help", locale))
+        await show_menu(message, backend, telegram_update_claim, localization, locale)
+        return
+    # Commands are never interpreted as answers.
+    if (message.text or "").startswith("/"):
         await message.answer(localization.text("training.help", locale))
         return
     await call(

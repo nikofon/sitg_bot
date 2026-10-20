@@ -34,11 +34,25 @@ constructing the document.
 
 ## Execution and presentation
 
-Telegram: select Training mode, then Train or Upload training packets. `/train`
-restores an active session or lists packets. `/train VERSION_ID [reverse]
-[hidden=SECONDS] [bestbuzz]` starts with explicit modifiers. Native document upload
-uses the default question values; the Mini App permits custom values. The Mini App
-route is `/training`; both adapters call versioned gateway operations.
+Telegram training is keyboard-driven, without training slash commands. The home
+keyboard contains Start training, Knowledge library, Upload packet for training,
+and Change mode. Start training creates a persistent solo lobby, replacing the
+keyboard with Packets and settings, Start, and Quit. Packets and settings launches
+the `/training` Mini App, using the regular lobby's Overview / Packets / Options
+sections and explicit Save workflow. Selecting a packet never starts questions.
+Return to Telegram and press Start after saving; exposure confirmation and Best
+buzz preparation checks still apply. Quit discards the lobby or stops a running
+session. During a session, question actions remain inline and the reply keyboard
+provides Quit. Completion restores the home keyboard.
+
+Lobby selections and settings persist across restarts and use an owner-locked,
+monotonically increasing version to reject stale saves, quits, and confirmations.
+Only a successful start consumes the lobby. Apply Alembic migration
+`0024_training_lobby` before deploying this flow.
+
+Upload packet for training opens `/training?view=upload`; native document upload
+uses default question values while the Mini App permits custom values. Both
+adapters call authenticated, versioned gateway operations.
 
 Sessions support incremental reading, buzz, deterministic answer matching, reveal,
 skip, next, pause/resume, stop and replay. Paused sessions still exclude normal play.

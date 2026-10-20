@@ -38,7 +38,8 @@ async def send_menu_with_notification_alert(
             navigation.active_game.id,
         )
         return
-    if navigation.context != "game":
+    # Interaction modes are broader than the notification audience contract.
+    if navigation.active_mode in {"player", "manager", "admin"}:
         alerts = await backend.claim_notification_alerts(
             claim,
             audience=cast(Literal["player", "manager", "admin"], navigation.active_mode),

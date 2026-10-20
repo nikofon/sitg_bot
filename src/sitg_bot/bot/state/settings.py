@@ -45,3 +45,7 @@ class TournamentCreationState(StatesGroup):
 
 class PacketUploadState(StatesGroup):
     waiting_document = State()
+
+
+class TrainingUploadState(StatesGroup):
+    waiting_document = State()

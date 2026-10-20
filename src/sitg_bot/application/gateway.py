@@ -149,6 +149,7 @@ from sitg_bot.application.contracts import (
     TrainingDraftDecideOperation,
     TrainingDraftOperation,
     TrainingEntitlementsOperation,
+    TrainingLobbyOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
     TrainingStartOperation,
@@ -337,6 +338,7 @@ ACTION_POLICIES.update(
         ActionCode.TRAINING_CURRENT: ActionPolicy(sensitive_response=True),
         ActionCode.TRAINING_VIEW: ActionPolicy(sensitive_response=True),
         ActionCode.TRAINING_DRAFT: ActionPolicy(sensitive_response=True),
+        ActionCode.TRAINING_LOBBY: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.TRAINING_START: ActionPolicy(
             mutation=True,
             idempotency_required=True,
@@ -1222,6 +1224,11 @@ class ApplicationGateway:
             return await self.knowledge.mutate(
                 player_id, commands[action], operation.model_dump(exclude={"action"})
             )
+        if isinstance(operation, TrainingLobbyOperation):
+            return await self.training.lobby(
+                player_id, operation.command, expected_version=operation.expected_version,
+                version_id=operation.version_id, settings=operation.settings,
+            )
         if isinstance(operation, TrainingCurrentOperation):
             return await self.training.current(player_id)
         if isinstance(operation, TrainingViewOperation):
@@ -1230,6 +1237,7 @@ class ApplicationGateway:
             return await self.training.start(
                 player_id, operation.version_id, confirm=operation.confirm,
                 settings=TrainingSettings.from_mapping(operation.settings),
+                lobby_version=operation.lobby_version,
             )
         if isinstance(operation, TrainingActOperation):
             return await self.training.act(
