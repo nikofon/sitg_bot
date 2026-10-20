@@ -16,7 +16,6 @@ from sitg_bot.application.contracts import ActionCode
 from sitg_bot.bot.handlers import knowledge, training
 from sitg_bot.bot.handlers.training import handle_training_action, router
 from sitg_bot.bot.i18n import LocalizationService
-from sitg_bot.bot.presenters import render
 from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.miniapp_http import MiniAppHttpServer
@@ -42,7 +41,9 @@ async def test_training_answer_routing_leaves_commands_unhandled(text, answering
 async def test_training_answer_routing_still_submits_non_command_text():
     state = {"id": str(UUID(int=1)), "phase": "answering", "version": 2,
              "question_revision_id": str(UUID(int=2))}
-    backend = SimpleNamespace(_execute=AsyncMock(return_value=SimpleNamespace(data={"session": state})))
+    backend = SimpleNamespace(
+        _execute=AsyncMock(return_value=SimpleNamespace(data={"session": state}))
+    )
     await router.propagate_event(
         "message", Message(message_id=1, date=datetime.now(UTC),
                            chat=Chat(id=1, type="private"), text="ordinary answer"),
@@ -266,9 +267,10 @@ async def test_training_menu_uses_polling_launch_dependency(
 ):
     answer, send = AsyncMock(), AsyncMock()
     monkeypatch.setattr(Message, "answer", answer)
-    monkeypatch.setattr(render, "send_message_model", send)
+    monkeypatch.setattr(training, "send_message_model", send)
     localization = LocalizationService()
     adapter = SimpleNamespace(facts_page=AsyncMock(return_value={"items": [], "total": 0}))
+    state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
     await training.router.propagate_event(
         "message", training_message(localization.text(f"button.{action}", locale)),
         bot=SimpleNamespace(), backend=SimpleNamespace(_execute=AsyncMock()),
@@ -276,16 +278,22 @@ async def test_training_menu_uses_polling_launch_dependency(
         localization=localization, locale=locale,
         navigation=SimpleNamespace(active_mode="training", allowed_actions=(action,)),
         launch_links="https://mini.example.test/nested/" if configured else None,
+        state=state,
     )
-    if action == "training.knowledge":
-        adapter.facts_page.assert_awaited_once()
-        send.assert_awaited_once()
-    if configured:
+    if action == "training.upload":
+        # The approved lobby baseline uses the isolated Telegram upload conversation,
+        # even when a Mini App URL is configured; never replace it with legacy launch.
+        state.set_state.assert_awaited_once_with(training.TrainingUploadState.waiting_document)
+        answer.assert_awaited_once_with(localization.text("training.document_prompt", locale))
+        adapter.facts_page.assert_not_awaited()
+    elif configured:
         markup = answer.await_args.kwargs["reply_markup"]
         assert markup.inline_keyboard[0][0].web_app.url == (
             f"https://mini.example.test/nested/{route}?_launch=1"
         )
-    elif action == "training.upload":
-        answer.assert_awaited_once_with(localization.text("training.document_prompt", locale))
+        adapter.facts_page.assert_not_awaited()
+        send.assert_not_awaited()
     else:
+        adapter.facts_page.assert_awaited_once()
+        send.assert_awaited_once()
         answer.assert_not_awaited()

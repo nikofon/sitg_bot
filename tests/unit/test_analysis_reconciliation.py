@@ -19,12 +19,14 @@ from sitg_bot.storage.models import (
 
 
 @pytest.mark.parametrize("current_status", ["pending", "running", "succeeded", "cancelled"])
-async def test_reconciliation_does_not_fail_current_generation_using_a_stale_snapshot(current_status):
+async def test_reconciliation_does_not_fail_current_generation_using_a_stale_snapshot(
+    current_status,
+):
     artifact_id = uuid4()
     stale = SimpleNamespace(id=artifact_id, status="pending", generation=1)
     current = SimpleNamespace(
         id=artifact_id, status=current_status, generation=2,
-        lease_expires_at=None, lease_token=None,
+        lease_expires_at=None, lease_token=None, last_error=None,
     )
 
     async def scalar(statement):
@@ -43,7 +45,13 @@ async def test_reconciliation_does_not_fail_current_generation_using_a_stale_sna
     service._complete_requests = AsyncMock()
     await service._reconcile_artifact(session, stale, datetime.now(UTC))
     assert current.status == current_status and current.generation == 2
-    service._complete_requests.assert_not_awaited()
+    if current_status in ("succeeded", "cancelled"):
+        # The combined delivery also repairs historical terminal artifacts with
+        # unsettled waiters; settle the freshly loaded generation, never the stale one.
+        service._complete_requests.assert_awaited_once()
+        assert service._complete_requests.await_args.args[1:3] == (artifact_id, current_status)
+    else:
+        service._complete_requests.assert_not_awaited()
 
 
 async def test_reconciliation_still_fails_a_current_generation_with_a_cancelled_job():
