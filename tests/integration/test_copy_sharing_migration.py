@@ -6,10 +6,9 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from conftest import create_player
-from sqlalchemy import select
+from sqlalchemy import MetaData, select, text
 
-from sitg_bot.domain.knowledge import CommonKnowledgeEstimate
+from sitg_bot.domain.knowledge import FactContent, SourceLink
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
@@ -31,38 +30,53 @@ def test_upgrade_converts_legacy_shares_and_only_updates_the_old_free_policy(
     async def seed():
         database = Database(training_database)
         try:
-            owner = await create_player(database, 8701, "legacy-owner")
-            recipient = await create_player(database, 8702, "legacy-recipient")
+            owner, recipient, original_id, tag_id = (uuid4() for _ in range(4))
             app = KnowledgeApplication(database)
-            created = await app.mutate(
-                owner,
-                "create",
-                {
-                    "title": "Original",
-                    "description": "Original description",
-                    "tag_names": ["history"],
-                    "links": [{"url": "https://example.org/source", "title": "Reference"}],
-                },
-            )
             async with database.transaction() as session:
-                await app.service(session).record_statistics(
-                    owner,
-                    created["id"],
-                    common=CommonKnowledgeEstimate(
-                        status="available",
-                        value=25,
-                        model="fixture",
-                        estimated_at=datetime.now(UTC),
-                    ),
-                )
-                session.add(
-                    KnowledgeGrantRecord(
-                        id=uuid4(),
-                        owner_id=owner,
-                        recipient_id=recipient,
-                        granted_at=datetime.now(UTC),
-                    )
-                )
+                metadata = MetaData()
+                connection = await session.connection()
+                await connection.run_sync(lambda sync: metadata.reflect(sync, only=[
+                    "players", "knowledge_facts", "knowledge_tags", "knowledge_fact_tags",
+                    "knowledge_statistic_snapshots", "knowledge_sharing_grants",
+                ]))
+                tables = metadata.tables
+                for player_id, telegram_id, nickname in (
+                    (owner, 8701, "legacy-owner"),
+                    (recipient, 8702, "legacy-recipient"),
+                ):
+                    await session.execute(tables["players"].insert().values(
+                        id=player_id, telegram_user_id=telegram_id, real_name=nickname,
+                        public_nickname=nickname, telegram_username=nickname,
+                        status="active", registration_step="complete",
+                        registration_completed_at=datetime.now(UTC),
+                        reputation=90, suspicion=0, game_sequence=0,
+                    ))
+                await session.execute(tables["knowledge_facts"].insert().values(
+                    id=original_id, owner_id=owner, title="Original", title_key="original",
+                    description="Original description",
+                    links=[{"url": "https://example.org/source", "title": "Reference",
+                            "position": 0, "origin": "manual"}],
+                    provenance={"origin": "manual"}, content_fingerprint=FactContent(
+                        "Original", "Original description",
+                        (SourceLink(url="https://example.org/source", title="Reference"),),
+                    ).fingerprint(),
+                    content_version=1, statistic_status="fresh",
+                ))
+                await session.execute(tables["knowledge_tags"].insert().values(
+                    id=tag_id, owner_id=owner, name="history",
+                ))
+                await session.execute(tables["knowledge_fact_tags"].insert().values(
+                    fact_id=original_id, tag_id=tag_id, owner_id=owner,
+                ))
+                await session.execute(tables["knowledge_statistic_snapshots"].insert().values(
+                    id=uuid4(), fact_id=original_id, owner_id=owner, content_version=1,
+                    common={"status": "available", "value": 25, "model": "fixture",
+                            "estimated_at": datetime.now(UTC).isoformat()},
+                ))
+                await session.execute(tables["knowledge_sharing_grants"].insert().values(
+                    id=uuid4(), owner_id=owner, recipient_id=recipient,
+                    granted_at=datetime.now(UTC),
+                ))
                 features = {
                     feature: {
                         "enabled": True,
@@ -91,7 +105,7 @@ def test_upgrade_converts_legacy_shares_and_only_updates_the_old_free_policy(
                 await app.entitlements.create_category(
                     session, code="custom", display_name="Custom", policy_version=custom_version
                 )
-            return owner, recipient, created["id"], custom_version
+            return owner, recipient, original_id, custom_version
         finally:
             await database.close()
 
@@ -146,12 +160,12 @@ def test_upgrade_converts_legacy_shares_and_only_updates_the_old_free_policy(
     command.downgrade(config, "0022_training_knowledge_ai")
 
     async def retained():
-        from sitg_bot.storage.models import KnowledgeFactRecord
-
         database = Database(training_database)
         try:
             async with database.transaction() as session:
-                assert (await session.get(KnowledgeFactRecord, copied_id)).owner_id == recipient
+                assert await session.scalar(text(
+                    "SELECT owner_id FROM knowledge_facts WHERE id = :id"
+                ), {"id": copied_id}) == recipient
         finally:
             await database.close()
 

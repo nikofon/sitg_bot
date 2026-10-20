@@ -39,7 +39,10 @@ def menu_message(
         return MessageModel(localization.text("account.unavailable", locale))
     if navigation.active_mode == "training":
         return MessageModel(
-            localization.text("menu.training", locale),
+            localization.text(
+                "training.lobby" if navigation.context == "training_lobby" else "menu.training",
+                locale,
+            ),
             navigation_keyboard(navigation, localization, locale),
         )
     if navigation.active_game is not None:

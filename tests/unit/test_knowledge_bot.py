@@ -224,16 +224,25 @@ async def test_knowledge_callback_rejects_stale_or_unknown_references(localizati
     malformed.answer.assert_awaited_once_with("Not found.")
 
 
-def test_knowledge_router_declares_facts_command():
-    from aiogram.filters import Command
+async def test_registered_facts_command_dispatches_localized_list(monkeypatch, localization):
+    from datetime import UTC, datetime
 
-    commands = [
-        wrapped.callback
-        for handler in handlers.router.message.handlers
-        for wrapped in handler.filters
-        if isinstance(wrapped.callback, Command)
-    ]
-    assert commands and commands[0].commands == ("facts",)
-    assert handlers.router.name.endswith("knowledge")
+    from aiogram.types import Message
+
+    send = AsyncMock()
+    monkeypatch.setattr(handlers, "send_message_model", send)
+    backend = SimpleNamespace(facts_page=AsyncMock(return_value=page()))
+    message = Message.model_validate({
+        "message_id": 1, "date": datetime.now(UTC),
+        "chat": {"id": 42, "type": "private"},
+        "from": {"id": 42, "is_bot": False, "first_name": "Trainee"},
+        "text": "/facts",
+    })
+    await handlers.router.propagate_event(
+        "message", message, bot=SimpleNamespace(), knowledge_backend=backend,
+        localization=localization, locale="en", telegram_update_claim=SimpleNamespace(),
+    )
+    backend.facts_page.assert_awaited_once()
+    assert "Battle of &lt;Austerlitz&gt;" in send.await_args.args[1].text
 
 

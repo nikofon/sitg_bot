@@ -18,6 +18,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("ApiClient", () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it("rejects keyboard-WebApp empty initData before attempting a session or training route", async () => {
+    // Telegram documents WebAppInitData as empty for reply-keyboard launches.
+    // A stable /training?_launch=1 URL is routing metadata, not authentication.
+    const fetcher = vi.fn<typeof fetch>();
+    const client = new ApiClient("", fetcher);
+    await expect(client.request("/api/miniapp/routes/resolve?path=/training"))
+      .rejects.toMatchObject({ code: "authentication_required", status: 401 });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("authenticates and protects mutations", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

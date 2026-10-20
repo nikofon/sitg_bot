@@ -73,6 +73,7 @@ class ActionCode(StrEnum):
     TRAINING_DRAFT_DECIDE = "training.drafts.decide.v1"
     TRAINING_RETIRE = "training.packets.retire.v1"
     TRAINING_ACCESS = "training.packets.access.v1"
+    TRAINING_LOBBY = "training.lobby.v1"
     TRAINING_START = "training.start.v1"
     TRAINING_CURRENT = "training.current.v1"
     TRAINING_VIEW = "training.view.v1"
@@ -88,6 +89,9 @@ class ActionCode(StrEnum):
     KNOWLEDGE_TAG_RENAME = "knowledge.tag.rename.v1"
     KNOWLEDGE_TAG_DELETE = "knowledge.tag.delete.v1"
     KNOWLEDGE_SHARING = "knowledge.sharing.view.v1"
+    KNOWLEDGE_LINK_CREATE = "knowledge.link.create.v1"
+    KNOWLEDGE_LINK_DEACTIVATE = "knowledge.link.deactivate.v1"
+    KNOWLEDGE_IMPORT = "knowledge.collection.import.v1"
     KNOWLEDGE_GRANT = "knowledge.grant.create.v1"
     KNOWLEDGE_REVOKE = "knowledge.grant.revoke.v1"
     KNOWLEDGE_DISSECTIONS = "knowledge.dissection.status.v1"
@@ -254,14 +258,19 @@ class KnowledgeTagOperation(ContractModel):
     ]
     tag_id: UUID | None = None
     name: str | None = Field(default=None, min_length=1, max_length=64)
+    colour: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class KnowledgeSharingOperation(ContractModel):
     action: Literal[
-        ActionCode.KNOWLEDGE_SHARING, ActionCode.KNOWLEDGE_GRANT, ActionCode.KNOWLEDGE_REVOKE
+        ActionCode.KNOWLEDGE_SHARING, ActionCode.KNOWLEDGE_GRANT, ActionCode.KNOWLEDGE_REVOKE,
+        ActionCode.KNOWLEDGE_LINK_CREATE, ActionCode.KNOWLEDGE_LINK_DEACTIVATE,
+        ActionCode.KNOWLEDGE_IMPORT,
     ]
     recipient: str | None = Field(default=None, min_length=1, max_length=200)
     grant_id: UUID | None = None
+    link_id: UUID | None = None
+    token: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{43}$", repr=False)
 
 
 class KnowledgeDissectionsOperation(ContractModel):
@@ -718,9 +727,15 @@ class TournamentStartOperation(ManagementSnapshotOptions):
 
 class TrainingPacketListOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_PACKETS]
-    cursor: UUID | None = None
+    cursor: str | None = Field(default=None, max_length=2000)
     limit: int = Field(default=25, ge=1, le=25)
     name: str = Field(default="", max_length=200)
+    author: str = Field(default="", max_length=200)
+    year_from: int | None = Field(default=None, ge=1000, le=9999)
+    year_to: int | None = Field(default=None, ge=1000, le=9999)
+    publication_from: int | None = Field(default=None, ge=1000, le=9999)
+    publication_to: int | None = Field(default=None, ge=1000, le=9999)
+    order: Literal["id_asc", "name_asc", "name_desc", "year_asc", "year_desc"] = "id_asc"
 
 
 class TrainingUploadOperation(ContractModel):
@@ -754,8 +769,17 @@ class TrainingAccessOperation(ContractModel):
     download: bool = Field(default=False, strict=True)
 
 
+class TrainingLobbyOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_LOBBY]
+    command: Literal["create", "save", "quit"]
+    expected_version: int | None = Field(default=None, ge=1)
+    version_id: UUID | None = None
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class TrainingStartOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_START]
+    lobby_version: int | None = Field(default=None, ge=1)
     version_id: UUID
     confirm: bool = Field(default=False, strict=True)
     settings: dict[str, JsonValue] = Field(default_factory=dict)
@@ -1327,6 +1351,7 @@ GatewayOperation = Annotated[
     | TrainingDraftDecideOperation
     | TrainingRetireOperation
     | TrainingAccessOperation
+    | TrainingLobbyOperation
     | TrainingStartOperation
     | TrainingCurrentOperation
     | TrainingViewOperation

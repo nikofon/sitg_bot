@@ -18,7 +18,7 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
         normalized_route
         not in {
             "tournaments", "history", "library", "ongoing", "authors/link", "admin/suspicion",
-            "admin/management", "authors", "players", "training",
+            "admin/management", "authors", "players", "training", "knowledge",
         }
         and _PLAYER_PROFILE_ROUTE.fullmatch(normalized_route) is None
         and _TOURNAMENT_PROFILE_ROUTE.fullmatch(normalized_route) is None
@@ -30,6 +30,23 @@ def mini_app_route_url(base_url: str, route: str, *, query: dict[str, str] | Non
     # A stable transition URL bypasses pre-cache-policy HTML while permitting reuse.
     launch_query = {**(query or {}), "_launch": "1"}
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(launch_query), ""))
+
+
+def knowledge_import_app_url(base_url: str, token: str) -> str:
+    """Inline WebApp launch: authenticate in Telegram, keep import capability off HTTP logs."""
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+        raise ValueError("Invalid knowledge sharing token")
+    parsed = urlsplit(mini_app_route_url(base_url, "knowledge"))
+    return urlunsplit(parsed._replace(fragment=f"import={token}"))
+
+
+def knowledge_import_bot_url(username: str, token: str) -> str:
+    """Ordinary bot /start links do not require a configured Mini App short name."""
+    if re.fullmatch(r"[A-Za-z0-9_]+", username) is None:
+        raise ValueError("Invalid bot username")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
+        raise ValueError("Invalid knowledge sharing token")
+    return f"https://t.me/{username}?start=kl_{token}"
 
 
 def mini_app_launch_url(base_url: str, route: str, reference: LaunchReference) -> str:

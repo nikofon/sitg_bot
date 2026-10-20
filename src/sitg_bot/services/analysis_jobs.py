@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     delete,
     func,
+    literal,
     select,
     update,
 )
@@ -64,8 +65,11 @@ from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     Base,
     DurableJobRecord,
+    PacketVersionRecord,
+    PlayerRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
+    TrainingBestBuzzCompletionRecord,
 )
 
 #: Durable job kind claimed only by analysis workers (kind-filtered claims).
@@ -230,6 +234,11 @@ class AnalysisService:
             descriptor["content_fingerprint"] = content_fingerprint
         if self.source_loader is not None and hasattr(self.source_loader, "authorize_in_session"):
             await self.source_loader.authorize_in_session(session, owner_player_id, descriptor)
+        if self.entitlements is not None:
+            await session.get(
+                PlayerRecord, owner_player_id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
         existing = await self._request_row(session, idempotency_key)
         if existing is not None:
             if existing.owner_player_id != owner_player_id:
@@ -254,6 +263,8 @@ class AnalysisService:
             tokenizer_version=self.settings.tokenizer_version,
             owner_player_id=artifact_owner,
         )
+        if self.entitlements is not None:
+            await session.get(PlayerRecord, owner_player_id, with_for_update=True)
         artifact = await self._artifact_for_key(
             session,
             key,
@@ -302,6 +313,7 @@ class AnalysisService:
         if cache_hit:
             row.status = artifact.status
             row.completed_at = moment
+            await self._record_packet_completion(session, row, moment)
         else:
             await DurableJobQueue.schedule_in_session(
                 session,
@@ -329,9 +341,6 @@ class AnalysisService:
         if self.entitlements is None:
             return
         feature = FEATURE_BY_KIND[kind]
-        from sitg_bot.storage.models import PlayerRecord
-
-        await session.get(PlayerRecord, owner_player_id, with_for_update=True)
         policy = await self.entitlements.policy_for(session, owner_player_id, feature)
         if not policy.enabled:
             raise AnalysisFeatureDisabledError(f"Feature {feature} is disabled")
@@ -396,6 +405,7 @@ class AnalysisService:
                 artifact = await session.get(TrainingAnalysisArtifactRecord, row.artifact_id)
                 if artifact is not None:
                     await self._reconcile_artifact(session, artifact, moment)
+                    await session.refresh(row)
             return self._view(row, artifact=artifact)
 
     async def result(
@@ -427,6 +437,21 @@ class AnalysisService:
             row = await self._request_row(session, request_id)
             if row is None or row.owner_player_id != owner_player_id:
                 return False
+            await session.get(
+                PlayerRecord, owner_player_id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
+            artifact = await session.get(
+                TrainingAnalysisArtifactRecord, row.artifact_id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
+            await session.refresh(row)
+            if row.status not in REQUEST_ACTIVE_STATUSES:
+                return False
+            artifact = await session.get(
+                TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
+            )
+            await session.refresh(row)
             if row.status not in REQUEST_ACTIVE_STATUSES:
                 return False
             row.status = "cancelled"
@@ -439,9 +464,6 @@ class AnalysisService:
                     request_id=request_id,
                     now=moment,
                 )
-            artifact = await session.get(
-                TrainingAnalysisArtifactRecord, row.artifact_id, with_for_update=True
-            )
             if artifact is not None and artifact.status in ("pending", "running"):
                 remaining = await session.scalar(
                     select(func.count())
@@ -471,7 +493,8 @@ class AnalysisService:
         generation = int(payload.get("generation", 1))
         async with self.database.transaction() as session:
             artifact = await session.get(
-                TrainingAnalysisArtifactRecord, artifact_id, with_for_update=True
+                TrainingAnalysisArtifactRecord, artifact_id,
+                with_for_update={"key_share": True}, populate_existing=True,
             )
             if artifact is None:
                 raise LookupError(f"Analysis artifact {artifact_id} is missing")
@@ -487,6 +510,14 @@ class AnalysisService:
                 and artifact.lease_token is not None
             ):
                 raise RuntimeError("Analysis compute lease is still held by another worker")
+            if any(
+                getattr(artifact, field) != getattr(self.settings, field)
+                for field in ("model", "prompt_version", "schema_version", "tokenizer_version")
+            ):
+                await self._fail_artifact(
+                    session, artifact, "Analysis execution profile changed", moment
+                )
+                return
             artifact.status = "running"
             artifact.lease_token = uuid4()
             artifact.lease_expires_at = moment + self.lease_duration
@@ -582,7 +613,8 @@ class AnalysisService:
         except Exception:
             async with self.database.transaction() as session:
                 artifact = await session.get(
-                    TrainingAnalysisArtifactRecord, artifact_id, with_for_update=True
+                    TrainingAnalysisArtifactRecord, artifact_id,
+                    with_for_update={"key_share": True}, populate_existing=True,
                 )
                 if artifact is not None and artifact.lease_token == lease_token:
                     artifact.provider_request_ids = self._provider_request_ids()
@@ -862,6 +894,19 @@ class AnalysisService:
                 raise RuntimeError("Stale analysis compute lease")
             await self._complete_requests(session, artifact_id, status, error, moment)
 
+    @staticmethod
+    async def _record_packet_completion(session, row, moment):
+        if row.kind != ANALYSIS_BEST_BUZZ or row.status != "succeeded":
+            return
+        # The analysis service also supports virtual fixture sources. Only
+        # persisted catalogue versions have a corresponding card/history row.
+        await session.execute(pg_insert(TrainingBestBuzzCompletionRecord).from_select(
+            ["owner_id", "packet_version_id", "calculated_at"],
+            select(literal(row.owner_player_id), PacketVersionRecord.id, literal(moment)).where(
+                PacketVersionRecord.id == UUID(row.source["packet_revision_id"])
+            ),
+        ).on_conflict_do_nothing())
+
     async def _complete_requests(
         self,
         session: AsyncSession,
@@ -898,6 +943,7 @@ class AnalysisService:
             row.status = status if allowed else "cancelled"
             row.error = error[:2000] if error else None
             row.completed_at = moment
+            await self._record_packet_completion(session, row, moment)
             if self.entitlements is None:
                 continue
             feature = FEATURE_BY_KIND[row.kind]
@@ -927,7 +973,18 @@ class AnalysisService:
         moment: datetime,
     ) -> None:
         """Fence stale computations whose durable job can no longer finish."""
+        artifact = await session.scalar(
+            select(TrainingAnalysisArtifactRecord)
+            .where(TrainingAnalysisArtifactRecord.id == artifact.id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        if artifact is None:
+            return
         if artifact.status not in ("pending", "running"):
+            await self._complete_requests(
+                session, artifact.id, artifact.status, artifact.last_error, moment
+            )
             return
         job = await session.scalar(
             select(DurableJobRecord).where(
@@ -1085,7 +1142,7 @@ class AnalysisService:
         record = await session.scalar(
             select(TrainingAnalysisArtifactRecord).where(
                 TrainingAnalysisArtifactRecord.artifact_key == key
-            )
+            ).with_for_update(key_share=True).execution_options(populate_existing=True)
         )
         if record is not None:
             return record
@@ -1097,7 +1154,7 @@ class AnalysisService:
         record = await session.scalar(
             select(TrainingAnalysisArtifactRecord).where(
                 TrainingAnalysisArtifactRecord.artifact_key == key
-            )
+            ).with_for_update(key_share=True).execution_options(populate_existing=True)
         )
         assert record is not None
         return record
@@ -1154,7 +1211,9 @@ class AnalysisService:
                                 )
                                 .exists(),
                             )
+                            .order_by(TrainingAnalysisArtifactRecord.id)
                             .limit(limit)
+                            .with_for_update(skip_locked=True)
                         )
                     )
                     .scalars()

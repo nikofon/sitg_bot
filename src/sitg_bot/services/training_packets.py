@@ -22,8 +22,17 @@ from sitg_bot.services.packet_catalogue import background_packet_batch
 from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.training_access import require_trainee
+from sitg_bot.services.training_catalogue import (
+    encode_packet_cursor,
+    enrich_packet_cards,
+    packet_cursor,
+    packet_order,
+    private_packet_authors,
+)
+from sitg_bot.storage.authorship import packet_author_rows
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    AuthorRecord,
     GameParticipantRecord,
     GameRecord,
     LogicalPacketRecord,
@@ -91,7 +100,7 @@ class TrainingPacketService:
             )
 
     @staticmethod
-    def _library_right(player_id: UUID):
+    def _library_assignments(player_id: UUID):
         """SQL equivalent of can_read_assignment, evaluated before pagination."""
         assignment = TournamentPacketAssignmentRecord
         latest = aliased(PacketVersionRecord)
@@ -205,8 +214,11 @@ class TrainingPacketService:
                 ),
             )
             .correlate(LogicalPacketRecord, PacketVersionRecord)
-            .exists()
         )
+
+    @classmethod
+    def _library_right(cls, player_id: UUID):
+        return cls._library_assignments(player_id).exists()
 
     @classmethod
     def _readable(cls, player_id: UUID):
@@ -246,37 +258,83 @@ class TrainingPacketService:
         self,
         player_id: UUID,
         *,
-        cursor: UUID | None = None,
+        cursor: str | UUID | None = None,
         limit: int = 25,
         name: str = "",
+        author: str = "",
+        year_from: int | None = None,
+        year_to: int | None = None,
+        publication_from: int | None = None,
+        publication_to: int | None = None,
+        order: str = "id_asc",
     ) -> dict:
         if not 1 <= limit <= 25:
             raise ValueError("Training page size must be between 1 and 25")
+        filters = dict(name=name.strip().lower(), author=author.strip().lower(),
+                       year_from=year_from, year_to=year_to,
+                       publication_from=publication_from, publication_to=publication_to)
+        signature = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()[:16]
+        sort_key, descending = packet_order(order)
         async with background_packet_batch(), self.database.sessions() as session:
             await require_trainee(session, player_id)
             query = (
                 select(
-                    PacketVersionRecord.id,
-                    PacketVersionRecord.packet_id,
-                    PacketVersionRecord.name,
-                    PacketVersionRecord.year,
-                    LogicalPacketRecord.scope,
+                    PacketVersionRecord.id, PacketVersionRecord.packet_id,
+                    PacketVersionRecord.name, PacketVersionRecord.year,
+                    LogicalPacketRecord.scope, sort_key.label("sort_value"),
                 )
                 .join(LogicalPacketRecord)
                 .where(self._readable(player_id))
             )
             if cursor:
-                query = query.where(PacketVersionRecord.id > cursor)
-            if name.strip():
+                value, identity = packet_cursor(str(cursor), order, signature)
+                key = tuple_(sort_key, PacketVersionRecord.id)
                 query = query.where(
-                    func.strpos(func.lower(PacketVersionRecord.name), name.strip().lower()) > 0
+                    key < (value, identity) if descending else key > (value, identity)
                 )
-            rows = await session.execute(query.order_by(PacketVersionRecord.id).limit(limit + 1))
+            if filters["name"]:
+                query = query.where(func.strpos(func.lower(PacketVersionRecord.name),
+                                                filters["name"]) > 0)
+            if filters["author"]:
+                pairs = packet_author_rows(select(PacketVersionRecord.id)).subquery()
+                matching = select(pairs.c.packet_version_id).join(
+                    AuthorRecord, AuthorRecord.id == pairs.c.author_id
+                ).where(func.strpos(func.lower(AuthorRecord.display_name), filters["author"]) > 0)
+                private = private_packet_authors(
+                    player_id, select(PacketVersionRecord.id)
+                ).subquery()
+                private_matching = select(private.c.packet_version_id).where(
+                    func.strpos(func.lower(private.c.name), filters["author"]) > 0
+                )
+                query = query.where(or_(
+                    PacketVersionRecord.id.in_(matching),
+                    PacketVersionRecord.id.in_(private_matching),
+                ))
+            for field, start, end in (
+                (PacketVersionRecord.year, year_from, year_to),
+                (func.extract("year", PacketVersionRecord.published_at),
+                 publication_from, publication_to),
+            ):
+                if start is not None:
+                    query = query.where(field >= start)
+                if end is not None:
+                    query = query.where(field <= end)
+            ordering = (sort_key.desc(), PacketVersionRecord.id.desc()) if descending else (
+                sort_key.asc(), PacketVersionRecord.id.asc()
+            )
+            rows = await session.execute(query.order_by(*ordering).limit(limit + 1))
             items = [dict(row) for row in rows.mappings()]
-            return {
-                "items": items[:limit],
-                "next_cursor": items[limit - 1]["id"] if len(items) > limit else None,
-            }
+            next_cursor = None
+            if len(items) > limit:
+                last = items[limit - 1]
+                next_cursor = encode_packet_cursor(last, last["sort_value"], order, signature)
+            items = items[:limit]
+            for item in items:
+                item.pop("sort_value")
+            await enrich_packet_cards(
+                session, player_id, items, self._library_assignments(player_id)
+            )
+            return {"items": items, "next_cursor": next_cursor}
 
     async def disclose(
         self,

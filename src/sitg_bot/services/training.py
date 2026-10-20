@@ -48,6 +48,52 @@ class TrainingService:
         self.packets = TrainingPacketService(database)
         self.best_buzz = best_buzz
 
+    async def lobby(
+        self,
+        player_id: UUID,
+        command: str,
+        *,
+        expected_version: int | None = None,
+        version_id: UUID | None = None,
+        settings: dict | None = None,
+    ) -> dict:
+        async with self.database.transaction() as session:
+            await require_trainee(session, player_id)
+            player = await session.get(PlayerRecord, player_id, with_for_update=True)
+            lobby = player.training_lobby
+            if command == "create":
+                await require_no_training(session, player_id)
+                if lobby is None:
+                    player.training_lobby_version += 1
+                    lobby = {
+                        "version": player.training_lobby_version,
+                        "version_id": None,
+                        "packet_name": None,
+                        "settings": TrainingSettings().to_dict(),
+                    }
+            else:
+                if lobby is None:
+                    raise ValueError("Create a training lobby first")
+                if expected_version != lobby["version"]:
+                    raise StaleWriteError("Training lobby has changed")
+                if command == "quit":
+                    lobby = None
+                elif command == "save":
+                    if version_id is None:
+                        raise ValueError("Select a packet first")
+                    packet, _ = await self.packets.authorize(session, player_id, version_id)
+                    player.training_lobby_version += 1
+                    lobby = {
+                        "version": player.training_lobby_version,
+                        "version_id": str(version_id),
+                        "packet_name": packet.name,
+                        "settings": TrainingSettings.from_mapping(settings or {}).to_dict(),
+                    }
+                else:
+                    raise ValueError("Unknown training lobby command")
+            player.training_lobby = lobby
+            return {"lobby": lobby}
+
     async def delivery(self, player_id: UUID, session_id: UUID, *, presentation=None) -> dict:
         """Trusted Telegram adapter projection with a persistent presentation cursor."""
         async with self.database.transaction() as session:
@@ -63,8 +109,19 @@ class TrainingService:
                 await self.packets.authorize(session, player_id, record.packet_version_id)
                 await self._advance(session, record, datetime.now(UTC))
                 result = await self._view(session, record, datetime.now(UTC))
+            show_menu = False
+            if record.status in {"stopped", "completed"} and player.training_lobby is None:
+                show_menu = not await session.scalar(
+                    select(TrainingSessionRecord.id)
+                    .where(
+                        TrainingSessionRecord.owner_id == player_id,
+                        TrainingSessionRecord.status.in_(("active", "paused")),
+                    )
+                    .limit(1)
+                )
             return {
                 **result,
+                "show_menu": show_menu,
                 "telegram_user_id": player.telegram_user_id,
                 "locale": player.preferred_locale,
                 "presentation": member.presentation,
@@ -78,11 +135,21 @@ class TrainingService:
         settings: TrainingSettings | None = None,
         confirm: bool = False,
         now: datetime | None = None,
+        lobby_version: int | None = None,
     ) -> dict:
         now = now or datetime.now(UTC)
         settings = settings or TrainingSettings()
         try:
             async with self.database.transaction() as session:
+                await self.packets.lock_access(session, player_id, version_id)
+                player = await session.get(PlayerRecord, player_id, with_for_update=True)
+                if lobby_version is not None:
+                    lobby = player.training_lobby
+                    if lobby is None or lobby["version"] != lobby_version:
+                        raise StaleWriteError("Training lobby has changed")
+                    if lobby["version_id"] != str(version_id):
+                        raise StaleWriteError("Training packet has changed")
+                    settings = TrainingSettings.from_mapping(lobby["settings"])
                 source = await self.packets.disclose(
                     session,
                     player_id,
@@ -159,6 +226,7 @@ class TrainingService:
                         )
                     )
                 await session.flush()
+                player.training_lobby = None
                 await self._begin_question(session, record, now)
                 await self._notice(session, record)
                 return await self._view(session, record, now)
@@ -176,8 +244,10 @@ class TrainingService:
                     TrainingSessionRecord.status.in_(("active", "paused")),
                 )
             )
+            player = await session.get(PlayerRecord, player_id)
+            lobby = player.training_lobby
         if identifier is None:
-            return {"session": None}
+            return {"session": None, "lobby": lobby}
         await self.tick(identifier, now=now)
         async with self.database.sessions() as session:
             record = await session.get(TrainingSessionRecord, identifier)

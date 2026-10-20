@@ -8,8 +8,9 @@ from aiogram.types import Message
 
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.miniapps.links import knowledge_import_app_url
 from sitg_bot.bot.presenters.common import help_message, menu_message, registration_prompt
-from sitg_bot.bot.presenters.models import MessageModel
+from sitg_bot.bot.presenters.models import InlineButtonModel, InlineKeyboardModel, MessageModel
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import BotBackend, NavigationState
 
@@ -38,7 +39,8 @@ async def send_menu_with_notification_alert(
             navigation.active_game.id,
         )
         return
-    if navigation.context != "game":
+    # Interaction modes are broader than the notification audience contract.
+    if navigation.active_mode in {"player", "manager", "admin"}:
         alerts = await backend.claim_notification_alerts(
             claim,
             audience=cast(Literal["player", "manager", "admin"], navigation.active_mode),
@@ -95,8 +97,28 @@ async def handle_start(
     locale: str,
     navigation: NavigationState | None,
     state: FSMContext,
+    launch_links: str | None = None,
 ) -> None:
     await state.clear()
+    knowledge = re.fullmatch(
+        r"/start(?:@[A-Za-z0-9_]+)? kl_([A-Za-z0-9_-]{43})", message.text or "",
+    )
+    if knowledge:
+        if launch_links is None:
+            await send_message_model(
+                message, MessageModel(localization.text("training.unavailable", locale))
+            )
+            return
+        url = knowledge_import_app_url(launch_links, knowledge.group(1))
+        if navigation is not None and navigation.context != "registration":
+            await show_knowledge_import(message, url, localization, locale)
+            return
+        await state.update_data(registration_knowledge_import_url=url)
+        await resume_registration(
+            message, backend=backend, claim=telegram_update_claim,
+            localization=localization, locale=locale, state=state,
+        )
+        return
     invite = re.fullmatch(
         r"/start(?:@[A-Za-z0-9_]+)? ((?:reg|join)_[A-Za-z0-9_-]{32})", message.text or "",
     )
@@ -138,11 +160,29 @@ async def handle_start(
     )
 
 
+async def show_knowledge_import(
+    message: Message, url: str, localization: LocalizationService, locale: str,
+) -> None:
+    # This opens a signed Telegram WebApp session; import still needs explicit
+    # confirmation plus the authenticated CSRF-protected HTTP POST.
+    await send_message_model(message, MessageModel(
+        localization.text("knowledge.sharing.permanent", locale),
+        InlineKeyboardModel(rows=((InlineButtonModel(
+            localization.text("training.knowledge", locale), web_app_url=url,
+        ),),)),
+    ))
+
+
 async def resume_invitation(
     message: Message, backend: BotBackend, claim: TelegramUpdateClaim,
     localization: LocalizationService, locale: str, state: FSMContext,
 ) -> None:
     data = await state.get_data()
+    import_url = data.get("registration_knowledge_import_url")
+    if isinstance(import_url, str):
+        await state.update_data(registration_knowledge_import_url=None)
+        await show_knowledge_import(message, import_url, localization, locale)
+        return
     reference = data.get("registration_invitation")
     if not isinstance(reference, str):
         return
