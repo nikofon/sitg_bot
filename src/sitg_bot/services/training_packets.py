@@ -300,7 +300,9 @@ class TrainingPacketService:
                 matching = select(pairs.c.packet_version_id).join(
                     AuthorRecord, AuthorRecord.id == pairs.c.author_id
                 ).where(func.strpos(func.lower(AuthorRecord.display_name), filters["author"]) > 0)
-                private = private_packet_authors(player_id, select(PacketVersionRecord.id)).subquery()
+                private = private_packet_authors(
+                    player_id, select(PacketVersionRecord.id)
+                ).subquery()
                 private_matching = select(private.c.packet_version_id).where(
                     func.strpos(func.lower(private.c.name), filters["author"]) > 0
                 )

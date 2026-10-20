@@ -83,13 +83,18 @@ async def test_knowledge_http_resolves_resource_and_forwards_filters_and_mutatio
         assert resource["kind"] == "knowledge"
         assert resource["facts"]["state"] == "empty"
         assert resource["sharing"] == {"grants": [], "shared": []}
-        assert resource["dissection"]["next_cursor"] == "next-packet"
+        assert resource["dissection"]["next_cursor"] is None
+        assert resource["dissection"]["packets"] == []
         assert [r.operation.action for r in gateway.requests] == [
             ActionCode.KNOWLEDGE_FACTS,
             ActionCode.KNOWLEDGE_SHARING,
             ActionCode.KNOWLEDGE_DISSECTIONS,
-            ActionCode.TRAINING_PACKETS,
         ]
+        # Packet catalogue is fetched only when the redesigned Packets tab opens.
+        response = await client.get("/api/miniapp/training/packets", headers=headers)
+        assert response.status == 200
+        assert (await response.json())["next_cursor"] == "next-packet"
+        assert gateway.requests[-1].operation.action == ActionCode.TRAINING_PACKETS
         response = await client.get(
             "/api/miniapp/knowledge/facts?search=History&tag=Past&order=updated_desc",
             headers=headers,

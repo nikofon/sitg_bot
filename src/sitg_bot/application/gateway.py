@@ -731,7 +731,9 @@ class ApplicationGateway:
                 await self._finish_idempotency(
                     idempotency.id,
                     response,
-                    store_response=not policy.sensitive_response or action in PRIVATE_MUTATION_REPLAYS,
+                    store_response=(
+                        not policy.sensitive_response or action in PRIVATE_MUTATION_REPLAYS
+                    ),
                 )
             await self._finish_audit(audit_id, outcome="succeeded", error_code=None)
             return response

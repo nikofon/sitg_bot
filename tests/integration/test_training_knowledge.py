@@ -233,7 +233,9 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
                 TrainingAnalysisArtifactRecord, request.artifact_id,
                 with_for_update={"key_share": True},
             )
-            await app.analysis._fail_artifact(session, artifact, "Fixture failure", datetime.now(UTC))
+            await app.analysis._fail_artifact(
+                session, artifact, "Fixture failure", datetime.now(UTC)
+            )
     if reconciled:
         await app.reconcile()
     retried = await app.request_analysis(
@@ -355,7 +357,9 @@ async def test_exact_dissection_identity_survives_bounded_persisted_history(data
         assert len(list(await session.scalars(select(KnowledgeDissectionRecord)))) == 102
 
 
-async def test_statistics_lock_owners_in_the_same_order_as_collection_imports(database, monkeypatch):
+async def test_statistics_lock_owners_in_the_same_order_as_collection_imports(
+    database, monkeypatch,
+):
     from dataclasses import replace
 
     from sitg_bot.services import training_knowledge

@@ -269,7 +269,8 @@ async def test_registration_serializes_with_terminal_settlement(database, monkey
         release.set()
         await asyncio.wait_for(asyncio.gather(registration, worker), 10)
     for owner, key in ((first, "race-first"), (second, "race-second")):
-        assert (await stack.service.status(owner_player_id=owner, request_id=key)).status == "succeeded"
+        status = await stack.service.status(owner_player_id=owner, request_id=key)
+        assert status.status == "succeeded"
         assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 9
 
 
@@ -285,7 +286,8 @@ async def test_terminal_artifact_reconciles_stranded_waiter(database):
         artifact.status = "failed"
         artifact.failed_at = datetime.now(UTC)
         artifact.last_error = "Historical terminal write without settlement"
-    assert (await stack.service.status(owner_player_id=owner, request_id="stranded")).status == "failed"
+    status = await stack.service.status(owner_player_id=owner, request_id="stranded")
+    assert status.status == "failed"
     assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
 
 
@@ -394,11 +396,15 @@ async def test_stale_reconciliation_cannot_fail_a_replacement_generation(databas
         assert sum(row.reserved for row in periods) == 1
         assert sum(row.settled for row in periods) == 0
     assert await stack.worker.run_once() == 1
-    result = await stack.service.result(owner_player_id=owner_b, request_id="generation-replacement")
+    result = await stack.service.result(
+        owner_player_id=owner_b, request_id="generation-replacement"
+    )
     assert result is not None and len(result["candidates"]) == 1
 
 
-@pytest.mark.parametrize("field", ["model", "prompt_version", "schema_version", "tokenizer_version"])
+@pytest.mark.parametrize("field", [
+    "model", "prompt_version", "schema_version", "tokenizer_version",
+])
 @pytest.mark.parametrize("checkpointed", [False, True])
 async def test_incompatible_execution_profile_refunds_reservations_without_computation(
     database, field, checkpointed,

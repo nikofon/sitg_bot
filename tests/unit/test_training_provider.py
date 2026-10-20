@@ -130,7 +130,9 @@ async def test_provider_maps_source_word_offsets_to_the_real_announcement_stream
 
 async def test_common_knowledge_accepts_fragmented_provider_response(monkeypatch):
     instance, _ = provider(monkeypatch, {"value": 42}, chunk_size=1)
-    result = await instance.estimate_common_knowledge(CommonKnowledgeRequest("A fact", "en", "adults"))
+    result = await instance.estimate_common_knowledge(
+        CommonKnowledgeRequest("A fact", "en", "adults")
+    )
     assert result.value == 42
 
 

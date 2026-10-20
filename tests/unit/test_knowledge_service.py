@@ -253,14 +253,18 @@ async def test_merge_tag_union_remains_editable_or_rejects_without_mutation(targ
         OWNER, title="Target", description="Target fact",
         tag_names=[f"tag-{index}" for index in range(target_start, target_start + 17)],
     )
-    before = deepcopy((knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]))
+    before = deepcopy((
+        knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]
+    ))
     if target_start == 17:
         with pytest.raises(ValueError, match="at most 32 tags"):
             await knowledge.merge_facts(
                 OWNER, source.fact_id, target.fact_id,
                 expected_target_version=target.content_version, confirm_source_delete=True,
             )
-        assert (knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]) == before
+        assert (
+            knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]
+        ) == before
         return
     merged = await knowledge.merge_facts(
         OWNER, source.fact_id, target.fact_id,

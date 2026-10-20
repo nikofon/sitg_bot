@@ -206,3 +206,33 @@ The supplied `scope-base-result.txt` and `scope-current-result.txt` under
 instructions/comment boundary collision, not a new redesign regression. It remains
 an explicitly deferred follow-up: distinct arrangements can reuse a request.
 No persisted key format, compatibility handling or data migration is changed here.
+
+## Combined direct-delivery evidence
+
+Both requested windows and their assigned backend corrections are integrated. On
+2026-10-20 the user explicitly authorized direct PR delivery after repeated
+model-service transport failures. The unavailable no-mistakes model-dependent
+validation is **waived for this delivery, not passed**. No attestation or green CI
+claim substitutes for that missing evidence.
+
+Deterministic checks executed on the combined source:
+
+- Frontend: 264 tests passed in 28 files; TypeScript typecheck and Vite build passed.
+- Focused backend/HTTP/admission/provider/retry/Knowledge checks: 241 passed,
+  54 PostgreSQL cases skipped because no isolated test database was configured.
+- Full existing unit suite: 1468 passed, eight failures. These are the same eight
+  independently reproduced on the untouched base by the backend owner: four admin
+  packet-loading fixture cases, two maintenance configuration fixture cases, and
+  two Russian question-indicator wording assertions. They remain failures, not
+  green checks; unrelated code was not changed to hide them.
+- Ruff passes for every changed Python file; whitespace check passes. Alembic has
+  one head, `0025_knowledge_catalogue`, following the approved lobby migration 0024.
+
+An older Knowledge HTTP test expected eager packet loading at window bootstrap;
+its assertions now exercise the redesigned lazy catalogue endpoint explicitly,
+while retaining authentication, filter and mutation checks. Final lint adjustments
+only wrap changed lines and order an import; production behavior is unchanged.
+
+Real PostgreSQL migration/concurrency/persistence, browser visual review, signed
+Telegram-client acceptance and live provider analysis remain **unverified**. No
+running application or database was changed, restarted, deployed or reset.

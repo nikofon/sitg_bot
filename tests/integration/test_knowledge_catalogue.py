@@ -220,9 +220,8 @@ async def test_private_authors_are_projected_and_searchable_only_for_the_owner(d
     async with database.sessions() as session:
         assert list(await session.scalars(select(AuthorRecord))) == []
     await packets.retire(owner, versions[0])
-    assert [item["id"] for item in (await packets.list_packets(owner, author="Alice"))["items"]] == [
-        versions[1],
-    ]
+    remaining = await packets.list_packets(owner, author="Alice")
+    assert [item["id"] for item in remaining["items"]] == [versions[1]]
 
 
 async def test_calculation_and_dissection_metadata_survive_analysis_cache_cleanup(database):

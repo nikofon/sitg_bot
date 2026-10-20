@@ -128,7 +128,9 @@ async def test_completed_private_mutation_replays_original_success_once(action, 
 
 @pytest.mark.parametrize(("action", "values"), CASES)
 @pytest.mark.parametrize("revocation", ["ban", "registration", "identity"])
-async def test_private_replay_rechecks_actor_without_destroying_original(action, values, revocation):
+async def test_private_replay_rechecks_actor_without_destroying_original(
+    action, values, revocation,
+):
     gateway, database, mutation, account = stack(action)
     principal = ApplicationPrincipal(player_id=OWNER, telegram_user_id=42)
     request = request_for(action, values)

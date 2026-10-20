@@ -2,9 +2,8 @@ import asyncio
 import json
 from uuid import UUID
 
-from sqlalchemy import select
-
 import pytest
+from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture
 from test_training import upload

@@ -263,7 +263,9 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
         yield session
 
     provider = FakeAnalysisProvider()
-    service = AnalysisService(SimpleNamespace(transaction=transaction), object(), provider, settings)
+    service = AnalysisService(
+        SimpleNamespace(transaction=transaction), object(), provider, settings
+    )
     service._complete_requests = AsyncMock()
     service._run_packet_scan = AsyncMock()
     service._run_common_knowledge = AsyncMock()
@@ -285,7 +287,9 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
 
 
 async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):
-    request = SimpleNamespace(status="succeeded", source={"content_version": 1}, artifact_id=uuid4())
+    request = SimpleNamespace(
+        status="succeeded", source={"content_version": 1}, artifact_id=uuid4()
+    )
     fact = SimpleNamespace(owner_id=uuid4(), id=uuid4(), content_version=1,
                            statistic_status="pending", deleted_at=None)
     artifact = SimpleNamespace(payload={"value": 25}, model="producing-model",
@@ -306,7 +310,8 @@ async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch)
     await app.reconcile_statistics()
     common = record.await_args.kwargs["common"]
     assert common.value == 25 and common.model == "producing-model"
-    assert common.prompt_version == "producing-prompt" and common.schema_version == "producing-schema"
+    assert common.prompt_version == "producing-prompt"
+    assert common.schema_version == "producing-schema"
 
 
 async def test_applied_dissection_is_not_reset_or_requeued_by_an_explicit_retry():

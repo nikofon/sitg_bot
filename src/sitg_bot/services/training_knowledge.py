@@ -824,7 +824,8 @@ class KnowledgeApplication:
                 .where(or_(
                     TrainingAnalysisArtifactRecord.status.in_(("pending", "running")),
                     select(TrainingAnalysisRequestRecord.id).where(
-                        TrainingAnalysisRequestRecord.artifact_id == TrainingAnalysisArtifactRecord.id,
+                        TrainingAnalysisRequestRecord.artifact_id
+                        == TrainingAnalysisArtifactRecord.id,
                         TrainingAnalysisRequestRecord.status.in_(("queued", "running")),
                     ).exists(),
                 ))
