@@ -236,4 +236,3 @@ def test_knowledge_router_does_not_register_slash_commands():
     assert commands == []
     assert handlers.router.name.endswith("knowledge")
 
-

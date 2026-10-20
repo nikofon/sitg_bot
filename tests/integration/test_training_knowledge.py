@@ -1,4 +1,6 @@
-from uuid import UUID
+import asyncio
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import create_player, seed_category
@@ -12,7 +14,13 @@ from sitg_bot.services.reliable_delivery import DurableJobQueue, DurableJobWorke
 from sitg_bot.services.training import TrainingService
 from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
 from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
-from sitg_bot.storage.models import KnowledgeDissectionRecord, TrainingAnalysisArtifactRecord
+from sitg_bot.storage.models import (
+    KnowledgeDissectionRecord,
+    TrainingAnalysisArtifactRecord,
+    TrainingAnalysisRequestRecord,
+    TrainingBestBuzzCompletionRecord,
+    TrainingUsagePeriodRecord,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -102,6 +110,42 @@ async def test_persistent_crud_pagination_and_permanent_independent_copies(datab
     assert statistics["bingo"]["status"] == "pending_calibration"
 
 
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+async def test_dissection_retry_applies_replacement_result(database, outcome):
+    from sitg_bot.services.training_ai import AnalysisValidationError
+
+    owner = await create_player(database, 8203, "retry-trainee")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="dissection", instructions="Keep history",
+        idempotency_key="first", confirm_exposure=True,
+    )
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    if outcome == "cancelled":
+        await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    else:
+        app.analysis.provider.extract_failures.append(AnalysisValidationError("Invalid result"))
+        await worker.run_once()
+    await app.reconcile()
+    assert (await app.dissections(owner))["items"][0]["status"] == "failed"
+    assert (await app.facts(owner))["total"] == 0
+    second = await app.request_analysis(
+        owner, version_id=version, kind="dissection", instructions="Keep history",
+        idempotency_key="replacement",
+    )
+    assert second["dissection_id"] == first["dissection_id"]
+    assert second["request_id"] != first["request_id"]
+    await worker.run_once()
+    await app.reconcile()
+    assert (await app.dissections(owner))["items"][0]["status"] == "succeeded"
+    assert (await app.facts(owner))["total"] == 5
+    await app.reconcile()
+    assert (await app.facts(owner))["total"] == 5
+
+
 async def test_dissection_automatic_application_and_best_buzz_bridge(database):
     owner = await create_player(database, 8201, "trainee")
     app = await application(database, owner)
@@ -166,6 +210,200 @@ async def test_dissection_automatic_application_and_best_buzz_bridge(database):
         )
         # Extracted knowledge remains the owner's collection after retiring its packet.
         assert (await app.facts(owner))["total"] == 5
+
+
+@pytest.mark.parametrize("prior_status", ["failed", "cancelled"])
+@pytest.mark.parametrize("reconciled", [False, True])
+async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them(
+    database, prior_status, reconciled,
+):
+    owner = await create_player(database, 8221, "retry-dissection")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="dissection", confirm_exposure=True,
+        idempotency_key="first-dissection",
+    )
+    if prior_status == "cancelled":
+        assert await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    else:
+        async with database.transaction() as session:
+            request = await app.analysis._request_row(session, first["request_id"])
+            artifact = await session.get(
+                TrainingAnalysisArtifactRecord, request.artifact_id,
+                with_for_update={"key_share": True},
+            )
+            await app.analysis._fail_artifact(
+                session, artifact, "Fixture failure", datetime.now(UTC)
+            )
+    if reconciled:
+        await app.reconcile()
+    retried = await app.request_analysis(
+        owner, version_id=version, kind="dissection", idempotency_key="retry-dissection",
+    )
+    assert retried["request_id"] != first["request_id"]
+    assert retried["dissection_id"] == first["dissection_id"]
+    async with database.sessions() as session:
+        row = await session.get(KnowledgeDissectionRecord, first["dissection_id"])
+        assert row.status == "pending" and row.application is None
+        assert row.analysis_request_id == retried["request_id"]
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    for _ in range(3):
+        await worker.run_once()
+    facts = await app.facts(owner)
+    assert facts["total"] == 5
+    await app.mutate(owner, "delete", {
+        "fact_id": facts["items"][0]["id"], "confirm_dissection_origin": True,
+    })
+    repeated = await app.request_analysis(
+        owner, version_id=version, kind="dissection", idempotency_key="after-application",
+    )
+    assert repeated["request_id"] == retried["request_id"]
+    await app.reconcile()
+    assert (await app.facts(owner))["total"] == 4
+    async with database.sessions() as session:
+        row = await session.get(KnowledgeDissectionRecord, first["dissection_id"])
+        assert row.status == "succeeded" and row.application is not None
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord).where(
+            TrainingUsagePeriodRecord.feature == "dissection",
+        )))
+        assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 1
+
+
+async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks(
+    database, monkeypatch,
+):
+    owner = await create_player(database, 8231, "fk-waiter")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="first-best-buzz",
+    )
+    lease = uuid4()
+    async with database.transaction() as session:
+        request = await app.analysis._request_row(session, first["request_id"])
+        artifact_id = request.artifact_id
+        artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        artifact.status = "running"
+        artifact.lease_token = lease
+        artifact.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    terminal_locked, waiter_lookup = asyncio.Event(), asyncio.Event()
+    original_complete = app.analysis._complete_requests
+    original_lookup = app.analysis._artifact_for_key
+
+    async def complete(*args):
+        terminal_locked.set()
+        await waiter_lookup.wait()
+        await original_complete(*args)
+
+    async def lookup(*args, **kwargs):
+        waiter_lookup.set()
+        return await original_lookup(*args, **kwargs)
+
+    monkeypatch.setattr(app.analysis, "_complete_requests", complete)
+    monkeypatch.setattr(app.analysis, "_artifact_for_key", lookup)
+    terminal = asyncio.create_task(app.analysis._write_terminal(
+        artifact_id, lease, status="succeeded", payload={"boundaries": []},
+    ))
+    waiter = None
+    try:
+        await asyncio.wait_for(terminal_locked.wait(), timeout=5)
+        waiter = asyncio.create_task(app.request_analysis(
+            owner, version_id=version, kind="best_buzz", idempotency_key="second-best-buzz",
+        ))
+        _, result = await asyncio.wait_for(asyncio.gather(terminal, waiter), timeout=10)
+        assert result["status"] == "succeeded"
+    finally:
+        waiter_lookup.set()
+        for task in (terminal, waiter):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(terminal, *([waiter] if waiter else []), return_exceptions=True)
+    async with database.sessions() as session:
+        requests = list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+        assert len(requests) == 2 and all(row.status == "succeeded" for row in requests)
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 1
+        assert len(list(await session.scalars(select(TrainingBestBuzzCompletionRecord)))) == 1
+
+
+async def test_exact_dissection_identity_survives_bounded_persisted_history(database):
+    from sitg_bot.storage.models import PacketVersionRecord
+
+    owner = await create_player(database, 8241, "history-owner")
+    version, _ = await upload(database, owner)
+    app = KnowledgeApplication(database)
+    async with database.transaction() as session:
+        packet = await session.get(PacketVersionRecord, version)
+        service = app.service(session)
+        first = await service.request_dissection(
+            owner, packet_id=packet.packet_id, packet_revision=str(version),
+        )
+        applied = await service.apply_dissection_result(owner, first.request_id, [])
+        for index in range(101):
+            await service.request_dissection(
+                owner, packet_id=packet.packet_id, packet_revision=str(version),
+                comment=f"History revision {index}",
+            )
+        history = await service.store.requests_for_owner(owner, packet_id=packet.packet_id)
+        assert len(history) == 100 and first.request_id not in {row.id for row in history}
+        retry = await service.request_dissection(
+            owner, packet_id=packet.packet_id, packet_revision=str(version),
+        )
+        assert retry == applied
+        assert len(list(await session.scalars(select(KnowledgeDissectionRecord)))) == 102
+
+
+async def test_statistics_lock_owners_in_the_same_order_as_collection_imports(
+    database, monkeypatch,
+):
+    from dataclasses import replace
+
+    from sitg_bot.services import training_knowledge
+    from sitg_bot.storage.models import KnowledgeSnapshotRecord, TrainingCategoryRecord
+
+    owner = await create_player(database, 8251, "statistics-owner")
+    other = await create_player(database, 8252, "statistics-other")
+    app = await application(database, owner)
+    async with database.transaction() as session:
+        category = await session.scalar(select(TrainingCategoryRecord))
+        await app.entitlements.assign_category(session, player_id=other, category_id=category.id)
+    for actor in sorted([owner, other], reverse=True):
+        fact = await app.mutate(actor, "create", {"title": str(actor), "description": "Fact"})
+        await app.statistics_job({"owner_id": str(actor), "fact_id": str(fact["id"]), "version": 1})
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    for _ in range(3):
+        await worker.run_once()
+    app.settings = replace(app.settings, model="new-runtime-model", prompt_version="new-prompt")
+    acquired = []
+    guard = training_knowledge.require_trainee
+
+    async def recording_guard(session, player_id, *, lock=False):
+        result = await guard(session, player_id, lock=lock)
+        if lock:
+            acquired.append(player_id)
+        return result
+
+    monkeypatch.setattr(training_knowledge, "require_trainee", recording_guard)
+    await app.reconcile_statistics()
+    assert acquired == sorted([owner, other])
+    async with database.sessions() as session:
+        snapshots = list(await session.scalars(select(KnowledgeSnapshotRecord)))
+        assert len(snapshots) == 2
+        assert all(row.common["model"] == "fixture" and row.common["prompt_version"] == "1"
+                   for row in snapshots)
+    link = await app.mutate(owner, "link_create", {})
+    acquired.clear()
+    await app.mutate(other, "import", {"token": link["token"]})
+    assert acquired == sorted([owner, other])
+    acquired.clear()
+    await app.mutate(owner, "grant", {"recipient": str(other)})
+    assert acquired == sorted([owner, other])
 
 
 async def test_fact_page_query_count_does_not_scale_per_card(database):

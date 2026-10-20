@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -38,7 +39,7 @@ from sitg_bot.services.training_ai import (
     fact_candidate_id,
     text_fingerprint,
 )
-from sitg_bot.storage.models import DurableJobRecord
+from sitg_bot.storage.models import DurableJobRecord, TrainingUsagePeriodRecord
 
 pytestmark = pytest.mark.integration
 
@@ -223,6 +224,221 @@ async def test_shared_base_requests_coalesce_into_one_computation(database):
     for owner in (owner_a, owner_b):
         remaining = (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining
         assert remaining == 9
+
+
+async def test_registration_serializes_with_terminal_settlement(database, monkeypatch):
+    first = await create_player(database, 230, "race-first")
+    second = await create_player(database, 231, "race-second")
+    stack = await make_stack(database, [first, second])
+    source = DissectionSource(uuid4(), (stack.loader.add("A shared fact."),))
+    await submit(stack.service, first, source, "race-first")
+    selected = asyncio.Event()
+    release = asyncio.Event()
+    terminal_ready = asyncio.Event()
+    allow_terminal = asyncio.Event()
+    terminal_entered = asyncio.Event()
+    terminal_finished = asyncio.Event()
+    authorize = stack.service._authorize_request
+    terminal = stack.service._write_terminal
+
+    async def pause_registration(session, **kwargs):
+        if kwargs["owner_player_id"] == second:
+            selected.set()
+            await release.wait()
+        return await authorize(session, **kwargs)
+
+    async def observe_terminal(*args, **kwargs):
+        terminal_ready.set()
+        await allow_terminal.wait()
+        terminal_entered.set()
+        await terminal(*args, **kwargs)
+        terminal_finished.set()
+
+    monkeypatch.setattr(stack.service, "_authorize_request", pause_registration)
+    monkeypatch.setattr(stack.service, "_write_terminal", observe_terminal)
+    worker = asyncio.create_task(stack.worker.run_once())
+    await asyncio.wait_for(terminal_ready.wait(), 5)
+    registration = asyncio.create_task(submit(stack.service, second, source, "race-second"))
+    await asyncio.wait_for(selected.wait(), 5)
+    allow_terminal.set()
+    try:
+        await asyncio.wait_for(terminal_entered.wait(), 5)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(terminal_finished.wait(), 0.2)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(registration, worker), 10)
+    for owner, key in ((first, "race-first"), (second, "race-second")):
+        status = await stack.service.status(owner_player_id=owner, request_id=key)
+        assert status.status == "succeeded"
+        assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 9
+
+
+async def test_terminal_artifact_reconciles_stranded_waiter(database):
+    owner = await create_player(database, 232, "stranded")
+    stack = await make_stack(database, [owner])
+    source = DissectionSource(uuid4(), (stack.loader.add("A completed fact."),))
+    await submit(stack.service, owner, source, "stranded")
+    async with database.transaction() as session:
+        artifact = await session.get(
+            TrainingAnalysisArtifactRecord, await artifact_id_of(database, "stranded")
+        )
+        artifact.status = "failed"
+        artifact.failed_at = datetime.now(UTC)
+        artifact.last_error = "Historical terminal write without settlement"
+    status = await stack.service.status(owner_player_id=owner, request_id="stranded")
+    assert status.status == "failed"
+    assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
+
+
+@pytest.mark.parametrize("insert_conflict", [False, True])
+async def test_waiter_registration_serializes_with_terminal_completion(
+    database, monkeypatch, insert_conflict,
+):
+    owner_a = await create_player(database, 9201, "terminal-a")
+    owner_b = await create_player(database, 9202, "terminal-b")
+    stack = await make_stack(database, [owner_a, owner_b])
+    revision_id = stack.loader.add("A concurrent shared fact.")
+    source = DissectionSource(uuid4(), (revision_id,))
+    lease_token = uuid4()
+    missing, continue_lookup = asyncio.Event(), asyncio.Event()
+    selected, finish_registration = asyncio.Event(), asyncio.Event()
+    original_lookup = stack.service._artifact_for_key
+    waiter_task = None
+
+    class PausedLookup:
+        def __init__(self, session):
+            self.session = session
+
+        async def scalar(self, statement):
+            result = await self.session.scalar(statement)
+            if result is None:
+                missing.set()
+                await continue_lookup.wait()
+            return result
+
+        async def execute(self, statement):
+            return await self.session.execute(statement)
+
+    async def lookup(waiter_session, key, **values):
+        if asyncio.current_task() is not waiter_task:
+            return await original_lookup(waiter_session, key, **values)
+        artifact = await original_lookup(PausedLookup(waiter_session), key, **values)
+        selected.set()
+        await finish_registration.wait()
+        return artifact
+
+    monkeypatch.setattr(stack.service, "_artifact_for_key", lookup)
+
+    async def start_artifact():
+        await submit(stack.service, owner_a, source, "terminal-first")
+        artifact_id = await artifact_id_of(database, "terminal-first")
+        async with database.transaction() as transaction:
+            artifact = await transaction.get(TrainingAnalysisArtifactRecord, artifact_id)
+            artifact.status = "running"
+            artifact.lease_token = lease_token
+            artifact.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        return artifact_id
+
+    if not insert_conflict:
+        artifact_id = await start_artifact()
+    waiter_task = asyncio.create_task(submit(stack.service, owner_b, source, "terminal-waiter"))
+    terminal_task = None
+    try:
+        if insert_conflict:
+            await asyncio.wait_for(missing.wait(), timeout=5)
+            artifact_id = await start_artifact()
+            continue_lookup.set()
+        await asyncio.wait_for(selected.wait(), timeout=5)
+        terminal_task = asyncio.create_task(stack.service._write_terminal(
+            artifact_id, lease_token, status="succeeded", payload={"candidates": []},
+        ))
+        done, _ = await asyncio.wait({terminal_task}, timeout=0.25)
+        assert not done
+    finally:
+        continue_lookup.set()
+        finish_registration.set()
+        await asyncio.gather(waiter_task, *([terminal_task] if terminal_task else []))
+
+    async with database.sessions() as transaction:
+        requests = list(await transaction.scalars(select(TrainingAnalysisRequestRecord)))
+        assert len(requests) == 2
+        assert all(row.status == "succeeded" and row.completed_at for row in requests)
+        periods = list(await transaction.scalars(select(TrainingUsagePeriodRecord).where(
+            TrainingUsagePeriodRecord.feature == FEATURE_DISSECTION,
+        )))
+        assert len(periods) == 2
+        assert all(row.reserved == 0 and row.settled == 1 for row in periods)
+    assert (await stack.service.result(owner_player_id=owner_b, request_id="terminal-waiter")) == {
+        "candidates": [],
+    }
+
+
+async def test_stale_reconciliation_cannot_fail_a_replacement_generation(database):
+    owner_a = await create_player(database, 9211, "generation-a")
+    owner_b = await create_player(database, 9212, "generation-b")
+    stack = await make_stack(database, [owner_a, owner_b])
+    revision_id = stack.loader.add("An explicitly retried shared fact.")
+    source = DissectionSource(uuid4(), (revision_id,))
+    await submit(stack.service, owner_a, source, "generation-first")
+    artifact_id = await artifact_id_of(database, "generation-first")
+    async with database.transaction() as session:
+        stale = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        assert stale.generation == 1 and stale.status == "pending"
+        assert await stack.service.cancel(owner_player_id=owner_a, request_id="generation-first")
+        await submit(stack.service, owner_b, source, "generation-replacement")
+        await stack.service._reconcile_artifact(session, stale, datetime.now(UTC))
+        assert stale.generation == 2 and stale.status == "pending"
+    async with database.sessions() as session:
+        replacement = await stack.service._request_row(session, "generation-replacement")
+        assert replacement.status == "queued" and replacement.completed_at is None
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert sum(row.reserved for row in periods) == 1
+        assert sum(row.settled for row in periods) == 0
+    assert await stack.worker.run_once() == 1
+    result = await stack.service.result(
+        owner_player_id=owner_b, request_id="generation-replacement"
+    )
+    assert result is not None and len(result["candidates"]) == 1
+
+
+@pytest.mark.parametrize("field", [
+    "model", "prompt_version", "schema_version", "tokenizer_version",
+])
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_incompatible_execution_profile_refunds_reservations_without_computation(
+    database, field, checkpointed,
+):
+    owner = await create_player(database, 9221, "profile-owner")
+    stack = await make_stack(database, [owner])
+    revision = stack.loader.add("The artifact belongs to its recorded execution profile.")
+    source = DissectionSource(uuid4(), (revision,))
+    await submit(stack.service, owner, source, "profile-request")
+    artifact_id = await artifact_id_of(database, "profile-request")
+    if checkpointed:
+        async with database.transaction() as session:
+            artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+            artifact.status = "running"
+            artifact.lease_token = uuid4()
+            artifact.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+            artifact.checkpoint = {"chunks_done": 0, "partial": []}
+    settings = replace(stack.settings, **{field: getattr(stack.settings, field) + "-changed"})
+    provider = FakeAnalysisProvider()
+    restarted = AnalysisService(
+        database, stack.jobs, provider, settings,
+        entitlements=stack.entitlements, source_loader=stack.loader,
+    )
+    await restarted.execute_job({"artifact_id": str(artifact_id), "generation": 1})
+    view = await restarted.status(owner_player_id=owner, request_id="profile-request")
+    assert view.status == "failed" and view.error == "Analysis execution profile changed"
+    assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
+    assert (await stack.entitlements.capabilities(owner))[FEATURE_DISSECTION].remaining == 10
+    async with database.sessions() as session:
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert len(periods) == 1 and periods[0].reserved == periods[0].settled == 0
+        artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        assert getattr(artifact, field) == getattr(stack.settings, field)
+        assert artifact.payload is None
 
 
 async def test_custom_instructions_and_owners_isolate_artifacts(database):

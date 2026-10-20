@@ -55,14 +55,59 @@ describe("training", () => {
     expect(request.mock.calls.length).toBe(count);
   });
 
+  it("preserves focused answers across presentation updates and resets for a new question", async () => {
+    vi.useFakeTimers();
+    const current = { ...state, phase: "answering" as const, presentation_version: 1 };
+    const { root, request } = create(current);
+    document.body.append(root);
+    const answer = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]')!;
+    answer.focus();
+    answer.value = "Partially typed";
+    answer.setSelectionRange(3, 7);
+    request.mockImplementation(async () => ({ session: {
+      ...current, presentation_version: 2, hidden: true,
+    } }));
+    await vi.advanceTimersByTimeAsync(650);
+    expect(root.querySelector('input[aria-label="Submit answer"]')).toBe(answer);
+    expect(document.activeElement).toBe(answer);
+    expect(answer.value).toBe("Partially typed");
+    expect(answer.selectionStart).toBe(3);
+    expect(root.querySelector(".training-question")?.textContent).toBe("Question text is hidden.");
+    request.mockImplementation(async () => ({ session: {
+      ...current, version: 2, question_revision_id: "next-question",
+    } }));
+    await vi.advanceTimersByTimeAsync(650);
+    const next = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]')!;
+    expect(next).not.toBe(answer);
+    expect(next.value).toBe("");
+    root.remove();
+  });
+
   it("allows hidden plus reversed and excludes Best buzz", () => {
     const { root } = create(null);
-    const boxes = root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    boxes[0]!.checked = true; boxes[0]!.dispatchEvent(new Event("change"));
-    boxes[1]!.checked = true; boxes[1]!.dispatchEvent(new Event("change"));
-    expect(boxes[0]!.disabled).toBe(false);
-    expect(boxes[1]!.disabled).toBe(false);
-    expect(boxes[2]!.disabled).toBe(true);
-    expect(root.querySelector<HTMLInputElement>('input[type="number"]')?.disabled).toBe(false);
+    root.querySelectorAll<HTMLButtonElement>("nav button")[2]!.click(); // Options
+    const options = root.querySelector<HTMLElement>(".training-options")!;
+    const picker = options.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    const config = () => options.querySelector<HTMLInputElement>('.training-modifier-config input[type="checkbox"]')!;
+    const enable = (): void => {
+      config().checked = true;
+      config().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(config().checked).toBe(true);
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(config().disabled).toBe(false);
+    const seconds = options.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
+    expect(seconds.disabled).toBe(false);
+    picker.value = "best_buzz";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().disabled).toBe(true);
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(true);
   });
 });

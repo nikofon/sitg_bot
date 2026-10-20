@@ -1,6 +1,9 @@
+import asyncio
+import json
 from uuid import UUID
 
 import pytest
+from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture
 from test_training import upload
@@ -73,6 +76,76 @@ async def test_lobby_persists_settings_and_starts_only_on_request(database_url):
         assert (await service.current(owner))["lobby"] is None
     finally:
         await database.close()
+
+
+async def test_start_does_not_hold_account_while_waiting_for_source(database_url, monkeypatch):
+    from sitg_bot.storage.models import PlayerRecord
+
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        owner = fixture.players[0].id
+        packet, _ = await upload(database, owner)
+        service = TrainingService(database)
+        waiting = asyncio.Event()
+        release = asyncio.Event()
+        lock_access = service.packets.lock_access
+
+        async def wait_for_source(*args, **kwargs):
+            waiting.set()
+            await release.wait()
+            return await lock_access(*args, **kwargs)
+
+        monkeypatch.setattr(service.packets, "lock_access", wait_for_source)
+        task = asyncio.create_task(service.start(owner, packet, confirm=True))
+        try:
+            await asyncio.wait_for(waiting.wait(), 5)
+            async with database.transaction() as session:
+                assert await session.get(PlayerRecord, owner, with_for_update={"nowait": True})
+        finally:
+            release.set()
+            result = await asyncio.wait_for(task, 10)
+        assert result["session"] is not None
+    finally:
+        await database.close()
+
+
+async def test_private_author_cards_and_search_remain_owner_scoped(database):
+    from conftest import create_player
+
+    from sitg_bot.services.training_packets import TrainingPacketService
+    from sitg_bot.storage.models import AuthorRecord
+
+    owner = await create_player(database, 8311, "private-authors")
+    other = await create_player(database, 8312, "other-authors")
+    packets = TrainingPacketService(database)
+    content = {
+        "name": "Attributed private packet", "lead_author": "Lead Person",
+        "themes": [{"name": "Theme", "authors": ["Theme Person"], "questions": [
+            {"value": value, "text": "Question", "answer": "Answer", "authors": ["Question Person"]}
+            for value in (10, 20, 30, 40, 50)
+        ]}],
+    }
+    imported = await packets.import_upload(owner, json.dumps(content).encode(), "authors.json")
+    draft = imported["drafts"][0]
+    published = await packets.decide_draft(
+        owner, UUID(draft["draft_id"]), expected_version=draft["version"], publish=True,
+    )
+    version_id = UUID(published["version_id"])
+    card = (await packets.list_packets(owner))["items"][0]
+    assert card["authors"] == [
+        {"id": None, "name": name} for name in ("Lead Person", "Question Person", "Theme Person")
+    ]
+    for name in ("lead", "QUESTION", " theme person "):
+        page = await packets.list_packets(owner, author=name)
+        assert [item["id"] for item in page["items"]] == [version_id]
+        assert (await packets.list_packets(other, author=name))["items"] == []
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(AuthorRecord).where(
+            AuthorRecord.display_name.in_(["Lead Person", "Question Person", "Theme Person"])
+        )))
+    await packets.retire(owner, version_id)
+    assert (await packets.list_packets(owner, author="Person"))["items"] == []
 
 
 async def test_quit_clears_saved_lobby(database_url):

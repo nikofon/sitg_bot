@@ -9,7 +9,8 @@ messages with authenticated inline navigation.
 
 from __future__ import annotations
 
-from html import escape
+from dataclasses import replace
+from html import escape, unescape
 from typing import Protocol
 from uuid import UUID
 
@@ -17,15 +18,31 @@ from aiogram import Router
 from aiogram.types import CallbackQuery, Message
 
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.presenters.game import plain_chunks
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
     InlineKeyboardModel,
     MessageModel,
 )
-from sitg_bot.bot.presenters.render import send_message_model
+from sitg_bot.bot.presenters.render import send_message_model as _send_message_model
 from sitg_bot.domain.knowledge import FACT_PAGE_SIZE
 
 router = Router(name=__name__)
+
+
+async def send_message_model(message: Message, model: MessageModel) -> None:
+    """Knowledge projections contain escaped plain text, not HTML markup."""
+    chunks = list(plain_chunks(unescape(model.text)))
+    for index, chunk in enumerate(chunks):
+        await _send_message_model(
+            message,
+            replace(
+                model,
+                text=chunk,
+                keyboard=model.keyboard if index == len(chunks) - 1 else None,
+            ),
+        )
+
 
 FACTS_CALLBACK_PREFIX = "klib"
 STATISTIC_LABELS = {

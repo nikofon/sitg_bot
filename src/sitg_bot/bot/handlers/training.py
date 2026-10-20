@@ -365,7 +365,7 @@ async def handle_training_document_expected(message: Message, localization, loca
     await message.answer(localization.text("training.document_prompt", locale))
 
 
-@router.message(TrainingContext(), F.text)
+@router.message(TrainingContext(), F.text, ~F.text.startswith("/"))
 async def handle_training_answer(
     message: Message, backend, telegram_update_claim, localization, locale
 ):

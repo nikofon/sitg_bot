@@ -141,6 +141,7 @@ class TrainingService:
         settings = settings or TrainingSettings()
         try:
             async with self.database.transaction() as session:
+                await self.packets.lock_access(session, player_id, version_id)
                 player = await session.get(PlayerRecord, player_id, with_for_update=True)
                 if lobby_version is not None:
                     lobby = player.training_lobby

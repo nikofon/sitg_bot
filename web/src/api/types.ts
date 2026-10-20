@@ -703,6 +703,16 @@ export interface TrainingPacket {
   name: string;
   year: number | null;
   scope: "training" | "tournament";
+  /** Catalogue metadata per the training/Knowledge backend contract v1
+   * (sitg-knowledge-data). Optional here so the UI degrades to "—" rows
+   * until the catalogue projection lands; never fabricated client-side. */
+  authors?: Array<{ id: string | null; name: string }>;
+  tournaments?: Array<{ id: string; name: string }>;
+  total_theme_count?: number;
+  fresh_theme_count?: number;
+  dissected_theme_count?: number | null;
+  dissected?: boolean;
+  best_buzz_calculated?: boolean;
 }
 
 export interface TrainingDraft {

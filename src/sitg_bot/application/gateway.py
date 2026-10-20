@@ -286,6 +286,20 @@ _LOBBY_ERROR_MESSAGES = {
 }
 
 
+PRIVATE_MUTATION_REPLAYS = frozenset({
+    ActionCode.KNOWLEDGE_CREATE,
+    ActionCode.KNOWLEDGE_UPDATE,
+    ActionCode.KNOWLEDGE_DELETE,
+    ActionCode.KNOWLEDGE_MERGE,
+    ActionCode.KNOWLEDGE_TAG_CREATE,
+    ActionCode.KNOWLEDGE_TAG_RENAME,
+    ActionCode.KNOWLEDGE_TAG_DELETE,
+    ActionCode.TRAINING_START,
+    ActionCode.TRAINING_ACT,
+    ActionCode.TRAINING_UPLOAD,
+    ActionCode.TRAINING_DRAFT_DECIDE,
+})
+
 ACTION_POLICIES: dict[ActionCode, ActionPolicy] = {action: ActionPolicy() for action in ActionCode}
 # Banned players keep read access to their packet library; every other action is refused.
 BAN_EXEMPT_ACTIONS = frozenset(
@@ -318,6 +332,16 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.KNOWLEDGE_TAG_DELETE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_SHARING: ActionPolicy(sensitive_response=True),
+        ActionCode.KNOWLEDGE_LINK_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_LINK_DEACTIVATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_IMPORT: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.KNOWLEDGE_GRANT: ActionPolicy(
@@ -676,6 +700,9 @@ class ApplicationGateway:
                     principal, request, policy=policy, key_digest=key_digest
                 )
                 if cached is not None:
+                    idempotency = None
+                    if cached.ok and action in PRIVATE_MUTATION_REPLAYS:
+                        await self._authorize_mutation_replay(principal, request, cached)
                     cached_error_code = cached.error.code.value if cached.error else None
                     cached_outcome = "succeeded"
                     if cached.error is not None:
@@ -704,7 +731,9 @@ class ApplicationGateway:
                 await self._finish_idempotency(
                     idempotency.id,
                     response,
-                    store_response=not policy.sensitive_response,
+                    store_response=(
+                        not policy.sensitive_response or action in PRIVATE_MUTATION_REPLAYS
+                    ),
                 )
             await self._finish_audit(audit_id, outcome="succeeded", error_code=None)
             return response
@@ -1220,10 +1249,14 @@ class ApplicationGateway:
                 ActionCode.KNOWLEDGE_TAG_DELETE: "tag_delete",
                 ActionCode.KNOWLEDGE_GRANT: "grant",
                 ActionCode.KNOWLEDGE_REVOKE: "revoke",
+                ActionCode.KNOWLEDGE_LINK_CREATE: "link_create",
+                ActionCode.KNOWLEDGE_LINK_DEACTIVATE: "link_deactivate",
+                ActionCode.KNOWLEDGE_IMPORT: "import",
             }
-            return await self.knowledge.mutate(
-                player_id, commands[action], operation.model_dump(exclude={"action"})
-            )
+            values = operation.model_dump(exclude={"action"})
+            if action == ActionCode.KNOWLEDGE_LINK_CREATE:
+                values["creation_key"] = request.metadata.idempotency_key
+            return await self.knowledge.mutate(player_id, commands[action], values)
         if isinstance(operation, TrainingLobbyOperation):
             return await self.training.lobby(
                 player_id, operation.command, expected_version=operation.expected_version,
@@ -2072,6 +2105,34 @@ class ApplicationGateway:
                 record.error_code = error_code
                 record.completed_at = datetime.now(UTC)
 
+    async def _authorize_mutation_replay(
+        self,
+        principal: ApplicationPrincipal,
+        request: GatewayRequest,
+        response: GatewayResponse,
+    ) -> None:
+        from sitg_bot.services.training_access import require_trainee
+
+        player_id = await self._require_active_principal(principal)
+        await self._reject_banned_player(player_id, ActionCode(request.operation.action))
+        operation = request.operation
+        if isinstance(operation, TrainingUploadOperation):
+            for draft in response.data["drafts"]:
+                await self.training.packets.draft(player_id, UUID(draft["draft_id"]))
+        elif isinstance(operation, TrainingDraftDecideOperation):
+            await self.training.packets.draft(player_id, operation.draft_id)
+        else:
+            async with self.database.transaction() as session:
+                await require_trainee(session, player_id)
+                if isinstance(operation, TrainingStartOperation):
+                    await self.training.packets.authorize(session, player_id, operation.version_id)
+                elif isinstance(operation, TrainingActOperation):
+                    record = await self.training._owned(session, player_id, operation.session_id)
+                    if operation.command != "stop":
+                        await self.training.packets.authorize(
+                            session, player_id, record.packet_version_id
+                        )
+
     async def _begin_idempotency(
         self,
         principal: ApplicationPrincipal,
@@ -2110,7 +2171,10 @@ class ApplicationGateway:
                     if policy.sensitive_response:
                         if request.operation.action == ActionCode.TOKEN_CLAIM:
                             raise _SecretAlreadyDelivered
-                        return None, record
+                        if request.operation.action not in PRIVATE_MUTATION_REPLAYS:
+                            return None, record
+                        if record.response_payload == {"completed": True}:
+                            raise _RequestIndeterminate
                     if record.response_payload is not None:
                         return GatewayResponse.model_validate(record.response_payload), record
                     raise _RequestIndeterminate

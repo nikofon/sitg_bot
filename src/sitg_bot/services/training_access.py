@@ -14,7 +14,11 @@ async def require_trainee(
     *,
     lock: bool = False,
 ) -> PlayerRecord:
-    player = await session.get(PlayerRecord, player_id, with_for_update=lock)
+    player = await session.get(
+        PlayerRecord, player_id,
+        with_for_update={"key_share": True} if lock else None,
+        populate_existing=lock,
+    )
     if player is None or player.status != "active":
         raise PermissionError("Completed registration is required")
     banned = await session.scalar(
