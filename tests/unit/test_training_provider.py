@@ -18,7 +18,7 @@ from sitg_bot.services.training_ai import (
 from sitg_bot.services.training_provider import ResponsesAnalysisProvider
 
 
-def provider(monkeypatch, output, *, status="completed"):
+def provider(monkeypatch, output, *, status="completed", chunk_size=None):
     calls = []
     response = {
         "status": status,
@@ -26,6 +26,13 @@ def provider(monkeypatch, output, *, status="completed"):
             {"type": "message", "content": [{"type": "output_text", "text": json.dumps(output)}]}
         ],
     }
+
+    encoded = json.dumps(response).encode()
+    chunks = (
+        [encoded]
+        if chunk_size is None
+        else [encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)]
+    )
 
     class Context:
         async def __aenter__(self):
@@ -40,9 +47,7 @@ def provider(monkeypatch, output, *, status="completed"):
 
         headers = {"x-request-id": "upstream-test"}
         status = 200
-        content = type(
-            "Content", (), {"read": AsyncMock(return_value=json.dumps(response).encode())}
-        )()
+        content = type("Content", (), {"read": AsyncMock(side_effect=[*chunks, b""])})()
 
     monkeypatch.setattr(
         "sitg_bot.services.training_provider.aiohttp.ClientSession", lambda **kwargs: Context()
@@ -50,6 +55,18 @@ def provider(monkeypatch, output, *, status="completed"):
     return ResponsesAnalysisProvider(
         ProviderSettings("openai", "configured-model", api_key="test-secret")
     ), calls
+
+
+async def test_provider_accumulates_short_network_reads_until_eof(monkeypatch):
+    instance, _ = provider(monkeypatch, {"candidates": []}, chunk_size=7)
+    result = await instance.extract_facts(ExtractionRequest((), "", "en"))
+    assert result == ()
+
+
+async def test_provider_rejects_oversized_chunked_response(monkeypatch):
+    instance, _ = provider(monkeypatch, {"padding": "x" * (1024 * 1024)}, chunk_size=65536)
+    with pytest.raises(AnalysisValidationError, match="size limit"):
+        await instance.extract_facts(ExtractionRequest((), "", "en"))
 
 
 async def test_provider_uses_strict_private_structured_requests(monkeypatch):

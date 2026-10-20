@@ -104,9 +104,14 @@ class ResponsesAnalysisProvider:
                         raise AnalysisValidationError(
                             "Provider rejected analysis request (HTTP " + str(response.status) + ")"
                         )
-                    raw = await response.content.read(1024 * 1024 + 1)
-                    if len(raw) > 1024 * 1024:
-                        raise AnalysisValidationError("Provider response exceeds size limit")
+                    raw = bytearray()
+                    while True:
+                        chunk = await response.content.read(min(65536, 1024 * 1024 + 1 - len(raw)))
+                        if not chunk:
+                            break
+                        raw.extend(chunk)
+                        if len(raw) > 1024 * 1024:
+                            raise AnalysisValidationError("Provider response exceeds size limit")
                     payload = json.loads(raw)
                     metadata = PROVIDER_CALL_METADATA.get()
                     if metadata is not None:

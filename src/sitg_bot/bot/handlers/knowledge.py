@@ -9,7 +9,8 @@ messages with authenticated inline navigation.
 
 from __future__ import annotations
 
-from html import escape
+from dataclasses import replace
+from html import escape, unescape
 from typing import Protocol
 from uuid import UUID
 
@@ -18,15 +19,31 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.presenters.game import plain_chunks
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
     InlineKeyboardModel,
     MessageModel,
 )
-from sitg_bot.bot.presenters.render import send_message_model
+from sitg_bot.bot.presenters.render import send_message_model as _send_message_model
 from sitg_bot.domain.knowledge import FACT_PAGE_SIZE
 
 router = Router(name=__name__)
+
+
+async def send_message_model(message: Message, model: MessageModel) -> None:
+    """Knowledge projections contain escaped plain text, not HTML markup."""
+    chunks = list(plain_chunks(unescape(model.text)))
+    for index, chunk in enumerate(chunks):
+        await _send_message_model(
+            message,
+            replace(
+                model,
+                text=chunk,
+                keyboard=model.keyboard if index == len(chunks) - 1 else None,
+            ),
+        )
+
 
 FACTS_CALLBACK_PREFIX = "klib"
 STATISTIC_LABELS = {
@@ -120,7 +137,8 @@ def facts_message(page: dict, localization: LocalizationService, locale: str) ->
         lines.append(entry)
     keyboard = InlineKeyboardModel(rows=tuple(rows)) if rows else None
     return MessageModel(
-        localization.text("knowledge.facts.title", locale, total=total) + "\n\n"
+        localization.text("knowledge.facts.title", locale, total=total)
+        + "\n\n"
         + "\n\n".join(lines),
         keyboard=keyboard,
     )
@@ -150,9 +168,9 @@ def fact_detail_message(
         )
     lines.append(
         localization.text(
-            "knowledge.fact.origin", locale, origin=localization.text(
-                f"knowledge.origin.{origin}", locale
-            )
+            "knowledge.fact.origin",
+            locale,
+            origin=localization.text(f"knowledge.origin.{origin}", locale),
         )
     )
     tags = detail.get("tags", ())
@@ -224,11 +242,7 @@ def dissection_status_message(
             )
         )
         if item.get("failed_candidate_ids"):
-            lines.append(
-                localization.text(
-                    "knowledge.dissection.partial", locale
-                )
-            )
+            lines.append(localization.text("knowledge.dissection.partial", locale))
     return MessageModel("\n".join(lines))
 
 
@@ -297,9 +311,7 @@ async def handle_knowledge_callback(
             model = facts_message(page, localization, locale)
         elif data.startswith(f"{FACTS_CALLBACK_PREFIX}:fact:"):
             fact_id = UUID(data.removeprefix(f"{FACTS_CALLBACK_PREFIX}:fact:"))
-            detail = await knowledge_backend.fact_detail(
-                telegram_update_claim, fact_id
-            )
+            detail = await knowledge_backend.fact_detail(telegram_update_claim, fact_id)
             model = fact_detail_message(detail, localization, locale)
         else:
             model = _error_message(ValueError("Unknown action"), localization, locale)
@@ -403,7 +415,8 @@ async def handle_knowledge_command(
             return
         elif command == "factshare":
             operation = KnowledgeSharingOperation(
-                action=ActionCode.KNOWLEDGE_GRANT, recipient=args,
+                action=ActionCode.KNOWLEDGE_GRANT,
+                recipient=args,
             )
         elif command in ("tagadd", "tagrename", "tagdelete"):
             values = {}
