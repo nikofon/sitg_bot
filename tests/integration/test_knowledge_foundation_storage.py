@@ -102,13 +102,18 @@ async def test_multitag_sql_search_pagination_and_metadata_reads_are_page_batche
 
 
 async def test_upload_only_catalogue_filter_and_split_lobby_mutations(database):
+    from test_lobby_architecture import tournament_fixture
+
     from sitg_bot.services.concurrency import StaleWriteError
 
-    owner = await create_player(database, 9471, "filter-owner")
+    fixture = await tournament_fixture(database, player_count=1)
+    owner = fixture.manager.id
     other = await create_player(database, 9472, "filter-other")
     version_id, _ = await upload(database, owner)
     other_version, _ = await upload(database, other)
     packets = TrainingPacketService(database)
+    available = (await packets.list_packets(owner))["items"]
+    assert any(item["scope"] == "tournament" for item in available)
     own = (await packets.list_packets(owner, owner_uploads_only=True))["items"]
     assert [item["id"] for item in own] == [version_id]
     assert other_version not in [item["id"] for item in own]

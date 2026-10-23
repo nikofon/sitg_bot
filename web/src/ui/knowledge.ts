@@ -764,7 +764,7 @@ function factForm(
     event.preventDefault();
     if (save.disabled) return;
     save.disabled = true;
-    void actions.save?.({
+    void imagesField.ready().then(() => actions.save?.({
       title: title.value,
       description: description.value,
       tag_names: [...selectedTags],
@@ -775,7 +775,7 @@ function factForm(
         }),
       // The complete desired attachment set: kept existing ids plus new uploads.
       image_ids: imagesField.imageIds(),
-    }, detail).then(() => {
+    }, detail)).then(() => {
       close();
       changed();
     }).catch(() => { error.textContent = i18n.t("knowledge.error"); })
@@ -805,8 +805,10 @@ function factImagesField(
   actions: KnowledgeActions,
   detail: KnowledgeFactDetail | undefined,
   error: HTMLElement,
-): { root: HTMLElement; imageIds: () => string[] } {
+): { root: HTMLElement; imageIds: () => string[]; ready: () => Promise<void> } {
   const kept: KnowledgeFactImage[] = [...(detail?.images ?? [])];
+  let queuedUploads = 0;
+  let pendingUploads = Promise.resolve();
   const list = element("div", { className: "knowledge-images" });
   const upload = actions.uploadImage;
   const picker = element("input", {
@@ -835,13 +837,15 @@ function factImagesField(
         element("img", { src: image.url, alt: i18n.t("knowledge.images_field") }),
         remove));
     }
-    if (upload) picker.disabled = kept.length >= MAX_FACT_IMAGES;
+    if (upload) picker.disabled = queuedUploads > 0 || kept.length >= MAX_FACT_IMAGES;
   };
   picker.addEventListener("change", () => {
     const files = [...(picker.files ?? [])];
     picker.value = "";
     if (!upload) return;
-    void (async (): Promise<void> => {
+    ++queuedUploads;
+    render();
+    pendingUploads = pendingUploads.then(async (): Promise<void> => {
       for (const file of files) {
         if (!IMAGE_TYPES.has(file.type)) {
           report("knowledge.images.unsupported");
@@ -863,13 +867,16 @@ function factImagesField(
           report("knowledge.error");
         }
       }
-    })();
+    }).finally(() => {
+      --queuedUploads;
+      render();
+    });
   });
   const root = element("div", { className: "knowledge-images-field" },
     element("span", { className: "knowledge-images-label" }, i18n.t("knowledge.images_field")),
     picker, list);
   render();
-  return { root, imageIds: () => kept.map((image) => image.id) };
+  return { root, imageIds: () => kept.map((image) => image.id), ready: () => pendingUploads };
 }
 
 function shareLinkRow(

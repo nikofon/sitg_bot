@@ -507,6 +507,31 @@ describe("fact editor", () => {
     await flush();
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ image_ids: ["image-2"] }), detail);
   });
+
+  it("waits for an in-flight image upload before saving the complete attachment set", async () => {
+    const uploaded = { id: "image-new", url: "/api/miniapp/knowledge/images/image-new", content_type: "image/png" };
+    let resolveUpload!: (image: typeof uploaded) => void;
+    const uploadImage = vi.fn(() => new Promise<typeof uploaded>((resolve) => { resolveUpload = resolve; }));
+    const save = vi.fn().mockResolvedValue(editableDetail);
+    const { root } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail), uploadImage, save,
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    const picker = dialog.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(picker, "files", { value: [new File(["png"], "image.png", { type: "image/png" })] });
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledOnce());
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    resolveUpload(uploaded);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ image_ids: ["image-new"] }), editableDetail,
+    ));
+  });
 });
 
 describe("tags with colours", () => {
