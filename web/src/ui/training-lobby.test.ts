@@ -179,7 +179,7 @@ describe("training lobby", () => {
     expect(tokenDelay.value).toBe("0.6");
   });
 
-  it("displaces incompatible modifiers without losing the stored preference", () => {
+  it("requires explicit selection to re-enable displaced modifiers", () => {
     const { root } = create();
     tab(root, 2);
     const options = root.querySelector<HTMLElement>(".training-options")!;
@@ -197,13 +197,16 @@ describe("training lobby", () => {
     expect([...root.querySelectorAll(".training-overview .training-modifier-badge")].map((b) => b.textContent))
       .toEqual(["Best buzz"]);
 
-    // Unchecking best buzz restores the displaced reversed preference.
     bestBuzzBox.checked = false;
     bestBuzzBox.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(root.querySelector<HTMLInputElement>(".training-modifier-config input[type=\"checkbox\"]")!.checked)
-      .toBe(true);
+    const reversedBox = root.querySelector<HTMLInputElement>(".training-modifier-config input[type=\"checkbox\"]")!;
+    expect(reversedBox.checked).toBe(false);
+    expect(root.querySelectorAll(".training-overview .training-modifier-badge")).toHaveLength(0);
+    reversedBox.checked = true;
+    reversedBox.dispatchEvent(new Event("change", { bubbles: true }));
     expect([...root.querySelectorAll(".training-overview .training-modifier-badge")].map((b) => b.textContent))
-      .toEqual(["Reverse word order", "Hide question text"]);
+      .toEqual(["Reverse word order"]);
+    expect(settingInput(root, "Reading interval").value).toBe("0.6");
   });
 
   it("autosaves packet selection immediately without carrying settings", async () => {
@@ -248,6 +251,51 @@ describe("training lobby", () => {
     await vi.waitFor(() => expect(status(root)).toContain("Saved. Return to Telegram"));
     expect(settingInput(root, "Buzz timer").value).toBe("9");
     expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Beta packet");
+  });
+
+  it("keeps edits made during a settings save unsaved until explicitly saved", async () => {
+    let resolveSave!: (value: unknown) => void;
+    const { root, request } = create({ lobbyCalls: [
+      () => new Promise((resolve) => { resolveSave = resolve; }),
+    ] });
+    tab(root, 2);
+    const buzz = settingInput(root, "Buzz timer");
+    buzz.value = "10";
+    buzz.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ settings: { buzz_timeout: 10 } });
+    buzz.value = "20";
+    buzz.dispatchEvent(new Event("input", { bubbles: true }));
+    resolveSave({ lobby: { ...lobby, version: 4, settings: { ...lobby.settings, buzz_timeout: 10 } } });
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram.");
+    expect(buzz.value).toBe("20");
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ expected_version: 4, settings: { buzz_timeout: 20 } });
+    await vi.waitFor(() => expect(status(root)).toContain("Saved. Return to Telegram"));
+  });
+
+  it("snapshots settings at submit while waiting for packet autosave", async () => {
+    let resolveSelect!: (value: unknown) => void;
+    const { root, request } = create({ lobbyCalls: [
+      () => new Promise((resolve) => { resolveSelect = resolve; }),
+    ] });
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    const buzz = settingInput(root, "Buzz timer");
+    buzz.value = "10";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    buzz.value = "20";
+    buzz.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(1));
+    resolveSelect({ lobby: { ...lobby, version: 4, version_id: "two", packet_name: "Beta packet" } });
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ expected_version: 4, settings: { buzz_timeout: 10 } });
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram.");
+    expect(buzz.value).toBe("20");
   });
 
   it("saves settings without a packet selected", async () => {

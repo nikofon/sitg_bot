@@ -1,5 +1,5 @@
 import { ApiClient, ApiError } from "../api/client";
-import type { TrainingDraft, TrainingLobby, TrainingPacket, TrainingResult } from "../api/types";
+import type { TrainingDraft, TrainingPacket, TrainingResult } from "../api/types";
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element, replaceChildren } from "./dom";
@@ -62,8 +62,6 @@ export function renderTraining(
   const conflicts: Record<ModifierKey, readonly ModifierKey[]> = {
     reversed: ["best_buzz"], hidden: ["best_buzz"], best_buzz: ["reversed", "hidden"],
   };
-  // Displaced preferences survive: turning a modifier back off restores what it switched off.
-  const displaced: Partial<Record<ModifierKey, boolean>> = {};
   let displacedNow = false;
   let state = initial.session ?? null;
   let timer: number | undefined;
@@ -334,7 +332,6 @@ export function renderTraining(
     if (next) {
       for (const other of conflicts[key]) {
         if (modifierBox[other].checked) {
-          displaced[other] = true;
           modifierBox[other].checked = false;
           displacedNow = true;
           notice.textContent = i18n.t("training.modifier_conflict", {
@@ -345,12 +342,6 @@ export function renderTraining(
       box.checked = true;
     } else {
       box.checked = false;
-      for (const other of conflicts[key]) {
-        if (displaced[other] && !conflicts[other].some((blocked) => modifierBox[blocked].checked)) {
-          displaced[other] = undefined;
-          modifierBox[other].checked = true;
-        }
-      }
     }
     syncModifierUi();
   };
@@ -384,8 +375,7 @@ export function renderTraining(
   const form = element("form", { className: "settings-form" });
   // Settings save is a separate, explicitly manual mutation: save_settings never
   // carries a packet, so a newly autosaved packet selection is never reverted.
-  const draftSettings = (source: TrainingLobby): Record<string, unknown> => ({
-    ...source.settings,
+  const draftSettings = (): Record<string, unknown> => ({
     reversed: reversed.checked,
     hidden_after: hidden.checked ? Number(seconds.value) : null,
     buzz_timeout: Number(buzzSeconds.value),
@@ -404,6 +394,7 @@ export function renderTraining(
       return;
     }
     if (!lobby || state || saveBusy || !form.reportValidity()) return;
+    const settings = draftSettings();
     saveBusy = true;
     syncSave();
     serialize(async () => {
@@ -411,13 +402,14 @@ export function renderTraining(
       const current = lobby;
       try {
         const result = await post<TrainingResult>("lobby", {
-          command: "save_settings", expected_version: current.version, settings: draftSettings(current),
+          command: "save_settings", expected_version: current.version,
+          settings: { ...current.settings, ...settings },
         });
         if (signal.aborted) return;
         if (result.lobby) lobby = result.lobby;
-        dirty = false;
+        dirty = JSON.stringify(draftSettings()) !== JSON.stringify(settings);
         feedback?.notifySuccess();
-        notice.textContent = i18n.t("training.saved");
+        notice.textContent = i18n.t(dirty ? "training.unsaved" : "training.saved");
         updateSelection();
       } catch (error) {
         feedback?.notifyError();

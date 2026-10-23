@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from conftest import create_player
@@ -7,11 +7,14 @@ from test_training import upload
 
 from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal, GatewayRequest
 from sitg_bot.application.gateway import ApplicationGateway
+from sitg_bot.domain.knowledge import FactContent, dissection_candidate_id
+from sitg_bot.services.knowledge import KnowledgeService
+from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.knowledge_images import KnowledgeImageService
 from sitg_bot.services.training import TrainingService
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.services.training_packets import TrainingPacketService
-from sitg_bot.storage.models import KnowledgeImageRecord
+from sitg_bot.storage.models import KnowledgeFactRecord, KnowledgeImageRecord, PacketVersionRecord
 
 pytestmark = pytest.mark.integration
 PNG_BASE64 = (
@@ -133,3 +136,94 @@ async def test_upload_only_catalogue_filter_and_split_lobby_mutations(database):
         await service.lobby(owner, "select_packet", expected_version=selected["version"],
                             version_id=other_version)
     assert (await service.current(owner))["lobby"] == selected
+
+
+async def test_dissection_loads_bounded_matching_identities_and_keeps_tombstones(database):
+    owner = await create_player(database, 9481, "candidate-owner")
+    other = await create_player(database, 9482, "candidate-other")
+    version, _ = await upload(database, owner)
+    async with database.transaction() as session:
+        packet = await session.get(PacketVersionRecord, version)
+        packet_id = packet.packet_id
+        session.add_all([
+            KnowledgeFactRecord(
+                owner_id=owner, title=f"Unrelated {index}", title_key=f"unrelated {index}",
+                description="D",
+                content_fingerprint=FactContent(f"Unrelated {index}", "D").fingerprint(),
+            )
+            for index in range(250)
+        ])
+        service = KnowledgeService(PostgresKnowledgeStore(session))
+        payloads = []
+        for index in range(105):
+            question_id = uuid4()
+            content = FactContent(f"Candidate {index}", "Extracted")
+            payloads.append({
+                "candidate_id": dissection_candidate_id(packet_id, question_id, "r1", content),
+                "packet_id": str(packet_id), "question_id": str(question_id),
+                "question_revision": "r1",
+                "content": {"title": content.title, "description": content.description},
+            })
+        first = await service.request_dissection(owner, packet_id=packet_id, packet_revision="r1")
+        applied = await service.apply_dissection_result(owner, first.request_id, payloads)
+        assert len(applied.applied_fact_ids) == 105
+        fact_ids = sorted(applied.applied_fact_ids)
+        await service.delete_fact(owner, fact_ids[0], confirm_dissection_origin=True)
+        await service.update_fact(owner, fact_ids[1], expected_version=1, description="Owner edit")
+        retry = await service.request_dissection(
+            owner, packet_id=packet_id, packet_revision="r1", comment="retry",
+        )
+        foreign = await service.request_dissection(other, packet_id=packet_id, packet_revision="r1")
+        await service.apply_dissection_result(other, foreign.request_id, [payloads[0]])
+        question_id = uuid4()
+        content = FactContent("Only foreign", "Extracted")
+        foreign_payload = {
+            "candidate_id": dissection_candidate_id(packet_id, question_id, "r1", content),
+            "packet_id": str(packet_id), "question_id": str(question_id),
+            "question_revision": "r1",
+            "content": {"title": content.title, "description": content.description},
+        }
+        foreign_next = await service.request_dissection(
+            other, packet_id=packet_id, packet_revision="r1", comment="foreign",
+        )
+        await service.apply_dissection_result(other, foreign_next.request_id, [foreign_payload])
+
+    sizes = []
+
+    class ObservedSession:
+        def __init__(self, session):
+            self.session = session
+
+        def __getattr__(self, name):
+            return getattr(self.session, name)
+
+        async def execute(self, statement, *args, **kwargs):
+            result = await self.session.execute(statement, *args, **kwargs)
+            if statement.is_select:
+                frozen = result.freeze()
+                sizes.append(len(frozen().all()))
+                return frozen()
+            return result
+
+        async def scalars(self, *args, **kwargs):
+            values = list(await self.session.scalars(*args, **kwargs))
+            sizes.append(len(values))
+            return values
+
+    async with database.transaction() as session:
+        service = KnowledgeService(PostgresKnowledgeStore(ObservedSession(session)))
+        result = await service.apply_dissection_result(
+            owner, retry.request_id, [*payloads, foreign_payload],
+        )
+        assert result.status == "succeeded" and len(result.applied_fact_ids) == 1
+        assert sizes and max(sizes) <= 100
+        assert sum(sizes) <= 106
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(KnowledgeFactRecord).where(
+            KnowledgeFactRecord.owner_id == owner,
+        )))
+        assert len(rows) == 356
+        by_id = {row.id: row for row in rows}
+        assert by_id[fact_ids[0]].deleted_at is not None
+        assert by_id[fact_ids[1]].description == "Owner edit"
+        assert by_id[fact_ids[1]].content_version == 2

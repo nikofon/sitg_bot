@@ -236,3 +236,27 @@ only wrap changed lines and order an import; production behavior is unchanged.
 Real PostgreSQL migration/concurrency/persistence, browser visual review, signed
 Telegram-client acceptance and live provider analysis remain **unverified**. No
 running application or database was changed, restarted, deployed or reset.
+
+## Selected integration-review corrections
+
+The current review correction removes the analysis admission account-lock upgrade,
+keeps failed image uploads from passing the fact-save barrier, awaits canonical tag
+updates, snapshots manually submitted training settings, and leaves displaced
+modifiers off until explicitly reselected. Active normal games now outrank dormant
+training lobbies in the shared navigation snapshot.
+
+Dissection application projects matching candidate identities in batches of at most
+100, including deleted tombstones and content versions but excluding other owners
+and unrelated fact content/tags. Dissection lists batch only pending analysis
+statuses. Added persistence regressions exercise large unrelated libraries,
+tombstones, manual edits, owner isolation, bounded result sets, and terminal/mixed
+history query counts; they still require isolated PostgreSQL execution. The existing
+persisted 25-timing-sample regression remains intact; SQL-spelling assertions were
+removed from the projection unit test.
+
+The recorded human scope decisions remain deferrals, not passing checks: legacy
+Best-buzz preparation/playback chunk sizes can still lose the exact source boundary,
+and distinct legacy instructions/comment arrangements can reuse one analysis
+request. No persisted identity conversion or boundary migration is included. The
+established combined lobby save command remains for existing clients; the new UI
+continues to use packet autosave and explicit settings-save commands separately.

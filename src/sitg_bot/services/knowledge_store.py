@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from sitg_bot.domain.knowledge import (
+    AppliedCandidate,
     BingoScore,
     CandidateOutcome,
     CommonKnowledgeEstimate,
@@ -330,14 +331,31 @@ class PostgresKnowledgeStore:
         tags = await self._tags([row.id])
         return self._fact(row, tags.get(row.id, []))
 
-    async def facts_for_owner(self, owner_id):
-        rows = list(
-            await self.session.scalars(
-                select(KnowledgeFactRecord).where(KnowledgeFactRecord.owner_id == owner_id)
-            )
-        )
-        tags = await self._tags([row.id for row in rows])
-        return [self._fact(row, tags.get(row.id, [])) for row in rows]
+    async def applied_candidates(self, owner_id, candidate_ids):
+        identities = sorted(set(candidate_ids))
+        model = KnowledgeFactRecord
+        applied = {}
+        for start in range(0, len(identities), 100):
+            cursor = None
+            while True:
+                statement = select(
+                    model.id, model.applied_candidate_id,
+                    model.applied_content_version, model.content_version,
+                ).where(
+                    model.owner_id == owner_id,
+                    model.applied_candidate_id.in_(identities[start:start + 100]),
+                )
+                if cursor is not None:
+                    statement = statement.where(model.id > cursor)
+                rows = (await self.session.execute(statement.order_by(model.id).limit(100))).all()
+                for fact_id, candidate_id, applied_version, current_version in rows:
+                    applied[candidate_id] = AppliedCandidate(
+                        candidate_id, fact_id, applied_version or 1, current_version,
+                    )
+                if len(rows) < 100:
+                    break
+                cursor = rows[-1].id
+        return applied
 
     async def add_fact(self, fact):
         self.session.add(KnowledgeFactRecord(id=fact.id, owner_id=fact.owner_id))

@@ -372,6 +372,13 @@ p {
   background: var(--tg-theme-section-bg-color);
 }
 
+.settings-form .knowledge-fact-fields {
+  gap: 1rem;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .settings-form legend {
   padding-inline: 0.35rem;
   font-weight: 800;

@@ -401,6 +401,34 @@ async def test_candidate_payloads_validate_provenance_and_links():
         dissection_candidate_from_payload({"packet_id": str(PACKET)})
 
 
+async def test_candidate_lookup_preserves_deleted_and_edited_facts_without_other_owners():
+    knowledge = service()
+    payloads = [payload(QUESTION, "Deleted"), payload(QUESTION_B, "Edited")]
+    first = await knowledge.request_dissection(OWNER, packet_id=PACKET, packet_revision="r1")
+    await knowledge.apply_dissection_result(OWNER, first.request_id, payloads)
+    by_candidate = {fact.applied_candidate_id: fact for fact in knowledge.store.facts.values()}
+    deleted = by_candidate[payloads[0]["candidate_id"]]
+    edited = by_candidate[payloads[1]["candidate_id"]]
+    await knowledge.delete_fact(OWNER, deleted.id, confirm_dissection_origin=True)
+    await knowledge.update_fact(OWNER, edited.id, expected_version=1, description="Owner edit")
+    foreign = payload(QUESTION, "Foreign")
+    other = await knowledge.request_dissection(RECIPIENT, packet_id=PACKET, packet_revision="r1")
+    await knowledge.apply_dissection_result(RECIPIENT, other.request_id, [foreign])
+    identities = await knowledge.store.applied_candidates(
+        OWNER, [item["candidate_id"] for item in [*payloads, foreign]],
+    )
+    assert set(identities) == {item["candidate_id"] for item in payloads}
+    assert identities[payloads[0]["candidate_id"]].fact_id == deleted.id
+    assert identities[payloads[1]["candidate_id"]].manually_edited()
+    retry = await knowledge.request_dissection(
+        OWNER, packet_id=PACKET, packet_revision="r1", comment="retry",
+    )
+    result = await knowledge.apply_dissection_result(OWNER, retry.request_id, [*payloads, foreign])
+    assert len(result.applied_fact_ids) == 1
+    assert deleted.deleted_at is not None and edited.content.description == "Owner edit"
+    assert len([fact for fact in knowledge.store.facts.values() if fact.owner_id == OWNER]) == 3
+
+
 async def test_statistic_snapshots_are_immutable_history():
     knowledge = service()
     view = await knowledge.create_fact(OWNER, title="Fact", description="D")

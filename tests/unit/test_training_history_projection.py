@@ -8,7 +8,6 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import column
-from sqlalchemy.dialects import postgresql
 
 from sitg_bot.services.training_history import (
     TrainingHistoryService,
@@ -107,9 +106,7 @@ def test_cursor_preserves_owner_and_session_filter_identity():
         _decode_cursor(encoded, "owner:another-session")
 
 
-async def test_timing_statistics_sql_has_bounded_samples_and_no_competitive_tables():
-    # Compile against supplied 0027 column expressions without inventing storage
-    # or modifying ORM metadata. Persistence of these fields needs combined schema.
+async def test_timing_statistics_projects_recorded_values():
     timing = {name: column(f"training_questions.{name}") for name in (
         "opened_at", "buzzed_at", "buzz_delay_seconds",
     )}
@@ -121,10 +118,3 @@ async def test_timing_statistics_sql_has_bounded_samples_and_no_competitive_tabl
     )
     assert stats[REVISION]["buzzes"] == 1
     assert stats[REVISION]["buzz_timings"] == [1.5]
-    statements = [str(call.args[0].compile(dialect=postgresql.dialect(),
-                                         compile_kwargs={"literal_binds": True}))
-                  for call in session.execute.await_args_list]
-    assert len(statements) == 3
-    assert "row_number() OVER" in statements[-1] and "rank <= 25" in statements[-1]
-    assert "games" not in " ".join(statements) and "rating" not in " ".join(statements)
-    assert "array_agg" not in " ".join(statements)

@@ -471,6 +471,7 @@ function dialogFrame(title: string, i18n: KnowledgeI18n): { dialog: HTMLDialogEl
 
 interface KnowledgeState {
   tagPool: Map<string, KnowledgeTagPoolEntry>;
+  tagPoolReady: Promise<void>;
 }
 
 function tagColoursFor(names: string[], state: KnowledgeState, detailTags?: KnowledgeTag[]): string[] {
@@ -489,7 +490,7 @@ function factCard(
   state: KnowledgeState,
   actions: KnowledgeActions,
   onChanged: () => void,
-  refreshTags: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): HTMLElement {
   const colours = tagColoursFor(fact.tag_names, state);
   const card = element("article", { className: "resource-card knowledge-fact", "data-fact-id": fact.id });
@@ -600,9 +601,11 @@ function tagSelectionFieldset(
   actions: KnowledgeActions,
   selected: Set<string>,
   onChanged: () => void,
-  refreshTags?: () => void,
-): HTMLElement {
+  refreshTags: (propagateError?: boolean) => Promise<void>,
+): { root: HTMLElement; ready: () => Promise<void> } {
   const fieldset = element("fieldset", { className: "knowledge-tag-select" });
+  let pendingTags = state.tagPoolReady;
+  const mutateTag = actions.tag;
   const list = element("div", { className: "knowledge-tag-options", role: "group",
     "aria-label": i18n.t("knowledge.tags.selected") });
   const sync = (): void => {
@@ -621,7 +624,7 @@ function tagSelectionFieldset(
       // Tag pool maintenance lives here in the editor, never on the fact card.
       const option = element("div", { className: "knowledge-tag-option" },
         element("label", { className: "checkbox-label" }, input, tagChip(tag)));
-      if (actions.tag) {
+      if (mutateTag && actions.loadTags) {
         option.append(
           element("button", {
             type: "button",
@@ -630,15 +633,17 @@ function tagSelectionFieldset(
             onclick: (() => {
               const name = window.prompt(i18n.t("knowledge.tag_rename"), tag.name);
               if (!name) return;
-              void actions.tag?.("tag_rename", tag.tag_id, name)
-                .then(() => {
-                  selected.delete(tag.name);
-                  selected.add(name);
-                  refreshTags?.();
+              fieldset.disabled = true;
+              pendingTags = mutateTag("tag_rename", tag.tag_id, name)
+                .then(async () => {
+                  await refreshTags(true);
+                  const canonical = [...state.tagPool.values()].find((entry) => entry.tag_id === tag.tag_id);
+                  if (selected.delete(tag.name) && canonical) selected.add(canonical.name);
                   onChanged();
                   sync();
                 })
-                .catch(() => { onChanged(); });
+                .finally(() => { fieldset.disabled = false; });
+              void pendingTags.catch(() => { onChanged(); });
             }) as EventListener,
           }, "✎"),
           element("button", {
@@ -647,15 +652,16 @@ function tagSelectionFieldset(
             "aria-label": `${i18n.t("knowledge.tag_delete")}: ${tag.name}`,
             onclick: (() => {
               if (!window.confirm(i18n.t("knowledge.tag_delete"))) return;
-              void actions.tag?.("tag_delete", tag.tag_id)
-                .then(() => {
-                  state.tagPool.delete(tag.name);
+              fieldset.disabled = true;
+              pendingTags = mutateTag("tag_delete", tag.tag_id)
+                .then(async () => {
+                  await refreshTags(true);
                   selected.delete(tag.name);
-                  refreshTags?.();
                   onChanged();
                   sync();
                 })
-                .catch(() => { onChanged(); });
+                .finally(() => { fieldset.disabled = false; });
+              void pendingTags.catch(() => { onChanged(); });
             }) as EventListener,
           }, "✕"));
       }
@@ -679,7 +685,9 @@ function tagSelectionFieldset(
     newTagButton,
   );
   sync();
-  return fieldset;
+  pendingTags = pendingTags.then(sync);
+  void pendingTags.catch(() => { onChanged(); });
+  return { root: fieldset, ready: () => pendingTags };
 }
 
 function openTagDialog(
@@ -688,7 +696,8 @@ function openTagDialog(
   actions: KnowledgeActions,
   created: (tag: KnowledgeTagPoolEntry) => void,
 ): void {
-  if (!actions.createTag) return;
+  const createTag = actions.createTag;
+  if (!createTag) return;
   const { dialog, body } = dialogFrame(i18n.t("knowledge.tags.new"), i18n);
   const name = element("input", { type: "text", required: true, maxlength: "60",
     "aria-label": i18n.t("knowledge.tags.name") });
@@ -706,7 +715,7 @@ function openTagDialog(
     const tagName = name.value.trim();
     if (!tagName || submit.disabled) return;
     submit.disabled = true;
-    void actions.createTag?.(tagName, colour.value)
+    void state.tagPoolReady.then(() => createTag(tagName, colour.value))
       .then((tag) => {
         state.tagPool.set(tag.name, tag);
         created(tag);
@@ -726,7 +735,7 @@ function openFactDialog(
   actions: KnowledgeActions,
   detail: KnowledgeFactDetail | undefined,
   changed: () => void,
-  refreshTags?: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): void {
   const { dialog, body } = dialogFrame(
     detail ? i18n.t("knowledge.fact.edit") : i18n.t("knowledge.create"), i18n);
@@ -741,7 +750,7 @@ function factForm(
   detail: KnowledgeFactDetail | undefined,
   changed: () => void,
   close: () => void,
-  refreshTags?: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): HTMLElement {
   const form = element("form", { className: "settings-form" });
   const title = element("input", { required: true, maxlength: "200", value: detail?.title ?? "" });
@@ -754,17 +763,21 @@ function factForm(
   const save = element("button", { type: "submit", className: "primary-button" },
     i18n.t(detail ? "knowledge.save" : "knowledge.create"));
   const imagesField = factImagesField(i18n, actions, detail, error);
-  form.append(
+  const tagsField = tagSelectionFieldset(i18n, state, actions, selectedTags, changed, refreshTags);
+  const fields = element("fieldset", { className: "knowledge-fact-fields" });
+  form.append(fields);
+  fields.append(
     element("label", {}, i18n.t("knowledge.title_field"), title),
     element("label", {}, i18n.t("knowledge.description"), description),
-    tagSelectionFieldset(i18n, state, actions, selectedTags, changed, refreshTags),
+    tagsField.root,
     element("label", {}, i18n.t("knowledge.links_field"), links),
     imagesField.root, save, error);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (save.disabled) return;
     save.disabled = true;
-    void imagesField.ready().then(() => actions.save?.({
+    fields.disabled = true;
+    void Promise.all([imagesField.ready(), tagsField.ready()]).then(() => actions.save?.({
       title: title.value,
       description: description.value,
       tag_names: [...selectedTags],
@@ -779,10 +792,10 @@ function factForm(
       close();
       changed();
     }).catch(() => { error.textContent = i18n.t("knowledge.error"); })
-      .finally(() => { save.disabled = false; });
+      .finally(() => { save.disabled = false; fields.disabled = false; });
   });
   if (detail && actions.remove) {
-    form.append(element("button", {
+    fields.append(element("button", {
       type: "button",
       className: "danger-button",
       onclick: (() => {
@@ -840,21 +853,23 @@ function factImagesField(
     if (upload) picker.disabled = queuedUploads > 0 || kept.length >= MAX_FACT_IMAGES;
   };
   picker.addEventListener("change", () => {
-    const files = [...(picker.files ?? [])];
+    const files = [...(picker.files ?? [])].filter((file) => {
+      if (!IMAGE_TYPES.has(file.type)) {
+        report("knowledge.images.unsupported");
+        return false;
+      }
+      if (file.size > IMAGE_MAX_BYTES) {
+        report("knowledge.images.too_large");
+        return false;
+      }
+      return true;
+    });
     picker.value = "";
-    if (!upload) return;
+    if (!upload || !files.length) return;
     ++queuedUploads;
     render();
-    pendingUploads = pendingUploads.then(async (): Promise<void> => {
+    pendingUploads = pendingUploads.catch(() => {}).then(async (): Promise<void> => {
       for (const file of files) {
-        if (!IMAGE_TYPES.has(file.type)) {
-          report("knowledge.images.unsupported");
-          continue;
-        }
-        if (file.size > IMAGE_MAX_BYTES) {
-          report("knowledge.images.too_large");
-          continue;
-        }
         if (kept.length >= MAX_FACT_IMAGES) {
           report("knowledge.images.too_many");
           break;
@@ -863,14 +878,16 @@ function factImagesField(
           const image = await upload(await fileBase64(file));
           kept.push(image);
           render();
-        } catch {
+        } catch (failure) {
           report("knowledge.error");
+          throw failure;
         }
       }
     }).finally(() => {
       --queuedUploads;
       render();
     });
+    void pendingUploads.catch(() => {});
   });
   const root = element("div", { className: "knowledge-images-field" },
     element("span", { className: "knowledge-images-label" }, i18n.t("knowledge.images_field")),
@@ -1179,11 +1196,11 @@ export function renderKnowledge(
   const reportError = (message: string): void => {
     errorText.textContent = message;
   };
-  const state: KnowledgeState = { tagPool: new Map() };
+  const state: KnowledgeState = { tagPool: new Map(), tagPoolReady: Promise.resolve() };
 
   const reloadTagPool = (propagateError = false): Promise<void> => {
     if (!actions.loadTags) return Promise.resolve();
-    return actions.loadTags().then((pool) => {
+    state.tagPoolReady = actions.loadTags().then((pool) => {
       if (actions.signal?.aborted) return;
       state.tagPool = new Map(pool.items.map((tag) => [tag.name, tag]));
       refreshTagFilterOptions();
@@ -1192,6 +1209,7 @@ export function renderKnowledge(
       if (propagateError) throw error;
       reportError(i18n.t("knowledge.error"));
     });
+    return state.tagPoolReady;
   };
 
   let search = data.facts.search ?? "";

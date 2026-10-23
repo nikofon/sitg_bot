@@ -442,9 +442,12 @@ describe("fact editor", () => {
     const detail: KnowledgeFactDetail = {
       ...editableDetail, tags: [{ id: "tag-1", name: "napoleonic wars", colour: "#1565c0" }],
     };
+    let resolveTags!: (pool: KnowledgeTagPool) => void;
+    const save = vi.fn().mockResolvedValue(detail);
     const actionList = actions({
-      loadFact: vi.fn().mockResolvedValue(detail),
-      save: vi.fn().mockResolvedValue(detail), tag,
+      loadFact: vi.fn().mockResolvedValue(detail), save, tag,
+      loadTags: vi.fn().mockResolvedValueOnce(tagPool)
+        .mockImplementationOnce(() => new Promise<KnowledgeTagPool>((resolve) => { resolveTags = resolve; })),
     });
     const { root } = render(structuredClone(data), actionList);
     root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
@@ -458,10 +461,65 @@ describe("fact editor", () => {
       .some((item) => item.getAttribute("aria-label") === "Rename tag: napoleonic wars")).toBe(true);
     expect([...dialog.querySelectorAll("button")]
       .some((item) => item.getAttribute("aria-label") === "Delete tag: napoleonic wars")).toBe(true);
-    vi.spyOn(window, "prompt").mockReturnValue("naval history");
+    vi.spyOn(window, "prompt").mockReturnValue(" Naval History ");
     dialog.querySelector<HTMLButtonElement>("[aria-label='Rename tag: napoleonic wars']")!.click();
     await flush();
-    expect(tag).toHaveBeenCalledWith("tag_rename", "tag-1", "naval history");
+    expect(tag).toHaveBeenCalledWith("tag_rename", "tag-1", " Naval History ");
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    resolveTags({ items: [{ tag_id: "tag-1", name: "naval history", colour: "#1565c0" }] });
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_names: ["naval history"] }), detail,
+    ));
+  });
+
+  it("refreshes an open editor when the initial tag pool arrives", async () => {
+    let resolveTags!: (pool: KnowledgeTagPool) => void;
+    const { root } = render(structuredClone(data), actions({
+      loadTags: vi.fn(() => new Promise<KnowledgeTagPool>((resolve) => { resolveTags = resolve; })),
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.querySelectorAll('.knowledge-tag-options input[type="checkbox"]')).toHaveLength(0);
+    resolveTags(tagPool);
+    await vi.waitFor(() => expect(dialog.querySelectorAll('.knowledge-tag-options input[type="checkbox"]'))
+      .toHaveLength(tagPool.items.length));
+  });
+
+  it.each(["tag_rename", "tag_delete"] as const)("refreshes canonical options after %s", async (command) => {
+    const detail: KnowledgeFactDetail = {
+      ...editableDetail, tags: [{ id: "tag-1", name: "napoleonic wars", colour: "#1565c0" }],
+    };
+    const save = vi.fn().mockResolvedValue(detail);
+    const pool: KnowledgeTagPool = { items: command === "tag_delete" ? [] : [
+      { tag_id: "tag-1", name: "naval history", colour: "#1565c0" },
+    ] };
+    const { root } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(detail), save,
+      tag: vi.fn().mockResolvedValue(undefined),
+      loadTags: vi.fn().mockResolvedValueOnce(tagPool).mockResolvedValue(pool),
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    vi.spyOn(window, "prompt").mockReturnValue(" Naval History ");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const label = command === "tag_rename" ? "Rename tag" : "Delete tag";
+    dialog.querySelector<HTMLButtonElement>(`[aria-label='${label}: napoleonic wars']`)!.click();
+    await vi.waitFor(() => expect(dialog.querySelector('input[value="napoleonic wars"]')).toBeNull());
+    if (command === "tag_rename") {
+      expect(dialog.querySelector<HTMLInputElement>('input[value="naval history"]')!.checked).toBe(true);
+    }
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_names: command === "tag_delete" ? [] : ["naval history"] }), detail,
+    ));
   });
 
   it("uploads, shows, removes and persists fact images through the editor", async () => {
@@ -506,6 +564,50 @@ describe("fact editor", () => {
     dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flush();
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ image_ids: ["image-2"] }), detail);
+  });
+
+  it.each([true, false])("keeps the editor open after upload failure (editing=%s)", async (editing) => {
+    let rejectUpload!: (error: Error) => void;
+    const image = { id: "retry-image", url: "/images/retry", content_type: "image/png" };
+    const uploadImage = vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectUpload = reject; }))
+      .mockResolvedValue(image);
+    const save = vi.fn().mockResolvedValue(editableDetail);
+    const { root, button } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail), uploadImage, save,
+    }));
+    if (editing) {
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+      await flush();
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    } else button("Add fact")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    const picker = dialog.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const pick = (): void => {
+      Object.defineProperty(picker, "files", { configurable: true,
+        value: [new File(["png"], "image.png", { type: "image/png" })] });
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const submit = (): void => {
+      dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    };
+    pick();
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledOnce());
+    submit();
+    rejectUpload(new Error("Upload failed"));
+    await vi.waitFor(() => expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(save).not.toHaveBeenCalled();
+    expect(dialog.isConnected).toBe(true);
+    expect(dialog.querySelector('[role="alert"]')!.textContent).toBe("Something went wrong.");
+    submit();
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    pick();
+    await vi.waitFor(() => expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(1));
+    submit();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ image_ids: ["retry-image"] }), editing ? editableDetail : undefined,
+    ));
   });
 
   it("waits for an in-flight image upload before saving the complete attachment set", async () => {

@@ -245,6 +245,19 @@ class InMemoryKnowledgeStore:
     async def facts_for_owner(self, owner_id: UUID) -> list[StoredFact]:
         return [fact for fact in self.facts.values() if fact.owner_id == owner_id]
 
+    async def applied_candidates(
+        self, owner_id: UUID, candidate_ids: Iterable[str]
+    ) -> dict[str, AppliedCandidate]:
+        identities = set(candidate_ids)
+        return {
+            fact.applied_candidate_id: AppliedCandidate(
+                fact.applied_candidate_id, fact.id,
+                fact.applied_content_version or 1, fact.content_version,
+            )
+            for fact in self.facts.values()
+            if fact.owner_id == owner_id and fact.applied_candidate_id in identities
+        }
+
     async def add_tag(self, tag: StoredTag) -> StoredTag:
         self.tags[tag.id] = tag
         return tag
@@ -819,16 +832,6 @@ class KnowledgeService:
         if row.application is not None:
             # Idempotent retry: return the recorded application unchanged.
             return self._request_view(row)
-        applied: dict[str, AppliedCandidate] = {}
-        for fact in await self.store.facts_for_owner(owner_id):
-            if fact.applied_candidate_id is None:
-                continue
-            applied[fact.applied_candidate_id] = AppliedCandidate(
-                candidate_id=fact.applied_candidate_id,
-                fact_id=fact.id,
-                applied_content_version=fact.applied_content_version or 1,
-                current_content_version=fact.content_version,
-            )
         outcomes: list[CandidateOutcome] = []
         planned: dict[str, DissectionCandidate] = {}
         for payload in candidate_payloads:
@@ -841,6 +844,7 @@ class KnowledgeService:
                 outcomes.append(CandidateOutcome(fallback_id, "invalid"))
                 continue
             planned[candidate.candidate_id] = candidate
+        applied = await self.store.applied_candidates(owner_id, planned)
         plan = plan_candidate_application(planned.values(), applied, excluded=excluded)
         now = self._now()
         for outcome in plan:

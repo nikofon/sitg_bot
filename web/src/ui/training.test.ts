@@ -114,11 +114,19 @@ describe("training", () => {
     picker.value = "hidden";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
     expect(config().checked).toBe(false);
-    // Unchecking Best buzz restores the displaced preferences.
     bestBuzz.checked = false;
     bestBuzz.dispatchEvent(new Event("change", { bubbles: true }));
     picker.value = "reversed";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(false);
+    enable();
     expect(config().checked).toBe(true);
+    bestBuzz.checked = true;
+    bestBuzz.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(bestBuzz.checked).toBe(false);
+    config().checked = false;
+    config().dispatchEvent(new Event("change", { bubbles: true }));
+    expect(bestBuzz.checked).toBe(false);
   });
 });

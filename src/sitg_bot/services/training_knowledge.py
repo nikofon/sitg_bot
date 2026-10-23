@@ -614,23 +614,26 @@ class KnowledgeApplication:
                     .limit(100)
                 )
             )
+            pending_ids = {
+                row.analysis_request_id for row in rows
+                if row.status == "pending" and row.analysis_request_id
+            }
+            statuses = dict((await session.execute(
+                select(
+                    TrainingAnalysisRequestRecord.request_id, TrainingAnalysisRequestRecord.status,
+                ).where(TrainingAnalysisRequestRecord.request_id.in_(pending_ids))
+            )).all()) if pending_ids else {}
             items = []
             for row in rows:
                 # A job list reveals no private packet name or question content.
                 view = await self.service(session).dissection_request(actor, row.id)
-                analysis = (
-                    await self.analysis._request_row(session, row.analysis_request_id)
-                    if row.analysis_request_id
-                    else None
-                )
                 items.append(
                     {
                         "id": row.id,
                         "packet_id": row.packet_revision,
                         "base": row.base,
-                        "status": analysis.status
-                        if analysis and row.status == "pending"
-                        else row.status,
+                        "status": statuses.get(row.analysis_request_id, row.status)
+                        if row.status == "pending" else row.status,
                         "request_id": row.analysis_request_id,
                         "applied_count": len(view.applied_fact_ids),
                         "applied_fact_ids": view.applied_fact_ids,

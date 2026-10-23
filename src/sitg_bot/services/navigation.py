@@ -319,11 +319,11 @@ class TelegramNavigationService:
         player = await session.get(PlayerRecord, account.player_id)
         if active_training_id is not None:
             active_mode, context = "training", "training"
-        elif active_mode == "training" and player.training_lobby is not None:
-            context = "training_lobby"
         elif active_game is not None and active_game.active:
             active_mode = "player"
             context = "game"
+        elif active_mode == "training" and player.training_lobby is not None:
+            context = "training_lobby"
         elif (
             active_mode == "player"
             and active_chat is not None
