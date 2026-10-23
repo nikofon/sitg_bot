@@ -1,8 +1,8 @@
 # Training knowledge and analysis integration
 
 B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
-metadata and migrations through `0025_knowledge_catalogue` (following the approved
-`0024_training_lobby` persistence prerequisite). `PostgresKnowledgeStore`
+metadata and migrations through `0026_knowledge_images` (following
+`0025_knowledge_catalogue` and `0024_training_lobby`). `PostgresKnowledgeStore`
 implements B's repository; `KnowledgeApplication` connects persistence, source
 access, automatic fact application, statistics and Best buzz.
 
@@ -88,8 +88,27 @@ The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
 on rename preserves it. Fact detail tags add `colour` while fact lists keep
 `tag_names`. Fact create/update still accept selected `tag_names` for compatibility.
 The Mini App should select from this palette, with explicit new-tag creation.
-The existing 32-tag fact limit also applies to merged tag unions; an oversized
-merge is rejected without changing or retiring either fact.
+Fact search accepts repeated `tags` query parameters and matches **all** selected
+normalized tags (at most 32); legacy `tag` intersects them. Fact merging is removed
+from HTTP, gateway and services. Historical merge tombstones remain intact.
+
+Facts retain internal content versions for stale-write protection. List cards now
+include description, links, images and the version without separate detail reads.
+Original dissection facts expose `packet_name` only while their source remains
+readable; copied facts do not inherit packet metadata or source access.
+
+Images are immutable persisted raster attachments, not URLs embedded in fact text
+or source links. POST `/api/miniapp/knowledge/image_upload` with `{source_base64}`
+uses normal session, CSRF and idempotency protection and returns `{id,url,content_type}`.
+PNG/JPEG/WebP headers and dimensions are checked; uploads are limited to 2 MiB and
+20 million pixels. SVG and remote fetching are unsupported. Fact create/update
+accepts up to eight distinct `image_ids`; omission preserves existing images and
+an empty array removes them. GET `/api/miniapp/knowledge/images/{image_id}` checks
+live uploader or owned-fact reference access, and serves raster bytes with
+`no-store`/`nosniff`. List/detail `images` contains `{id,url,content_type}` metadata,
+never image bytes. Permanent copies retain immutable attachments independently of
+source edits/deletion and grant no packet metadata. Apply migration
+`0026_knowledge_images` before deploying this API.
 
 `GET /api/miniapp/knowledge/sharing` retains historical `grants` and `shared`
 copy summaries and adds the creator's `links`. POST `knowledge/link_create`
@@ -128,7 +147,9 @@ readable-packet predicate (own unretired uploads and authorized published tourna
 versions). It adds regular catalogue-style literal case-insensitive `name`/`author`
 filters and inclusive `year_from`, `year_to`, `publication_from`, `publication_to`.
 Orders are `id_asc` (legacy default), `name_asc`, `name_desc`, `year_asc`, `year_desc`;
-unknown years sort as 0 and UUID breaks ties. Preserve opaque `next_cursor` values
+unknown years sort as 0 and UUID breaks ties. `owner_uploads_only=true` intersects
+readability with private training scope and uploader=caller before pagination;
+this filter is shared by Knowledge and the training lobby. Preserve opaque `next_cursor` values
 and reset them on filter/order changes. Legacy UUID cursors remain valid with
 `id_asc`. Pages remain at most 25 and use the shared background batch pacer.
 
@@ -169,7 +190,7 @@ collection imports and direct copying.
 ## Adapters
 
 The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit,
-source URLs, tags, delete/merge, tag rename/delete, search, tag filtering, sorting,
+source URLs, tags, delete, tag rename/delete, search, additive tag filtering, sorting,
 pagination, permanent copy sharing and dissection with comments. Job polling preserves
 form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
@@ -181,7 +202,7 @@ to the read-only Telegram library with lazy detail callbacks. Training and
 knowledge slash commands are no longer registered; editing, tags, sharing,
 analysis preparation/status, and entitlements use Mini App controls instead.
 
-Deleting a dissection import or merging away a manual fact requires confirmation.
+Deleting a dissection import requires confirmation.
 Exposure prompts use explicit confirmation controls. See [training.md](training.md)
 for the keyboard-driven training lobby and settings flow.
 

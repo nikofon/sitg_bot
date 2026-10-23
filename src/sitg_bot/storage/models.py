@@ -2612,6 +2612,18 @@ class TrainingAnalysisRequestRecord(Base):
     )
 
 
+class KnowledgeImageRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_images"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    content_type: Mapped[str] = mapped_column(String(32))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    __table_args__ = (
+        CheckConstraint("content_type IN ('image/png', 'image/jpeg', 'image/webp')"),
+        CheckConstraint("octet_length(data) BETWEEN 1 AND 2097152"),
+    )
+
+
 class KnowledgeFactRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_facts"
     id: Mapped[UUID] = uuid_column()
@@ -2620,6 +2632,9 @@ class KnowledgeFactRecord(Base, TimestampMixin):
     title_key: Mapped[str] = mapped_column(String(400))
     description: Mapped[str] = mapped_column(Text)
     links: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    image_ids: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     content_fingerprint: Mapped[str] = mapped_column(String(64))
     content_version: Mapped[int] = mapped_column(Integer, default=1)

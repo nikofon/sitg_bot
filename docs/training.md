@@ -39,15 +39,22 @@ keyboard contains Start training, Knowledge library, Upload packet for training,
 and Change mode. Start training creates a persistent solo lobby, replacing the
 keyboard with Packets and settings, Start, and Quit. Packets and settings launches
 the `/training` Mini App, using the regular lobby's Overview / Packets / Options
-sections and explicit Save workflow. Selecting a packet never starts questions.
-Return to Telegram and press Start after saving; exposure confirmation and Best
+sections. Packet selection autosaves independently, while settings require an
+explicit save. Selecting a packet never starts questions.
+Return to Telegram and press Start after choosing a packet and saving any settings; exposure confirmation and Best
 buzz preparation checks still apply. Quit discards the lobby or stops a running
 session. During a session, question actions remain inline and the reply keyboard
 provides Quit. Completion restores the home keyboard.
 
 Lobby selections and settings persist across restarts and use an owner-locked,
 monotonically increasing version to reject stale saves, quits, and confirmations.
-Only a successful start consumes the lobby. Apply Alembic migration
+Only a successful start consumes the lobby. The lobby API's `select_packet` command
+changes only the packet and `save_settings` changes only settings (even without a
+selected packet); both require the current `expected_version` and return the new
+`lobby` projection. The compatibility `save` command still updates both atomically.
+Clients must retain unsaved settings drafts when updating the version after a
+packet autosave, serialize mutations, and surface stale writes rather than silently
+overwriting newer state. Apply Alembic migration
 `0024_training_lobby` before deploying this flow.
 
 Upload packet for training opens `/training?view=upload`; native document upload

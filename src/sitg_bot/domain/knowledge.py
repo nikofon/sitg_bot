@@ -98,6 +98,7 @@ class FactContent:
     title: str
     description: str
     links: tuple[SourceLink, ...] = ()
+    image_ids: tuple[UUID, ...] = ()
 
     def __post_init__(self) -> None:
         title = _WHITESPACE_RE.sub(" ", self.title).strip()
@@ -119,6 +120,12 @@ class FactContent:
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "links", links)
+        images = tuple(self.image_ids)
+        if len(images) > 8 or len(set(images)) != len(images):
+            raise ValueError("A fact allows at most eight distinct images")
+        if any(not isinstance(image, UUID) for image in images):
+            raise ValueError("Images must be attachment UUIDs")
+        object.__setattr__(self, "image_ids", images)
 
     def fingerprint(self) -> str:
         """Stable digest of editable content; drives statistic invalidation."""
@@ -130,6 +137,9 @@ class FactContent:
                     {"url": link.url, "title": link.title, "origin": link.origin}
                     for link in self.links
                 ],
+                # Preserve existing no-image fingerprints and import claims.
+                **({"image_ids": [str(image) for image in self.image_ids]}
+                   if self.image_ids else {}),
             },
             ensure_ascii=False,
             sort_keys=True,

@@ -48,6 +48,6 @@ async def test_catalogue_http_dispatch_returns_direct_card_metadata_and_filters(
     forwarded = catalogue.await_args.kwargs
     assert forwarded == {
         **filters, "year_from": 2020, "year_to": 2025, "publication_from": 2021,
-        "publication_to": 2026, "limit": 25,
+        "publication_to": 2026, "limit": 25, "owner_uploads_only": False,
     }
     catalogue.assert_awaited_once()

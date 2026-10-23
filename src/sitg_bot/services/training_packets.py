@@ -267,12 +267,15 @@ class TrainingPacketService:
         publication_from: int | None = None,
         publication_to: int | None = None,
         order: str = "id_asc",
+        owner_uploads_only: bool = False,
     ) -> dict:
         if not 1 <= limit <= 25:
             raise ValueError("Training page size must be between 1 and 25")
         filters = dict(name=name.strip().lower(), author=author.strip().lower(),
                        year_from=year_from, year_to=year_to,
                        publication_from=publication_from, publication_to=publication_to)
+        if owner_uploads_only:
+            filters["owner_uploads_only"] = True
         signature = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()[:16]
         sort_key, descending = packet_order(order)
         async with background_packet_batch(), self.database.sessions() as session:
@@ -286,6 +289,11 @@ class TrainingPacketService:
                 .join(LogicalPacketRecord)
                 .where(self._readable(player_id))
             )
+            if owner_uploads_only:
+                query = query.where(
+                    LogicalPacketRecord.scope == "training",
+                    LogicalPacketRecord.uploader_id == player_id,
+                )
             if cursor:
                 value, identity = packet_cursor(str(cursor), order, signature)
                 key = tuple_(sort_key, PacketVersionRecord.id)

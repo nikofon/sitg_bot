@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hmac
 import logging
 import re
@@ -44,7 +45,8 @@ from sitg_bot.application.contracts import (
     KnowledgeDissectionsOperation,
     KnowledgeFactOperation,
     KnowledgeFactsOperation,
-    KnowledgeMergeOperation,
+    KnowledgeImageOperation,
+    KnowledgeImageUploadOperation,
     KnowledgeSaveOperation,
     KnowledgeSharingOperation,
     KnowledgeTagOperation,
@@ -189,6 +191,7 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/training/packets", self._training_packets)
         app.router.add_get("/api/miniapp/knowledge/facts", self._knowledge_facts)
         app.router.add_get("/api/miniapp/knowledge/facts/{fact_id}", self._knowledge_fact)
+        app.router.add_get("/api/miniapp/knowledge/images/{image_id}", self._knowledge_image)
         app.router.add_get("/api/miniapp/knowledge/sharing", self._knowledge_sharing)
         app.router.add_get("/api/miniapp/knowledge/tags", self._knowledge_tags)
         app.router.add_get("/api/miniapp/knowledge/dissections", self._knowledge_dissections)
@@ -1744,7 +1747,8 @@ class MiniAppHttpServer:
             request,
             KnowledgeFactsOperation.model_validate(
                 {
-                    **request.query,
+                    **{key: value for key, value in request.query.items() if key != "tags"},
+                    "tags": request.query.getall("tags", []),
                     "action": ActionCode.KNOWLEDGE_FACTS,
                 }
             ),
@@ -1759,6 +1763,18 @@ class MiniAppHttpServer:
             ),
         )
         return self._gateway_response(result)
+
+    async def _knowledge_image(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, KnowledgeImageOperation(
+            action=ActionCode.KNOWLEDGE_IMAGE, image_id=UUID(request.match_info["image_id"])
+        ))
+        if not result.ok:
+            return self._gateway_response(result)
+        return web.Response(
+            body=base64.b64decode(result.data["source_base64"], validate=True),
+            content_type=result.data["content_type"],
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     async def _knowledge_tags(self, request: web.Request) -> web.Response:
         _, result = await self._query(
@@ -1824,7 +1840,7 @@ class MiniAppHttpServer:
             "create": (KnowledgeSaveOperation, ActionCode.KNOWLEDGE_CREATE),
             "update": (KnowledgeSaveOperation, ActionCode.KNOWLEDGE_UPDATE),
             "delete": (KnowledgeDeleteOperation, ActionCode.KNOWLEDGE_DELETE),
-            "merge": (KnowledgeMergeOperation, ActionCode.KNOWLEDGE_MERGE),
+            "image_upload": (KnowledgeImageUploadOperation, ActionCode.KNOWLEDGE_IMAGE_UPLOAD),
             "tag_create": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_CREATE),
             "tag_rename": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_RENAME),
             "tag_delete": (KnowledgeTagOperation, ActionCode.KNOWLEDGE_TAG_DELETE),

@@ -55,7 +55,8 @@ from sitg_bot.application.contracts import (
     KnowledgeDissectionsOperation,
     KnowledgeFactOperation,
     KnowledgeFactsOperation,
-    KnowledgeMergeOperation,
+    KnowledgeImageOperation,
+    KnowledgeImageUploadOperation,
     KnowledgeSaveOperation,
     KnowledgeSharingOperation,
     KnowledgeTagOperation,
@@ -290,7 +291,7 @@ PRIVATE_MUTATION_REPLAYS = frozenset({
     ActionCode.KNOWLEDGE_CREATE,
     ActionCode.KNOWLEDGE_UPDATE,
     ActionCode.KNOWLEDGE_DELETE,
-    ActionCode.KNOWLEDGE_MERGE,
+    ActionCode.KNOWLEDGE_IMAGE_UPLOAD,
     ActionCode.KNOWLEDGE_TAG_CREATE,
     ActionCode.KNOWLEDGE_TAG_RENAME,
     ActionCode.KNOWLEDGE_TAG_DELETE,
@@ -322,9 +323,10 @@ ACTION_POLICIES.update(
         ActionCode.KNOWLEDGE_DELETE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
-        ActionCode.KNOWLEDGE_MERGE: ActionPolicy(
+        ActionCode.KNOWLEDGE_IMAGE_UPLOAD: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
+        ActionCode.KNOWLEDGE_IMAGE: ActionPolicy(sensitive_response=True),
         ActionCode.KNOWLEDGE_TAG_CREATE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -1223,6 +1225,13 @@ class ApplicationGateway:
                 idempotency_key=request.metadata.idempotency_key,
                 **operation.model_dump(exclude={"action"}),
             )
+        if isinstance(operation, (KnowledgeImageOperation, KnowledgeImageUploadOperation)):
+            from sitg_bot.services.knowledge_images import KnowledgeImageService
+
+            images = KnowledgeImageService(self.database)
+            if isinstance(operation, KnowledgeImageUploadOperation):
+                return await images.upload(player_id, operation.source_base64)
+            return await images.read(player_id, operation.image_id)
         if isinstance(operation, KnowledgeTagOperation) and action == ActionCode.KNOWLEDGE_TAGS:
             from sitg_bot.services.training_access import require_trainee
 
@@ -1234,7 +1243,6 @@ class ApplicationGateway:
             (
                 KnowledgeSaveOperation,
                 KnowledgeDeleteOperation,
-                KnowledgeMergeOperation,
                 KnowledgeTagOperation,
                 KnowledgeSharingOperation,
             ),
@@ -1243,7 +1251,6 @@ class ApplicationGateway:
                 ActionCode.KNOWLEDGE_CREATE: "create",
                 ActionCode.KNOWLEDGE_UPDATE: "update",
                 ActionCode.KNOWLEDGE_DELETE: "delete",
-                ActionCode.KNOWLEDGE_MERGE: "merge",
                 ActionCode.KNOWLEDGE_TAG_CREATE: "tag_create",
                 ActionCode.KNOWLEDGE_TAG_RENAME: "tag_rename",
                 ActionCode.KNOWLEDGE_TAG_DELETE: "tag_delete",

@@ -237,6 +237,7 @@ class PostgresKnowledgeStore:
                         "title_key": row.title_key,
                         "description": row.description,
                         "links": row.links,
+                        "image_ids": row.image_ids,
                         "provenance": {"origin": "manual"},
                         "content_fingerprint": row.content_fingerprint,
                         "content_version": 1,
@@ -307,7 +308,8 @@ class PostgresKnowledgeStore:
             id=row.id,
             owner_id=row.owner_id,
             content=FactContent(
-                row.title, row.description, tuple(SourceLink(**link) for link in row.links)
+                row.title, row.description, tuple(SourceLink(**link) for link in row.links),
+                tuple(UUID(value) for value in row.image_ids),
             ),
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -357,6 +359,7 @@ class PostgresKnowledgeStore:
             fact.content.description,
         )
         row.links = [asdict(link) for link in fact.content.links]
+        row.image_ids = [str(image) for image in fact.content.image_ids]
         row.provenance = json_data(fact.provenance)
         row.content_fingerprint, row.content_version = (
             fact.content.fingerprint(),
@@ -383,7 +386,7 @@ class PostgresKnowledgeStore:
         )
         await self.session.flush()
 
-    async def fact_page(self, owner_id, *, search, tag, order, cursor, limit):
+    async def fact_page(self, owner_id, *, search, tags, order, cursor, limit):
         model = KnowledgeFactRecord
         conditions = [model.owner_id == owner_id, model.deleted_at.is_(None)]
         if search and search.strip():
@@ -399,7 +402,7 @@ class PostgresKnowledgeStore:
                     "%" + needle + "%", escape="\\"
                 )
             )
-        if tag and tag.strip():
+        for tag in sorted(tags):
             conditions.append(
                 select(KnowledgeFactTagRecord.fact_id)
                 .join(KnowledgeTagRecord, KnowledgeTagRecord.id == KnowledgeFactTagRecord.tag_id)

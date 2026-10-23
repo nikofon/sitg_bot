@@ -24,8 +24,6 @@ CASES = [
     (ActionCode.KNOWLEDGE_UPDATE, {"fact_id": RESOURCE, "expected_version": 1,
                                  "description": "Changed"}),
     (ActionCode.KNOWLEDGE_DELETE, {"fact_id": RESOURCE}),
-    (ActionCode.KNOWLEDGE_MERGE, {"source_fact_id": RESOURCE, "target_fact_id": QUESTION,
-                                "expected_target_version": 1, "confirm_source_delete": True}),
     (ActionCode.KNOWLEDGE_TAG_CREATE, {"name": "History", "colour": "#123456"}),
     (ActionCode.KNOWLEDGE_TAG_RENAME, {"tag_id": RESOURCE, "name": "Past"}),
     (ActionCode.KNOWLEDGE_TAG_DELETE, {"tag_id": RESOURCE}),
@@ -171,7 +169,8 @@ async def test_training_replay_rechecks_source_and_draft_authorization(action, v
 
 
 async def test_stop_retry_remains_available_after_source_retirement():
-    values = {**CASES[8][1], "command": "stop"}
+    values = {**next(values for action, values in CASES if action == ActionCode.TRAINING_ACT),
+              "command": "stop"}
     gateway, _, mutation, _ = stack(ActionCode.TRAINING_ACT)
     principal = ApplicationPrincipal(player_id=OWNER, telegram_user_id=42)
     request = request_for(ActionCode.TRAINING_ACT, values)

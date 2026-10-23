@@ -60,6 +60,9 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0026_knowledge_images` adds immutable raster attachments and an empty image
+list to existing facts; it preserves existing facts, import fingerprints and merge
+history. Apply it before deploying Knowledge image upload/read APIs.
 Revision `0020_database_maintenance` adds compaction timestamps and maintenance indexes;
 it does not prune existing data. Apply it before running the maintenance CLI or enabling
 automatic maintenance.

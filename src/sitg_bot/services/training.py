@@ -78,17 +78,19 @@ class TrainingService:
                     raise StaleWriteError("Training lobby has changed")
                 if command == "quit":
                     lobby = None
-                elif command == "save":
-                    if version_id is None:
-                        raise ValueError("Select a packet first")
-                    packet, _ = await self.packets.authorize(session, player_id, version_id)
+                elif command in {"save", "select_packet", "save_settings"}:
+                    # Copy the JSON projection: packet autosave must not overwrite
+                    # settings, and explicit settings saves must not change packets.
+                    lobby = dict(lobby)
+                    if command in {"save", "select_packet"}:
+                        if version_id is None:
+                            raise ValueError("Select a packet first")
+                        packet, _ = await self.packets.authorize(session, player_id, version_id)
+                        lobby.update(version_id=str(version_id), packet_name=packet.name)
+                    if command in {"save", "save_settings"}:
+                        lobby["settings"] = TrainingSettings.from_mapping(settings or {}).to_dict()
                     player.training_lobby_version += 1
-                    lobby = {
-                        "version": player.training_lobby_version,
-                        "version_id": str(version_id),
-                        "packet_name": packet.name,
-                        "settings": TrainingSettings.from_mapping(settings or {}).to_dict(),
-                    }
+                    lobby["version"] = player.training_lobby_version
                 else:
                     raise ValueError("Unknown training lobby command")
             player.training_lobby = lobby
