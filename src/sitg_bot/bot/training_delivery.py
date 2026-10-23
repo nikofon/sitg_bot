@@ -171,7 +171,10 @@ class TrainingDelivery:
                         )
                     keyboard = training_keyboard(question, self.localization, locale)
                 chunks = plain_chunks(text, size=600) or ("…",)
-                digest = hashlib.sha256((text + repr(keyboard)).encode()).hexdigest()
+                digest = hashlib.sha256(repr((
+                    text, keyboard, question["status"] if question else None,
+                    bool(state.get("show_menu")),
+                )).encode()).hexdigest()
                 presentation = dict(state["presentation"])
                 if presentation.get("digest") == digest and not payload.get("force"):
                     return

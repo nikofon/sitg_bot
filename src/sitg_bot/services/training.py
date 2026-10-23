@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.domain.game_rulesets import SIGameRuleset
 from sitg_bot.domain.training import TrainingSettings, best_buzz_cursor
 from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.training_access import require_no_training, require_trainee
 from sitg_bot.services.training_packets import (
@@ -145,15 +146,12 @@ class TrainingService:
                     presentation=member.presentation,
                 )
             show_menu = False
-            if record.status in {"stopped", "completed"} and player.training_lobby is None:
-                show_menu = not await session.scalar(
-                    select(TrainingSessionRecord.id)
-                    .where(
-                        TrainingSessionRecord.owner_id == player_id,
-                        TrainingSessionRecord.status.in_(("active", "paused")),
-                    )
-                    .limit(1)
+            if record.status in {"stopped", "completed"}:
+                navigation = TelegramNavigationService(self.database)
+                snapshot = await navigation._snapshot(
+                    session, navigation.player_accounts._account_snapshot(player),
                 )
+                show_menu = snapshot.active_mode == "training" and snapshot.context == "menu"
             return {
                 **result,
                 "show_menu": show_menu,
