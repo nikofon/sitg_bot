@@ -78,6 +78,8 @@ class ActionCode(StrEnum):
     TRAINING_CURRENT = "training.current.v1"
     TRAINING_VIEW = "training.view.v1"
     TRAINING_ACT = "training.act.v1"
+    TRAINING_HISTORY = "training.history.list.v1"
+    TRAINING_HISTORY_DETAIL = "training.history.detail.v1"
     KNOWLEDGE_FACTS = "knowledge.facts.view.v1"
     KNOWLEDGE_FACT = "knowledge.fact.view.v1"
     KNOWLEDGE_CREATE = "knowledge.fact.create.v1"
@@ -814,6 +816,19 @@ class TrainingActOperation(ContractModel):
     approve: bool | None = Field(default=None, strict=True)
 
 
+class TrainingHistoryListOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_HISTORY]
+    cursor: str | None = Field(default=None, max_length=2000)
+    limit: int = Field(default=25, ge=1, le=25)
+
+
+class TrainingHistoryDetailOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_HISTORY_DETAIL]
+    session_id: UUID
+    cursor: str | None = Field(default=None, max_length=2000)
+    limit: int = Field(default=25, ge=1, le=25)
+
+
 class LibraryListOperation(ContractModel):
     action: Literal[ActionCode.LIBRARY_LIST]
 
@@ -1366,6 +1381,8 @@ GatewayOperation = Annotated[
     | TrainingCurrentOperation
     | TrainingViewOperation
     | TrainingActOperation
+    | TrainingHistoryListOperation
+    | TrainingHistoryDetailOperation
     | LibraryAccessOperation
     | PlayerListOperation
     | PlayerProfileOperation

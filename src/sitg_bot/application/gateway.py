@@ -150,6 +150,8 @@ from sitg_bot.application.contracts import (
     TrainingDraftDecideOperation,
     TrainingDraftOperation,
     TrainingEntitlementsOperation,
+    TrainingHistoryDetailOperation,
+    TrainingHistoryListOperation,
     TrainingLobbyOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
@@ -181,6 +183,7 @@ from sitg_bot.services.token_requests import (
 from sitg_bot.services.tournament_profiles import TournamentProfileService
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.services.training import TrainingService
+from sitg_bot.services.training_history import TrainingHistoryService
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
@@ -314,6 +317,10 @@ ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
         ActionCode.TRAINING_PACKETS: ActionPolicy(cursor_paginated=True),
+        ActionCode.TRAINING_HISTORY: ActionPolicy(cursor_paginated=True),
+        ActionCode.TRAINING_HISTORY_DETAIL: ActionPolicy(
+            cursor_paginated=True, sensitive_response=True
+        ),
         ActionCode.KNOWLEDGE_CREATE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -646,6 +653,7 @@ class ApplicationGateway:
         launch_references: LaunchReferenceService | None = None,
         packets: PacketAdminService | None = None,
         training: TrainingService | None = None,
+        training_history: TrainingHistoryService | None = None,
         knowledge: KnowledgeApplication | None = None,
         minimum_client_version: str = "1.0.0",
         idempotency_lease: timedelta = timedelta(minutes=5),
@@ -678,6 +686,7 @@ class ApplicationGateway:
         self.library = PacketLibraryService(database)
         self.knowledge = knowledge or KnowledgeApplication(database)
         self.training = training or TrainingService(database, best_buzz=self.knowledge)
+        self.training_history = training_history or TrainingHistoryService(database)
         self.profiles = PlayerProfileService(database)
         self.tournament_profiles = TournamentProfileService(database)
         self.minimum_client_version = minimum_client_version
@@ -1275,6 +1284,14 @@ class ApplicationGateway:
             )
         if isinstance(operation, TrainingViewOperation):
             return await self.training.view(player_id, operation.session_id)
+        if isinstance(operation, TrainingHistoryListOperation):
+            return await self.training_history.list_sessions(
+                player_id, cursor=operation.cursor, limit=operation.limit,
+            )
+        if isinstance(operation, TrainingHistoryDetailOperation):
+            return await self.training_history.session_detail(
+                player_id, operation.session_id, cursor=operation.cursor, limit=operation.limit,
+            )
         if isinstance(operation, TrainingStartOperation):
             return await self.training.start(
                 player_id, operation.version_id, confirm=operation.confirm,

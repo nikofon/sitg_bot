@@ -23,17 +23,21 @@ from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.state.backend import BotBackend
 
 URL = "https://mini.example.test/"
-HOME = ["training.train", "training.knowledge", "training.upload", "mode.switch"]
+HOME = [
+    "training.train", "training.history", "training.knowledge", "training.upload", "mode.switch",
+]
 LOBBY = ["training.settings", "training.start", "training.quit"]
 LABELS = {
     "en": [
         ["Start training"],
+        ["Training history"],
         ["Knowledge library"],
         ["Upload packet for training"],
         ["Change mode"],
     ],
     "ru": [
         ["Начать тренировку"],
+        ["История тренировок"],
         ["Библиотека знаний"],
         ["Загрузить пакет для тренировки"],
         ["Сменить режим"],

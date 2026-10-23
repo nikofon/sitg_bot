@@ -72,6 +72,7 @@ ADMIN_MENU_ACTIONS = (
 
 TRAINING_MENU_ACTIONS = (
     ("training.train",),
+    ("training.history",),
     ("training.knowledge",),
     ("training.upload",),
     ("mode.switch",),

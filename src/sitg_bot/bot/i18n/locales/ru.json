@@ -57,6 +57,8 @@
   "mode.training": "Тренировка",
   "menu.training": "Тренировка",
   "button.training.train": "Начать тренировку",
+  "button.training.history": "История тренировок",
+  "training.history": "История тренировок",
   "button.training.settings": "Пакеты и настройки",
   "training.lobby": "Лобби тренировки. Откройте «Пакеты и настройки», сохраните выбор и нажмите «Старт».",
   "button.training.mode_switch": "Сменить режим",

@@ -40,6 +40,7 @@ class TrainingMenuAction(Filter):
             "training.train",
             "training.upload",
             "training.knowledge",
+            "training.history",
             "training.settings",
             "training.start",
             "training.quit",
@@ -70,7 +71,11 @@ async def open_app(message, localization, locale, base_url, action):
     if not base_url:
         await message.answer(localization.text("training.miniapp_unavailable", locale))
         return
-    route = "knowledge" if action == "training.knowledge" else "training"
+    route = (
+        "knowledge" if action == "training.knowledge"
+        else "training/history" if action == "training.history"
+        else "training"
+    )
     url = mini_app_route_url(base_url, route)
     await message.answer(
         localization.text(action, locale),

@@ -104,6 +104,8 @@ from sitg_bot.application.contracts import (
     TrainingCurrentOperation,
     TrainingDraftDecideOperation,
     TrainingEntitlementsOperation,
+    TrainingHistoryDetailOperation,
+    TrainingHistoryListOperation,
     TrainingLobbyOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
@@ -189,6 +191,10 @@ class MiniAppHttpServer:
         app.router.add_post("/api/miniapp/authors/link", self._create_author_link)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
         app.router.add_get("/api/miniapp/training/packets", self._training_packets)
+        app.router.add_get("/api/miniapp/training/history", self._training_history_list)
+        app.router.add_get(
+            "/api/miniapp/training/history/{session_id}", self._training_history_detail
+        )
         app.router.add_get("/api/miniapp/knowledge/facts", self._knowledge_facts)
         app.router.add_get("/api/miniapp/knowledge/facts/{fact_id}", self._knowledge_fact)
         app.router.add_get("/api/miniapp/knowledge/images/{image_id}", self._knowledge_image)
@@ -572,6 +578,50 @@ class MiniAppHttpServer:
             return web.json_response({
                 "locale": session.preferred_locale, "authorization": {"allowed": True},
                 "resource": {"kind": "training", "state": "ready", **result.data},
+            })
+        if normalized_path == "/training/history":
+            query = parse_qs(parsed.query)
+            session, result = await self._query(
+                request,
+                TrainingHistoryListOperation.model_validate({
+                    "action": ActionCode.TRAINING_HISTORY,
+                    "cursor": query.get("cursor", [None])[-1],
+                    "limit": query.get("limit", ["25"])[-1],
+                }),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": {
+                    "kind": "training_history",
+                    "state": "ready" if result.data["items"] else "empty",
+                    **result.data,
+                },
+            })
+        history_match = re.fullmatch(
+            r"/training/history/([0-9a-fA-F-]{36})", normalized_path
+        )
+        if history_match:
+            query = parse_qs(parsed.query)
+            session, result = await self._query(
+                request,
+                TrainingHistoryDetailOperation(
+                    action=ActionCode.TRAINING_HISTORY_DETAIL,
+                    session_id=UUID(history_match.group(1)),
+                    cursor=query.get("cursor", [None])[-1],
+                    limit=int(query.get("limit", ["25"])[-1]),
+                ),
+            )
+            if not result.ok:
+                return self._gateway_response(result)
+            return web.json_response({
+                "locale": session.preferred_locale, "authorization": {"allowed": True},
+                "resource": {
+                    "kind": "training_history_detail",
+                    "state": "ready" if result.data["rows"] else "empty",
+                    **result.data,
+                },
             })
         if normalized_path == "/players":
             query = parse_qs(parsed.query)
@@ -1869,6 +1919,23 @@ class MiniAppHttpServer:
         operation = TrainingPacketListOperation.model_validate({
             **request.query, "action": ActionCode.TRAINING_PACKETS,
         })
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _training_history_list(self, request: web.Request) -> web.Response:
+        operation = TrainingHistoryListOperation.model_validate({
+            **request.query, "action": ActionCode.TRAINING_HISTORY,
+        })
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _training_history_detail(self, request: web.Request) -> web.Response:
+        operation = TrainingHistoryDetailOperation(
+            action=ActionCode.TRAINING_HISTORY_DETAIL,
+            session_id=self._path_uuid(request, "session_id"),
+            cursor=request.query.get("cursor"),
+            limit=int(request.query.get("limit", "25")),
+        )
         _, result = await self._query(request, operation)
         return self._gateway_response(result)
 

@@ -661,7 +661,9 @@ class TelegramNavigationService:
                 if selected_player is not None:
                     actions.extend(item.key for item in selected_player.capability_actions)
         elif active_mode == "training":
-            actions.extend(("training.train", "training.knowledge", "training.upload"))
+            actions.extend(
+                ("training.train", "training.history", "training.knowledge", "training.upload")
+            )
         elif active_mode == "manager":
             if context == "menu":
                 actions.append("notifications")

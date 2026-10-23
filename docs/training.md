@@ -101,6 +101,41 @@ boundaries map to the pinned announcement-token stream. Playback pauses once and
 offers inline Continue reading while buzzing remains available. Missing preparation
 is reported explicitly. Normal-game modifier hooks default to disabled.
 
+## Training history
+
+The home keyboard's **Training history** text button supplies an authenticated
+inline Mini App launch at `/training/history` (a reply-keyboard WebApp would not
+supply signed `initData`). Cards show the played date, pinned packet, effective
+score, status and modifiers. **More info** opens `/training/history/{session_id}`.
+Both screens use explicit **Load more** requests, at most 25 runs/questions each.
+The run list uses descending `(created_at, id)` keysets; detail uses ascending
+question positions. Cursors are bound to the owner and list/detail identity.
+
+`TrainingHistoryService` is read-only and owner-scoped, including for administrators.
+Scores join only training attempts/questions: correct `+value`, incorrect `-value`,
+otherwise zero; appeals use the effective verdict and preserve the original one.
+Anonymous revision-level question statistics aggregate training records only, never
+competitive games/statistics; answers and performance are always from the owner's
+selected run. Known buzz-delay samples are the latest 25 per question, SQL-bounded.
+Counts do not imply missing timings were known. Unknown legacy timings display as
+unavailable, never inferred from an attempt's generic creation timestamp.
+
+History rechecks `TrainingPacketService.authorize` on each detail request. Source
+retirement, deletion, archiving or library revocation removes protected question
+content; packet/run metadata and the owner's submitted answers remain. Pinning and
+whole-packet exposure claims do not prove playback: unvisited questions remain
+redacted even after stopping the run. Recorded opening/buzz or a finished legacy
+attempt proves play; unanswered questions of active/paused runs stay redacted so
+history cannot bypass hidden/incremental reading. These forward-recorded timing
+and appeal fields depend on integration-owned migration `0027_training_history_flow`;
+this component creates no separate migration.
+
+Targeted checks: `tests/unit/test_training_history*.py`,
+`tests/integration/test_training_history.py`, `web/src/ui/training-history.test.ts`
+and the real shell navigation regression in `web/src/app.test.ts`. Base-schema
+checks are not acceptance of the forthcoming timing writer/migration; the timing
+storage regression explicitly requires 0027.
+
 ## Knowledge and AI integration
 
 [Contracts](training-contracts.md) describe source access and Best buzz ports.

@@ -1860,6 +1860,116 @@ p {
   }
 }
 
+/* Training history screen (namespaced: training-history-*, scoped to
+   .training-history set by the screen component). */
+.training-history {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.training-history > p[role="status"]:empty {
+  display: none;
+}
+
+.training-history .training-history-list,
+.training-history .training-history-questions {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.training-history .training-history-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.training-history .training-history-card h3 {
+  margin: 0;
+}
+
+.training-history .training-history-packet,
+.training-history .training-history-score,
+.training-history .training-history-status {
+  margin: 0;
+}
+
+.training-history .training-history-more {
+  align-self: flex-start;
+  margin-top: 0.35rem;
+}
+
+.training-history .training-history-summary-card .lobby-packet-details {
+  margin: 0.5rem 0 0;
+}
+
+.training-history .training-history-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.training-history .training-history-theme-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.training-history .training-history-question {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.training-history .training-history-question-title {
+  margin: 0;
+}
+
+.training-history dd,
+.training-history h3,
+.training-history h4,
+.training-history .training-history-packet {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.training-history .training-history-settings {
+  margin: 0.4rem 0;
+}
+
+.training-history button {
+  min-height: 44px;
+}
+
+.training-history .training-history-stats,
+.training-history .training-history-own {
+  margin: 0;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.training-history .training-history-stats-title {
+  margin: 0.3rem 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.training-history .training-history-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+@media (max-width: 34rem) {
+  .training-history .training-history-more {
+    align-self: stretch;
+  }
+}
+
 /* Knowledge library mini app (namespaced: knowledge-*) */
 .knowledge-library {
   display: grid;

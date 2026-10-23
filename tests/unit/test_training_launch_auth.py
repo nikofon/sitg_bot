@@ -201,3 +201,37 @@ async def test_training_bootstrap_does_not_relax_authentication(kind):
     assert database.record is None
     accounts.create_or_resume_registration.assert_not_awaited()
     gateway.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_training_history_menu_button_launches_history_route(locale):
+    loc = LocalizationService()
+    backend = SimpleNamespace(
+        _execute=AsyncMock(return_value=SimpleNamespace(data={})),
+        navigation=AsyncMock(return_value=training_navigation()),
+    )
+
+    def message(text):
+        from aiogram.types import Chat
+
+        return Message(
+            message_id=1, date=datetime.now(UTC), chat=Chat(id=42, type="private"), text=text
+        )
+
+    with patch.object(Message, "answer", new_callable=AsyncMock) as answer:
+        await router.propagate_event(
+            update_type="message",
+            event=message(loc.text("button.training.history", locale)),
+            navigation=training_navigation(),
+            backend=backend,
+            telegram_update_claim=object(),
+            localization=loc,
+            locale=locale,
+            launch_links=ORIGIN,
+        )
+        reply = answer.await_args.kwargs["reply_markup"]
+        button = reply.inline_keyboard[0][0]
+        assert button.text == loc.text("training.history", locale)
+        assert button.web_app.url == ORIGIN + "/training/history?_launch=1"
+        assert "token" not in button.web_app.url and "user" not in button.web_app.url
+    backend._execute.assert_not_awaited()

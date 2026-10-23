@@ -3,6 +3,8 @@ import type { MessageKey } from "../i18n/en";
 export type RouteId =
   | "knowledge"
   | "training"
+  | "training_history"
+  | "training_history_detail"
   | "tournaments"
   | "tournament_profile"
   | "tournament_packets"
@@ -54,6 +56,20 @@ const routes: RouteDefinition[] = [
   {
     id: "training", pattern: /^\/training\/?$/,
     titleKey: "training.title", emptyKey: "training.empty", isRoot: true,
+  },
+  {
+    id: "training_history",
+    pattern: /^\/training\/history\/?$/,
+    titleKey: "route.training_history.title",
+    emptyKey: "route.training_history.empty",
+    isRoot: true,
+  },
+  {
+    id: "training_history_detail",
+    pattern: /^\/training\/history\/([0-9a-fA-F-]{36})\/?$/,
+    parameterNames: ["session_id"],
+    titleKey: "route.training_history_detail.title",
+    emptyKey: "route.training_history_detail.empty",
   },
   {
     id: "players",

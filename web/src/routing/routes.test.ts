@@ -12,6 +12,11 @@ it("opens a player profile from a Mini App launch without accepting arbitrary pa
 describe("route matching", () => {
   it.each([
     ["/tournaments", "tournaments"],
+    ["/training", "training"],
+    ["/training/history", "training_history"],
+    ["/training/history/", "training_history"],
+    ["/training/history/11111111-1111-1111-1111-111111111111", "training_history_detail"],
+    ["/training/history/not-a-uuid", "not_found"],
     ["/ongoing", "ongoing"],
     ["/history", "history"],
     ["/library", "library"],

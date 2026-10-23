@@ -28,6 +28,33 @@ def test_knowledge_launch_route_is_supported(base, expected):
 
 
 @pytest.mark.parametrize(
+    "base,expected",
+    [
+        ("https://mini.example.test", "https://mini.example.test/training/history?_launch=1"),
+        (
+            "https://mini.example.test/app/",
+            "https://mini.example.test/app/training/history?_launch=1",
+        ),
+    ],
+)
+def test_training_history_launch_route_is_supported(base, expected):
+    assert mini_app_route_url(base, "training/history") == expected
+
+
+@pytest.mark.parametrize(
+    "base,route",
+    [
+        ("http://mini.example.test", "training/history"),
+        ("https://mini.example.test", "training/histor"),
+        ("https://mini.example.test", "training/history/extra"),
+    ],
+)
+def test_training_history_launch_does_not_relax_route_validation(base, route):
+    with pytest.raises(ValueError):
+        mini_app_route_url(base, route)
+
+
+@pytest.mark.parametrize(
     "base,route",
     [
         ("http://mini.example.test", "knowledge"),
