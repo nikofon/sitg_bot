@@ -207,7 +207,8 @@ export class MiniAppShell {
       return;
     }
     if ("kind" in payload.resource && payload.resource.kind === "training" && this.request) {
-      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal, route.query.get("view") === "upload"));
+      // The training lobby follows regular-lobby haptic behavior on selection/save.
+      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal, route.query.get("view") === "upload", this.platform));
       return;
     }
     if (route.id === "players" && "kind" in payload.resource && payload.resource.kind === "players") {

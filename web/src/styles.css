@@ -1793,6 +1793,35 @@ p {
   display: none;
 }
 
+/* Modifier descriptions, incompatibility notes and modifier-driven overrides. */
+.training-lobby .training-modifier-description,
+.training-lobby .training-modifier-note,
+.training-lobby .training-setting-override {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.training-lobby .training-modifier-note,
+.training-lobby .training-setting-override {
+  color: var(--tg-theme-hint-color);
+}
+
+.training-lobby .training-setting-override {
+  font-weight: 700;
+}
+
+.training-lobby .training-best-buzz-group {
+  display: grid;
+  gap: 0.65rem;
+}
+
+/* A modifier-driven override greys the stored setting value out instead of wiping it. */
+.training-lobby .settings-form input:disabled {
+  opacity: 0.55;
+  cursor: default;
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 8%, var(--tg-theme-bg-color));
+}
+
 /* The training packets filter bubble gets its own padded surface so search and
    sorting read as one clearly distinct section. */
 .training-lobby .training-packet-filters {
