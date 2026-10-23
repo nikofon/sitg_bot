@@ -30,11 +30,15 @@ const messages: Record<string, string> = {
   "knowledge.refresh": "Refresh",
   "knowledge.fact.tags": "Tags: {tags}",
   "knowledge.fact.links": "No source links.",
-  "knowledge.fact.origin.manual": "Manual",
-  "knowledge.fact.origin.dissection": "Dissection",
+  "knowledge.fact.origin.packet": "From packet: {name}",
   "knowledge.fact.read_only": "Read-only shared fact",
-  "knowledge.fact.version": "version {version}",
   "knowledge.fact.edit": "Edit",
+  "knowledge.fact.edit_label": "Edit fact: {title}",
+  "knowledge.images_field": "Images",
+  "knowledge.images.remove": "Remove image",
+  "knowledge.images.too_large": "Image is larger than 2 MiB.",
+  "knowledge.images.unsupported": "Only PNG, JPEG or WebP images are supported.",
+  "knowledge.images.too_many": "A fact can have at most 8 images.",
   "knowledge.statistic.none": "No statistics",
   "knowledge.statistic.pending": "Pending",
   "knowledge.statistic.fresh": "Current",
@@ -55,9 +59,6 @@ const messages: Record<string, string> = {
   "knowledge.links_field": "Sources (URL | title, one per line)",
   "knowledge.confirm_delete": "Delete this fact?",
   "knowledge.tag_filter": "Filter by tag",
-  "knowledge.tag_filter_all": "All tags",
-  "knowledge.merge": "Merge into another fact",
-  "knowledge.merge_target": "Target fact ID",
   "knowledge.tag_rename": "Rename tag",
   "knowledge.tag_delete": "Delete tag",
   "knowledge.share": "Share library",
@@ -107,6 +108,7 @@ const messages: Record<string, string> = {
   "knowledge.packets.dissected_complete": "Dissected",
   "knowledge.packets.scope.training": "Training",
   "knowledge.packets.scope.tournament": "Tournament",
+  "knowledge.packets.owner_only": "Only my uploads",
   "knowledge.packets.jobs": "Dissection jobs",
   "knowledge.dissection.title": "Packet dissection",
   "knowledge.dissection.packet": "Packet",
@@ -270,6 +272,11 @@ describe("knowledge tabs", () => {
     const packets = root.querySelector<HTMLElement>('[data-panel="packets"]')!;
     expect(library.hidden).toBe(false);
     expect(packets.hidden).toBe(true);
+    // The active tab is highlighted on the very first render, not only after a click.
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tab")];
+    const active = tabs.find((tab) => tab.getAttribute("aria-current") === "page");
+    expect(active?.textContent).toBe("Library");
+    expect(active?.className).toContain("primary-button");
     expect(getComputedStyle(library).display).toBe("grid");
     expect(getComputedStyle(packets).display).toBe("none");
     expect(root.querySelector(".knowledge-tabs")?.textContent).toContain("Library");
@@ -381,6 +388,125 @@ describe("collapsed fact cards", () => {
     const fresh = root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!;
     expect(fresh.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("shows packet provenance and attached images without version or manual-origin notes", async () => {
+    const detail: KnowledgeFactDetail = {
+      id: "fact-1", title: "Rosetta Stone", description: "d",
+      links: [], tags: [], origin: "dissection", packet_name: "Cup 2026",
+      content_version: 7, editable: false, statistics: { status: "none" },
+      images: [{ id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" }],
+    };
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(detail) });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    expect(card.textContent).toContain("From packet: Cup 2026");
+    expect(card.querySelector(".knowledge-fact-images img")?.getAttribute("src"))
+      .toBe("/api/miniapp/knowledge/images/image-1");
+    // No fact version, no manual/dissection origin words, no card-level tag tools.
+    expect(card.textContent).not.toContain("version");
+    expect(card.textContent).not.toContain("Manual");
+    expect(card.textContent).not.toContain("Dissection");
+    expect(card.querySelector(".knowledge-tag-tool")).toBeNull();
+    // Read-only facts never offer the pencil editor control.
+    expect(card.querySelector<HTMLElement>(".knowledge-fact-edit")!.hidden).toBe(true);
+  });
+});
+
+describe("fact editor", () => {
+  const editableDetail: KnowledgeFactDetail = {
+    id: "fact-1", title: "Battle of Austerlitz", description: "d",
+    links: [], tags: [], origin: "manual", content_version: 1, editable: true,
+    statistics: { status: "none" },
+  };
+
+  it("exposes no merge controls or merge action", async () => {
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+    });
+    const { root } = render(structuredClone(data), actionList);
+    expect("merge" in actionList).toBe(false);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => /merge/i.test(item.textContent ?? ""))).toBe(false);
+    expect(dialog.querySelector("input[aria-label='Target fact ID']")).toBeNull();
+  });
+
+  it("moves tag rename and delete controls off the card into the editor", async () => {
+    const tag = vi.fn().mockResolvedValue(undefined);
+    const detail: KnowledgeFactDetail = {
+      ...editableDetail, tags: [{ id: "tag-1", name: "napoleonic wars", colour: "#1565c0" }],
+    };
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(detail),
+      save: vi.fn().mockResolvedValue(detail), tag,
+    });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    // Tag chips render read-only on the card: no rename/delete buttons there.
+    expect(card.querySelectorAll(".knowledge-fact-tags button")).toHaveLength(0);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => item.getAttribute("aria-label") === "Rename tag: napoleonic wars")).toBe(true);
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => item.getAttribute("aria-label") === "Delete tag: napoleonic wars")).toBe(true);
+    vi.spyOn(window, "prompt").mockReturnValue("naval history");
+    dialog.querySelector<HTMLButtonElement>("[aria-label='Rename tag: napoleonic wars']")!.click();
+    await flush();
+    expect(tag).toHaveBeenCalledWith("tag_rename", "tag-1", "naval history");
+  });
+
+  it("uploads, shows, removes and persists fact images through the editor", async () => {
+    const existing = { id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" };
+    const uploaded = { id: "image-2", url: "/api/miniapp/knowledge/images/image-2", content_type: "image/jpeg" };
+    const detail: KnowledgeFactDetail = { ...editableDetail, images: [existing] };
+    const uploadImage = vi.fn().mockResolvedValue(uploaded);
+    const save = vi.fn().mockResolvedValue(detail);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(detail), uploadImage, save });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    // The existing attachment is shown with its server URL and can be removed.
+    expect(dialog.querySelector(".knowledge-image img")?.getAttribute("src")).toBe(existing.url);
+
+    const picker = dialog.querySelector<HTMLInputElement>(".knowledge-images-field input[type='file']")!;
+    const pick = (file: File): void => {
+      Object.defineProperty(picker, "files", { value: [file], configurable: true });
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    pick(new File([new Uint8Array([1, 2, 3])], "pic.jpg", { type: "image/jpeg" }));
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledWith("AQID"));
+    await vi.waitFor(() => expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(2));
+
+    // Unsupported types are rejected locally without an upload request.
+    pick(new File([new Uint8Array([1])], "note.txt", { type: "text/plain" }));
+    await vi.waitFor(() => expect(dialog.querySelector("[role='alert']")?.textContent)
+      .toBe("Only PNG, JPEG or WebP images are supported."));
+    expect(uploadImage).toHaveBeenCalledTimes(1);
+
+    // Oversized files are rejected locally too.
+    pick(new File([new Uint8Array(2 * 1024 * 1024 + 1)], "big.png", { type: "image/png" }));
+    await vi.waitFor(() => expect(dialog.querySelector("[role='alert']")?.textContent)
+      .toBe("Image is larger than 2 MiB."));
+    expect(uploadImage).toHaveBeenCalledTimes(1);
+
+    // Removing a thumbnail drops its id from the saved set.
+    dialog.querySelector<HTMLButtonElement>("[aria-label='Remove image 1']")!.click();
+    expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(1);
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ image_ids: ["image-2"] }), detail);
+  });
 });
 
 describe("tags with colours", () => {
@@ -422,11 +548,16 @@ describe("tags with colours", () => {
       loadFact: vi.fn().mockResolvedValue(detail),
       save: vi.fn().mockResolvedValue(detail),
     });
-    const { button } = render(structuredClone(data), actionList);
+    const { root } = render(structuredClone(data), actionList);
     await flush();
-    document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
     await flush();
-    button("Edit")!.click();
+    const pencil = document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!;
+    // Keyboard-accessible control: a real button with a meaningful localized label.
+    expect(pencil).toBeInstanceOf(HTMLButtonElement);
+    expect(pencil.getAttribute("aria-label")).toBe("Edit fact: Battle of Austerlitz");
+    expect(pencil.tabIndex).toBe(0);
+    pencil.click();
     const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
     const checkboxes = [...dialog.querySelectorAll<HTMLInputElement>(".knowledge-tag-option input")];
     expect(checkboxes.map((box) => box.value)).toEqual(["history", "napoleonic wars"]);
@@ -457,7 +588,7 @@ describe("tags with colours", () => {
     expect(root.querySelector(".knowledge-tag-select")).toBeNull(); // New tag button lives beside the selector in fact editing.
     root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
     await flush();
-    button("Edit")!.click();
+    document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
     const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
     button("New tag", dialog)!.click();
     const tagDialog = [...document.querySelectorAll<HTMLDialogElement>(".knowledge-dialog")]
@@ -475,21 +606,30 @@ describe("tags with colours", () => {
     expect(art!.checked).toBe(true);
   });
 
-  it("filters the fact list by a tag chosen from the pool", async () => {
+  it("filters the fact list additively by several tags at once", async () => {
     const reloaded: KnowledgeFactsResource = { ...facts, items: [facts.items[0]!], total: 1, next_cursor: null };
-    const actionList = actions({ loadFacts: vi.fn().mockResolvedValue(reloaded) });
-    const { field } = render(structuredClone(data), actionList);
+    const loadFacts = vi.fn().mockResolvedValue(reloaded);
+    const actionList = actions({ loadFacts });
+    const { root } = render(structuredClone(data), actionList);
     await flush();
-    const select = field<HTMLSelectElement>("Filter by tag");
-    expect([...select.options].map((option) => option.value)).toEqual(
-      ["", "history", "napoleonic wars"],
-    );
-    select.value = "napoleonic wars";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const chips = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["history", "napoleonic wars"]);
+
+    chips.find((chip) => chip.textContent === "napoleonic wars")!.click();
     await flush();
-    expect(actionList.loadFacts).toHaveBeenCalledWith({
-      search: "", order: "title_asc", tag: "napoleonic wars",
-    });
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["napoleonic wars"] });
+    expect(chips.find((chip) => chip.textContent === "napoleonic wars")!.getAttribute("aria-pressed"))
+      .toBe("true");
+
+    // A second tag joins the filter instead of replacing the first one.
+    chips.find((chip) => chip.textContent === "history")!.click();
+    await flush();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["napoleonic wars", "history"] });
+
+    // Deselecting one chip leaves the other selected.
+    chips.find((chip) => chip.textContent === "napoleonic wars")!.click();
+    await flush();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["history"] });
   });
 });
 
@@ -627,14 +767,14 @@ describe("importing a shared library", () => {
       importLibrary: vi.fn().mockResolvedValue({ imported_count: 1, skipped_count: 0 }),
       loadTags: vi.fn().mockResolvedValueOnce({ items: [] }).mockResolvedValue(tagPool),
     });
-    const { root, button, field } = render(view, actionList);
+    const { root, button } = render(view, actionList);
     await flush();
     expect(root.textContent).toContain("0 facts");
     button("Import")!.click();
     await vi.waitFor(() => {
       expect(root.querySelector(".knowledge-total")?.textContent).toBe(`${facts.total} facts`);
       expect(root.querySelector(".knowledge-list")?.textContent).toContain(facts.items[0]!.title);
-      expect(field<HTMLSelectElement>("Filter by tag").options.length).toBe(tagPool.items.length + 1);
+      expect(root.querySelectorAll(".knowledge-tag-filter-chip").length).toBe(tagPool.items.length);
       expect(document.querySelector(".knowledge-dialog")?.textContent).toContain("Imported 1 facts");
     });
     expect(actionList.loadFacts).toHaveBeenCalledOnce();
@@ -724,6 +864,29 @@ describe("packets tab", () => {
       expect(query.get("order")).toBe("year_desc");
       expect(root.querySelector('[data-panel="packets"]')!.textContent)
         .toContain("No packets match these filters.");
+    } finally {
+      controller.abort();
+    }
+  });
+
+  it("labels packet cards with the real tournament names, not a generic word", async () => {
+    const controller = new AbortController();
+    try {
+      const fromTournament = {
+        ...packet("packet-1", "Cup 2026"), scope: "tournament" as const,
+        tournaments: [{ id: "tournament-1", name: "Autumn Cup" }, { id: "tournament-2", name: "Spring Cup" }],
+      };
+      const loadPackets = vi.fn().mockResolvedValue({ items: [fromTournament], next_cursor: null });
+      const { root } = renderPackets(actions({ loadPackets }), controller);
+      await vi.advanceTimersByTimeAsync(0);
+      const badges = [...root.querySelectorAll(".knowledge-scope-badge")]
+        .map((badge) => badge.textContent);
+      expect(badges).toEqual(["Autumn Cup", "Spring Cup"]);
+      // A training-scope upload without tournaments keeps its meaningful scope label.
+      const training = { ...packet("packet-2", "Drills"), tournaments: [] };
+      loadPackets.mockResolvedValue({ items: [training], next_cursor: null });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(root.querySelectorAll(".knowledge-scope-badge")[0]?.textContent).toBe("Training");
     } finally {
       controller.abort();
     }
