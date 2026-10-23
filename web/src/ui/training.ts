@@ -488,21 +488,24 @@ export function renderTraining(
           }
         } catch (error) { failure(error); }
       }) as EventListener }, i18n.t("training.prepare"));
-      const retire = packet.scope === "training" ? element("button", { type: "button", className: "danger-button", onclick: (async () => {
-        if (!window.confirm(i18n.t("training.retire_confirm"))) return;
-        try {
-          await post("retire", { version_id: packet.id });
-          if (state?.packet_version_id === packet.id) show({ session: null });
-          // No deselect command exists in the split contract; dismiss locally and
-          // keep the server-side selection for the integration owner to reconcile.
-          if (lobby?.version_id === packet.id) {
-            lobby = { ...lobby, version_id: null, packet_name: null };
-          }
-          updateSelection();
-          syncPacketSelection();
-          loader.reconcile();
-        }
-        catch (error) { failure(error); }
+      const retire = packet.scope === "training" ? element("button", { type: "button", className: "danger-button", onclick: (() => {
+        if (queued || !window.confirm(i18n.t("training.retire_confirm"))) return;
+        serialize(async () => {
+          try {
+            await post("retire", { version_id: packet.id });
+            const current = await api.request<TrainingResult>("/api/miniapp/training/current", { signal });
+            if (signal.aborted) return;
+            // Retirement does not deselect a saved packet. Retain the authoritative
+            // selection/version, explain its unavailability, and preserve drafts.
+            lobby = current.lobby ?? null;
+            show(current);
+            notice.textContent = lobby?.version_id === packet.id
+              ? i18n.t("training.retired_selected") : i18n.t("training.retired");
+            updateSelection();
+            syncPacketSelection();
+            loader.reconcile();
+          } catch (error) { failure(error); }
+        });
       }) as EventListener }, i18n.t("training.retire")) : null;
       return element("article", { className: "resource-card lobby-packet-card training-packet-card", "data-packet-id": packet.id },
         element("h3", {}, packet.name),

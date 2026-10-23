@@ -124,6 +124,7 @@ async def test_packet_autosave_and_settings_save_are_independent_and_versioned(m
 
     monkeypatch.setattr(training, "require_trainee", AsyncMock())
     service = TrainingService(SimpleNamespace(transaction=transaction))
+    service._lobby_notice = AsyncMock()
     service.packets.authorize = AsyncMock(return_value=(SimpleNamespace(name="Packet"), None))
     saved = (await service.lobby(
         owner, "save_settings", expected_version=1, settings={"reversed": True}
@@ -142,3 +143,8 @@ async def test_packet_autosave_and_settings_save_are_independent_and_versioned(m
         await service.lobby(owner, "select_packet", expected_version=1, version_id=packet)
     latest = (await service.lobby(owner, "save_settings", expected_version=3, settings={}))["lobby"]
     assert latest["version_id"] == str(packet) and latest["settings"]["reversed"] is False
+    assert service._lobby_notice.await_count == 3
+    # Reopening an existing lobby is not a mutation or a status refresh event.
+    monkeypatch.setattr(training, "require_no_training", AsyncMock())
+    assert (await service.lobby(owner, "create"))["lobby"] == latest
+    assert service._lobby_notice.await_count == 3

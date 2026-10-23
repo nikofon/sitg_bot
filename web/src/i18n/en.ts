@@ -165,6 +165,8 @@ export const en = {
   "training.search": "Search training packets",
   "training.retire": "Delete private packet",
   "training.retire_confirm": "Delete this private packet? Pinned history will be retained.",
+  "training.retired": "Private packet deleted.",
+  "training.retired_selected": "The saved packet was deleted and is unavailable for training. Select another packet; your settings draft is unchanged.",
   "training.publish": "Confirm publication",
   "training.reject": "Reject draft",
   "training.question_values": "Question values (comma-separated)",

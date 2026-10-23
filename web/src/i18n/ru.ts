@@ -167,6 +167,8 @@ export const ru: Record<MessageKey, string> = {
   "training.search": "Поиск тренировочных пакетов",
   "training.retire": "Удалить личный пакет",
   "training.retire_confirm": "Удалить этот личный пакет? История тренировок сохранится.",
+  "training.retired": "Личный пакет удалён.",
+  "training.retired_selected": "Сохранённый пакет удалён и недоступен для тренировки. Выберите другой пакет; несохранённые настройки не изменены.",
   "training.publish": "Подтвердить публикацию",
   "training.reject": "Отклонить черновик",
   "training.question_values": "Стоимости вопросов (через запятую)",

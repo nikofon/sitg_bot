@@ -491,20 +491,26 @@ describe("training lobby", () => {
     expect(lobbyBodies(request).length).toBe(0);
   });
 
-  it("keeps settings savable after retiring the selected packet", async () => {
-    const { root, request } = create();
+  it("retains authoritative retired selection and unsaved settings without inventing deselection", async () => {
+    const { root, request } = create({ current: { session: null, lobby: { ...lobby, version: 4 } } });
     await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
     const save = root.querySelector<HTMLButtonElement>('.training-options button[type="submit"]')!;
     expect(save.disabled).toBe(false);
+    const buzzTimer = settingInput(root, "Buzz timer (seconds)");
+    buzzTimer.value = "12";
+    buzzTimer.dispatchEvent(new Event("input", { bubbles: true }));
     vi.spyOn(window, "confirm").mockReturnValue(true);
     packetCards(root)[0]!.querySelector<HTMLButtonElement>(".danger-button")!.click();
-    await vi.waitFor(() => expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
-      .toBe("No packet selected"));
-    // Settings can still be saved without a packet selection.
+    await vi.waitFor(() => expect(status(root)).toContain("saved packet was deleted"));
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
+      .toBe("Alpha packet");
+    expect(request).toHaveBeenCalledWith("/api/miniapp/training/current", expect.anything());
+    // Settings remain independently savable using the authoritative version.
     expect(save.disabled).toBe(false);
     root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
-    expect(lobbyBodies(request)[0]).toMatchObject({ command: "save_settings", expected_version: 3 });
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "save_settings", expected_version: 4,
+      settings: { buzz_timeout: 12 } });
   });
 
   it("shows upload controls separately without loading the packet picker", () => {

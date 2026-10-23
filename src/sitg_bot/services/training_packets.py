@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select, text, tuple_
+from sqlalchemy import and_, case, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -47,6 +47,7 @@ from sitg_bot.storage.models import (
     TournamentPacketAssignmentRecord,
     TournamentPacketEntitlementRecord,
     TournamentRecord,
+    TrainingAttemptRecord,
     TrainingSessionRecord,
 )
 
@@ -658,7 +659,7 @@ class TrainingPacketService:
                 raise LookupError("Private packet not found")
             await session.refresh(logical, with_for_update=True)
             logical.retired_at = datetime.now(UTC)
-            records = await session.scalars(
+            records = list(await session.scalars(
                 select(TrainingSessionRecord)
                 .where(
                     TrainingSessionRecord.owner_id == player_id,
@@ -670,7 +671,12 @@ class TrainingPacketService:
                     TrainingSessionRecord.status.in_(("active", "paused")),
                 )
                 .with_for_update()
-            )
+            ))
+            if records:
+                await session.execute(update(TrainingAttemptRecord).where(
+                    TrainingAttemptRecord.session_id.in_([record.id for record in records]),
+                    TrainingAttemptRecord.appeal_status == "voting",
+                ).values(appeal_status="rejected", appeal_resolved_at=logical.retired_at))
             for record in records:
                 record.status, record.ended_at = "stopped", logical.retired_at
                 record.deadline = record.hidden_deadline = None

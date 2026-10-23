@@ -61,6 +61,7 @@ class TrainingService:
             await require_trainee(session, player_id)
             player = await session.get(PlayerRecord, player_id, with_for_update=True)
             lobby = player.training_lobby
+            previous_lobby = lobby
             if command == "create":
                 await require_no_training(session, player_id)
                 if lobby is None:
@@ -94,7 +95,8 @@ class TrainingService:
                 else:
                     raise ValueError("Unknown training lobby command")
             player.training_lobby = lobby
-            await self._lobby_notice(session, player)
+            if lobby is not previous_lobby:
+                await self._lobby_notice(session, player)
             return {"lobby": lobby}
 
     @staticmethod
