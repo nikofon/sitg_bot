@@ -66,7 +66,9 @@ def test_training_menu_recovers_even_with_a_finished_normal_game_view():
     )
     model = menu_message(state, LocalizationService(), "en")
     assert model.text == "Training"
-    assert model.keyboard.rows == (("Quit",),)
+    assert model.keyboard.rows[0] == ("+",)
+    assert ("||", "!") in model.keyboard.rows
+    assert ("Next question", "Score") in model.keyboard.rows
 
 
 async def test_training_http_requires_authenticated_csrf_mutation_and_rejects_actor_override():
@@ -102,11 +104,14 @@ async def test_training_http_requires_authenticated_csrf_mutation_and_rejects_ac
 
 
 async def test_training_callback_keeps_encoded_version_and_uses_authorized_question():
-    state = {"question_revision_id": str(UUID(int=2))}
+    state = {"question_revision_id": str(UUID(int=2)), "message_ids": [10]}
     backend = SimpleNamespace(
         _execute=AsyncMock(return_value=SimpleNamespace(data={"session": state}))
     )
-    callback = SimpleNamespace(data=f"tr:{UUID(int=1).hex}:7:continue", answer=AsyncMock())
+    callback = SimpleNamespace(
+        data=f"tr:{UUID(int=1).hex}:7:continue", answer=AsyncMock(),
+        message=Message(message_id=10, date=datetime.now(UTC), chat=Chat(id=42, type="private")),
+    )
     claim = object()
     await handle_training_action(callback, backend, claim, LocalizationService(), "en")
     operation = backend._execute.await_args_list[-1].args[1]
@@ -172,7 +177,7 @@ async def test_hidden_telegram_recovery_clears_every_persisted_question_chunk():
             return_value={
                 "telegram_user_id": 42,
                 "locale": "en",
-                "presentation": {"ids": [10, 11, 12]},
+                "presentation": {"ids": [10, 11, 12], "controls": "play"},
                 "session": state,
             }
         )

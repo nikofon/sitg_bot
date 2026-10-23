@@ -78,6 +78,19 @@ TRAINING_MENU_ACTIONS = (
 )
 
 
+def training_game_keyboard(localization, locale, *, voting=False) -> ReplyKeyboardModel:
+    rows = (("+",), ("||", "!"))
+    if voting:
+        rows += ((localization.text("button.yes", locale),
+                  localization.text("button.no", locale)),)
+    rows += (
+        (localization.text("training.next", locale), localization.text("training.score", locale)),
+        (localization.text("training.reveal", locale), localization.text("training.skip", locale)),
+        (localization.text("button.training.quit", locale),),
+    )
+    return ReplyKeyboardModel(rows=rows, persistent=True)
+
+
 def registration_consent_keyboard(
     localization: LocalizationService, locale: str
 ) -> ReplyKeyboardModel:
@@ -132,7 +145,7 @@ def navigation_keyboard(
     if navigation.active_mode == "training" and navigation.context == "training_lobby":
         layout = (("training.settings",), ("training.start",), ("training.quit",))
     elif navigation.active_mode == "training" and navigation.context == "training":
-        layout = (("training.quit",),)
+        return training_game_keyboard(localization, locale)
     if navigation.context == "game":
         return ReplyKeyboardModel(rows=(("+",), ("||", "!")), persistent=True)
     allowed = set(navigation.allowed_actions)

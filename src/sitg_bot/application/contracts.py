@@ -793,6 +793,7 @@ class TrainingStartOperation(ContractModel):
 
 class TrainingCurrentOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_CURRENT]
+    score_only: bool = Field(default=False, strict=True)
 
 
 class TrainingViewOperation(ContractModel):
@@ -806,9 +807,11 @@ class TrainingActOperation(ContractModel):
     expected_version: int = Field(ge=1)
     question_revision_id: UUID
     command: Literal[
-        "buzz", "answer", "reveal", "skip", "pause", "resume", "stop", "next", "continue"
+        "buzz", "answer", "reveal", "skip", "pause", "resume", "stop", "next", "continue",
+        "appeal", "vote",
     ]
     answer: str | None = Field(default=None, max_length=4000)
+    approve: bool | None = Field(default=None, strict=True)
 
 
 class LibraryListOperation(ContractModel):

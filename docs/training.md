@@ -34,7 +34,7 @@ constructing the document.
 
 ## Execution and presentation
 
-Telegram training is keyboard-driven, without training slash commands. The home
+Telegram training is keyboard-driven, without training-specific slash commands. The home
 keyboard contains Start training, Knowledge library, Upload packet for training,
 and Change mode. Start training creates a persistent solo lobby, replacing the
 keyboard with Packets and settings, Start, and Quit. Packets and settings launches
@@ -43,8 +43,16 @@ sections. Packet selection autosaves independently, while settings require an
 explicit save. Selecting a packet never starts questions.
 Return to Telegram and press Start after choosing a packet and saving any settings; exposure confirmation and Best
 buzz preparation checks still apply. Quit discards the lobby or stops a running
-session. During a session, question actions remain inline and the reply keyboard
-provides Quit. Completion restores the home keyboard.
+session. A durable lobby status message shows the selected packet and localized enabled
+modifiers; packet/settings saves update that message through the transactional outbox.
+Reopening the menu recovers the same status instead of posting another copy.
+
+During a session, reply-keyboard controls use `+` to buzz, `||` to pause/resume,
+and `!` to appeal, like regular games. Next question, reveal, skip, score and quit
+are also keyboard actions. `/score` reads the current or latest finished training
+score. Ordinary question messages have no inline controls. Only the Best buzz pause
+has inline Continue reading; it resumes the configured token cadence rather than
+instantly revealing the remainder. Completion restores the home keyboard.
 
 Lobby selections and settings persist across restarts and use an owner-locked,
 monotonically increasing version to reject stale saves, quits, and confirmations.
@@ -68,7 +76,22 @@ locks serialize training start with normal-game entry. Commands carry expected
 versions and question revision IDs. Reading cursors have a separate presentation
 version so a newly displayed token does not invalidate a buzz on the same question.
 Outbox events contain identifiers; Telegram fetches authorized text at delivery and
-stores message identities for subsequent edits.
+stores message identities for subsequent edits. Buzzing is bound to the question
+last delivered in the chat, not an unseen later server question. Pausing freezes
+reading, buzz, answer and hidden-text timers; resuming restores their remaining time.
+
+Training-only question rows record opening time and accepted buzz time, active elapsed
+seconds (excluding explicit pauses), and revealed-token cursor at the actual buzz,
+even if no answer follows. Legacy unknown timing remains null. Attempts preserve the
+original and effective verdicts. Correct answers add the question value; incorrect
+answers and accepted-buzz answer timeouts subtract it. No-buzz timeouts, reveal and
+skip are neutral. An answer in progress must be submitted or time out before reveal/skip.
+A submitted answer on the current revealed question can be appealed once with `!`.
+The solo trainee explicitly votes Yes/No within 60 seconds, as a one-player electorate.
+Acceptance flips the verdict and corrects the training score; rejection/expiry leaves
+it unchanged. The prior pause state is restored. Neither attempts nor appeals write
+competitive scores, ratings, suspicion, player statistics or author totals. These
+additive persistence fields require migration `0027_training_history_flow`.
 
 Reversed mode reverses word order. Hidden mode immediately displays the whole
 question for a configurable positive duration shorter than the buzz timer, then

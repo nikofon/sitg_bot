@@ -37,8 +37,9 @@ class AutomaticJobScheduler:
             training = tuple(await session.scalars(select(TrainingSessionRecord).where(
                 (TrainingSessionRecord.status == "active")
                 | ((TrainingSessionRecord.status == "paused")
-                   & TrainingSessionRecord.hidden_deadline.is_not(None)
-                   & TrainingSessionRecord.text_hidden.is_(False)),
+                   & (TrainingSessionRecord.deadline.is_not(None)
+                      | (TrainingSessionRecord.hidden_deadline.is_not(None)
+                         & TrainingSessionRecord.text_hidden.is_(False)))),
             )))
             games = tuple(
                 (

@@ -220,9 +220,9 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
         )
         queue = AsyncMock()
         await AutomaticJobScheduler(database, queue).reconcile(now=now + timedelta(seconds=1))
-        assert any(call.args[0] == "training.deadline"
-                   and call.args[2].get("session_id") == str(session_id)
-                   for call in queue.schedule.await_args_list)
+        assert not any(call.args[0] == "training.deadline"
+                       and call.args[2].get("session_id") == str(session_id)
+                       for call in queue.schedule.await_args_list)
         await training.tick(session_id, now=now + timedelta(seconds=3))
         state = (
             await TrainingService(database).view(
@@ -231,17 +231,25 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
                 now=now + timedelta(seconds=3),
             )
         )["session"]
-        assert state["hidden"] and state["text"] == ""
+        assert not state["hidden"] and state["text"] == "five <four> three two One"
         assert state["status"] == "paused"
         async with database.sessions() as session:
-            assert (await session.get(TrainingSessionRecord, session_id)).text_hidden
+            assert not (await session.get(TrainingSessionRecord, session_id)).text_hidden
+        state = (await training.act(
+            owner, session_id, "resume", expected_version=state["version"],
+            question_revision_id=UUID(state["question_revision_id"]),
+            now=now + timedelta(seconds=3),
+        ))["session"]
+        assert state["hidden_deadline"] == now + timedelta(seconds=4)
+        state = (await training.view(owner, session_id, now=now + timedelta(seconds=4)))["session"]
+        assert state["hidden"] and state["text"] == ""
         await training.act(
             owner,
             session_id,
             "stop",
             expected_version=state["version"],
             question_revision_id=UUID(state["question_revision_id"]),
-            now=now + timedelta(seconds=3),
+            now=now + timedelta(seconds=4),
         )
 
         async def prepared(session, player_id, source):

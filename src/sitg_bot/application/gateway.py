@@ -1270,7 +1270,9 @@ class ApplicationGateway:
                 version_id=operation.version_id, settings=operation.settings,
             )
         if isinstance(operation, TrainingCurrentOperation):
-            return await self.training.current(player_id)
+            return await self.training.current(
+                player_id, score_only=operation.score_only,
+            )
         if isinstance(operation, TrainingViewOperation):
             return await self.training.view(player_id, operation.session_id)
         if isinstance(operation, TrainingStartOperation):
@@ -1284,6 +1286,7 @@ class ApplicationGateway:
                 player_id, operation.session_id, operation.command,
                 expected_version=operation.expected_version,
                 question_revision_id=operation.question_revision_id, answer=operation.answer,
+                approve=operation.approve,
             )
         if isinstance(operation, TrainingUploadOperation):
             try:
