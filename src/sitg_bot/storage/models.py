@@ -1330,6 +1330,7 @@ class TrainingAttemptRecord(Base, TimestampMixin):
             "appeal_status IS NULL OR appeal_status IN ('voting', 'accepted', 'rejected')",
             name="ck_training_attempt_appeal_status",
         ),
+        Index("ix_training_attempts_revision", "question_revision_id"),
     )
 
 

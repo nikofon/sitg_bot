@@ -50,6 +50,10 @@ def upgrade():
         CREATE INDEX ix_training_questions_revision
         ON training_questions(question_revision_id)
     """)
+    op.execute("""
+        CREATE INDEX ix_training_attempts_revision
+        ON training_attempts(question_revision_id)
+    """)
     op.drop_index("ix_training_deadline", table_name="training_sessions")
     op.execute("""
         CREATE INDEX ix_training_deadline ON training_sessions(deadline)
@@ -63,6 +67,7 @@ def downgrade():
         CREATE INDEX ix_training_deadline ON training_sessions(deadline)
         WHERE status = 'active'
     """)
+    op.drop_index("ix_training_attempts_revision", table_name="training_attempts")
     op.drop_index("ix_training_questions_revision", table_name="training_questions")
     op.drop_index("ix_training_sessions_owner_created", table_name="training_sessions")
     op.drop_column("players", "training_lobby_presentation")

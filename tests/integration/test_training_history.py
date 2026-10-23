@@ -363,8 +363,6 @@ async def test_library_revocation_and_anonymous_training_statistics(database):
     assert (await history.list_sessions(owner))["items"][0]["id"] == first["id"]
 
 
-@pytest.mark.skipif(not hasattr(TrainingQuestionRecord, "buzzed_at"),
-                    reason="Requires integration-owned 0027 question timing fields")
 async def test_recorded_buzz_without_attempt_and_bounded_samples(database):
     from sitg_bot.storage.models import PacketQuestionRecord
 
@@ -377,6 +375,8 @@ async def test_recorded_buzz_without_attempt_and_bounded_samples(database):
     now = datetime.now(UTC)
     last_id = None
     async with database.transaction() as session:
+        # Playback evidence does not replace the independent disclosure/access gate.
+        await TrainingService(database).packets.disclose(session, owner, version_id, confirm=True)
         for index in range(30):
             record = TrainingSessionRecord(
                 owner_id=owner, packet_version_id=version_id, disclosure_receipt={},

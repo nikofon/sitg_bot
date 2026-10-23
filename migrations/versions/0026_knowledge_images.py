@@ -14,7 +14,6 @@ def upgrade():
             id UUID PRIMARY KEY, owner_id UUID NOT NULL REFERENCES players(id),
             content_type VARCHAR(32) NOT NULL, data BYTEA NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             CHECK (content_type IN ('image/png', 'image/jpeg', 'image/webp')),
             CHECK (octet_length(data) BETWEEN 1 AND 2097152)
         )
