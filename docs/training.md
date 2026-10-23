@@ -2,7 +2,7 @@
 
 Solo training uses separate session, membership, question-pin and attempt tables.
 It never creates competitive games, rating entries or tournament results.
-Run `alembic upgrade head` (through `0023_copy_sharing_theme_quotas`) before deployment.
+Run `alembic upgrade head` (through `0027_training_history_flow`) before deployment.
 
 ## Access and uploads
 
