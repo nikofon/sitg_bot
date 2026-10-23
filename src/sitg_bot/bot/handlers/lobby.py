@@ -293,16 +293,7 @@ async def handle_lobby_action(
         )
         updated = await backend.navigation(telegram_update_claim)
         if updated.context == "game":
-            from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
-
-            await send_menu_with_notification_alert(
-                message,
-                backend=backend,
-                claim=telegram_update_claim,
-                navigation=updated,
-                localization=localization,
-                locale=locale,
-            )
+            # The outbox delivers pending lobby notices before the game messages.
             return
         await send_message_model(message, menu_message(updated, localization, locale))
 
@@ -436,15 +427,6 @@ async def handle_start_confirmation_callback(
     )
     updated = await backend.navigation(telegram_update_claim)
     if updated.context == "game":
-        from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
-
-        await send_menu_with_notification_alert(
-            callback.message,
-            backend=backend,
-            claim=telegram_update_claim,
-            navigation=updated,
-            localization=localization,
-            locale=locale,
-        )
+        # The outbox delivers packet-selection notices before the game messages.
         return
     await send_message_model(callback.message, menu_message(updated, localization, locale))

@@ -1879,6 +1879,47 @@ async def test_lobby_search_with_selected_packets_starts_without_confirmation() 
     backend.select_lobby_packets.assert_not_awaited()
 
 
+async def test_lobby_start_leaves_game_messages_to_ordered_delivery() -> None:
+    from sitg_bot.bot.handlers.lobby import handle_lobby_action
+
+    current = navigation(
+        context="lobby",
+        active_lobby={
+            "id": str(UUID(int=9)), "tournament_id": str(UUID(int=8)),
+            "version": 3, "status": "assembling",
+        },
+        allowed_actions=["lobby.start"],
+    )
+    updated = navigation(context="game", active_game={
+        "id": str(UUID(int=4)), "tournament_id": str(UUID(int=8)), "status": "lobby",
+        "phase": "waiting_for_players", "version": 1, "joined": False,
+        "active": False, "can_reconnect": False,
+    })
+    backend = SimpleNamespace(
+        lobby_info=AsyncMock(return_value={
+            "version": 3, "selected_packets": [{"name": "Selected"}],
+        }),
+        lobby_action=AsyncMock(), navigation=AsyncMock(return_value=updated),
+        game_view=AsyncMock(return_value={"id": str(UUID(int=4)), "status": "lobby"}),
+        game_delivery=SimpleNamespace(track=AsyncMock(), sync=AsyncMock()),
+        game_callback_references=SimpleNamespace(),
+    )
+    message = SimpleNamespace(
+        answer=AsyncMock(), chat=SimpleNamespace(id=42), message_id=1, text="Start",
+    )
+    claim = SimpleNamespace()
+    await handle_lobby_action(
+        message, "lobby.start", backend, claim, LocalizationService(), "en", current,
+        SimpleNamespace(clear=AsyncMock()), None,
+    )
+
+    backend.lobby_action.assert_awaited_once_with(
+        claim, lobby_id=UUID(int=9), action="start", expected_version=3,
+    )
+    backend.game_delivery.sync.assert_not_awaited()
+    message.answer.assert_not_awaited()
+
+
 async def test_lobby_info_lists_participants_ratings_packets_and_settings_link() -> None:
     from sitg_bot.bot.handlers.lobby import handle_lobby_action
     from sitg_bot.bot.lobby_delivery import LobbyDelivery
@@ -2079,12 +2120,22 @@ async def test_lobby_confirmation_selects_packets_before_action(action, already_
         lobby_action=AsyncMock(return_value={"started": True}),
         navigation=AsyncMock(
             return_value=(
-                current.model_copy(update={"context": "tournament"})
+                navigation(context="game", active_game={
+                    "id": str(UUID(int=4)), "tournament_id": str(UUID(int=8)), "status": "lobby",
+                    "phase": "waiting_for_players", "version": 1, "joined": False,
+                    "active": False, "can_reconnect": False,
+                })
                 if action == "start" else current
             )
         ),
+        game_view=AsyncMock(return_value={"id": str(UUID(int=4)), "status": "lobby"}),
+        game_delivery=SimpleNamespace(track=AsyncMock(), sync=AsyncMock()),
+        game_callback_references=SimpleNamespace(),
     )
     message = AsyncMock(spec=Message)
+    message.chat = SimpleNamespace(id=42)
+    message.message_id = 1
+    message.text = None
     message.answer = AsyncMock()
     message.edit_reply_markup = AsyncMock()
     callback = SimpleNamespace(
@@ -2117,6 +2168,9 @@ async def test_lobby_confirmation_selects_packets_before_action(action, already_
     start = backend.lobby_action.await_args.kwargs
     assert start["action"] == action
     assert start["expected_version"] == (3 if already_selected else 5)
+    backend.game_delivery.sync.assert_not_awaited()
+    if action == "start":
+        callback.message.answer.assert_not_awaited()
 
 
 @pytest.mark.parametrize("action", ("start", "search"))
