@@ -9,8 +9,8 @@ from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal, Gat
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.domain.knowledge import FactContent, dissection_candidate_id
 from sitg_bot.services.knowledge import KnowledgeService
-from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.knowledge_images import KnowledgeImageService
+from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.training import TrainingService
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.services.training_packets import TrainingPacketService
