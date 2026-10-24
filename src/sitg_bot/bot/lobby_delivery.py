@@ -2,6 +2,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from html import escape
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -205,7 +206,9 @@ def notification_alert_delivery_handler(
             same_role = bool(payload["same_role"])
             if audience not in {"player", "manager", "admin"}:
                 raise TerminalDeliveryError("Notification audience is invalid")
-            if same_role:
+            if "message_text" in payload:
+                text = escape(str(payload["message_text"]))
+            elif same_role:
                 text = localization.text("notifications.new_alert", locale)
             else:
                 text = localization.text(

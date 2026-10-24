@@ -511,11 +511,32 @@ class AuthorLinkService:
                 raise ValueError("Unknown notification audience")
             if await TelegramNavigationService._active_game(session, player_id) is not None:
                 return NotificationAlertResult(())
+            pending_message = await session.scalar(
+                select(PlayerNotificationRecord).where(
+                    PlayerNotificationRecord.recipient_player_id == player_id,
+                    PlayerNotificationRecord.kind == "admin.message",
+                    PlayerNotificationRecord.read_at.is_(None),
+                    PlayerNotificationRecord.payload["alert_enqueued"].as_boolean().is_not(True),
+                ).order_by(PlayerNotificationRecord.created_at, PlayerNotificationRecord.id)
+                .limit(1).with_for_update()
+            )
+            if pending_message is not None:
+                scheduled = await NotificationWriter._schedule_alert(
+                    session,
+                    recipient_player_id=player_id,
+                    audience="player",
+                    deduplication_key=pending_message.deduplication_key,
+                    message_text=str(pending_message.payload["text"]),
+                )
+                if scheduled:
+                    pending_message.payload = {**pending_message.payload, "alert_enqueued": True}
+                return NotificationAlertResult(())
             if (
                 await session.scalar(
                     select(PlayerNotificationRecord.id)
                     .where(
                         *notification_filters,
+                        PlayerNotificationRecord.kind != "admin.message",
                         PlayerNotificationRecord.read_at.is_(None),
                     )
                     .limit(1)

@@ -7,6 +7,7 @@ from sitg_bot.application.adapters import TelegramGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
     AdminAuthenticateOperation,
+    AdminMessageSendOperation,
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
@@ -705,6 +706,13 @@ class BotBackend:
             GameAppealDecideOperation(
                 action=ActionCode.GAME_APPEAL_DECIDE, appeal_id=appeal_id, approve=approve
             ),
+        )
+        return cast(dict, response.data)
+
+    async def send_admin_message(self, claim: TelegramUpdateClaim, *, text: str) -> dict:
+        response = await self._execute(
+            claim,
+            AdminMessageSendOperation(action=ActionCode.ADMIN_MESSAGE_SEND, text=text),
         )
         return cast(dict, response.data)
 

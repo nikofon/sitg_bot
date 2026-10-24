@@ -10,6 +10,10 @@ class AdminAuthenticationState(StatesGroup):
     entering_credential = State()
 
 
+class AdminMessageState(StatesGroup):
+    entering_text = State()
+
+
 class AdminBanState(StatesGroup):
     entering_target = State()
     entering_reason = State()

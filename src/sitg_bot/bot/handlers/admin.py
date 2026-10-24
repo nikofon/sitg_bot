@@ -33,6 +33,7 @@ from sitg_bot.bot.state import (
 from sitg_bot.bot.state.settings import (
     AdminAuthenticationState,
     AdminBanState,
+    AdminMessageState,
     AdminTokenDecisionState,
     AdminUnbanState,
 )
@@ -385,6 +386,12 @@ async def handle_admin_menu_action(
     launch_links: str | None,
 ) -> None:
     await state.clear()
+    if admin_action == "admin.message":
+        await state.set_state(AdminMessageState.entering_text)
+        await send_message_model(
+            message, MessageModel(localization.text("admin.message.prompt", locale))
+        )
+        return
     if admin_action == "admin.token_requests.pending":
         page = await backend.pending_token_requests(telegram_update_claim)
         await _send_pending_token_requests(
@@ -699,6 +706,39 @@ async def handle_token_final_decision(
     )
 
 
+@router.message(StateFilter(AdminMessageState.entering_text), F.text)
+async def handle_admin_message_text(
+    message: Message,
+    backend: BotBackend,
+    telegram_update_claim: TelegramUpdateClaim,
+    localization: LocalizationService,
+    locale: str,
+    navigation: NavigationState,
+    state: FSMContext,
+) -> None:
+    if not _admin_menu_available(navigation, "admin.message"):
+        await state.clear()
+        await send_message_model(
+            message, MessageModel(localization.text("mode.access_changed", locale))
+        )
+        return
+    value = (message.text or "").strip()
+    if _is_back(value, localization):
+        await state.clear()
+        await send_message_model(message, menu_message(navigation, localization, locale))
+        return
+    if not value or len(value) > 4000:
+        await send_message_model(
+            message, MessageModel(localization.text("admin.message.invalid", locale))
+        )
+        return
+    receipt = await backend.send_admin_message(telegram_update_claim, text=value)
+    await state.clear()
+    await send_message_model(message, MessageModel(localization.text(
+        "admin.message.sent", locale, count=receipt["recipient_count"],
+    )))
+
+
 def _is_back(value: str, localization: LocalizationService) -> bool:
     return any(
         value == localization.text("button.back", candidate) for candidate in localization.catalogs
@@ -761,7 +801,9 @@ async def handle_admin_ban_reason(
     value = (message.text or "").strip()
     if _is_back(value, localization):
         await state.clear()
-        await send_message_model(message, MessageModel(localization.text("admin.ban.cancelled", locale)))
+        await send_message_model(
+            message, MessageModel(localization.text("admin.ban.cancelled", locale))
+        )
         return
     skip = any(
         value == localization.text("button.skip", candidate) for candidate in localization.catalogs

@@ -83,6 +83,10 @@ at send time so a queued notice does not restore an outdated keyboard.
   review, selected tournament management and profiles, and JSON/DOCX packet upload.
 - Administrator credential authentication (`/admin`) and token-request decisions with
   optional commentary and receipts.
+- **Admin message** broadcasts up to 4000 characters to all registered users as player
+  notifications. Telegram alerts display the message text directly, respecting active-game
+  suppression and the shared alert cooldown. Deferred messages are queued on menu recovery;
+  notifications retain the text for later reading. `/cancel` aborts message entry.
 - Administrator moderation is opened through the **Management** keyboard button. Player
   cards provide Ban/Unban and suspicion review/clearance. Banned players receive
   "You have been banned! Reason: … You can still use your library" on every interaction

@@ -21,6 +21,7 @@ from sitg_bot.application.contracts import (
     AdminAuthorUpdateOperation,
     AdminGameListOperation,
     AdminManagementListOperation,
+    AdminMessageSendOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
     AdminSuspicionClearOperation,
@@ -423,6 +424,7 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_MESSAGE_SEND: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
         ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
@@ -1439,6 +1441,8 @@ class ApplicationGateway:
             return await self.moderation.ban_player(
                 player_id, operation.target, reason=operation.reason
             )
+        if isinstance(operation, AdminMessageSendOperation):
+            return await self.moderation.broadcast_message(player_id, operation.text)
         if isinstance(operation, PlayerUnbanOperation):
             return await self.moderation.unban_player(player_id, operation.target)
         if isinstance(operation, BugReportCreateOperation):

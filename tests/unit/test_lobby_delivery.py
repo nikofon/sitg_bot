@@ -450,6 +450,16 @@ async def test_notification_alert_uses_matching_role_copy() -> None:
     bot.send_message.assert_awaited_once_with(42, "You have a new notification!")
 
 
+async def test_admin_message_alert_shows_content() -> None:
+    bot = SimpleNamespace(send_message=AsyncMock())
+    handler = notification_alert_delivery_handler(bot, LocalizationService())
+    await handler({
+        "recipient_telegram_user_id": 42, "locale": "en", "audience": "player",
+        "same_role": False, "message_text": "News <today> & tomorrow",
+    })
+    bot.send_message.assert_awaited_once_with(42, "News &lt;today&gt; &amp; tomorrow")
+
+
 async def test_notification_alert_names_a_different_role() -> None:
     bot = SimpleNamespace(send_message=AsyncMock())
     handler = notification_alert_delivery_handler(  # type: ignore[arg-type]

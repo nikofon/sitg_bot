@@ -113,8 +113,10 @@ async def test_live_alert_names_role_and_throttles_across_audiences(
     }
 
 
+@pytest.mark.parametrize("message_text", [None, "Broadcast"])
 async def test_live_alert_is_suppressed_during_game(
     monkeypatch: pytest.MonkeyPatch,
+    message_text: str | None,
 ) -> None:
     player = PlayerRecord(id=UUID(int=1), telegram_user_id=42, status="active")
     session = AlertSession(player)
@@ -131,7 +133,33 @@ async def test_live_alert_is_suppressed_during_game(
         recipient_player_id=player.id,
         audience="player",
         deduplication_key="in-game",
+        message_text=message_text,
     )
 
     enqueue.assert_not_awaited()
     assert session.alert is None
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_admin_message_notification_displays_escaped_content(locale):
+    assert notification_text(
+        "admin.message", {"text": "Hello <everyone> & friends"}, LocalizationService(), locale
+    ) == "Hello &lt;everyone&gt; &amp; friends"
+
+
+async def test_admin_message_alert_contains_content_and_obeys_cooldown(alert_dependencies):
+    player = PlayerRecord(
+        id=UUID(int=1), telegram_user_id=42, preferred_locale="en", status="active",
+    )
+    session = AlertSession(player, mode="admin")
+    first = await NotificationWriter._schedule_alert(
+        session, recipient_player_id=player.id, audience="player",
+        deduplication_key="broadcast-one", message_text="Hello <everyone>",
+    )
+    second = await NotificationWriter._schedule_alert(
+        session, recipient_player_id=player.id, audience="player",
+        deduplication_key="broadcast-two", message_text="Second message",
+    )
+    assert first is True and second is False
+    alert_dependencies.assert_awaited_once()
+    assert alert_dependencies.await_args.kwargs["payload"]["message_text"] == "Hello <everyone>"

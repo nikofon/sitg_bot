@@ -1,4 +1,9 @@
 {
+  "button.admin.message": "Admin message",
+  "admin.message.prompt": "Send the message to broadcast to every registered user (up to 4000 characters). /cancel aborts.",
+  "admin.message.invalid": "Enter a message between 1 and 4000 characters.",
+  "admin.message.sent": "Message queued for {count} users.",
+  "notification.admin.message": "{text}",
   "game.denied.left": "You have left this game.",
   "game.denied.finished": "The game has already ended.",
   "game.denied.observer": "Observers cannot perform player actions.",

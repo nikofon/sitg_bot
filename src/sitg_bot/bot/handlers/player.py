@@ -108,6 +108,8 @@ def other_menu_message(
 def notification_text(
     kind: str, payload: dict[str, object], localization: LocalizationService, locale: str
 ) -> str:
+    if kind == "admin.message":
+        return localization.text("notification.admin.message", locale, text=payload.get("text", ""))
     if kind == "subscription.assigned":
         count = payload.get("packet_count")
         return localization.text(

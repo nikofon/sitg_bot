@@ -45,12 +45,15 @@ class NotificationWriter:
         )
         session.add(notification)
         await session.flush()
-        await cls._schedule_alert(
+        scheduled = await cls._schedule_alert(
             session,
             recipient_player_id=recipient_player_id,
             audience=audience,
             deduplication_key=deduplication_key,
+            message_text=str(payload["text"]) if kind == "admin.message" else None,
         )
+        if kind == "admin.message" and scheduled:
+            notification.payload = {**notification.payload, "alert_enqueued": True}
         return notification
 
     @classmethod
@@ -101,7 +104,8 @@ class NotificationWriter:
         recipient_player_id: UUID,
         audience: str,
         deduplication_key: str,
-    ) -> None:
+        message_text: str | None = None,
+    ) -> bool:
         now = datetime.now(UTC)
         player = await session.scalar(
             select(PlayerRecord)
@@ -112,16 +116,16 @@ class NotificationWriter:
             .with_for_update()
         )
         if player is None or player.telegram_user_id is None:
-            return
+            return False
         if await TelegramNavigationService._active_game(session, recipient_player_id) is not None:
-            return
+            return False
         alert = await session.get(
             PlayerNotificationAlertRecord,
             recipient_player_id,
             with_for_update=True,
         )
         if alert is not None and alert.last_alerted_at > now - NOTIFICATION_ALERT_COOLDOWN:
-            return
+            return False
         navigation = await session.get(PlayerTelegramNavigationRecord, recipient_player_id)
         saved_mode = navigation.interaction_mode if navigation is not None else "player"
         available_modes = await TelegramNavigationService._available_modes(
@@ -147,5 +151,7 @@ class NotificationWriter:
                 "locale": player.preferred_locale,
                 "audience": audience,
                 "same_role": active_mode == audience,
+                **({"message_text": message_text} if message_text is not None else {}),
             },
         )
+        return True

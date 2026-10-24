@@ -674,6 +674,7 @@ class TelegramNavigationService:
             actions.extend(
                 (
                     "admin.menu",
+                    "admin.message",
                     "admin.token_requests.pending",
                     "admin.management",
                 )

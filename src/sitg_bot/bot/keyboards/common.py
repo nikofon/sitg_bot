@@ -64,6 +64,7 @@ MANAGER_TOURNAMENT_ACTIONS = (
 )
 
 ADMIN_MENU_ACTIONS = (
+    ("admin.message",),
     ("admin.token_requests.pending",),
     ("admin.management",),
     ("notifications",),

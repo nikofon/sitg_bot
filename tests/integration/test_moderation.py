@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -10,14 +11,17 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.moderation import BugReportService, PlayerModerationService
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    OutboxEventRecord,
+    PlatformAdministratorRecord,
+    PlayerNotificationAlertRecord,
     PlayerNotificationRecord,
     PlayerRecord,
-    PlatformAdministratorRecord,
     SuspicionLedgerRecord,
 )
 
@@ -72,6 +76,55 @@ async def _create_player(
 
 def test_ban_unban_bug_reports_and_suspicion_ledger(migrated_database) -> None:
     asyncio.run(_exercise(migrated_database))
+
+
+def test_admin_broadcast_and_deferred_content(migrated_database, monkeypatch) -> None:
+    asyncio.run(_exercise_broadcast(migrated_database, monkeypatch))
+
+
+async def _exercise_broadcast(database_url, monkeypatch):
+    database = Database(database_url)
+    try:
+        admin = await _create_player(database, nickname="Admin", administrator=True)
+        user = await _create_player(database, nickname="User")
+        service = PlayerModerationService(database)
+        with pytest.raises(PermissionError):
+            await service.broadcast_message(user["player_id"], "Unauthorized")
+        for invalid in (" ", "x" * 4001):
+            with pytest.raises(ValueError):
+                await service.broadcast_message(admin["player_id"], invalid)
+        monkeypatch.setattr(
+            TelegramNavigationService, "_active_game", AsyncMock(return_value=object()),
+        )
+        receipt = await service.broadcast_message(admin["player_id"], "Hello <everyone>")
+        assert receipt == {"recipient_count": 2}
+        async with database.transaction() as session:
+            notifications = tuple(await session.scalars(select(PlayerNotificationRecord)))
+            assert len(notifications) == 2
+            assert all(item.kind == "admin.message" for item in notifications)
+            assert all(not item.payload.get("alert_enqueued") for item in notifications)
+            assert not tuple(await session.scalars(select(OutboxEventRecord)))
+        monkeypatch.setattr(
+            TelegramNavigationService, "_active_game", AsyncMock(return_value=None),
+        )
+        links = AuthorLinkService(database)
+        result = await links.claim_notification_alerts(user["player_id"], audience="player")
+        assert result.audiences == ()
+        async with database.transaction() as session:
+            events = tuple(await session.scalars(select(OutboxEventRecord)))
+            assert len(events) == 1
+            assert events[0].payload["message_text"] == "Hello <everyone>"
+            assert events[0].payload["recipient_telegram_user_id"] == user["telegram_user_id"]
+            alert = await session.get(PlayerNotificationAlertRecord, user["player_id"])
+            await session.delete(alert)
+        result = await links.claim_notification_alerts(user["player_id"], audience="player")
+        assert result.audiences == ()
+        async with database.transaction() as session:
+            assert len(tuple(await session.scalars(select(OutboxEventRecord)))) == 1
+        page = await links.notification_page(user["player_id"], audience="player")
+        assert page.items[0].payload["text"] == "Hello <everyone>"
+    finally:
+        await database.close()
 
 
 async def _exercise(database_url: str) -> None:

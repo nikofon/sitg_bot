@@ -1,4 +1,9 @@
 {
+  "button.admin.message": "Сообщение администратора",
+  "admin.message.prompt": "Отправьте сообщение для всех зарегистрированных пользователей (до 4000 символов). /cancel отменяет.",
+  "admin.message.invalid": "Введите сообщение длиной от 1 до 4000 символов.",
+  "admin.message.sent": "Сообщение поставлено в очередь для {count} пользователей.",
+  "notification.admin.message": "{text}",
   "game.denied.left": "Вы вышли из этой игры.",
   "game.denied.finished": "Игра уже завершена.",
   "game.denied.observer": "Наблюдатели не могут выполнять действия игроков.",

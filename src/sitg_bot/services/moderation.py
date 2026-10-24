@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +48,29 @@ class PlayerModerationService:
 
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    async def broadcast_message(self, administrator_id: UUID, text: str) -> dict[str, int]:
+        normalized = text.strip()
+        if not normalized or len(normalized) > 4000:
+            raise ValueError("Admin message must contain between 1 and 4000 characters")
+        async with self.database.transaction() as session:
+            await _require_administrator(session, administrator_id)
+            recipients = tuple(await session.scalars(
+                select(PlayerRecord.id)
+                .where(PlayerRecord.status == "active")
+                .order_by(PlayerRecord.id)
+            ))
+            broadcast_id = uuid4()
+            for player_id in recipients:
+                await NotificationWriter.create_for_player(
+                    session,
+                    recipient_player_id=player_id,
+                    audience="player",
+                    kind="admin.message",
+                    deduplication_key=f"admin-message:{broadcast_id}:{player_id}",
+                    payload={"text": normalized, "administrator_id": str(administrator_id)},
+                )
+            return {"recipient_count": len(recipients)}
 
     async def ban_player(
         self,

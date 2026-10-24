@@ -125,6 +125,7 @@ class ActionCode(StrEnum):
     GAME_APPEAL_TICKETS = "games.appeals.manager.list.v1"
     GAME_APPEAL_DECIDE = "games.appeals.manager.decide.v1"
     PLAYER_BAN = "platform.players.ban.v1"
+    ADMIN_MESSAGE_SEND = "platform.admin.message.send.v1"
     PLAYER_UNBAN = "platform.players.unban.v1"
     BUG_REPORT_CREATE = "platform.bug_reports.create.v1"
     ADMIN_SUSPICION_LEDGER = "platform.admin.suspicion.ledger.v1"
@@ -975,6 +976,11 @@ class PlayerReportOperation(ContractModel):
     details: str | None = Field(default=None, max_length=2000)
 
 
+class AdminMessageSendOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_MESSAGE_SEND]
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class PlayerBanOperation(ContractModel):
     action: Literal[ActionCode.PLAYER_BAN]
     target: str = Field(min_length=1, max_length=200)
@@ -1185,6 +1191,7 @@ GatewayOperation = Annotated[
     | ReputationVoteOperation
     | PlayerReportOperation
     | PlayerBanOperation
+    | AdminMessageSendOperation
     | PlayerUnbanOperation
     | BugReportCreateOperation
     | AdminSuspicionLedgerOperation

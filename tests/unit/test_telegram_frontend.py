@@ -163,7 +163,9 @@ async def test_packet_upload_accepts_several_files_in_one_session() -> None:
         )
         assert f"Packet {index}" in message.answer.await_args.args[0]
     operations = [call.args[1] for call in gateway.execute_update.await_args_list]
-    uploads = [operation for operation in operations if operation.action == ActionCode.PACKET_UPLOAD]
+    uploads = [
+        operation for operation in operations if operation.action == ActionCode.PACKET_UPLOAD
+    ]
     assert [upload.source_filename for upload in uploads] == ["first.docx", "second.pdf"]
     assert all(
         upload.tournament_id == UUID(int=3) and upload.source_base64 for upload in uploads
@@ -2328,6 +2330,30 @@ async def test_banned_player_middleware_blocks_interaction_but_allows_library(
     )
     handler.assert_awaited_once()
     assert send.await_count == 1
+
+
+@pytest.mark.parametrize("text, permitted, sent", [
+    ("Hello everyone", True, True), (" ", True, False),
+    ("x" * 4001, True, False), ("Hello", False, False),
+])
+async def test_admin_message_validates_text_and_permissions(text, permitted, sent):
+    from sitg_bot.bot.handlers.admin import handle_admin_message_text
+
+    backend = SimpleNamespace(send_admin_message=AsyncMock(return_value={"recipient_count": 3}))
+    state = SimpleNamespace(clear=AsyncMock())
+    message = SimpleNamespace(answer=AsyncMock(), text=text)
+    await handle_admin_message_text(
+        message, backend=backend, telegram_update_claim=object(),
+        localization=LocalizationService(), locale="en",
+        navigation=navigation(
+            active_mode="admin", allowed_actions=["admin.message"] if permitted else [],
+        ), state=state,
+    )
+    assert backend.send_admin_message.await_count == int(sent)
+    if sent:
+        assert backend.send_admin_message.await_args.kwargs == {"text": text}
+        state.clear.assert_awaited_once()
+        assert "3" in message.answer.await_args.args[0]
 
 
 async def test_admin_ban_flow_collects_target_reason_and_receipt() -> None:
