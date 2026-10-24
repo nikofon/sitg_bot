@@ -34,13 +34,6 @@ class AutomaticJobScheduler:
         now = now or datetime.now(UTC)
         scheduled = 0
         async with self.database.sessions() as session:
-            training = tuple(await session.scalars(select(TrainingSessionRecord).where(
-                (TrainingSessionRecord.status == "active")
-                | ((TrainingSessionRecord.status == "paused")
-                   & (TrainingSessionRecord.deadline.is_not(None)
-                      | (TrainingSessionRecord.hidden_deadline.is_not(None)
-                         & TrainingSessionRecord.text_hidden.is_(False)))),
-            )))
             games = tuple(
                 (
                     await session.execute(
@@ -72,17 +65,6 @@ class AutomaticJobScheduler:
                 ).scalars()
             )
 
-        for record in training:
-            deadline = min((value for value in (
-                record.deadline,
-                record.hidden_deadline if not record.text_hidden else None,
-            ) if value is not None), default=None)
-            if deadline is not None:
-                await self.queue.schedule(
-                    "training.deadline", self._key("training", record.id, deadline),
-                    {"session_id": str(record.id)}, scheduled_at=deadline, priority=12,
-                )
-                scheduled += 1
         for game in games:
             deadline = self._game_deadline(game)
             if deadline is None:
@@ -119,6 +101,34 @@ class AutomaticJobScheduler:
 
         for kind, every, priority in PERIODIC_JOBS:
             scheduled += await self._periodic(kind, now, every=every, priority=priority)
+
+        async with self.database.sessions() as session:
+            cursor = None
+            model = TrainingSessionRecord
+            while True:
+                statement = select(
+                    model.id, model.deadline, model.hidden_deadline, model.text_hidden,
+                ).where(
+                    model.status.in_(("active", "paused")),
+                    model.deadline.is_not(None)
+                    | (model.hidden_deadline.is_not(None) & model.text_hidden.is_(False)),
+                )
+                if cursor is not None:
+                    statement = statement.where(model.id > cursor)
+                training = (await session.execute(statement.order_by(model.id).limit(100))).all()
+                for record in training:
+                    deadline = min(value for value in (
+                        record.deadline,
+                        record.hidden_deadline if not record.text_hidden else None,
+                    ) if value is not None)
+                    await self.queue.schedule(
+                        "training.deadline", self._key("training", record.id, deadline),
+                        {"session_id": str(record.id)}, scheduled_at=deadline, priority=12,
+                    )
+                    scheduled += 1
+                if len(training) < 100:
+                    break
+                cursor = training[-1].id
         return scheduled
 
     async def _periodic(

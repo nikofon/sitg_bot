@@ -185,3 +185,20 @@ async def test_terminal_menu_eligibility_change_is_not_hidden_by_unchanged_text(
     )
     await harness.delivery(harness.payload)
     assert harness.bot.send_message.await_count == count_before + 1
+
+
+@pytest.mark.parametrize("status", ["stopped", "completed"])
+async def test_retained_normal_game_does_not_block_training_terminal_menu(monkeypatch, status):
+    harness = terminal_delivery_harness(monkeypatch)
+    await harness.delivery(harness.payload)
+    await finish(harness, status)
+    harness.game_lookup.return_value = NavigationGame(
+        OTHER, OTHER, "finalized", "finished", 1, True, True, False,
+    )
+    state = await harness.service.delivery(OWNER, RUN)
+    assert state["show_menu"] is True
+    await harness.delivery(harness.payload)
+    assert harness.bot.send_message.await_count == 3
+    assert harness.bot.send_message.await_args.kwargs["reply_markup"].keyboard[0][0].text == (
+        "Start training"
+    )

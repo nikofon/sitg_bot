@@ -23,8 +23,8 @@ from sitg_bot.application.contracts import (
     TrainingUploadOperation,
     TrainingViewOperation,
 )
+from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
 from sitg_bot.bot.miniapps import mini_app_route_url
-from sitg_bot.bot.presenters.common import menu_message
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import GatewayCallError
 from sitg_bot.bot.state.settings import TrainingUploadState
@@ -59,12 +59,10 @@ async def call(backend, claim, operation):
 
 async def show_menu(message, backend, claim, localization, locale):
     navigation = await backend.navigation(claim)
-    # Reply-keyboard WebApps receive no signed initData. Keep this a text action;
-    # the settings handler supplies the authenticated inline WebApp launch.
-    await send_message_model(message, menu_message(navigation, localization, locale))
-    delivery = getattr(backend, "training_delivery", None)
-    if delivery is not None and navigation.context == "training_lobby":
-        await delivery.lobby({"owner_id": str(navigation.account.player_id)})
+    await send_menu_with_notification_alert(
+        message, backend=backend, claim=claim, navigation=navigation,
+        localization=localization, locale=locale,
+    )
 
 
 async def open_app(message, localization, locale, base_url, action):

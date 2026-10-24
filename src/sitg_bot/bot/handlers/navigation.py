@@ -170,7 +170,11 @@ async def handle_cancel(
     )
     await send_message_model(
         message,
-        MessageModel(localization.text(key, locale), RemoveKeyboardModel()),
+        MessageModel(
+            localization.text(key, locale),
+            None if navigation is not None and navigation.context == "training"
+            else RemoveKeyboardModel(),
+        ),
     )
 
 

@@ -183,7 +183,7 @@ class TrainingDelivery:
                     "voting" if question and question.get("appeal_status") == "voting" else "play"
                 )
                 if question and question["status"] in {"active", "paused"} and (
-                    presentation.get("controls") != controls
+                    presentation.get("controls") != controls or payload.get("force")
                 ):
                     await self.bot.send_message(
                         chat, self.localization.text("training.controls", locale),

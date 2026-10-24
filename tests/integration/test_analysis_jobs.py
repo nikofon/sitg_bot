@@ -727,6 +727,12 @@ async def test_uncertain_outcomes_are_recorded_and_retried(database):
     artifact = await artifact_of(database, artifact_id)
     assert "upstream-1" in artifact.provider_request_ids
     assert "upstream-1" in (artifact.last_error or "")
+    for _ in range(2):
+        await stack.service._record_uncertain(
+            artifact_id, artifact.lease_token,
+            ProviderOutcomeUncertain("Disconnected", provider_request_id="upstream-1"),
+        )
+    assert (await artifact_of(database, artifact_id)).provider_request_ids.count("upstream-1") == 1
 
     await asyncio.sleep(0.1)
     await stack.service.execute_job(payload)
@@ -734,6 +740,69 @@ async def test_uncertain_outcomes_are_recorded_and_retried(database):
     assert view.status == "succeeded"
     result = await stack.service.result(owner_player_id=owner, request_id="unc-1")
     assert result["value"] == 50
+
+
+@pytest.mark.parametrize("replacement_status", ["cancelled", "pending", "running", "succeeded"])
+async def test_old_uncertain_error_cannot_write_cancelled_or_replacement_artifact(
+    database, monkeypatch, replacement_status,
+):
+    owner = await create_player(database, 229, "uncertain-generation")
+    stack = await make_stack(database, [owner])
+    source = CommonKnowledgeSource("Generation-fenced uncertainty")
+    await submit(stack.service, owner, source, "old-uncertain")
+    artifact_id = await artifact_id_of(database, "old-uncertain")
+    old_started, old_release = asyncio.Event(), asyncio.Event()
+    new_started, new_release = asyncio.Event(), asyncio.Event()
+    original = stack.provider.estimate_common_knowledge
+    calls = 0
+
+    async def estimate(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            old_started.set()
+            await old_release.wait()
+            raise ProviderOutcomeUncertain("Old connection lost", provider_request_id="stale-id")
+        if replacement_status == "running":
+            new_started.set()
+            await new_release.wait()
+        return await original(request)
+
+    monkeypatch.setattr(stack.provider, "estimate_common_knowledge", estimate)
+    old_task = asyncio.create_task(stack.service.execute_job({
+        "artifact_id": str(artifact_id), "generation": 1,
+    }))
+    new_task = None
+    try:
+        await asyncio.wait_for(old_started.wait(), timeout=5)
+        assert await stack.service.cancel(owner_player_id=owner, request_id="old-uncertain")
+        if replacement_status != "cancelled":
+            await submit(stack.service, owner, source, "new-uncertain")
+        if replacement_status in {"running", "succeeded"}:
+            new_task = asyncio.create_task(stack.service.execute_job({
+                "artifact_id": str(artifact_id), "generation": 2,
+            }))
+            if replacement_status == "running":
+                await asyncio.wait_for(new_started.wait(), timeout=5)
+            else:
+                await asyncio.wait_for(new_task, timeout=5)
+        before = await artifact_of(database, artifact_id)
+        assert before.status == replacement_status
+        old_release.set()
+        with pytest.raises(ProviderOutcomeUncertain):
+            await asyncio.wait_for(old_task, timeout=5)
+        after = await artifact_of(database, artifact_id)
+        assert (
+            after.status, after.generation, after.lease_token, after.provider_request_ids,
+            after.last_error, after.provider_usage,
+        ) == (
+            before.status, before.generation, before.lease_token, before.provider_request_ids,
+            before.last_error, before.provider_usage,
+        )
+    finally:
+        old_release.set()
+        new_release.set()
+        await asyncio.gather(old_task, *([new_task] if new_task else []), return_exceptions=True)
 
 
 async def test_common_knowledge_estimates_are_cached_by_content(database):

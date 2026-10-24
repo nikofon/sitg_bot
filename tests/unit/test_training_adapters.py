@@ -66,9 +66,7 @@ def test_training_menu_recovers_even_with_a_finished_normal_game_view():
     )
     model = menu_message(state, LocalizationService(), "en")
     assert model.text == "Training"
-    assert model.keyboard.rows[0] == ("+",)
-    assert ("||", "!") in model.keyboard.rows
-    assert ("Next question", "Score") in model.keyboard.rows
+    assert model.keyboard is None
 
 
 async def test_training_http_requires_authenticated_csrf_mutation_and_rejects_actor_override():

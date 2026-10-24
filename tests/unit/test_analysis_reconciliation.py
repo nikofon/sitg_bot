@@ -12,6 +12,7 @@ from sitg_bot.services.training_ai import (
     CommonKnowledgeSource,
     DissectionSource,
     FakeAnalysisProvider,
+    ProviderOutcomeUncertain,
     ProviderSettings,
     source_descriptor,
 )
@@ -312,6 +313,42 @@ async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch)
     assert common.value == 25 and common.model == "producing-model"
     assert common.prompt_version == "producing-prompt"
     assert common.schema_version == "producing-schema"
+
+
+async def test_uncertain_provider_error_is_written_with_the_current_compute_token():
+    settings = ProviderSettings("fake", "m")
+    artifact = SimpleNamespace(
+        id=uuid4(), generation=1, status="pending", kind="common_knowledge",
+        lease_token=None, lease_expires_at=None, provider_usage=None,
+        **{name: getattr(settings, name) for name in (
+            "model", "prompt_version", "schema_version", "tokenizer_version",
+        )},
+    )
+    request = SimpleNamespace(
+        owner_player_id=uuid4(), instructions="", source={}, status="queued",
+    )
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=artifact),
+        execute=AsyncMock(return_value=SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [request]),
+        )),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    service = AnalysisService(
+        SimpleNamespace(transaction=transaction), object(), FakeAnalysisProvider(), settings,
+    )
+    error = ProviderOutcomeUncertain("Disconnected", provider_request_id="old-call")
+    service._run_common_knowledge = AsyncMock(side_effect=error)
+    service._record_uncertain = AsyncMock()
+    with pytest.raises(ProviderOutcomeUncertain):
+        await service.execute_job({"artifact_id": str(artifact.id), "generation": 1})
+    token = service._run_common_knowledge.await_args.args[1]
+    assert token is not None and token == artifact.lease_token
+    service._record_uncertain.assert_awaited_once_with(artifact.id, token, error)
 
 
 async def test_applied_dissection_is_not_reset_or_requeued_by_an_explicit_retry():
