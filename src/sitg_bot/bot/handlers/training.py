@@ -24,8 +24,8 @@ from sitg_bot.application.contracts import (
     TrainingViewOperation,
 )
 from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
+from sitg_bot.bot.handlers.knowledge import send_message_model
 from sitg_bot.bot.miniapps import mini_app_route_url
-from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import GatewayCallError
 from sitg_bot.bot.state.settings import TrainingUploadState
 

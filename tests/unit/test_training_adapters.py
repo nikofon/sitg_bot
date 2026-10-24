@@ -268,9 +268,8 @@ async def test_training_router_still_submits_an_ordinary_answer():
 async def test_training_menu_uses_polling_launch_dependency(
     monkeypatch, locale, action, route, configured,
 ):
-    answer, send = AsyncMock(), AsyncMock()
+    answer = AsyncMock()
     monkeypatch.setattr(Message, "answer", answer)
-    monkeypatch.setattr(training, "send_message_model", send)
     localization = LocalizationService()
     adapter = SimpleNamespace(facts_page=AsyncMock(return_value={"items": [], "total": 0}))
     state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
@@ -295,8 +294,9 @@ async def test_training_menu_uses_polling_launch_dependency(
             f"https://mini.example.test/nested/{route}?_launch=1"
         )
         adapter.facts_page.assert_not_awaited()
-        send.assert_not_awaited()
+        answer.assert_awaited_once()
     else:
         adapter.facts_page.assert_awaited_once()
-        send.assert_awaited_once()
-        answer.assert_not_awaited()
+        answer.assert_awaited_once()
+        assert answer.await_args.kwargs["reply_markup"] is None
+        assert localization.text("knowledge.facts.empty", locale) in answer.await_args.args[0]
