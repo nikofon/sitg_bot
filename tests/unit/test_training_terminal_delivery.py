@@ -6,8 +6,6 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import EditMessageText
 
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.training_delivery import TrainingDelivery
@@ -112,19 +110,15 @@ async def test_last_revealed_frame_completion_delivers_home_menu_once(monkeypatc
     revealed = harness.bot.send_message.await_args.args[1]
     assert "Answer" in revealed and "Score: 10" in revealed
     await finish(harness, "completed")
-    harness.bot.edit_message_text.side_effect = TelegramBadRequest(
-        method=EditMessageText(chat_id=42, message_id=11, text=revealed),
-        message="message is not modified",
-    )
     await harness.delivery(harness.payload)
-    assert harness.bot.edit_message_text.await_args.args[0] == revealed
+    harness.bot.edit_message_text.assert_not_awaited()
     assert harness.bot.send_message.await_count == 3
     finished = harness.bot.send_message.await_args
     assert finished.args[1] == LocalizationService().text("training.finished", "en")
     assert finished.kwargs["reply_markup"].keyboard[0][0].text == "Start training"
     await harness.delivery(harness.payload)
     assert harness.bot.send_message.await_count == 3
-    assert harness.bot.edit_message_text.await_count == 1
+    harness.bot.edit_message_text.assert_not_awaited()
 
 
 @pytest.mark.parametrize("status", ["stopped", "completed"])

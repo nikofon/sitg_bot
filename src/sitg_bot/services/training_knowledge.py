@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select, update
+from sqlalchemy import String, delete, func, or_, select, tuple_, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -935,8 +935,13 @@ class KnowledgeApplication:
 
     async def reconcile_statistics(self):
         async with self.database.transaction() as session:
-            rows = list(
-                await session.execute(
+            cursor = None
+            order = (
+                KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
+                TrainingAnalysisRequestRecord.id,
+            )
+            while True:
+                statement = (
                     select(TrainingAnalysisRequestRecord, KnowledgeFactRecord)
                     .join(
                         KnowledgeFactRecord,
@@ -948,43 +953,51 @@ class KnowledgeApplication:
                         TrainingAnalysisRequestRecord.status.in_(
                             ("succeeded", "failed", "cancelled")
                         ),
+                        TrainingAnalysisRequestRecord.owner_player_id
+                        == KnowledgeFactRecord.owner_id,
+                        TrainingAnalysisRequestRecord.source["content_version"].astext
+                        == KnowledgeFactRecord.content_version.cast(String),
                         KnowledgeFactRecord.statistic_status == "pending",
                         KnowledgeFactRecord.deleted_at.is_(None),
                     )
-                    .order_by(KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
-                              TrainingAnalysisRequestRecord.id)
-                    .limit(100)
                 )
-            )
-            for request, fact in rows:
-                try:
-                    await require_trainee(session, fact.owner_id, lock=True)
-                except PermissionError:
-                    continue
-                await session.refresh(fact)
-                if (
-                    request.source.get("content_version") != fact.content_version
-                    or fact.statistic_status != "pending"
-                    or fact.deleted_at is not None
-                ):
-                    continue
-                artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
-                available = request.status == "succeeded" and artifact and artifact.payload
-                common = CommonKnowledgeEstimate(
-                    status="available" if available else "failed",
-                    value=artifact.payload["value"] if available else None,
-                    model=artifact.model if artifact else None,
-                    prompt_version=artifact.prompt_version if artifact else None,
-                    schema_version=artifact.schema_version if artifact else None,
-                    population=POPULATION,
-                    estimated_at=datetime.now(UTC) if available else None,
-                )
-                await self.service(session).record_statistics(
-                    fact.owner_id,
-                    fact.id,
-                    common=common,
-                    bingo=BingoScore(status="pending_calibration"),
-                )
+                if cursor is not None:
+                    statement = statement.where(tuple_(*order) > cursor)
+                rows = list(await session.execute(statement.order_by(*order).limit(100)))
+                for request, fact in rows:
+                    cursor = (fact.owner_id, fact.id, request.id)
+                    try:
+                        await require_trainee(session, fact.owner_id, lock=True)
+                    except PermissionError:
+                        continue
+                    await session.refresh(fact)
+                    if (
+                        request.source.get("content_version") != fact.content_version
+                        or fact.statistic_status != "pending"
+                        or fact.deleted_at is not None
+                    ):
+                        continue
+                    artifact = await session.get(
+                        TrainingAnalysisArtifactRecord, request.artifact_id,
+                    )
+                    available = request.status == "succeeded" and artifact and artifact.payload
+                    common = CommonKnowledgeEstimate(
+                        status="available" if available else "failed",
+                        value=artifact.payload["value"] if available else None,
+                        model=artifact.model if artifact else None,
+                        prompt_version=artifact.prompt_version if artifact else None,
+                        schema_version=artifact.schema_version if artifact else None,
+                        population=POPULATION,
+                        estimated_at=datetime.now(UTC) if available else None,
+                    )
+                    await self.service(session).record_statistics(
+                        fact.owner_id,
+                        fact.id,
+                        common=common,
+                        bingo=BingoScore(status="pending_calibration"),
+                    )
+                if len(rows) < 100:
+                    break
 
     async def prepared(self, session, player_id, source):
         rows = await session.execute(

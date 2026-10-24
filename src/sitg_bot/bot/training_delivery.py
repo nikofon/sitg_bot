@@ -179,6 +179,7 @@ class TrainingDelivery:
                 if presentation.get("digest") == digest and not payload.get("force"):
                     return
                 ids = presentation.get("ids", [])
+                chunk_digests = dict(presentation.get("chunk_digests", {}))
                 controls = (
                     "voting" if question and question.get("appeal_status") == "voting" else "play"
                 )
@@ -199,6 +200,13 @@ class TrainingDelivery:
                 for index in range(max(len(chunks), len(ids))):
                     value = chunks[index] if index < len(chunks) else "…"
                     markup = keyboard if index == len(chunks) - 1 else None
+                    chunk_digest = hashlib.sha256(repr((value, markup)).encode()).hexdigest()
+                    key = str(index)
+                    if (
+                        index < len(ids) and chunk_digests.get(key) == chunk_digest
+                        and not payload.get("force")
+                    ):
+                        continue
                     if index < len(ids):
                         try:
                             await self.bot.edit_message_text(
@@ -207,9 +215,11 @@ class TrainingDelivery:
                                 message_id=ids[index],
                                 reply_markup=markup,
                             )
+                            chunk_digests[key] = chunk_digest
                             continue
                         except TelegramBadRequest as error:
                             if "message is not modified" in str(error).lower():
+                                chunk_digests[key] = chunk_digest
                                 continue
                             if "message to edit not found" not in str(error).lower():
                                 raise
@@ -218,10 +228,13 @@ class TrainingDelivery:
                         ids[index] = sent.message_id
                     else:
                         ids.append(sent.message_id)
+                    chunk_digests[key] = chunk_digest
                     await self.protocol.request(
                         "telegram.training.record",
                         **payload,
-                        presentation={**presentation, "ids": ids},
+                        presentation={
+                            **presentation, "ids": ids, "chunk_digests": dict(chunk_digests),
+                        },
                     )
                 if state.get("show_menu"):
                     await self.bot.send_message(
@@ -250,6 +263,7 @@ class TrainingDelivery:
                     **payload,
                     presentation={
                         **presentation, "ids": ids, "digest": digest,
+                        "chunk_digests": chunk_digests,
                         "question_revision_id": (
                             question.get("question_revision_id") if question else None
                         ),

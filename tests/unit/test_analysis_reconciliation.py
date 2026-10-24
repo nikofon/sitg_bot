@@ -289,7 +289,7 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
 
 async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):
     request = SimpleNamespace(
-        status="succeeded", source={"content_version": 1}, artifact_id=uuid4()
+        id=uuid4(), status="succeeded", source={"content_version": 1}, artifact_id=uuid4()
     )
     fact = SimpleNamespace(owner_id=uuid4(), id=uuid4(), content_version=1,
                            statistic_status="pending", deleted_at=None)
@@ -313,6 +313,46 @@ async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch)
     assert common.value == 25 and common.model == "producing-model"
     assert common.prompt_version == "producing-prompt"
     assert common.schema_version == "producing-schema"
+
+
+async def test_statistics_reconciliation_advances_past_unavailable_owner_batches(monkeypatch):
+    unavailable, owner = uuid4(), uuid4()
+    blocked = [(
+        SimpleNamespace(id=uuid4(), source={"content_version": 1}),
+        SimpleNamespace(id=uuid4(), owner_id=unavailable),
+    ) for _ in range(100)]
+    fact = SimpleNamespace(
+        id=uuid4(), owner_id=owner, content_version=1, statistic_status="pending", deleted_at=None,
+    )
+    request = SimpleNamespace(
+        id=uuid4(), status="succeeded", source={"content_version": 1}, artifact_id=uuid4(),
+    )
+    artifact = SimpleNamespace(
+        payload={"value": 25}, model="model", prompt_version="1", schema_version="1",
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[blocked, [(request, fact)]]), refresh=AsyncMock(),
+        get=AsyncMock(return_value=artifact),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    async def guard(session, player_id, *, lock=False):
+        if player_id == unavailable:
+            raise PermissionError("Unavailable owner")
+
+    monkeypatch.setattr("sitg_bot.services.training_knowledge.require_trainee", guard)
+    app = KnowledgeApplication(SimpleNamespace(transaction=transaction))
+    record = AsyncMock()
+    app.service = lambda session: SimpleNamespace(record_statistics=record)
+    await app.reconcile_statistics()
+    record.assert_awaited_once()
+    assert record.await_args.args == (owner, fact.id)
+    assert record.await_args.kwargs["common"].value == 25
+    assert session.execute.await_count == 2
+    session.refresh.assert_awaited_once_with(fact)
 
 
 async def test_uncertain_provider_error_is_written_with_the_current_compute_token():
