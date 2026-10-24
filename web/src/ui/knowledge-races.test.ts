@@ -82,9 +82,10 @@ describe("Knowledge query response ownership", () => {
     const { root } = setup({ loadFacts });
     await flush();
     click("Refresh");
-    const tag = root.querySelector<HTMLSelectElement>("[aria-label='Filter by tag']")!;
-    tag.value = "history"; tag.dispatchEvent(new Event("change"));
-    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tag: "history" });
+    const tagChip = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")]
+      .find((chip) => chip.textContent === "history")!;
+    tagChip.click();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["history"] });
     second.resolve(page("tagged")); await flush();
     first.resolve(page("unfiltered")); await flush();
     expect(root.querySelector(".knowledge-list")!.textContent).toContain("tagged");

@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select, update
+from sqlalchemy import String, delete, func, or_, select, tuple_, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -22,6 +22,7 @@ from sitg_bot.services.analysis_jobs import (
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
 from sitg_bot.services.knowledge import DEFAULT_TAG_COLOUR, KnowledgeService
+from sitg_bot.services.knowledge_images import authorized_images, image_view
 from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.reliable_delivery import DurableJobQueue, TransactionalOutbox
 from sitg_bot.services.training_access import require_trainee
@@ -173,13 +174,26 @@ class KnowledgeApplication:
         async with self.database.transaction() as session:
             await require_trainee(session, actor)
             page = await self.service(session).list_facts(actor, **params)
-            snapshots = await self._latest_snapshots(session, [item.fact_id for item in page.items])
+            ids = [item.fact_id for item in page.items]
+            snapshots = await self._latest_snapshots(session, ids)
+            rows = {row.id: row for row in await session.scalars(
+                select(KnowledgeFactRecord).where(KnowledgeFactRecord.id.in_(ids))
+            )} if ids else {}
+            names = await self._packet_names(session, actor, ids)
+            image_ids = {UUID(value) for row in rows.values() for value in row.image_ids}
+            images = {row.id: image_view(row) for row in
+                      await authorized_images(session, actor, image_ids)}
             items = [
                 {
                     "id": item.fact_id,
                     "fact_id": item.fact_id,
                     "owner_id": item.owner_id,
                     "title": item.title,
+                    "description": rows[item.fact_id].description,
+                    "links": rows[item.fact_id].links,
+                    "images": [images[UUID(value)] for value in rows[item.fact_id].image_ids],
+                    "packet_name": names.get(item.fact_id),
+                    "content_version": rows[item.fact_id].content_version,
                     "tag_names": item.tag_names,
                     "origin": item.origin,
                     "statistic_status": item.statistic_status,
@@ -244,7 +258,32 @@ class KnowledgeApplication:
             await require_trainee(session, actor)
             detail = await self.service(session).fact_detail(actor, fact_id)
             snapshots = await self._latest_snapshots(session, [fact_id])
-            return self._detail(detail, snapshots.get(fact_id))
+            result = self._detail(detail, snapshots.get(fact_id))
+            result["images"] = [image_view(row) for row in await authorized_images(
+                session, actor, detail.content.image_ids
+            )]
+            names = await self._packet_names(session, actor, [fact_id])
+            result["packet_name"] = names.get(fact_id)
+            return result
+
+    @staticmethod
+    async def _packet_names(session, actor, ids):
+        if not ids:
+            return {}
+        # Only original, currently authorized imports receive source metadata.
+        # Permanent collection copies are manual facts and cannot inherit rights.
+        return dict((await session.execute(
+            select(KnowledgeFactRecord.id, PacketVersionRecord.name)
+            .join(KnowledgeDissectionRecord,
+                  KnowledgeDissectionRecord.id.cast(String) ==
+                  KnowledgeFactRecord.provenance["request_id"].as_string())
+            .join(PacketVersionRecord,
+                  PacketVersionRecord.id.cast(String) == KnowledgeDissectionRecord.packet_revision)
+            .join(LogicalPacketRecord, LogicalPacketRecord.id == PacketVersionRecord.packet_id)
+            .where(KnowledgeFactRecord.id.in_(ids), KnowledgeFactRecord.owner_id == actor,
+                   KnowledgeDissectionRecord.owner_id == actor,
+                   TrainingPacketService._readable(actor))
+        )).all())
 
     def _detail(self, detail, snapshot=None):
         # Packet metadata is never a consequence of sharing the collection.
@@ -255,6 +294,8 @@ class KnowledgeApplication:
             "title": detail.content.title,
             "description": detail.content.description,
             "links": [asdict(link) for link in detail.content.links],
+            "images": [],
+            "packet_name": None,
             "tags": [
                 {"id": tag.tag_id, "name": tag.name, "colour": tag.colour} for tag in detail.tags
             ],
@@ -394,9 +435,13 @@ class KnowledgeApplication:
             if command in ("create", "update"):
                 fields = {
                     key: values[key]
-                    for key in ("title", "description", "tag_names", "expected_version")
+                    for key in (
+                        "title", "description", "tag_names", "expected_version", "image_ids"
+                    )
                     if values.get(key) is not None
                 }
+                if values.get("image_ids") is not None:
+                    await authorized_images(session, actor, values["image_ids"])
                 if values.get("links") is not None:
                     fields["links"] = tuple(SourceLink(**link) for link in values["links"])
                 if command == "create":
@@ -414,25 +459,20 @@ class KnowledgeApplication:
                 await self._schedule_statistics(
                     session, actor, detail.fact_id, detail.content_version
                 )
-                return self._detail(detail)
+                result = self._detail(detail)
+                result["images"] = [image_view(row) for row in await authorized_images(
+                    session, actor, detail.content.image_ids
+                )]
+                result["packet_name"] = (await self._packet_names(
+                    session, actor, [detail.fact_id]
+                )).get(detail.fact_id)
+                return result
             if command == "delete":
                 await service.delete_fact(
                     actor,
                     values["fact_id"],
                     confirm_dissection_origin=values["confirm_dissection_origin"],
                 )
-            elif command == "merge":
-                detail = await service.merge_facts(
-                    actor,
-                    values["source_fact_id"],
-                    values["target_fact_id"],
-                    expected_target_version=values["expected_target_version"],
-                    confirm_source_delete=values["confirm_source_delete"],
-                )
-                await self._schedule_statistics(
-                    session, actor, detail.fact_id, detail.content_version
-                )
-                return self._detail(detail)
             elif command == "revoke":
                 return await service.revoke_collection_access(actor, values["grant_id"])
             elif command == "tag_create":
@@ -574,23 +614,26 @@ class KnowledgeApplication:
                     .limit(100)
                 )
             )
+            pending_ids = {
+                row.analysis_request_id for row in rows
+                if row.status == "pending" and row.analysis_request_id
+            }
+            statuses = dict((await session.execute(
+                select(
+                    TrainingAnalysisRequestRecord.request_id, TrainingAnalysisRequestRecord.status,
+                ).where(TrainingAnalysisRequestRecord.request_id.in_(pending_ids))
+            )).all()) if pending_ids else {}
             items = []
             for row in rows:
                 # A job list reveals no private packet name or question content.
                 view = await self.service(session).dissection_request(actor, row.id)
-                analysis = (
-                    await self.analysis._request_row(session, row.analysis_request_id)
-                    if row.analysis_request_id
-                    else None
-                )
                 items.append(
                     {
                         "id": row.id,
                         "packet_id": row.packet_revision,
                         "base": row.base,
-                        "status": analysis.status
-                        if analysis and row.status == "pending"
-                        else row.status,
+                        "status": statuses.get(row.analysis_request_id, row.status)
+                        if row.status == "pending" else row.status,
                         "request_id": row.analysis_request_id,
                         "applied_count": len(view.applied_fact_ids),
                         "applied_fact_ids": view.applied_fact_ids,
@@ -892,8 +935,13 @@ class KnowledgeApplication:
 
     async def reconcile_statistics(self):
         async with self.database.transaction() as session:
-            rows = list(
-                await session.execute(
+            cursor = None
+            order = (
+                KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
+                TrainingAnalysisRequestRecord.id,
+            )
+            while True:
+                statement = (
                     select(TrainingAnalysisRequestRecord, KnowledgeFactRecord)
                     .join(
                         KnowledgeFactRecord,
@@ -905,43 +953,51 @@ class KnowledgeApplication:
                         TrainingAnalysisRequestRecord.status.in_(
                             ("succeeded", "failed", "cancelled")
                         ),
+                        TrainingAnalysisRequestRecord.owner_player_id
+                        == KnowledgeFactRecord.owner_id,
+                        TrainingAnalysisRequestRecord.source["content_version"].astext
+                        == KnowledgeFactRecord.content_version.cast(String),
                         KnowledgeFactRecord.statistic_status == "pending",
                         KnowledgeFactRecord.deleted_at.is_(None),
                     )
-                    .order_by(KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
-                              TrainingAnalysisRequestRecord.id)
-                    .limit(100)
                 )
-            )
-            for request, fact in rows:
-                try:
-                    await require_trainee(session, fact.owner_id, lock=True)
-                except PermissionError:
-                    continue
-                await session.refresh(fact)
-                if (
-                    request.source.get("content_version") != fact.content_version
-                    or fact.statistic_status != "pending"
-                    or fact.deleted_at is not None
-                ):
-                    continue
-                artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
-                available = request.status == "succeeded" and artifact and artifact.payload
-                common = CommonKnowledgeEstimate(
-                    status="available" if available else "failed",
-                    value=artifact.payload["value"] if available else None,
-                    model=artifact.model if artifact else None,
-                    prompt_version=artifact.prompt_version if artifact else None,
-                    schema_version=artifact.schema_version if artifact else None,
-                    population=POPULATION,
-                    estimated_at=datetime.now(UTC) if available else None,
-                )
-                await self.service(session).record_statistics(
-                    fact.owner_id,
-                    fact.id,
-                    common=common,
-                    bingo=BingoScore(status="pending_calibration"),
-                )
+                if cursor is not None:
+                    statement = statement.where(tuple_(*order) > cursor)
+                rows = list(await session.execute(statement.order_by(*order).limit(100)))
+                for request, fact in rows:
+                    cursor = (fact.owner_id, fact.id, request.id)
+                    try:
+                        await require_trainee(session, fact.owner_id, lock=True)
+                    except PermissionError:
+                        continue
+                    await session.refresh(fact)
+                    if (
+                        request.source.get("content_version") != fact.content_version
+                        or fact.statistic_status != "pending"
+                        or fact.deleted_at is not None
+                    ):
+                        continue
+                    artifact = await session.get(
+                        TrainingAnalysisArtifactRecord, request.artifact_id,
+                    )
+                    available = request.status == "succeeded" and artifact and artifact.payload
+                    common = CommonKnowledgeEstimate(
+                        status="available" if available else "failed",
+                        value=artifact.payload["value"] if available else None,
+                        model=artifact.model if artifact else None,
+                        prompt_version=artifact.prompt_version if artifact else None,
+                        schema_version=artifact.schema_version if artifact else None,
+                        population=POPULATION,
+                        estimated_at=datetime.now(UTC) if available else None,
+                    )
+                    await self.service(session).record_statistics(
+                        fact.owner_id,
+                        fact.id,
+                        common=common,
+                        bingo=BingoScore(status="pending_calibration"),
+                    )
+                if len(rows) < 100:
+                    break
 
     async def prepared(self, session, player_id, source):
         rows = await session.execute(

@@ -401,6 +401,15 @@ class ConsoleApplicationServer:
             async with self.database.sessions() as session:
                 player = await session.get(PlayerRecord, owner_id)
                 return {**result, "recipient_telegram_user_id": player.telegram_user_id}
+        if action in {"telegram.training.lobby.delivery", "telegram.training.lobby.record"}:
+            self._require_adapter(connection, channel="telegram_bot")
+            presentation = params.get("presentation")
+            if action.endswith(".record") and not isinstance(presentation, dict):
+                raise ValueError("Invalid training lobby presentation")
+            return await self.application_gateway.training.lobby_delivery(
+                self._uuid(params, "owner_id"),
+                presentation=presentation if action.endswith(".record") else None,
+            )
         if action in {"telegram.training.delivery", "telegram.training.record"}:
             self._require_adapter(connection, channel="telegram_bot")
             presentation = params.get("presentation")

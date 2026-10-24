@@ -8,23 +8,46 @@ import { saveReminder } from "./save-reminder";
 
 type ModifierKey = "reversed" | "hidden" | "best_buzz";
 
+/** Haptic feedback bridge matching the regular-lobby MiniAppPlatform behavior. */
+export interface TrainingFeedback {
+  notifySuccess(): void;
+  notifyError(): void;
+}
+
 const MODIFIER_KEYS: readonly ModifierKey[] = ["reversed", "hidden", "best_buzz"];
+// Best buzz lives in its own settings section; the picker configures the rest.
+const PICKER_KEYS: readonly ModifierKey[] = ["reversed", "hidden"];
 const modifierLabelKey = (key: ModifierKey): MessageKey =>
   key === "reversed" ? "training.reversed" : key === "hidden" ? "training.hidden" : "training.best_buzz";
+// Verified modifier/setting override map: hidden reveals the question instantly,
+// so the effective reading interval is 0 while the stored token_delay is retained.
+const OVERRIDDEN_BY_HIDDEN = 0;
 
 export function renderTraining(
-  initial: TrainingResult, api: ApiClient, i18n: I18n, signal: AbortSignal, uploadOnly = false,
+  initial: TrainingResult,
+  api: ApiClient,
+  i18n: I18n,
+  signal: AbortSignal,
+  uploadOnly = false,
+  feedback?: TrainingFeedback,
 ): HTMLElement {
   const root = element("section", { className: "route-content lobby-content training-lobby" });
   let lobby = initial.lobby ?? null;
-  let selectedId = lobby?.version_id ?? null;
-  let selectedName = lobby?.packet_name ?? null;
+  // Optimistic overlay while a packet autosave is in flight; the server state below wins.
+  let pending: { id: string; name: string } | null = null;
+  const selectedId = (): string | null => pending?.id ?? lobby?.version_id ?? null;
+  const selectedName = (): string | null => pending?.name ?? lobby?.packet_name ?? null;
+  let dirty = false;
+  let saveBusy = false;
+  let queued = 0;
+  // Mutations run one at a time in user-action order; each reads the newest version.
+  let queue: Promise<void> = Promise.resolve();
   const notice = element("p", { role: "status", "aria-live": "polite" });
   const play = element("div", { className: "stack" });
   const list = element("div", { className: "stack", "aria-live": "polite" });
   const drafts = element("div", { className: "stack" });
-  // Persistent setting inputs are the single source of truth; the modifier panel
-  // moves them in and out of the DOM, so switching the picker never loses values.
+  // Persistent setting inputs are the single source of truth for local drafts; the
+  // modifier panel moves them in and out of the DOM, so nothing loses values.
   const reversed = element("input", { type: "checkbox" });
   const hidden = element("input", { type: "checkbox" });
   const seconds = element("input", { type: "number", min: "0.1", max: "3599", step: "0.1", value: "3", required: true });
@@ -35,12 +58,12 @@ export function renderTraining(
   const bestBuzz = element("input", { type: "checkbox" });
   const settingLabel = (key: MessageKey, control: HTMLElement): HTMLElement =>
     element("label", {}, i18n.t(key), control);
-  const modifierCheckbox = (key: ModifierKey): HTMLInputElement =>
-    key === "reversed" ? reversed : key === "hidden" ? hidden : bestBuzz;
-  const enabledModifiers = (): ModifierKey[] =>
-    MODIFIER_KEYS.filter((key) => modifierCheckbox(key).checked);
+  const modifierBox: Record<ModifierKey, HTMLInputElement> = { reversed, hidden, best_buzz: bestBuzz };
+  const conflicts: Record<ModifierKey, readonly ModifierKey[]> = {
+    reversed: ["best_buzz"], hidden: ["best_buzz"], best_buzz: ["reversed", "hidden"],
+  };
+  let displacedNow = false;
   let state = initial.session ?? null;
-  let busy = false;
   let timer: number | undefined;
   let hideTimer: number | undefined;
   const failure = (error: unknown): void => {
@@ -53,6 +76,13 @@ export function renderTraining(
   );
   const show = (result: TrainingResult): void => {
     if (signal.aborted) return;
+    // Presentation-only refresh: adopt the authoritative lobby version/selection,
+    // but never overwrite the local unsaved settings draft or focused inputs.
+    if (result.lobby && queued === 0 && !pending) {
+      lobby = result.lobby;
+      updateSelection();
+      syncPacketSelection();
+    }
     const next = result.session ?? null;
     const changed = state?.id !== next?.id || state?.version !== next?.version
       || state?.presentation_version !== next?.presentation_version;
@@ -78,6 +108,32 @@ export function renderTraining(
       timer = window.setTimeout(() => void refresh(), 600);
     }
   };
+  const serialize = (task: () => Promise<void>): void => {
+    ++queued;
+    queue = queue.then(task, task).then(() => {
+      --queued;
+      syncSave();
+      syncPacketSelection();
+    }, () => {
+      --queued;
+      syncSave();
+      syncPacketSelection();
+    });
+  };
+  // Stale writes are never retried silently: reload the authoritative lobby,
+  // announce it, and keep the local settings draft untouched.
+  const reloadLobby = async (): Promise<void> => {
+    try {
+      const result = await api.request<TrainingResult>("/api/miniapp/training/current", { signal });
+      if (signal.aborted) return;
+      if (result.lobby) lobby = result.lobby;
+      pending = null;
+      notice.textContent = i18n.t("error.stale_write");
+    } catch (error) { failure(error); }
+    updateSelection();
+    syncPacketSelection();
+  };
+  let busy = false;
   const act = async (command: string, answer?: string): Promise<void> => {
     if (!state || busy) return;
     busy = true;
@@ -110,7 +166,8 @@ export function renderTraining(
     window.clearTimeout(hideTimer);
     play.replaceChildren();
     settingsFieldset.disabled = state !== null && ["active", "paused"].includes(state.status);
-    save.disabled = !lobby || !selectedId || !!state;
+    syncSave();
+    syncPacketSelection();
     if (!state) return;
     const current = state;
     const question = element("p", { className: "training-question", "aria-live": "polite" },
@@ -169,21 +226,72 @@ export function renderTraining(
       element("h3", {}, i18n.t("training.selected_packet")), name, badges);
   };
   const updateSelection = (): void => {
-    const enabled = enabledModifiers();
+    const enabled = MODIFIER_KEYS.filter((key) => modifierBox[key].checked);
     for (const card of selectionCards) {
-      card.name.textContent = selectedName ?? i18n.t("training.select_packet");
+      card.name.textContent = selectedName() ?? i18n.t("training.select_packet");
       replaceChildren(card.badges, ...enabled.map((key) =>
         element("li", { className: "training-modifier-badge" }, i18n.t(modifierLabelKey(key)))));
     }
-    save.disabled = !lobby || !selectedId || !!state;
+    syncSave();
+  };
+  const syncSave = (): void => {
+    // Settings can be saved without a packet; only an active session blocks saving.
+    save.disabled = !lobby || !!state || saveBusy;
+  };
+  const syncPacketSelection = (): void => {
+    const current = selectedId();
+    const disabled = !lobby || !!state || !!pending;
+    for (const card of list.querySelectorAll<HTMLElement>(".training-packet-card")) {
+      const id = card.dataset.packetId ?? "";
+      const button = card.querySelector<HTMLButtonElement>("button[data-select]");
+      if (button) {
+        button.disabled = disabled;
+        button.className = id === current ? "primary-button" : "secondary-button";
+      }
+      const badge = card.querySelector<HTMLElement>(".lobby-packet-selected");
+      if (id === current) {
+        if (!badge) card.querySelector("dl")?.before(
+          element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected")));
+      } else badge?.remove();
+    }
   };
 
-  // Modifiers group: pick a modifier from the dropdown, then enable it and tune
-  // the settings that belong to that concrete modifier.
-  let modifierView: ModifierKey | null = enabledModifiers()[0] ?? null;
+  // Packet selection autosaves immediately through the owner's split mutation
+  // contract: select_packet never carries settings, so unsaved drafts stay local.
+  const selectPacket = (packet: TrainingPacket): void => {
+    if (!lobby || state || pending) return;
+    pending = { id: packet.id, name: packet.name };
+    notice.textContent = i18n.t("training.selecting");
+    syncPacketSelection();
+    serialize(async () => {
+      if (!lobby) return;
+      try {
+        const result = await post<TrainingResult>("lobby", {
+          command: "select_packet", expected_version: lobby.version, version_id: packet.id,
+        });
+        if (signal.aborted) return;
+        if (result.lobby) lobby = result.lobby;
+        feedback?.notifySuccess();
+        notice.textContent = dirty ? i18n.t("training.unsaved") : i18n.t("training.packet_saved");
+      } catch (error) {
+        feedback?.notifyError();
+        if (error instanceof ApiError && error.code === "stale_write") await reloadLobby();
+        else failure(error);
+      } finally {
+        pending = null;
+        updateSelection();
+        syncPacketSelection();
+      }
+    });
+  };
+
+  // Modifier panels: pick a display modifier from the dropdown, then enable it and
+  // tune the settings that belong to that concrete modifier. Each modifier carries
+  // a description of its verified game behavior.
+  let modifierView: ModifierKey | null = PICKER_KEYS.find((key) => modifierBox[key].checked) ?? null;
   const modifierPicker = element("select", { "aria-label": i18n.t("training.modifier") },
     element("option", { value: "", selected: modifierView === null }, i18n.t("training.modifier_pick")),
-    ...MODIFIER_KEYS.map((key) => element("option", { value: key, selected: modifierView === key }, i18n.t(modifierLabelKey(key)))));
+    ...PICKER_KEYS.map((key) => element("option", { value: key, selected: modifierView === key }, i18n.t(modifierLabelKey(key)))));
   modifierPicker.addEventListener("change", () => {
     modifierView = (modifierPicker.value as ModifierKey | "") || null;
     renderModifierConfig();
@@ -192,24 +300,54 @@ export function renderTraining(
   const renderModifierConfig = (): void => {
     replaceChildren(modifierConfig);
     if (!modifierView) return;
-    const checkbox = modifierCheckbox(modifierView);
+    const checkbox = modifierBox[modifierView];
     const enable = element("label", { className: "checkbox-label" }, checkbox, i18n.t(modifierLabelKey(modifierView)));
-    modifierConfig.append(enable);
+    const description = element("p", { className: "training-modifier-description" },
+      i18n.t(modifierView === "reversed" ? "training.reversed_description" : "training.hidden_description"));
+    modifierConfig.append(enable, description);
     if (modifierView === "hidden") {
       modifierConfig.append(settingLabel("training.hidden_seconds", seconds));
       seconds.disabled = !hidden.checked;
     }
   };
-  const compatibility = (): void => {
-    bestBuzz.disabled = reversed.checked || hidden.checked;
-    if (bestBuzz.disabled) bestBuzz.checked = false;
-    reversed.disabled = hidden.disabled = bestBuzz.checked;
-    if (reversed.disabled) { reversed.checked = false; hidden.checked = false; }
+  const tokenOverrideNote = element("p", { className: "training-setting-override", role: "note", hidden: true });
+  const syncModifierUi = (): void => {
+    // Hidden reveals the whole question instantly, so the effective reading
+    // interval becomes 0: grey the stored value out and explain the override,
+    // but never persist the stored preference as an invalid zero.
+    const overridden = hidden.checked;
     seconds.disabled = !hidden.checked;
+    tokenDelay.disabled = overridden;
+    tokenOverrideNote.hidden = !overridden;
+    if (overridden) {
+      tokenOverrideNote.textContent = i18n.t("training.override_note", {
+        value: String(OVERRIDDEN_BY_HIDDEN), modifier: i18n.t("training.hidden"),
+      });
+    }
     updateSelection();
     renderModifierConfig();
   };
-  [reversed, hidden, bestBuzz].forEach((input) => input.addEventListener("change", compatibility));
+  const applyModifier = (key: ModifierKey, next: boolean): void => {
+    const box = modifierBox[key];
+    if (next) {
+      for (const other of conflicts[key]) {
+        if (modifierBox[other].checked) {
+          modifierBox[other].checked = false;
+          displacedNow = true;
+          notice.textContent = i18n.t("training.modifier_conflict", {
+            modifier: i18n.t(modifierLabelKey(other)), other: i18n.t(modifierLabelKey(key)),
+          });
+        }
+      }
+      box.checked = true;
+    } else {
+      box.checked = false;
+    }
+    syncModifierUi();
+  };
+  [reversed, hidden, bestBuzz].forEach((input) => input.addEventListener("change", () => {
+    applyModifier(input === reversed ? "reversed" : input === hidden ? "hidden" : "best_buzz", input.checked);
+  }));
 
   const save = element("button", { type: "submit", className: "primary-button" }, i18n.t("lobby.settings_save"));
   const settingsFieldset = element("fieldset", {},
@@ -220,6 +358,11 @@ export function renderTraining(
         element("div", { className: "training-modifier-picker" },
           settingLabel("training.modifier", modifierPicker)),
         modifierConfig),
+      element("section", { className: "descriptor-category-group training-best-buzz-group" },
+        element("h3", { className: "descriptor-category" }, i18n.t("training.best_buzz_section")),
+        element("label", { className: "checkbox-label" }, bestBuzz, i18n.t("training.best_buzz")),
+        element("p", { className: "training-modifier-description" }, i18n.t("training.best_buzz_description")),
+        element("p", { className: "training-modifier-note" }, i18n.t("training.best_buzz_note"))),
       element("section", { className: "descriptor-category-group training-timing-group" },
         element("h3", { className: "descriptor-category" }, i18n.t("training.settings_timing")),
         settingLabel("training.buzz_seconds", buzzSeconds),
@@ -227,8 +370,20 @@ export function renderTraining(
       element("section", { className: "descriptor-category-group training-reading-group" },
         element("h3", { className: "descriptor-category" }, i18n.t("training.settings_reading")),
         settingLabel("training.token_delay", tokenDelay),
+        tokenOverrideNote,
         settingLabel("training.token_chars", tokenChars))));
   const form = element("form", { className: "settings-form" });
+  // Settings save is a separate, explicitly manual mutation: save_settings never
+  // carries a packet, so a newly autosaved packet selection is never reverted.
+  const draftSettings = (): Record<string, unknown> => ({
+    reversed: reversed.checked,
+    hidden_after: hidden.checked ? Number(seconds.value) : null,
+    buzz_timeout: Number(buzzSeconds.value),
+    best_buzz: bestBuzz.checked,
+    answer_timeout: Number(answerSeconds.value),
+    token_delay: Number(tokenDelay.value),
+    token_target_chars: Number(tokenChars.value),
+  });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (hidden.checked && !seconds.checkValidity()) {
@@ -238,37 +393,48 @@ export function renderTraining(
       seconds.reportValidity();
       return;
     }
-    if (busy || !lobby || !selectedId || !form.reportValidity()) return;
-    busy = true;
-    save.disabled = true;
-    void (async () => {
+    if (!lobby || state || saveBusy || !form.reportValidity()) return;
+    const settings = draftSettings();
+    saveBusy = true;
+    syncSave();
+    serialize(async () => {
+      if (!lobby) return;
+      const current = lobby;
       try {
         const result = await post<TrainingResult>("lobby", {
-          command: "save", expected_version: lobby.version, version_id: selectedId,
-          settings: { ...lobby.settings,
-            reversed: reversed.checked, hidden_after: hidden.checked ? Number(seconds.value) : null,
-            buzz_timeout: Number(buzzSeconds.value), best_buzz: bestBuzz.checked,
-            answer_timeout: Number(answerSeconds.value), token_delay: Number(tokenDelay.value),
-            token_target_chars: Number(tokenChars.value),
-          },
+          command: "save_settings", expected_version: current.version,
+          settings: { ...current.settings, ...settings },
         });
         if (signal.aborted) return;
-        lobby = result.lobby ?? null;
-        notice.textContent = i18n.t("training.saved");
-      } catch (error) { failure(error); }
-      finally { busy = false; save.disabled = !lobby || !selectedId || !!state; }
-    })();
+        if (result.lobby) lobby = result.lobby;
+        dirty = JSON.stringify(draftSettings()) !== JSON.stringify(settings);
+        feedback?.notifySuccess();
+        notice.textContent = i18n.t(dirty ? "training.unsaved" : "training.saved");
+        updateSelection();
+      } catch (error) {
+        feedback?.notifyError();
+        if (error instanceof ApiError && error.code === "stale_write") await reloadLobby();
+        else failure(error);
+      } finally {
+        saveBusy = false;
+        syncSave();
+      }
+    });
   });
   form.addEventListener("change", (event) => {
     // Browsing a modifier panel or using the packet search bubble is not a setting change.
     if (event.target === modifierPicker) return;
     if (event.target instanceof Element && event.target.closest(".training-packet-filters")) return;
-    notice.textContent = i18n.t("training.unsaved");
+    dirty = true;
+    // A displacement notice explains more than the generic unsaved reminder.
+    if (!displacedNow) notice.textContent = i18n.t("training.unsaved");
+    displacedNow = false;
   });
 
-  // Packets section: search and sorting controls in one distinct filter bubble,
-  // and information-rich packet cards. Filters and order run server-side on the
-  // catalogue endpoint (backend contract v1, sitg-knowledge-data).
+  // Packets section: search, sorting and the own-uploads filter in one distinct
+  // filter bubble; information-rich packet cards. Filters and order run
+  // server-side on the catalogue endpoint (backend contract v1, sitg-knowledge-data),
+  // including owner_uploads_only for training-scope packets uploaded by the player.
   const filters: Record<string, string> = {};
   const hasActiveFilters = (): boolean => Object.values(filters).some(Boolean);
   const renderPackets = (packets: TrainingPacket[], loading: boolean): void => {
@@ -285,19 +451,10 @@ export function renderTraining(
       const dissectedThemes = packet.dissected_theme_count == null || packet.total_theme_count === undefined
         ? "—" : `${packet.dissected_theme_count} / ${packet.total_theme_count}`;
       const select = element("button", { type: "button",
-        className: selectedId === packet.id ? "primary-button" : "secondary-button",
-        disabled: !lobby || !!state,
-        onclick: ((event: Event) => {
-          selectedId = packet.id; selectedName = packet.name; updateSelection();
-          for (const button of list.querySelectorAll("button[data-select]")) {
-            button.className = "secondary-button";
-          }
-          (event.currentTarget as HTMLButtonElement).className = "primary-button";
-          for (const badge of list.querySelectorAll(".lobby-packet-selected")) badge.remove();
-          list.querySelector(`[data-packet-id="${packet.id}"] dl`)?.before(
-            element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected")));
-          notice.textContent = i18n.t("training.unsaved");
-        }) as EventListener, "data-select": packet.id }, i18n.t("training.select"));
+        className: selectedId() === packet.id ? "primary-button" : "secondary-button",
+        disabled: !lobby || !!state || !!pending,
+        onclick: (() => { selectPacket(packet); }) as EventListener, "data-select": packet.id },
+        i18n.t("training.select"));
       const prepare = element("button", { type: "button", className: "secondary-button", onclick: (async () => {
         try {
           const body = { version_id: packet.id, confirm_exposure: false };
@@ -323,20 +480,27 @@ export function renderTraining(
           }
         } catch (error) { failure(error); }
       }) as EventListener }, i18n.t("training.prepare"));
-      const retire = packet.scope === "training" ? element("button", { type: "button", className: "danger-button", onclick: (async () => {
-        if (!window.confirm(i18n.t("training.retire_confirm"))) return;
-        try {
-          await post("retire", { version_id: packet.id });
-          if (state?.packet_version_id === packet.id) show({ session: null });
-          if (selectedId === packet.id) { selectedId = null; selectedName = null; updateSelection(); }
-          loader.reconcile();
-        }
-        catch (error) { failure(error); }
+      const retire = packet.scope === "training" ? element("button", { type: "button", className: "danger-button", onclick: (() => {
+        if (queued || !window.confirm(i18n.t("training.retire_confirm"))) return;
+        serialize(async () => {
+          try {
+            await post("retire", { version_id: packet.id });
+            const current = await api.request<TrainingResult>("/api/miniapp/training/current", { signal });
+            if (signal.aborted) return;
+            // Retirement does not deselect a saved packet. Retain the authoritative
+            // selection/version, explain its unavailability, and preserve drafts.
+            lobby = current.lobby ?? null;
+            show(current);
+            notice.textContent = lobby?.version_id === packet.id
+              ? i18n.t("training.retired_selected") : i18n.t("training.retired");
+            updateSelection();
+            syncPacketSelection();
+            loader.reconcile();
+          } catch (error) { failure(error); }
+        });
       }) as EventListener }, i18n.t("training.retire")) : null;
       return element("article", { className: "resource-card lobby-packet-card training-packet-card", "data-packet-id": packet.id },
         element("h3", {}, packet.name),
-        selectedId === packet.id
-          ? element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected")) : null,
         element("dl", { className: "lobby-packet-details" },
           detail("lobby.packet_year", packet.year?.toString() ?? "—"),
           detail("lobby.packet_authors", authors ?? "—"),
@@ -351,6 +515,7 @@ export function renderTraining(
     replaceChildren(list, ...cards,
       loading ? element("p", { role: "status" }, i18n.t("common.loading")) : null,
       !loading && !cards.length ? element("p", {}, i18n.t(hasActiveFilters() ? "lobby.packet_no_matches" : "training.empty")) : null);
+    syncPacketSelection();
   };
   const loader = new PacketLoader<TrainingPacket>(signal,
     async (query, pageSignal) => {
@@ -377,6 +542,13 @@ export function renderTraining(
   };
   const search = filterInput("name");
   const author = filterInput("author");
+  // Owner-only filter: only training packets this player uploaded themselves.
+  const mine = element("input", { type: "checkbox" }) as HTMLInputElement;
+  mine.addEventListener("change", () => {
+    if (mine.checked) filters.owner_uploads_only = "true";
+    else delete filters.owner_uploads_only;
+    loader.start(filters);
+  });
   const order = element("select", { "aria-label": i18n.t("lobby.packet_sort"),
     onchange: (() => {
       filters.order = order.value;
@@ -397,6 +569,7 @@ export function renderTraining(
     for (const field of [search, author, ...bubble.querySelectorAll<HTMLInputElement>('.lobby-packet-year-range input')]) {
       field.value = "";
     }
+    mine.checked = false;
     for (const key of Object.keys(filters)) delete filters[key];
     order.value = "id_asc";
     loader.start({});
@@ -438,6 +611,7 @@ export function renderTraining(
   const bubble = element("div", { className: "lobby-packet-filters training-packet-filters", role: "search", "aria-label": i18n.t("lobby.packet_filters") },
     settingLabel("lobby.packet_search", search),
     settingLabel("lobby.packet_authors", author),
+    element("label", { className: "checkbox-label" }, mine, i18n.t("training.my_uploads")),
     settingLabel("lobby.packet_sort", order),
     yearRange("lobby.packet_year", "year_from", "year_to"),
     yearRange("lobby.packet_publication_year", "publication_from", "publication_to"),
@@ -473,7 +647,7 @@ export function renderTraining(
     root.append(play, tabs, ...panels);
   }
   signal.addEventListener("abort", () => { window.clearTimeout(timer); window.clearTimeout(hideTimer); }, { once: true });
-  compatibility();
+  syncModifierUi();
   renderSession(); schedule();
   if (!uploadOnly) loader.start({});
   return root;

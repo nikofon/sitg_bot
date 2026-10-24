@@ -172,8 +172,9 @@ async def test_packet_search_sort_cursor_filters_forward_through_http_and_dispat
     request = gateway.requests[-1]
     values = request.operation.model_dump(exclude={"action"})
     assert values == {
-        key: int(value) if key.endswith(("from", "to")) or key == "limit" else value
-        for key, value in params.items()
+        **{key: int(value) if key.endswith(("from", "to")) or key == "limit" else value
+           for key, value in params.items()},
+        "owner_uploads_only": False,
     }
     app = dispatch_gateway()
     app.training = SimpleNamespace(packets=SimpleNamespace(list_packets=AsyncMock()))

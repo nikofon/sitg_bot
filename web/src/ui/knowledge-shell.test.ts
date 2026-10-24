@@ -60,7 +60,13 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     const { root } = start(fetcher);
     await vi.waitFor(() => expect(root.querySelector(".knowledge-empty")?.textContent).toBe(i18n.t("knowledge.empty")));
     expect(root.querySelector("h1")?.textContent).toBe(i18n.t("knowledge.title"));
-    expect(root.querySelector('a[href="/training"]')).not.toBeNull();
+    // No cross-navigation link to Training at the top of the page.
+    expect(root.querySelector('a[href="/training"]')).toBeNull();
+    // The active section is highlighted immediately on first render in both locales.
+    const firstActive = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tab")]
+      .find((tab) => tab.getAttribute("aria-current") === "page");
+    expect(firstActive?.textContent).toBe(i18n.t("knowledge.tab.library"));
+    expect(firstActive?.className).toContain("primary-button");
     button(root, i18n.t("knowledge.create")).click();
     const form = document.querySelector<HTMLFormElement>(".knowledge-dialog form")!;
     form.querySelector("input")!.value = "<History>"; form.querySelector("textarea")!.value = "Description";
@@ -68,8 +74,8 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     await vi.waitFor(() => expect(root.querySelector(".knowledge-fact-title")?.textContent).toBe("<History>"));
     expect(root.querySelector("history")).toBeNull();
     root.querySelector<HTMLButtonElement>(".knowledge-fact-header")!.click();
-    await vi.waitFor(() => expect(button(root, i18n.t("knowledge.fact.edit"))).toBeDefined());
-    button(root, i18n.t("knowledge.fact.edit")).click();
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.hidden).toBe(false));
+    root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.click();
     const edit = document.querySelector<HTMLFormElement>(".knowledge-dialog form")!;
     edit.querySelector("input")!.value = "Updated";
     edit.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -81,8 +87,8 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     await vi.waitFor(() => expect(fetcher.mock.calls.some(([path]) => String(path).includes("search=History"))).toBe(true));
     // Reopen the current detail/editor, then delete through the explicit editor action.
     root.querySelector<HTMLButtonElement>(".knowledge-fact-header")!.click();
-    await vi.waitFor(() => expect(button(root, i18n.t("knowledge.fact.edit"))).toBeDefined());
-    button(root, i18n.t("knowledge.fact.edit")).click();
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.hidden).toBe(false));
+    root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.click();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     button(document, i18n.t("knowledge.delete")).click();
     await vi.waitFor(() => expect(root.querySelector(".knowledge-empty")).not.toBeNull());

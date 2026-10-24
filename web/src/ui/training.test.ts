@@ -83,7 +83,7 @@ describe("training", () => {
     root.remove();
   });
 
-  it("allows hidden plus reversed and excludes Best buzz", () => {
+  it("allows hidden plus reversed and displaces Best buzz", () => {
     const { root } = create(null);
     root.querySelectorAll<HTMLButtonElement>("nav button")[2]!.click(); // Options
     const options = root.querySelector<HTMLElement>(".training-options")!;
@@ -103,11 +103,30 @@ describe("training", () => {
     expect(config().disabled).toBe(false);
     const seconds = options.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
     expect(seconds.disabled).toBe(false);
-    picker.value = "best_buzz";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(config().disabled).toBe(true);
+    // Best buzz is configured in its own separate section.
+    const bestBuzz = options.querySelector<HTMLInputElement>(".training-best-buzz-group input[type=\"checkbox\"]")!;
+    bestBuzz.checked = true;
+    bestBuzz.dispatchEvent(new Event("change", { bubbles: true }));
+    // Checking Best buzz displaces the incompatible reversed and hidden modifiers.
     picker.value = "reversed";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(false);
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(false);
+    bestBuzz.checked = false;
+    bestBuzz.dispatchEvent(new Event("change", { bubbles: true }));
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(config().checked).toBe(false);
+    enable();
     expect(config().checked).toBe(true);
+    bestBuzz.checked = true;
+    bestBuzz.dispatchEvent(new Event("change", { bubbles: true }));
+    enable();
+    expect(bestBuzz.checked).toBe(false);
+    config().checked = false;
+    config().dispatchEvent(new Event("change", { bubbles: true }));
+    expect(bestBuzz.checked).toBe(false);
   });
 });

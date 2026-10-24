@@ -119,15 +119,100 @@ describe("Knowledge page direct HTTP payload contract", () => {
     } finally { controller.abort(); }
   });
 
-  it("uses the real tag-pool payload rather than a free-text tag field", async () => {
-    const { controller } = setup();
+  it("uses the real tag-pool payload as additive multi-tag filter chips and repeats tags in the query", async () => {
+    const { root, fetcher, controller } = setup({
+      "/api/miniapp/knowledge/tags": { items: [
+        { tag_id: "tag-1", name: "history", colour: "#1565c0" },
+        { tag_id: "tag-2", name: "science", colour: "#2e7d32" },
+      ] },
+    });
     try {
-      await vi.waitFor(() => expect(document.querySelector<HTMLSelectElement>(
-        "[aria-label='Filter by tag']")?.options.length).toBe(2));
+      await vi.waitFor(() => expect(root.querySelectorAll(".knowledge-tag-filter-chip").length).toBe(2));
       button("Add fact").click();
       const tag = document.querySelector<HTMLInputElement>(".knowledge-tag-option input")!;
       expect(tag.value).toBe("history");
       expect(document.querySelector(".knowledge-new-tag")?.textContent).toBe("New tag");
+      document.querySelector<HTMLButtonElement>(".knowledge-dialog-close")!.click();
+
+      const chips = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")];
+      chips.find((chip) => chip.textContent === "history")!.click();
+      await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) => {
+        const path = String(url);
+        return path.includes("/knowledge/facts?") && path.includes("tags=history");
+      })).toBe(true));
+      chips.find((chip) => chip.textContent === "science")!.click();
+      await vi.waitFor(() => {
+        const query = fetcher.mock.calls.map(([url]) => String(url))
+          .filter((url) => url.includes("/knowledge/facts?")).at(-1)!;
+        expect(query).toContain("tags=history");
+        expect(query).toContain("tags=science");
+        expect(query.match(/tags=/g)).toHaveLength(2);
+      });
+    } finally { controller.abort(); }
+  });
+
+  it("uploads fact images as bounded base64 JSON and saves their ids", async () => {
+    const image = { id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" };
+    const { fetcher, controller } = setup({
+      "/api/miniapp/knowledge/image_upload": image,
+      "/api/miniapp/knowledge/create": {
+        id: "fact-1", title: "Pictured", description: "d", links: [], tags: [],
+        origin: "manual", content_version: 1, editable: true, statistics: { status: "none" },
+      },
+    });
+    try {
+      button("Add fact").click();
+      const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+      const form = dialog.querySelector<HTMLFormElement>("form")!;
+      form.querySelector<HTMLInputElement>("input")!.value = "Pictured";
+      form.querySelector("textarea")!.value = "d";
+      const picker = form.querySelector<HTMLInputElement>(".knowledge-images-field input[type='file']")!;
+      expect(picker.getAttribute("aria-label")).toBe("Images");
+      const file = new File([new Uint8Array([1, 2, 3])], "pic.png", { type: "image/png" });
+      Object.defineProperty(picker, "files", { value: [file] });
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => expect(dialog.querySelector(".knowledge-image img")?.getAttribute("src"))
+        .toBe(image.url));
+      const upload = fetcher.mock.calls.find(([url]) => String(url).endsWith("/image_upload"))!;
+      expect(upload[1]?.method).toBe("POST");
+      expect(JSON.parse(String(upload[1]?.body))).toEqual({ source_base64: "AQID" });
+
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) =>
+        String(url).endsWith("/knowledge/create"))).toBe(true));
+      const create = fetcher.mock.calls.find(([url]) => String(url).endsWith("/knowledge/create"))!;
+      expect(JSON.parse(String(create[1]?.body))).toMatchObject({ title: "Pictured", image_ids: ["image-1"] });
+    } finally { controller.abort(); }
+  });
+
+  it("sends owner_uploads_only as a packets filter and clears it with reset", async () => {
+    const items = [{
+      id: "version-1", packet_id: "logical-packet", name: "Mine", year: 2026, scope: "training",
+      authors: [], tournaments: [], total_theme_count: 1, fresh_theme_count: 1,
+      dissected_theme_count: 0, dissected: false, best_buzz_calculated: false,
+    }];
+    const { root, fetcher, controller } = setup({
+      "/api/miniapp/training/packets": { items, next_cursor: null },
+    });
+    try {
+      button("Packets").click();
+      await vi.waitFor(() => expect(root.querySelectorAll(".knowledge-packet-card").length).toBe(1));
+      const owner = root.querySelector<HTMLInputElement>(".knowledge-owner-filter input")!;
+      expect(owner.type).toBe("checkbox");
+      owner.checked = true;
+      owner.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => {
+        const query = fetcher.mock.calls.map(([url]) => String(url))
+          .filter((url) => url.includes("/training/packets?")).at(-1)!;
+        expect(query).toContain("owner_uploads_only=true");
+      });
+      button("Reset filters").click();
+      await vi.waitFor(() => {
+        expect(root.querySelector<HTMLInputElement>(".knowledge-owner-filter input")!.checked).toBe(false);
+        const query = fetcher.mock.calls.map(([url]) => String(url))
+          .filter((url) => url.includes("/training/packets?")).at(-1)!;
+        expect(query).not.toContain("owner_uploads_only");
+      });
     } finally { controller.abort(); }
   });
 });

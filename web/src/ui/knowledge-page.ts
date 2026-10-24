@@ -7,6 +7,7 @@ import {
   type KnowledgeDissection,
   type KnowledgeDissectOutcome,
   type KnowledgeFactDetail,
+  type KnowledgeFactImage,
   type KnowledgeFactsResource,
   type KnowledgeImportResult,
   type KnowledgePacketCard,
@@ -48,25 +49,33 @@ export function renderKnowledgePage(
       `/api/miniapp/training/packets?${query}`, { signal: requestSignal });
     return { ...page, items: page.items.map((packet) => ({ ...packet, packet_id: packet.id })) };
   };
+  const loadFacts = (params: {
+    owner_id?: string;
+    tags?: string[];
+    cursor?: string | null;
+    search?: string;
+    order?: string;
+  }): Promise<KnowledgeFactsResource> => {
+    const query = new URLSearchParams();
+    if (params.owner_id) query.set("owner_id", params.owner_id);
+    if (params.cursor) query.set("cursor", params.cursor);
+    if (params.search) query.set("search", params.search);
+    if (params.order) query.set("order", params.order);
+    // Repeated `tags` entries: every selected tag must match (AND semantics).
+    for (const tag of params.tags ?? []) query.append("tags", tag);
+    return api.request<KnowledgeFactsResource>(`/api/miniapp/knowledge/facts?${query}`, { signal });
+  };
   const actions: KnowledgeActions = {
     signal,
     loadSharing: () => api.request<KnowledgeSharing>("/api/miniapp/knowledge/sharing", { signal }),
-    loadFacts: (params) => {
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(params)) if (value) query.set(key, value);
-      return api.request<KnowledgeFactsResource>(`/api/miniapp/knowledge/facts?${query}`, { signal });
-    },
+    loadFacts,
     loadFact: (id) => api.request<KnowledgeFactDetail>(
       `/api/miniapp/knowledge/facts/${encodeURIComponent(id)}`, { signal }),
     save: (values, detail) => post<KnowledgeFactDetail>(detail ? "update" : "create", {
       ...values, ...(detail ? { fact_id: detail.id, expected_version: detail.content_version } : {}),
     }),
     remove: async (detail) => { await post("delete", { fact_id: detail.id, confirm_dissection_origin: true }); },
-    merge: async (detail, targetId) => {
-      const target = await actions.loadFact(targetId);
-      await post("merge", { source_fact_id: detail.id, target_fact_id: target.id,
-        expected_target_version: target.content_version, confirm_source_delete: true });
-    },
+    uploadImage: (sourceBase64) => post<KnowledgeFactImage>("image_upload", { source_base64: sourceBase64 }),
     tag: async (command, tagId, name, colour) => {
       await post(command, { tag_id: tagId, ...(name ? { name } : {}), ...(colour ? { colour } : {}) });
     },
@@ -84,7 +93,6 @@ export function renderKnowledgePage(
     cancel: async (requestId) => { await post("cancel", { request_id: requestId }); },
   };
   const root = element("section", { className: "stack" },
-    element("a", { href: "/training", className: "knowledge-back" }, i18n.t("training.title")),
     renderKnowledge({ ...initial, ...(pendingImport ? { import_token: pendingImport } : {}) },
       i18n, actions));
   const limits = element("p", { role: "status" });

@@ -45,15 +45,9 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
     fact = await twice(ActionCode.KNOWLEDGE_CREATE,
                        {"title": "Fact", "description": "Private fact", "tag_names": ["Past"]},
                        "fact-create")
-    updated = await twice(ActionCode.KNOWLEDGE_UPDATE,
+    await twice(ActionCode.KNOWLEDGE_UPDATE,
                           {"fact_id": fact["id"], "expected_version": fact["content_version"],
                            "description": "Edited private fact"}, "fact-update")
-    source = await twice(ActionCode.KNOWLEDGE_CREATE,
-                         {"title": "Other fact", "description": "Merge source"}, "source-create")
-    await twice(ActionCode.KNOWLEDGE_MERGE,
-                {"source_fact_id": source["id"], "target_fact_id": fact["id"],
-                 "expected_target_version": updated["content_version"],
-                 "confirm_source_delete": True}, "fact-merge")
     await twice(ActionCode.KNOWLEDGE_DELETE, {"fact_id": fact["id"]}, "fact-delete")
     await twice(ActionCode.KNOWLEDGE_TAG_DELETE, {"tag_id": tag["tag_id"]}, "tag-delete")
 
@@ -95,7 +89,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
                  "publish": False}, "reject")
 
     async with database.sessions() as session:
-        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)) == 2
+        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)) == 1
         assert await session.scalar(select(func.count()).select_from(PacketDraftRecord)) == 2
         assert await session.scalar(select(func.count()).select_from(TrainingSessionRecord)) == 1
         assert await session.scalar(select(func.count()).select_from(TrainingAttemptRecord)) == 1

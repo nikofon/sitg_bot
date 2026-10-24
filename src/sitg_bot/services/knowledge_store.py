@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from sitg_bot.domain.knowledge import (
+    AppliedCandidate,
     BingoScore,
     CandidateOutcome,
     CommonKnowledgeEstimate,
@@ -237,6 +238,7 @@ class PostgresKnowledgeStore:
                         "title_key": row.title_key,
                         "description": row.description,
                         "links": row.links,
+                        "image_ids": row.image_ids,
                         "provenance": {"origin": "manual"},
                         "content_fingerprint": row.content_fingerprint,
                         "content_version": 1,
@@ -307,7 +309,8 @@ class PostgresKnowledgeStore:
             id=row.id,
             owner_id=row.owner_id,
             content=FactContent(
-                row.title, row.description, tuple(SourceLink(**link) for link in row.links)
+                row.title, row.description, tuple(SourceLink(**link) for link in row.links),
+                tuple(UUID(value) for value in row.image_ids),
             ),
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -328,14 +331,31 @@ class PostgresKnowledgeStore:
         tags = await self._tags([row.id])
         return self._fact(row, tags.get(row.id, []))
 
-    async def facts_for_owner(self, owner_id):
-        rows = list(
-            await self.session.scalars(
-                select(KnowledgeFactRecord).where(KnowledgeFactRecord.owner_id == owner_id)
-            )
-        )
-        tags = await self._tags([row.id for row in rows])
-        return [self._fact(row, tags.get(row.id, [])) for row in rows]
+    async def applied_candidates(self, owner_id, candidate_ids):
+        identities = sorted(set(candidate_ids))
+        model = KnowledgeFactRecord
+        applied = {}
+        for start in range(0, len(identities), 100):
+            cursor = None
+            while True:
+                statement = select(
+                    model.id, model.applied_candidate_id,
+                    model.applied_content_version, model.content_version,
+                ).where(
+                    model.owner_id == owner_id,
+                    model.applied_candidate_id.in_(identities[start:start + 100]),
+                )
+                if cursor is not None:
+                    statement = statement.where(model.id > cursor)
+                rows = (await self.session.execute(statement.order_by(model.id).limit(100))).all()
+                for fact_id, candidate_id, applied_version, current_version in rows:
+                    applied[candidate_id] = AppliedCandidate(
+                        candidate_id, fact_id, applied_version or 1, current_version,
+                    )
+                if len(rows) < 100:
+                    break
+                cursor = rows[-1].id
+        return applied
 
     async def add_fact(self, fact):
         self.session.add(KnowledgeFactRecord(id=fact.id, owner_id=fact.owner_id))
@@ -357,6 +377,7 @@ class PostgresKnowledgeStore:
             fact.content.description,
         )
         row.links = [asdict(link) for link in fact.content.links]
+        row.image_ids = [str(image) for image in fact.content.image_ids]
         row.provenance = json_data(fact.provenance)
         row.content_fingerprint, row.content_version = (
             fact.content.fingerprint(),
@@ -383,7 +404,7 @@ class PostgresKnowledgeStore:
         )
         await self.session.flush()
 
-    async def fact_page(self, owner_id, *, search, tag, order, cursor, limit):
+    async def fact_page(self, owner_id, *, search, tags, order, cursor, limit):
         model = KnowledgeFactRecord
         conditions = [model.owner_id == owner_id, model.deleted_at.is_(None)]
         if search and search.strip():
@@ -399,7 +420,7 @@ class PostgresKnowledgeStore:
                     "%" + needle + "%", escape="\\"
                 )
             )
-        if tag and tag.strip():
+        for tag in sorted(tags):
             conditions.append(
                 select(KnowledgeFactTagRecord.fact_id)
                 .join(KnowledgeTagRecord, KnowledgeTagRecord.id == KnowledgeFactTagRecord.tag_id)

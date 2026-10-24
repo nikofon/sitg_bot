@@ -4,12 +4,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.game_rulesets import SIGameRuleset
 from sitg_bot.domain.training import TrainingSettings, best_buzz_cursor
 from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.training_access import require_no_training, require_trainee
 from sitg_bot.services.training_packets import (
@@ -61,6 +62,7 @@ class TrainingService:
             await require_trainee(session, player_id)
             player = await session.get(PlayerRecord, player_id, with_for_update=True)
             lobby = player.training_lobby
+            previous_lobby = lobby
             if command == "create":
                 await require_no_training(session, player_id)
                 if lobby is None:
@@ -78,21 +80,51 @@ class TrainingService:
                     raise StaleWriteError("Training lobby has changed")
                 if command == "quit":
                     lobby = None
-                elif command == "save":
-                    if version_id is None:
-                        raise ValueError("Select a packet first")
-                    packet, _ = await self.packets.authorize(session, player_id, version_id)
+                elif command in {"save", "select_packet", "save_settings"}:
+                    # Copy the JSON projection: packet autosave must not overwrite
+                    # settings, and explicit settings saves must not change packets.
+                    lobby = dict(lobby)
+                    if command in {"save", "select_packet"}:
+                        if version_id is None:
+                            raise ValueError("Select a packet first")
+                        packet, _ = await self.packets.authorize(session, player_id, version_id)
+                        lobby.update(version_id=str(version_id), packet_name=packet.name)
+                    if command in {"save", "save_settings"}:
+                        lobby["settings"] = TrainingSettings.from_mapping(settings or {}).to_dict()
                     player.training_lobby_version += 1
-                    lobby = {
-                        "version": player.training_lobby_version,
-                        "version_id": str(version_id),
-                        "packet_name": packet.name,
-                        "settings": TrainingSettings.from_mapping(settings or {}).to_dict(),
-                    }
+                    lobby["version"] = player.training_lobby_version
                 else:
                     raise ValueError("Unknown training lobby command")
             player.training_lobby = lobby
+            if lobby is not previous_lobby:
+                await self._lobby_notice(session, player)
             return {"lobby": lobby}
+
+    @staticmethod
+    async def _lobby_notice(session, player):
+        await TransactionalOutbox.enqueue(
+            session, topic="training.lobby.changed",
+            deduplication_key=(f"training:lobby:{player.id}:{player.training_lobby_version}:"
+                               f"{bool(player.training_lobby)}"),
+            partition_key=f"training:lobby:{player.id}",
+            aggregate_type="player", aggregate_id=player.id,
+            payload={"owner_id": str(player.id)},
+        )
+
+    async def lobby_delivery(self, player_id: UUID, *, presentation=None) -> dict:
+        async with self.database.transaction() as session:
+            await require_trainee(session, player_id)
+            player = await session.get(PlayerRecord, player_id, with_for_update=True)
+            if presentation is not None:
+                player.training_lobby_presentation = presentation
+                return {"recorded": True}
+            return {
+                "lobby": player.training_lobby,
+                "version": player.training_lobby_version,
+                "presentation": player.training_lobby_presentation,
+                "telegram_user_id": player.telegram_user_id,
+                "locale": player.preferred_locale,
+            }
 
     async def delivery(self, player_id: UUID, session_id: UUID, *, presentation=None) -> dict:
         """Trusted Telegram adapter projection with a persistent presentation cursor."""
@@ -107,18 +139,19 @@ class TrainingService:
                 result = {"session": None}
             else:
                 await self.packets.authorize(session, player_id, record.packet_version_id)
-                await self._advance(session, record, datetime.now(UTC))
-                result = await self._view(session, record, datetime.now(UTC))
-            show_menu = False
-            if record.status in {"stopped", "completed"} and player.training_lobby is None:
-                show_menu = not await session.scalar(
-                    select(TrainingSessionRecord.id)
-                    .where(
-                        TrainingSessionRecord.owner_id == player_id,
-                        TrainingSessionRecord.status.in_(("active", "paused")),
-                    )
-                    .limit(1)
+                now = datetime.now(UTC)
+                question_data = await self._advance(session, record, now)
+                result = await self._view(
+                    session, record, now, question_data=question_data,
+                    presentation=member.presentation,
                 )
+            show_menu = False
+            if record.status in {"stopped", "completed"}:
+                navigation = TelegramNavigationService(self.database)
+                snapshot = await navigation._snapshot(
+                    session, navigation.player_accounts._account_snapshot(player),
+                )
+                show_menu = snapshot.active_mode == "training" and snapshot.context == "menu"
             return {
                 **result,
                 "show_menu": show_menu,
@@ -227,23 +260,28 @@ class TrainingService:
                     )
                 await session.flush()
                 player.training_lobby = None
-                await self._begin_question(session, record, now)
+                await self._lobby_notice(session, player)
+                question_data = await self._begin_question(session, record, now)
                 await self._notice(session, record)
-                return await self._view(session, record, now)
+                return await self._view(session, record, now, question_data=question_data)
         except DisclosureRequired as error:
             return {"confirmation_required": True, "fresh_unit_count": error.fresh_unit_count}
         except BestBuzzUnavailable:
             return {"preparation": "unavailable", "session": None}
 
-    async def current(self, player_id: UUID, *, now: datetime | None = None) -> dict:
+    async def current(
+        self, player_id: UUID, *, now: datetime | None = None, score_only: bool = False,
+    ) -> dict:
         async with self.database.sessions() as session:
             await require_trainee(session, player_id)
-            identifier = await session.scalar(
-                select(TrainingSessionRecord.id).where(
-                    TrainingSessionRecord.owner_id == player_id,
-                    TrainingSessionRecord.status.in_(("active", "paused")),
-                )
+            query = select(TrainingSessionRecord.id).where(
+                TrainingSessionRecord.owner_id == player_id,
             )
+            if not score_only:
+                query = query.where(TrainingSessionRecord.status.in_(("active", "paused")))
+            identifier = await session.scalar(query.order_by(
+                TrainingSessionRecord.created_at.desc(), TrainingSessionRecord.id.desc(),
+            ).limit(1))
             player = await session.get(PlayerRecord, player_id)
             lobby = player.training_lobby
         if identifier is None:
@@ -251,6 +289,11 @@ class TrainingService:
         await self.tick(identifier, now=now)
         async with self.database.sessions() as session:
             record = await session.get(TrainingSessionRecord, identifier)
+            if score_only:
+                return {"session": {
+                    "id": str(record.id), "status": record.status,
+                    "score": await self._score(session, record.id),
+                }}
             if record.status == "stopped":
                 return {"session": None}
         return await self.view(player_id, identifier, now=now)
@@ -260,8 +303,8 @@ class TrainingService:
         async with self.database.transaction() as session:
             record = await self._owned(session, player_id, session_id)
             await self.packets.authorize(session, player_id, record.packet_version_id)
-            await self._advance(session, record, now)
-            return await self._view(session, record, now)
+            question_data = await self._advance(session, record, now)
+            return await self._view(session, record, now, question_data=question_data)
 
     async def act(
         self,
@@ -272,44 +315,81 @@ class TrainingService:
         expected_version: int,
         question_revision_id: UUID,
         answer: str | None = None,
+        approve: bool | None = None,
         now: datetime | None = None,
     ) -> dict:
         now = now or datetime.now(UTC)
         async with self.database.transaction() as session:
             record = await self._owned(session, player_id, session_id)
-            question, revision, _ = await self._question(session, record)
+            question_data = await self._question(session, record)
+            # Catch reading up before binding the action. Presentation-only token
+            # advances do not invalidate a buzz, but an expired answer does.
+            if command != "stop":
+                await self.packets.authorize(session, player_id, record.packet_version_id)
+                await self._advance(session, record, now, question_data=question_data)
+            question, revision, _ = question_data
             if record.version != expected_version or revision.id != question_revision_id:
                 raise StaleWriteError("Training question has changed")
             # Stop remains available after source revocation or retirement.
             if command == "stop":
                 if record.status not in {"active", "paused"}:
                     raise ValueError("Training has already ended")
+                attempt = (
+                    await self._attempt(session, record) if record.phase == "revealed" else None
+                )
+                if attempt is not None and attempt.appeal_status == "voting":
+                    attempt.appeal_status, attempt.appeal_resolved_at = "rejected", now
                 record.status, record.ended_at = "stopped", now
                 record.deadline = record.hidden_deadline = None
                 record.version += 1
                 await self._notice(session, record)
                 return {"session": None, "stopped": True}
             else:
-                await self.packets.authorize(session, player_id, record.packet_version_id)
-                if record.deadline is not None and record.deadline <= now:
-                    raise StaleWriteError("Training deadline elapsed; refresh the session")
                 if record.status not in {"active", "paused"}:
                     raise ValueError("Training has already ended")
                 settings = TrainingSettings.from_mapping(record.settings)
-                if command == "pause" and record.status == "active":
-                    record.paused_phase = record.phase
-                    record.paused_remaining = (
-                        max(0, (record.deadline - now).total_seconds()) if record.deadline else None
-                    )
-                    record.status, record.deadline = "paused", None
+                attempt = (
+                    await self._attempt(session, record) if record.phase == "revealed" else None
+                )
+                voting = attempt is not None and attempt.appeal_status == "voting"
+                if command == "appeal":
+                    if (
+                        attempt is None or not attempt.answer
+                        or attempt.correct is None or attempt.appeal_status is not None
+                    ):
+                        raise ValueError("There is no answer to appeal")
+                    attempt.appeal_status, attempt.appealed_at = "voting", now
+                    attempt.appeal_was_paused = record.status == "paused"
+                    if record.status == "active":
+                        self._pause(record, now)
+                    # The regular default ballot window; solo training has one voter.
+                    record.deadline = now + timedelta(seconds=60)
+                elif command == "vote" and voting:
+                    if type(approve) is not bool:
+                        raise ValueError("A yes or no vote is required")
+                    attempt.appeal_status = "accepted" if approve else "rejected"
+                    attempt.appeal_resolved_at = now
+                    record.deadline = None
+                    if approve:
+                        attempt.correct = not attempt.correct
+                    if not attempt.appeal_was_paused:
+                        self._resume(record, question, now)
+                elif voting:
+                    raise ValueError("Resolve the appeal before acting")
+                elif command == "pause" and record.status == "active":
+                    self._pause(record, now)
                 elif command == "resume" and record.status == "paused":
-                    record.status = "active"
-                    if record.paused_remaining is not None:
-                        record.deadline = now + timedelta(seconds=float(record.paused_remaining))
-                    record.paused_phase = record.paused_remaining = None
+                    self._resume(record, question, now)
                 elif record.status != "active":
                     raise ValueError("Resume training before acting")
                 elif command == "buzz" and record.phase in {"reading", "waiting", "best_buzz"}:
+                    question.buzzed_at = now
+                    question.buzz_token_cursor = record.token_cursor
+                    question.buzz_delay_seconds = (
+                        max(0, (now - question.opened_at).total_seconds()
+                            - float(question.paused_seconds or 0))
+                        if question.opened_at is not None else None
+                    )
                     record.phase = "answering"
                     record.deadline = now + timedelta(seconds=settings.answer_timeout)
                 elif command == "answer" and record.phase == "answering":
@@ -323,7 +403,9 @@ class TrainingService:
                     await self._finish_question(
                         session, record, revision, "answered", answer, correct
                     )
-                elif command in {"reveal", "skip"} and record.phase != "revealed":
+                elif command in {"reveal", "skip"} and record.phase in {
+                    "reading", "waiting", "best_buzz",
+                }:
                     await self._finish_question(
                         session,
                         record,
@@ -350,12 +432,45 @@ class TrainingService:
                         record.status, record.ended_at = "completed", now
                     else:
                         record.question_index += 1
-                        await self._begin_question(session, record, now)
+                        question_data = await self._begin_question(session, record, now)
                 else:
                     raise ValueError("Training action is unavailable in this phase")
             record.version += 1
             await self._notice(session, record)
-            return await self._view(session, record, now)
+            return await self._view(session, record, now, question_data=question_data)
+
+    @staticmethod
+    def _pause(record, now):
+        record.paused_phase, record.paused_at = record.phase, now
+        record.paused_remaining = (
+            max(0, (record.deadline - now).total_seconds()) if record.deadline else None
+        )
+        record.paused_hidden_remaining = (
+            max(0, (record.hidden_deadline - now).total_seconds())
+            if record.hidden_deadline else None
+        )
+        record.status, record.deadline, record.hidden_deadline = "paused", None, None
+
+    @staticmethod
+    def _resume(record, question, now):
+        if record.paused_at is not None:
+            question.paused_seconds = float(question.paused_seconds or 0) + max(
+                0, (now - record.paused_at).total_seconds()
+            )
+        record.status = "active"
+        if record.paused_remaining is not None:
+            record.deadline = now + timedelta(seconds=float(record.paused_remaining))
+        if record.paused_hidden_remaining is not None:
+            record.hidden_deadline = now + timedelta(seconds=float(record.paused_hidden_remaining))
+        record.paused_phase = record.paused_remaining = record.paused_at = None
+        record.paused_hidden_remaining = None
+
+    @staticmethod
+    async def _attempt(session, record):
+        return await session.scalar(select(TrainingAttemptRecord).where(
+            TrainingAttemptRecord.session_id == record.id,
+            TrainingAttemptRecord.question_index == record.question_index,
+        ))
 
     async def tick(self, session_id: UUID, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -366,6 +481,11 @@ class TrainingService:
             try:
                 await self.packets.authorize(session, record.owner_id, record.packet_version_id)
             except (LookupError, PermissionError):
+                attempt = (
+                    await self._attempt(session, record) if record.phase == "revealed" else None
+                )
+                if attempt is not None and attempt.appeal_status == "voting":
+                    attempt.appeal_status, attempt.appeal_resolved_at = "rejected", now
                 record.status, record.ended_at = "stopped", now
                 record.deadline = record.hidden_deadline = None
                 record.version += 1
@@ -406,7 +526,9 @@ class TrainingService:
         ).one()
 
     async def _begin_question(self, session, record, now):
-        _, revision, _ = await self._question(session, record)
+        question_data = await self._question(session, record)
+        question, revision, _ = question_data
+        question.opened_at, question.paused_seconds = now, 0
         settings = TrainingSettings.from_mapping(record.settings)
         record.best_buzz_consumed = False
         record.text_hidden = False
@@ -418,13 +540,26 @@ class TrainingService:
         else:
             record.phase, record.token_cursor = "reading", 0
             record.deadline = now + timedelta(seconds=settings.token_delay)
+        return question_data
 
-    async def _advance(self, session, record, now):
+    async def _advance(self, session, record, now, *, question_data=None):
         if record.status not in {"active", "paused"}:
             return
         changed = False
+        if record.phase == "revealed" and record.deadline is not None and record.deadline <= now:
+            attempt = await self._attempt(session, record)
+            if attempt is not None and attempt.appeal_status == "voting":
+                attempt.appeal_status, attempt.appeal_resolved_at = "rejected", now
+                record.deadline = None
+                if not attempt.appeal_was_paused:
+                    question_data = question_data or await self._question(session, record)
+                    self._resume(record, question_data[0], now)
+                record.version += 1
+                await self._notice(session, record)
+            return question_data
         if (
-            not record.text_hidden
+            record.status == "active"
+            and not record.text_hidden
             and record.hidden_deadline is not None
             and record.hidden_deadline <= now
         ):
@@ -433,10 +568,11 @@ class TrainingService:
         if record.status == "paused":
             if changed:
                 await self._notice(session, record)
-            return
-        question, revision, _ = await self._question(session, record)
-        settings = TrainingSettings.from_mapping(record.settings)
+            return question_data
         if record.deadline and record.deadline <= now:
+            question_data = question_data or await self._question(session, record)
+            question, revision, _ = question_data
+            settings = TrainingSettings.from_mapping(record.settings)
             if record.phase == "reading":
                 tokens = settings.tokens(revision.text)
                 steps = int((now - record.deadline).total_seconds() / settings.token_delay) + 1
@@ -468,11 +604,15 @@ class TrainingService:
                 and record.deadline <= now
                 and record.phase in {"waiting", "answering"}
             ):
-                await self._finish_question(session, record, revision, "timeout")
+                await self._finish_question(
+                    session, record, revision, "timeout",
+                    correct=False if record.phase == "answering" else None,
+                )
                 record.version += 1
                 changed = True
         if changed:
             await self._notice(session, record)
+        return question_data
 
     @staticmethod
     async def _finish_question(session, record, revision, outcome, answer=None, correct=None):
@@ -484,6 +624,7 @@ class TrainingService:
                 question_index=record.question_index,
                 answer=answer,
                 correct=correct,
+                original_correct=correct,
                 outcome=outcome,
                 token_cursor=record.token_cursor,
             )
@@ -491,17 +632,41 @@ class TrainingService:
         record.phase, record.deadline = "revealed", None
         record.hidden_deadline, record.text_hidden = None, False
 
-    async def _view(self, session, record, now):
-        question, revision, theme = await self._question(session, record)
+    @staticmethod
+    async def _score(session, session_id):
+        return await session.scalar(
+            select(func.coalesce(func.sum(case(
+                (TrainingAttemptRecord.correct.is_(True), TrainingQuestionRecord.value),
+                (TrainingAttemptRecord.correct.is_(False), -TrainingQuestionRecord.value),
+                else_=0,
+            )), 0))
+            .select_from(TrainingAttemptRecord)
+            .join(TrainingQuestionRecord, (
+                (TrainingQuestionRecord.session_id == TrainingAttemptRecord.session_id)
+                & (TrainingQuestionRecord.position == TrainingAttemptRecord.question_index)
+            ))
+            .where(TrainingAttemptRecord.session_id == session_id)
+        )
+
+    async def _view(self, session, record, now, *, question_data=None, presentation=None):
+        question, revision, theme = question_data or await self._question(session, record)
         settings = TrainingSettings.from_mapping(record.settings)
         revealed = record.phase == "revealed"
-        hidden = (
-            record.hidden_deadline is not None and record.hidden_deadline <= now and not revealed
+        hidden = not revealed and (
+            record.text_hidden
+            or record.hidden_deadline is not None and record.hidden_deadline <= now
         )
         tokens = settings.tokens(revision.text)
         text = "" if hidden else " ".join(tokens if revealed else tokens[: record.token_cursor])
+        if presentation is None:
+            member = await session.get(TrainingMemberRecord, (record.id, record.owner_id))
+            presentation = member.presentation
+        score = await self._score(session, record.id)
         result = {
             "id": str(record.id),
+            "score": score,
+            "presented_question_revision_id": presentation.get("question_revision_id"),
+            "message_ids": presentation.get("ids", []),
             "version": record.version,
             "status": record.status,
             "presentation_version": record.presentation_version,
@@ -519,17 +684,15 @@ class TrainingService:
             "settings": record.settings,
         }
         if revealed:
-            attempt = await session.scalar(
-                select(TrainingAttemptRecord).where(
-                    TrainingAttemptRecord.session_id == record.id,
-                    TrainingAttemptRecord.question_index == record.question_index,
-                )
-            )
+            attempt = await self._attempt(session, record)
             result.update(
                 answer=revision.answer,
                 commentary=revision.commentary,
                 correct=attempt.correct if attempt else None,
                 outcome=attempt.outcome if attempt else None,
+                appeal_status=attempt.appeal_status if attempt else None,
+                can_appeal=bool(attempt and attempt.answer and attempt.correct is not None
+                                and attempt.appeal_status is None),
             )
         return {"confirmation_required": False, "session": result}
 

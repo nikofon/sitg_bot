@@ -17,6 +17,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    case,
     delete,
     func,
     literal,
@@ -263,8 +264,6 @@ class AnalysisService:
             tokenizer_version=self.settings.tokenizer_version,
             owner_player_id=artifact_owner,
         )
-        if self.entitlements is not None:
-            await session.get(PlayerRecord, owner_player_id, with_for_update=True)
         artifact = await self._artifact_for_key(
             session,
             key,
@@ -608,7 +607,7 @@ class AnalysisService:
                     artifact_id, lease_token, kind, instructions, descriptor, initiating_owner
                 )
         except ProviderOutcomeUncertain as error:
-            await self._record_uncertain(artifact_id, error)
+            await self._record_uncertain(artifact_id, lease_token, error)
             raise
         except Exception:
             async with self.database.transaction() as session:
@@ -1039,19 +1038,27 @@ class AnalysisService:
             raise RuntimeError("Stale analysis compute lease")
 
     async def _record_uncertain(
-        self, artifact_id: UUID, error: ProviderOutcomeUncertain
+        self, artifact_id: UUID, lease_token: UUID, error: ProviderOutcomeUncertain
     ) -> None:
         """Record possibly-billed upstream request IDs before retrying."""
         async with self.database.transaction() as session:
-            artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
-            if artifact is None:
-                return
-            ids = list(artifact.provider_request_ids or [])
-            if error.provider_request_id not in ids:
-                ids.append(error.provider_request_id)
-            artifact.provider_request_ids = ids
-            artifact.last_error = (
-                f"Uncertain provider outcome for request {error.provider_request_id}"
+            model = TrainingAnalysisArtifactRecord
+            request_ids = [error.provider_request_id]
+            await session.execute(
+                update(model).where(
+                    model.id == artifact_id,
+                    model.lease_token == lease_token,
+                    model.status == "running",
+                ).values(
+                    provider_request_ids=case(
+                        (model.provider_request_ids.contains(request_ids),
+                         model.provider_request_ids),
+                        else_=model.provider_request_ids + request_ids,
+                    ),
+                    last_error=(
+                        f"Uncertain provider outcome for request {error.provider_request_id}"
+                    ),
+                )
             )
 
     def _view(

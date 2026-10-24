@@ -55,7 +55,8 @@ from sitg_bot.application.contracts import (
     KnowledgeDissectionsOperation,
     KnowledgeFactOperation,
     KnowledgeFactsOperation,
-    KnowledgeMergeOperation,
+    KnowledgeImageOperation,
+    KnowledgeImageUploadOperation,
     KnowledgeSaveOperation,
     KnowledgeSharingOperation,
     KnowledgeTagOperation,
@@ -149,6 +150,8 @@ from sitg_bot.application.contracts import (
     TrainingDraftDecideOperation,
     TrainingDraftOperation,
     TrainingEntitlementsOperation,
+    TrainingHistoryDetailOperation,
+    TrainingHistoryListOperation,
     TrainingLobbyOperation,
     TrainingPacketListOperation,
     TrainingRetireOperation,
@@ -180,6 +183,7 @@ from sitg_bot.services.token_requests import (
 from sitg_bot.services.tournament_profiles import TournamentProfileService
 from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.services.training import TrainingService
+from sitg_bot.services.training_history import TrainingHistoryService
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.services.trust import TrustService
 from sitg_bot.storage.database import Database
@@ -290,7 +294,7 @@ PRIVATE_MUTATION_REPLAYS = frozenset({
     ActionCode.KNOWLEDGE_CREATE,
     ActionCode.KNOWLEDGE_UPDATE,
     ActionCode.KNOWLEDGE_DELETE,
-    ActionCode.KNOWLEDGE_MERGE,
+    ActionCode.KNOWLEDGE_IMAGE_UPLOAD,
     ActionCode.KNOWLEDGE_TAG_CREATE,
     ActionCode.KNOWLEDGE_TAG_RENAME,
     ActionCode.KNOWLEDGE_TAG_DELETE,
@@ -313,6 +317,10 @@ ACTION_POLICIES.update(
     {
         ActionCode.CAPABILITIES: ActionPolicy(authentication_required=False),
         ActionCode.TRAINING_PACKETS: ActionPolicy(cursor_paginated=True),
+        ActionCode.TRAINING_HISTORY: ActionPolicy(cursor_paginated=True),
+        ActionCode.TRAINING_HISTORY_DETAIL: ActionPolicy(
+            cursor_paginated=True, sensitive_response=True
+        ),
         ActionCode.KNOWLEDGE_CREATE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -322,9 +330,10 @@ ACTION_POLICIES.update(
         ActionCode.KNOWLEDGE_DELETE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
-        ActionCode.KNOWLEDGE_MERGE: ActionPolicy(
+        ActionCode.KNOWLEDGE_IMAGE_UPLOAD: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
+        ActionCode.KNOWLEDGE_IMAGE: ActionPolicy(sensitive_response=True),
         ActionCode.KNOWLEDGE_TAG_CREATE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -644,6 +653,7 @@ class ApplicationGateway:
         launch_references: LaunchReferenceService | None = None,
         packets: PacketAdminService | None = None,
         training: TrainingService | None = None,
+        training_history: TrainingHistoryService | None = None,
         knowledge: KnowledgeApplication | None = None,
         minimum_client_version: str = "1.0.0",
         idempotency_lease: timedelta = timedelta(minutes=5),
@@ -676,6 +686,7 @@ class ApplicationGateway:
         self.library = PacketLibraryService(database)
         self.knowledge = knowledge or KnowledgeApplication(database)
         self.training = training or TrainingService(database, best_buzz=self.knowledge)
+        self.training_history = training_history or TrainingHistoryService(database)
         self.profiles = PlayerProfileService(database)
         self.tournament_profiles = TournamentProfileService(database)
         self.minimum_client_version = minimum_client_version
@@ -1223,6 +1234,13 @@ class ApplicationGateway:
                 idempotency_key=request.metadata.idempotency_key,
                 **operation.model_dump(exclude={"action"}),
             )
+        if isinstance(operation, (KnowledgeImageOperation, KnowledgeImageUploadOperation)):
+            from sitg_bot.services.knowledge_images import KnowledgeImageService
+
+            images = KnowledgeImageService(self.database)
+            if isinstance(operation, KnowledgeImageUploadOperation):
+                return await images.upload(player_id, operation.source_base64)
+            return await images.read(player_id, operation.image_id)
         if isinstance(operation, KnowledgeTagOperation) and action == ActionCode.KNOWLEDGE_TAGS:
             from sitg_bot.services.training_access import require_trainee
 
@@ -1234,7 +1252,6 @@ class ApplicationGateway:
             (
                 KnowledgeSaveOperation,
                 KnowledgeDeleteOperation,
-                KnowledgeMergeOperation,
                 KnowledgeTagOperation,
                 KnowledgeSharingOperation,
             ),
@@ -1243,7 +1260,6 @@ class ApplicationGateway:
                 ActionCode.KNOWLEDGE_CREATE: "create",
                 ActionCode.KNOWLEDGE_UPDATE: "update",
                 ActionCode.KNOWLEDGE_DELETE: "delete",
-                ActionCode.KNOWLEDGE_MERGE: "merge",
                 ActionCode.KNOWLEDGE_TAG_CREATE: "tag_create",
                 ActionCode.KNOWLEDGE_TAG_RENAME: "tag_rename",
                 ActionCode.KNOWLEDGE_TAG_DELETE: "tag_delete",
@@ -1263,9 +1279,19 @@ class ApplicationGateway:
                 version_id=operation.version_id, settings=operation.settings,
             )
         if isinstance(operation, TrainingCurrentOperation):
-            return await self.training.current(player_id)
+            return await self.training.current(
+                player_id, score_only=operation.score_only,
+            )
         if isinstance(operation, TrainingViewOperation):
             return await self.training.view(player_id, operation.session_id)
+        if isinstance(operation, TrainingHistoryListOperation):
+            return await self.training_history.list_sessions(
+                player_id, cursor=operation.cursor, limit=operation.limit,
+            )
+        if isinstance(operation, TrainingHistoryDetailOperation):
+            return await self.training_history.session_detail(
+                player_id, operation.session_id, cursor=operation.cursor, limit=operation.limit,
+            )
         if isinstance(operation, TrainingStartOperation):
             return await self.training.start(
                 player_id, operation.version_id, confirm=operation.confirm,
@@ -1277,6 +1303,7 @@ class ApplicationGateway:
                 player_id, operation.session_id, operation.command,
                 expected_version=operation.expected_version,
                 question_revision_id=operation.question_revision_id, answer=operation.answer,
+                approve=operation.approve,
             )
         if isinstance(operation, TrainingUploadOperation):
             try:

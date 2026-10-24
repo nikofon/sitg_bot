@@ -289,6 +289,15 @@ and chair role), status, phase, paused flag, ruleset, tournament type, and timin
 tournament's settings snapshot and remaining execution details stay collapsed under the card's
 details summary.
 
+**Training history:** `/training/history` lists the authenticated owner's training
+runs newest first, with packet names, effective scores, modifiers and **More info**
+links to `/training/history/{session_id}`. Detail groups ordered question rows by
+theme, showing authorized played content, training-only question statistics, bounded
+known buzz-delay samples, and the owner's answer/verdict/appeal performance. Both
+screens load pages of at most 25 on explicit request. Retired/revoked content and
+unvisited questions remain redacted; legacy unknown timings say unavailable. See
+[training](training.md#training-history) for disclosure and schema dependencies.
+
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families
@@ -305,6 +314,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
+| GET `/training/history?cursor=&limit=25`; GET `/training/history/{session_id}?cursor=&limit=25` | Owner-only run cards and bounded question detail; also served through route resolution |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
 | POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |

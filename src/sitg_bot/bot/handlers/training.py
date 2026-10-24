@@ -23,9 +23,9 @@ from sitg_bot.application.contracts import (
     TrainingUploadOperation,
     TrainingViewOperation,
 )
+from sitg_bot.bot.handlers.common import send_menu_with_notification_alert
+from sitg_bot.bot.handlers.knowledge import send_message_model
 from sitg_bot.bot.miniapps import mini_app_route_url
-from sitg_bot.bot.presenters.common import menu_message
-from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import GatewayCallError
 from sitg_bot.bot.state.settings import TrainingUploadState
 
@@ -40,6 +40,7 @@ class TrainingMenuAction(Filter):
             "training.train",
             "training.upload",
             "training.knowledge",
+            "training.history",
             "training.settings",
             "training.start",
             "training.quit",
@@ -58,16 +59,21 @@ async def call(backend, claim, operation):
 
 async def show_menu(message, backend, claim, localization, locale):
     navigation = await backend.navigation(claim)
-    # Reply-keyboard WebApps receive no signed initData. Keep this a text action;
-    # the settings handler supplies the authenticated inline WebApp launch.
-    await send_message_model(message, menu_message(navigation, localization, locale))
+    await send_menu_with_notification_alert(
+        message, backend=backend, claim=claim, navigation=navigation,
+        localization=localization, locale=locale,
+    )
 
 
 async def open_app(message, localization, locale, base_url, action):
     if not base_url:
         await message.answer(localization.text("training.miniapp_unavailable", locale))
         return
-    route = "knowledge" if action == "training.knowledge" else "training"
+    route = (
+        "knowledge" if action == "training.knowledge"
+        else "training/history" if action == "training.history"
+        else "training"
+    )
     url = mini_app_route_url(base_url, route)
     await message.answer(
         localization.text(action, locale),
@@ -202,6 +208,9 @@ async def handle_training_menu(
 async def handle_training_start(
     callback: CallbackQuery, backend, telegram_update_claim, localization, locale
 ):
+    if not isinstance(callback.message, Message):
+        await callback.answer(localization.text("training.unavailable", locale), show_alert=True)
+        return
     try:
         await start_lobby(
             callback.message,
@@ -222,13 +231,20 @@ async def handle_training_action(
     callback: CallbackQuery, backend, telegram_update_claim, localization, locale
 ):
     try:
+        if not isinstance(callback.message, Message):
+            raise ValueError("Question message is unavailable")
         _, identifier, version, command = callback.data.split(":")
+        # Obsolete action keyboards must not keep controlling a recovered session.
+        if command != "continue":
+            raise ValueError("Use the reply keyboard")
         result = await call(
             backend,
             telegram_update_claim,
             TrainingViewOperation(action=ActionCode.TRAINING_VIEW, session_id=UUID(identifier)),
         )
         state = result["session"]
+        if callback.message.message_id not in state.get("message_ids", []):
+            raise ValueError("Question message has changed")
         await call(
             backend,
             telegram_update_claim,
@@ -365,7 +381,68 @@ async def handle_training_document_expected(message: Message, localization, loca
     await message.answer(localization.text("training.document_prompt", locale))
 
 
-@router.message(TrainingContext(), F.text, ~F.text.startswith("/"))
+class TrainingControl(Filter):
+    async def __call__(self, message, localization):
+        text = message.text or ""
+        symbols = {"+": "buzz", "||": "pause_toggle", "!": "appeal"}
+        if text in symbols:
+            return {"training_command": symbols[text]}
+        if text.startswith("/"):
+            command = text.split(maxsplit=1)[0].split("@")[0][1:]
+            if command in {"score", "pause", "resume", "appeal"}:
+                return {"training_command": command}
+        for locale in localization.catalogs:
+            for command in ("next", "reveal", "skip", "score"):
+                if text == localization.text(f"training.{command}", locale):
+                    return {"training_command": command}
+            for approve, key in ((True, "button.yes"), (False, "button.no")):
+                if text == localization.text(key, locale):
+                    return {"training_command": "vote", "training_approve": approve}
+        return False
+
+
+@router.message(TrainingContext(), StateFilter(None), TrainingControl())
+async def handle_training_control(
+    message: Message, backend, telegram_update_claim, localization, locale,
+    training_command, training_approve=None,
+):
+    try:
+        result = await call(backend, telegram_update_claim, TrainingCurrentOperation(
+            action=ActionCode.TRAINING_CURRENT, score_only=training_command == "score",
+        ))
+        state = result.get("session")
+        if state is None:
+            raise ValueError("No training session")
+        if training_command == "score":
+            await message.answer(localization.text(
+                "training.score_value", locale, score=state["score"],
+            ))
+            return
+        command = training_command
+        # Yes/No are ordinary answers outside a ballot, not reserved commands.
+        if command == "vote" and state.get("appeal_status") != "voting":
+            if state["phase"] != "answering" or state.get("status") == "paused":
+                raise ValueError("No appeal ballot")
+            command = "answer"
+            training_approve = None
+        if command == "pause_toggle":
+            command = "resume" if state["status"] == "paused" else "pause"
+        question_id = state["question_revision_id"]
+        if command == "buzz":
+            question_id = state.get("presented_question_revision_id")
+            if not question_id:
+                raise ValueError("Wait for the question to be delivered")
+        await call(backend, telegram_update_claim, TrainingActOperation(
+            action=ActionCode.TRAINING_ACT, session_id=UUID(state["id"]),
+            expected_version=state["version"], question_revision_id=UUID(question_id),
+            command=command, approve=training_approve,
+            answer=message.text if command == "answer" else None,
+        ))
+    except (ValueError, GatewayCallError):
+        await message.answer(localization.text("training.unavailable", locale))
+
+
+@router.message(TrainingContext(), StateFilter(None), F.text, ~F.text.startswith("/"))
 async def handle_training_answer(
     message: Message, backend, telegram_update_claim, localization, locale
 ):
@@ -373,7 +450,7 @@ async def handle_training_answer(
         backend, telegram_update_claim, TrainingCurrentOperation(action=ActionCode.TRAINING_CURRENT)
     )
     state = result.get("session")
-    if state is None or state["phase"] != "answering":
+    if state is None or state["phase"] != "answering" or state.get("status") == "paused":
         await message.answer(localization.text("training.help", locale))
         await show_menu(message, backend, telegram_update_claim, localization, locale)
         return
@@ -381,15 +458,18 @@ async def handle_training_answer(
     if (message.text or "").startswith("/"):
         await message.answer(localization.text("training.help", locale))
         return
-    await call(
-        backend,
-        telegram_update_claim,
-        TrainingActOperation(
-            action=ActionCode.TRAINING_ACT,
-            session_id=UUID(state["id"]),
-            expected_version=state["version"],
-            question_revision_id=UUID(state["question_revision_id"]),
-            command="answer",
-            answer=message.text,
-        ),
-    )
+    try:
+        await call(
+            backend,
+            telegram_update_claim,
+            TrainingActOperation(
+                action=ActionCode.TRAINING_ACT,
+                session_id=UUID(state["id"]),
+                expected_version=state["version"],
+                question_revision_id=UUID(state["question_revision_id"]),
+                command="answer",
+                answer=message.text,
+            ),
+        )
+    except (ValueError, GatewayCallError):
+        await message.answer(localization.text("training.unavailable", locale))

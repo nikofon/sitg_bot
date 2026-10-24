@@ -724,6 +724,86 @@ export interface TrainingDraft {
   warnings: string[];
 }
 
+export interface TrainingHistoryPacket {
+  id: string;
+  packet_id: string | null;
+  name: string | null;
+}
+
+export interface TrainingHistoryCard {
+  id: string;
+  created_at: string;
+  ended_at: string | null;
+  status: "active" | "paused" | "completed" | "stopped";
+  packets: TrainingHistoryPacket[];
+  score: number;
+  question_total: number;
+  settings: Record<string, unknown>;
+  modifiers: string[];
+}
+
+export interface TrainingHistoryListResource {
+  kind: "training_history";
+  state: "ready" | "empty";
+  items: TrainingHistoryCard[];
+  next_cursor: string | null;
+}
+
+export interface TrainingHistoryQuestionStats {
+  presentations: number;
+  /** Unknown for legacy runs that did not record accepted buzzes. */
+  buzzes: number | null;
+  attempts: number;
+  answered: number;
+  correct: number;
+  incorrect: number;
+  /** null means timings were never recorded (legacy runs); never fabricated. */
+  buzz_timings: number[] | null;
+}
+
+export interface TrainingHistoryBuzz {
+  buzzed_at: string;
+  buzz_delay_seconds: number | null;
+  buzz_token_cursor: number | null;
+}
+
+export interface TrainingHistoryOwnAttempt {
+  answer: string | null;
+  correct: boolean | null;
+  outcome: string;
+  token_cursor: number;
+  created_at: string;
+  /** Initial verdict preserved before any appeal correction (0027). */
+  original_correct?: boolean | null;
+  appeal_status?: string | null;
+  appealed_at?: string | null;
+  appeal_resolved_at?: string | null;
+}
+
+export interface TrainingHistoryQuestionRow {
+  position: number;
+  value: number;
+  theme: string | null;
+  text: string | null;
+  answer: string | null;
+  accepted_answers: string[] | null;
+  rejected_answers: string[] | null;
+  commentary: string | null;
+  source: string | null;
+  protected: "pending" | "undisclosed" | "revoked" | null;
+  buzz: TrainingHistoryBuzz | null;
+  stats: TrainingHistoryQuestionStats;
+  own: TrainingHistoryOwnAttempt | null;
+}
+
+export interface TrainingHistoryDetailResource extends TrainingHistoryCard {
+  kind: "training_history_detail";
+  state: "ready" | "empty";
+  protected_source: boolean;
+  rows: TrainingHistoryQuestionRow[];
+  next_cursor: string | null;
+}
+
 export interface LibraryPacket {
   packet_id: string;
   version_id: string;
@@ -970,6 +1050,8 @@ export interface RoutePayload {
     | PacketDraftResource
     | LibraryResource
     | TrainingResource
+    | TrainingHistoryListResource
+    | TrainingHistoryDetailResource
     | KnowledgeResource
     | PlayerProfileResource
     | PlayersResource

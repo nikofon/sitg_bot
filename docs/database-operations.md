@@ -60,6 +60,14 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0027_training_history_flow` adds per-question playback/buzz evidence,
+pause accounting, solo appeal verdict fields and durable training-lobby presentation.
+Legacy playback/buzz timestamps remain null; only the existing answer verdict is
+copied into `original_correct`. Apply it before deploying the training flow/history
+writers and readers. There is one ordered chain after `0026_knowledge_images`.
+Revision `0026_knowledge_images` adds immutable raster attachments and an empty image
+list to existing facts; it preserves existing facts, import fingerprints and merge
+history. Apply it before deploying Knowledge image upload/read APIs.
 Revision `0020_database_maintenance` adds compaction timestamps and maintenance indexes;
 it does not prune existing data. Apply it before running the maintenance CLI or enabling
 automatic maintenance.

@@ -245,6 +245,19 @@ class InMemoryKnowledgeStore:
     async def facts_for_owner(self, owner_id: UUID) -> list[StoredFact]:
         return [fact for fact in self.facts.values() if fact.owner_id == owner_id]
 
+    async def applied_candidates(
+        self, owner_id: UUID, candidate_ids: Iterable[str]
+    ) -> dict[str, AppliedCandidate]:
+        identities = set(candidate_ids)
+        return {
+            fact.applied_candidate_id: AppliedCandidate(
+                fact.applied_candidate_id, fact.id,
+                fact.applied_content_version or 1, fact.content_version,
+            )
+            for fact in self.facts.values()
+            if fact.owner_id == owner_id and fact.applied_candidate_id in identities
+        }
+
     async def add_tag(self, tag: StoredTag) -> StoredTag:
         self.tags[tag.id] = tag
         return tag
@@ -448,8 +461,11 @@ class KnowledgeService:
         description: str,
         links: Iterable[SourceLink] = (),
         tag_names: Iterable[str] = (),
+        image_ids: Iterable[UUID] = (),
     ) -> FactView:
-        content = FactContent(title=title, description=description, links=tuple(links))
+        content = FactContent(
+            title=title, description=description, links=tuple(links), image_ids=tuple(image_ids)
+        )
         now = self._now()
         fact = StoredFact(
             id=uuid4(),
@@ -479,17 +495,19 @@ class KnowledgeService:
         description: str | None = None,
         links: tuple[SourceLink, ...] | None = None,
         tag_names: Iterable[str] | None = None,
+        image_ids: Iterable[UUID] | None = None,
     ) -> FactView:
         fact = await self._get_live_fact(fact_id)
         self._require_owner(owner_id, fact.owner_id)
         if fact.content_version != expected_version:
             raise ValueError("Fact changed since it was read")
         new_content = fact.content
-        if title is not None or description is not None or links is not None:
+        if any(value is not None for value in (title, description, links, image_ids)):
             new_content = FactContent(
                 title=fact.content.title if title is None else title,
                 description=fact.content.description if description is None else description,
                 links=fact.content.links if links is None else links,
+                image_ids=fact.content.image_ids if image_ids is None else tuple(image_ids),
             )
         if new_content.changed(fact.content):
             fact.content = new_content
@@ -515,53 +533,6 @@ class KnowledgeService:
         fact.deleted_at = self._now()
         await self.store.save_fact(fact)
 
-    async def merge_facts(
-        self,
-        owner_id: UUID,
-        source_fact_id: UUID,
-        target_fact_id: UUID,
-        *,
-        expected_target_version: int,
-        confirm_source_delete: bool = False,
-    ) -> FactView:
-        """Explicit merge: union tags and source links, retire the source."""
-        source = await self._get_live_fact(source_fact_id)
-        target = await self._get_live_fact(target_fact_id)
-        if source.id == target.id:
-            raise ValueError("A fact cannot be merged into itself")
-        self._require_owner(owner_id, source.owner_id)
-        self._require_owner(owner_id, target.owner_id)
-        if target.content_version != expected_target_version:
-            raise ValueError("Fact changed since it was read")
-        if not confirm_source_delete and source.provenance.origin == "manual":
-            raise ValueError(
-                "Merging away a manually maintained fact requires explicit confirmation"
-            )
-        target_urls = {link.url for link in target.content.links}
-        added = tuple(
-            link for link in source.content.links if link.url not in target_urls
-        )
-        merged_links = target.content.links + added
-        merged_content = FactContent(
-            title=target.content.title,
-            description=target.content.description,
-            links=merged_links,
-        )
-        merged_tags = target.tag_ids | source.tag_ids
-        if len(merged_tags) > FACT_TAGS_MAX:
-            raise ValueError(f"A fact allows at most {FACT_TAGS_MAX} tags")
-        target.tag_ids = merged_tags
-        if merged_content.changed(target.content):
-            target.content = merged_content
-            target.content_version += 1
-            target.updated_at = self._now()
-            target.statistic_status = "stale"
-        source.deleted_at = self._now()
-        source.merged_into_id = target.id
-        await self.store.save_fact(source)
-        await self.store.save_fact(target)
-        return await self._fact_view(target, editable=True)
-
     async def list_facts(
         self,
         actor_id: UUID,
@@ -569,6 +540,7 @@ class KnowledgeService:
         owner_id: UUID | None = None,
         search: str | None = None,
         tag: str | None = None,
+        tags: Iterable[str] = (),
         order: FactOrder = "title_asc",
         cursor: str | None = None,
         limit: int | None = None,
@@ -578,10 +550,16 @@ class KnowledgeService:
         await self._require_view_access(actor_id, view_owner)
         if order not in SUPPORTED_FACT_ORDERS:
             raise ValueError(f"Unsupported facts order {order!r}")
+        selected_tags = {normalize_tag_name(name) for name in tags}
+        if tag and tag.strip():
+            selected_tags.add(normalize_tag_name(tag))
+        if len(selected_tags) > FACT_TAGS_MAX:
+            raise ValueError(f"At most {FACT_TAGS_MAX} search tags are allowed")
         page_limit = self.page_size if limit is None else max(1, min(limit, self.page_size))
         if hasattr(self.store, "fact_page"):
             return await self.store.fact_page(
-                view_owner, search=search, tag=tag, order=order, cursor=cursor, limit=page_limit
+                view_owner, search=search, tags=selected_tags, order=order,
+                cursor=cursor, limit=page_limit
             )
         rows = [
             fact
@@ -596,11 +574,13 @@ class KnowledgeService:
                 if needle in fact.content.title.casefold()
                 or needle in fact.content.description.casefold()
             ]
-        if tag is not None and tag.strip():
-            tag_name = normalize_tag_name(tag)
-            owner_tags = await self.store.tags_for_owner(view_owner)
-            matching_ids = {tag.id for tag in owner_tags if tag.name == tag_name}
-            rows = [fact for fact in rows if fact.tag_ids & matching_ids]
+        if selected_tags:
+            owner_tags = {tag.name: tag.id for tag in await self.store.tags_for_owner(view_owner)}
+            if selected_tags - owner_tags.keys():
+                rows = []
+            else:
+                required_ids = {owner_tags[name] for name in selected_tags}
+                rows = [fact for fact in rows if required_ids <= fact.tag_ids]
         ascending = order == "title_asc"
         total = len(rows)
 
@@ -726,6 +706,7 @@ class KnowledgeService:
                 title=source.content.title,
                 description=source.content.description,
                 links=source.content.links,
+                image_ids=source.content.image_ids,
                 tag_names=[tag.name for tag in tags],
             )
             await self.store.add_copy(
@@ -851,16 +832,6 @@ class KnowledgeService:
         if row.application is not None:
             # Idempotent retry: return the recorded application unchanged.
             return self._request_view(row)
-        applied: dict[str, AppliedCandidate] = {}
-        for fact in await self.store.facts_for_owner(owner_id):
-            if fact.applied_candidate_id is None:
-                continue
-            applied[fact.applied_candidate_id] = AppliedCandidate(
-                candidate_id=fact.applied_candidate_id,
-                fact_id=fact.id,
-                applied_content_version=fact.applied_content_version or 1,
-                current_content_version=fact.content_version,
-            )
         outcomes: list[CandidateOutcome] = []
         planned: dict[str, DissectionCandidate] = {}
         for payload in candidate_payloads:
@@ -873,6 +844,7 @@ class KnowledgeService:
                 outcomes.append(CandidateOutcome(fallback_id, "invalid"))
                 continue
             planned[candidate.candidate_id] = candidate
+        applied = await self.store.applied_candidates(owner_id, planned)
         plan = plan_candidate_application(planned.values(), applied, excluded=excluded)
         now = self._now()
         for outcome in plan:

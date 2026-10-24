@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select, text, tuple_
+from sqlalchemy import and_, case, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -47,6 +47,7 @@ from sitg_bot.storage.models import (
     TournamentPacketAssignmentRecord,
     TournamentPacketEntitlementRecord,
     TournamentRecord,
+    TrainingAttemptRecord,
     TrainingSessionRecord,
 )
 
@@ -267,12 +268,15 @@ class TrainingPacketService:
         publication_from: int | None = None,
         publication_to: int | None = None,
         order: str = "id_asc",
+        owner_uploads_only: bool = False,
     ) -> dict:
         if not 1 <= limit <= 25:
             raise ValueError("Training page size must be between 1 and 25")
         filters = dict(name=name.strip().lower(), author=author.strip().lower(),
                        year_from=year_from, year_to=year_to,
                        publication_from=publication_from, publication_to=publication_to)
+        if owner_uploads_only:
+            filters["owner_uploads_only"] = True
         signature = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()[:16]
         sort_key, descending = packet_order(order)
         async with background_packet_batch(), self.database.sessions() as session:
@@ -286,6 +290,11 @@ class TrainingPacketService:
                 .join(LogicalPacketRecord)
                 .where(self._readable(player_id))
             )
+            if owner_uploads_only:
+                query = query.where(
+                    LogicalPacketRecord.scope == "training",
+                    LogicalPacketRecord.uploader_id == player_id,
+                )
             if cursor:
                 value, identity = packet_cursor(str(cursor), order, signature)
                 key = tuple_(sort_key, PacketVersionRecord.id)
@@ -650,7 +659,7 @@ class TrainingPacketService:
                 raise LookupError("Private packet not found")
             await session.refresh(logical, with_for_update=True)
             logical.retired_at = datetime.now(UTC)
-            records = await session.scalars(
+            records = list(await session.scalars(
                 select(TrainingSessionRecord)
                 .where(
                     TrainingSessionRecord.owner_id == player_id,
@@ -662,7 +671,12 @@ class TrainingPacketService:
                     TrainingSessionRecord.status.in_(("active", "paused")),
                 )
                 .with_for_update()
-            )
+            ))
+            if records:
+                await session.execute(update(TrainingAttemptRecord).where(
+                    TrainingAttemptRecord.session_id.in_([record.id for record in records]),
+                    TrainingAttemptRecord.appeal_status == "voting",
+                ).values(appeal_status="rejected", appeal_resolved_at=logical.retired_at))
             for record in records:
                 record.status, record.ended_at = "stopped", logical.retired_at
                 record.deadline = record.hidden_deadline = None

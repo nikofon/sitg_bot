@@ -71,6 +71,13 @@ export interface KnowledgeFactsResource {
   search?: string;
 }
 
+/** Image attached to a fact via the authenticated image upload contract. */
+export interface KnowledgeFactImage {
+  id: string;
+  url: string;
+  content_type: string;
+}
+
 export interface KnowledgeFactDetail {
   id: string;
   title: string;
@@ -78,8 +85,11 @@ export interface KnowledgeFactDetail {
   links: Array<{ url: string; title: string }>;
   tags: KnowledgeTag[];
   origin: "manual" | "dissection";
+  /** Packet provenance for automatically imported facts; null when absent. */
+  packet_name?: string | null;
   content_version: number;
   editable: boolean;
+  images?: KnowledgeFactImage[];
   statistics: KnowledgeStatistics;
 }
 
@@ -153,7 +163,7 @@ export interface KnowledgeActions {
   signal?: AbortSignal;
   loadFacts: (params: {
     owner_id?: string;
-    tag?: string;
+    tags?: string[];
     cursor?: string | null;
     search?: string;
     order?: KnowledgeOrder;
@@ -161,7 +171,7 @@ export interface KnowledgeActions {
   loadFact: (factId: string) => Promise<KnowledgeFactDetail>;
   save?: (values: KnowledgeFactInput, detail?: KnowledgeFactDetail) => Promise<KnowledgeFactDetail>;
   remove?: (detail: KnowledgeFactDetail) => Promise<void>;
-  merge?: (source: KnowledgeFactDetail, targetId: string) => Promise<void>;
+  uploadImage?: (sourceBase64: string) => Promise<KnowledgeFactImage>;
   tag?: (command: "tag_rename" | "tag_delete", tagId: string, name?: string, colour?: string) => Promise<void>;
   loadTags?: () => Promise<KnowledgeTagPool>;
   createTag?: (name: string, colour: string) => Promise<KnowledgeTagPoolEntry>;
@@ -186,6 +196,7 @@ export interface KnowledgeFactInput {
   description: string;
   tag_names: string[];
   links: Array<{ url: string; title?: string; position: number }>;
+  image_ids?: string[];
 }
 
 export const knowledgeMessageKeys = [
@@ -204,9 +215,6 @@ export const knowledgeMessageKeys = [
   "knowledge.shared_collections",
   "knowledge.own",
   "knowledge.tag_filter",
-  "knowledge.tag_filter_all",
-  "knowledge.merge",
-  "knowledge.merge_target",
   "knowledge.tag_rename",
   "knowledge.tag_delete",
   "knowledge.dissection.comment",
@@ -230,11 +238,15 @@ export const knowledgeMessageKeys = [
   "knowledge.load_more",
   "knowledge.fact.tags",
   "knowledge.fact.links",
-  "knowledge.fact.origin.manual",
-  "knowledge.fact.origin.dissection",
+  "knowledge.fact.origin.packet",
   "knowledge.fact.read_only",
-  "knowledge.fact.version",
   "knowledge.fact.edit",
+  "knowledge.fact.edit_label",
+  "knowledge.images_field",
+  "knowledge.images.remove",
+  "knowledge.images.too_large",
+  "knowledge.images.unsupported",
+  "knowledge.images.too_many",
   "knowledge.statistic.none",
   "knowledge.statistic.pending",
   "knowledge.statistic.fresh",
@@ -292,6 +304,7 @@ export const knowledgeMessageKeys = [
   "knowledge.packets.dissected_complete",
   "knowledge.packets.scope.training",
   "knowledge.packets.scope.tournament",
+  "knowledge.packets.owner_only",
   "knowledge.packets.jobs",
   "knowledge.dissection.title",
   "knowledge.dissection.packet",
@@ -349,11 +362,6 @@ const packetOrderKeys: Record<KnowledgePacketOrder, KnowledgeMessageKey> = {
   year_desc: "lobby.packet_sort_year_desc",
 };
 
-const originKeys: Record<"manual" | "dissection", KnowledgeMessageKey> = {
-  manual: "knowledge.fact.origin.manual",
-  dissection: "knowledge.fact.origin.dissection",
-};
-
 const dissectionStatusKeys: Record<string, KnowledgeMessageKey> = {
   queued: "knowledge.dissection.status.queued",
   running: "knowledge.dissection.status.running",
@@ -366,6 +374,32 @@ const dissectionStatusKeys: Record<string, KnowledgeMessageKey> = {
 
 const DEFAULT_TAG_COLOUR = "#64748b";
 const TAG_COLOUR_PATTERN = /^#[0-9a-f]{6}$/;
+
+/** Fact image attachment limits per the image upload contract. */
+const MAX_FACT_IMAGES = 8;
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** Raw bytes of the picked file via FileReader (works in browsers and jsdom). */
+function fileBytes(file: File): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => { resolve(reader.result as ArrayBuffer); };
+    reader.onerror = () => { reject(reader.error ?? new Error("read failed")); };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/** RFC 4648 base64 of the raw bytes, as required by image_upload. */
+async function fileBase64(file: File): Promise<string> {
+  const buffer = await fileBytes(file);
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
 
 export interface KnowledgeI18n {
   t(key: KnowledgeMessageKey, parameters?: Record<string, unknown>): string;
@@ -437,6 +471,7 @@ function dialogFrame(title: string, i18n: KnowledgeI18n): { dialog: HTMLDialogEl
 
 interface KnowledgeState {
   tagPool: Map<string, KnowledgeTagPoolEntry>;
+  tagPoolReady: Promise<void>;
 }
 
 function tagColoursFor(names: string[], state: KnowledgeState, detailTags?: KnowledgeTag[]): string[] {
@@ -455,7 +490,7 @@ function factCard(
   state: KnowledgeState,
   actions: KnowledgeActions,
   onChanged: () => void,
-  refreshTags: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): HTMLElement {
   const colours = tagColoursFor(fact.tag_names, state);
   const card = element("article", { className: "resource-card knowledge-fact", "data-fact-id": fact.id });
@@ -475,6 +510,27 @@ function factCard(
     id: `knowledge-fact-body-${fact.id}`,
     hidden: true,
   }, element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.loading")));
+  let loaded: KnowledgeFactDetail | undefined;
+  // Compact pencil control at the card's top right; visible once an editable detail is loaded.
+  const editButton = element("button", {
+    type: "button",
+    className: "icon-button knowledge-fact-edit",
+    "aria-label": i18n.t("knowledge.fact.edit_label", { title: fact.title }),
+    title: i18n.t("knowledge.fact.edit"),
+    hidden: true,
+  }, "✎");
+  const renderDetail = (detail: KnowledgeFactDetail): void => {
+    loaded = detail;
+    renderFactDetail(detail, i18n, actions, body, editButton);
+  };
+  editButton.addEventListener("click", () => {
+    if (!loaded) return;
+    openFactDialog(i18n, state, actions, loaded, () => {
+      onChanged();
+      void actions.loadFact(fact.id).then(renderDetail)
+        .catch(() => { /* the changed-list reload surfaces failures */ });
+    }, refreshTags);
+  });
   header.addEventListener("click", () => {
     const expanded = header.getAttribute("aria-expanded") === "true";
     if (expanded) {
@@ -489,25 +545,22 @@ function factCard(
       void actions.loadFact(fact.id).then((detail) => {
         if (body.dataset.loaded === "true") return;
         body.dataset.loaded = "true";
-        renderFactDetail(detail, i18n, state, actions, body, onChanged, fact.id, refreshTags);
+        renderDetail(detail);
       }).catch(() => {
         replaceChildren(body, element("p", { className: "error-text" }, i18n.t("knowledge.error")));
       }).finally(() => { delete body.dataset.loading; });
     }
   });
-  card.append(header, body);
+  card.append(element("div", { className: "knowledge-fact-head-row" }, header, editButton), body);
   return card;
 }
 
 function renderFactDetail(
   detail: KnowledgeFactDetail,
   i18n: KnowledgeI18n,
-  state: KnowledgeState,
   actions: KnowledgeActions,
   container: HTMLElement,
-  onChanged: () => void,
-  factId: string,
-  refreshTags: () => void,
+  editButton: HTMLElement,
 ): void {
   const links = detail.links.length
     ? element(
@@ -517,63 +570,29 @@ function renderFactDetail(
         element("li", {}, element("a", { href: link.url, target: "_blank", rel: "noreferrer" }, link.title || link.url))),
     )
     : element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.fact.links"));
+  const images = detail.images?.length
+    ? element("div", { className: "knowledge-fact-images" },
+      ...detail.images.map((image) =>
+        element("img", { src: image.url, alt: detail.title, loading: "lazy" })))
+    : null;
   replaceChildren(container,
     element("p", { className: "knowledge-fact-description" }, detail.description),
+    images,
     links,
     detail.tags.length
       ? element("p", { className: "knowledge-fact-tags" },
         ...detail.tags.map((tag) => tagChip(tag)))
       : null,
-    element("p", { className: "knowledge-fact-meta" },
-      `${i18n.t(originKeys[detail.origin])} · ${i18n.t("knowledge.fact.version", { version: detail.content_version })}`),
+    detail.packet_name
+      ? element("p", { className: "knowledge-fact-meta" },
+        i18n.t("knowledge.fact.origin.packet", { name: detail.packet_name }))
+      : null,
     element("p", { className: "knowledge-fact-meta" },
       statisticLines(detail.statistics, i18n).join(" · ")),
     detail.editable ? null : element("p", { className: "knowledge-readonly" }, i18n.t("knowledge.fact.read_only")),
   );
-  if (detail.editable && actions.save) {
-    container.append(element("div", { className: "settings-actions" },
-      element("button", {
-        type: "button",
-        className: "primary-button",
-        onclick: (() => {
-          openFactDialog(i18n, state, actions, detail, () => {
-            onChanged();
-            void actions.loadFact(factId).then((fresh) => {
-              renderFactDetail(fresh, i18n, state, actions, container, onChanged, factId, refreshTags);
-            }).catch(() => { /* the changed-list reload surfaces failures */ });
-          });
-        }) as EventListener,
-      }, i18n.t("knowledge.fact.edit"))));
-    const tagTools = element("div", { className: "knowledge-tag-tools" });
-    for (const tag of detail.tags) {
-      tagTools.append(element("span", { className: "knowledge-tag-tool" },
-        tagChip(tag),
-        element("button", {
-          type: "button",
-          className: "secondary-button knowledge-tag-button",
-          "aria-label": `${i18n.t("knowledge.tag_rename")}: ${tag.name}`,
-          onclick: (() => {
-            const name = window.prompt(i18n.t("knowledge.tag_rename"), tag.name);
-            if (name) void actions.tag?.("tag_rename", tag.id, name)
-              .then(() => { refreshTags(); onChanged(); })
-              .catch(() => { /* list reload surfaces failures */ });
-          }) as EventListener,
-        }, "✎"),
-        element("button", {
-          type: "button",
-          className: "secondary-button knowledge-tag-button",
-          "aria-label": `${i18n.t("knowledge.tag_delete")}: ${tag.name}`,
-          onclick: (() => {
-            if (window.confirm(i18n.t("knowledge.tag_delete"))) {
-              void actions.tag?.("tag_delete", tag.id)
-                .then(() => { state.tagPool.delete(tag.name); onChanged(); })
-                .catch(() => { /* list reload surfaces failures */ });
-            }
-          }) as EventListener,
-        }, "✕")));
-    }
-    if (detail.tags.length) container.append(tagTools);
-  }
+  // Tag and fact editing happens in the editor dialog, never inline on the card.
+  editButton.hidden = !(detail.editable && actions.save !== undefined);
 }
 
 function tagSelectionFieldset(
@@ -582,8 +601,11 @@ function tagSelectionFieldset(
   actions: KnowledgeActions,
   selected: Set<string>,
   onChanged: () => void,
-): HTMLElement {
+  refreshTags: (propagateError?: boolean) => Promise<void>,
+): { root: HTMLElement; ready: () => Promise<void> } {
   const fieldset = element("fieldset", { className: "knowledge-tag-select" });
+  let pendingTags = state.tagPoolReady;
+  const mutateTag = actions.tag;
   const list = element("div", { className: "knowledge-tag-options", role: "group",
     "aria-label": i18n.t("knowledge.tags.selected") });
   const sync = (): void => {
@@ -599,7 +621,51 @@ function tagSelectionFieldset(
         if (input.checked) selected.add(tag.name);
         else selected.delete(tag.name);
       });
-      list.append(element("label", { className: "checkbox-label knowledge-tag-option" }, input, tagChip(tag)));
+      // Tag pool maintenance lives here in the editor, never on the fact card.
+      const option = element("div", { className: "knowledge-tag-option" },
+        element("label", { className: "checkbox-label" }, input, tagChip(tag)));
+      if (mutateTag && actions.loadTags) {
+        option.append(
+          element("button", {
+            type: "button",
+            className: "secondary-button knowledge-tag-button",
+            "aria-label": `${i18n.t("knowledge.tag_rename")}: ${tag.name}`,
+            onclick: (() => {
+              const name = window.prompt(i18n.t("knowledge.tag_rename"), tag.name);
+              if (!name) return;
+              fieldset.disabled = true;
+              pendingTags = mutateTag("tag_rename", tag.tag_id, name)
+                .then(async () => {
+                  await refreshTags(true);
+                  const canonical = [...state.tagPool.values()].find((entry) => entry.tag_id === tag.tag_id);
+                  if (selected.delete(tag.name) && canonical) selected.add(canonical.name);
+                  onChanged();
+                  sync();
+                })
+                .finally(() => { fieldset.disabled = false; });
+              void pendingTags.catch(() => { onChanged(); });
+            }) as EventListener,
+          }, "✎"),
+          element("button", {
+            type: "button",
+            className: "secondary-button knowledge-tag-button",
+            "aria-label": `${i18n.t("knowledge.tag_delete")}: ${tag.name}`,
+            onclick: (() => {
+              if (!window.confirm(i18n.t("knowledge.tag_delete"))) return;
+              fieldset.disabled = true;
+              pendingTags = mutateTag("tag_delete", tag.tag_id)
+                .then(async () => {
+                  await refreshTags(true);
+                  selected.delete(tag.name);
+                  onChanged();
+                  sync();
+                })
+                .finally(() => { fieldset.disabled = false; });
+              void pendingTags.catch(() => { onChanged(); });
+            }) as EventListener,
+          }, "✕"));
+      }
+      list.append(option);
     }
   };
   const newTagButton = element("button", {
@@ -619,7 +685,9 @@ function tagSelectionFieldset(
     newTagButton,
   );
   sync();
-  return fieldset;
+  pendingTags = pendingTags.then(sync);
+  void pendingTags.catch(() => { onChanged(); });
+  return { root: fieldset, ready: () => pendingTags };
 }
 
 function openTagDialog(
@@ -628,7 +696,8 @@ function openTagDialog(
   actions: KnowledgeActions,
   created: (tag: KnowledgeTagPoolEntry) => void,
 ): void {
-  if (!actions.createTag) return;
+  const createTag = actions.createTag;
+  if (!createTag) return;
   const { dialog, body } = dialogFrame(i18n.t("knowledge.tags.new"), i18n);
   const name = element("input", { type: "text", required: true, maxlength: "60",
     "aria-label": i18n.t("knowledge.tags.name") });
@@ -646,7 +715,7 @@ function openTagDialog(
     const tagName = name.value.trim();
     if (!tagName || submit.disabled) return;
     submit.disabled = true;
-    void actions.createTag?.(tagName, colour.value)
+    void state.tagPoolReady.then(() => createTag(tagName, colour.value))
       .then((tag) => {
         state.tagPool.set(tag.name, tag);
         created(tag);
@@ -666,10 +735,11 @@ function openFactDialog(
   actions: KnowledgeActions,
   detail: KnowledgeFactDetail | undefined,
   changed: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): void {
   const { dialog, body } = dialogFrame(
     detail ? i18n.t("knowledge.fact.edit") : i18n.t("knowledge.create"), i18n);
-  body.append(factForm(i18n, state, actions, detail, changed, () => closeDialog(dialog)));
+  body.append(factForm(i18n, state, actions, detail, changed, () => closeDialog(dialog), refreshTags));
   openDialog(dialog);
 }
 
@@ -680,6 +750,7 @@ function factForm(
   detail: KnowledgeFactDetail | undefined,
   changed: () => void,
   close: () => void,
+  refreshTags: (propagateError?: boolean) => Promise<void>,
 ): HTMLElement {
   const form = element("form", { className: "settings-form" });
   const title = element("input", { required: true, maxlength: "200", value: detail?.title ?? "" });
@@ -691,16 +762,22 @@ function factForm(
   const error = element("p", { role: "alert" });
   const save = element("button", { type: "submit", className: "primary-button" },
     i18n.t(detail ? "knowledge.save" : "knowledge.create"));
-  form.append(
+  const imagesField = factImagesField(i18n, actions, detail, error);
+  const tagsField = tagSelectionFieldset(i18n, state, actions, selectedTags, changed, refreshTags);
+  const fields = element("fieldset", { className: "knowledge-fact-fields" });
+  form.append(fields);
+  fields.append(
     element("label", {}, i18n.t("knowledge.title_field"), title),
     element("label", {}, i18n.t("knowledge.description"), description),
-    tagSelectionFieldset(i18n, state, actions, selectedTags, changed),
-    element("label", {}, i18n.t("knowledge.links_field"), links), save, error);
+    tagsField.root,
+    element("label", {}, i18n.t("knowledge.links_field"), links),
+    imagesField.root, save, error);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (save.disabled) return;
     save.disabled = true;
-    void actions.save?.({
+    fields.disabled = true;
+    void Promise.all([imagesField.ready(), tagsField.ready()]).then(() => actions.save?.({
       title: title.value,
       description: description.value,
       tag_names: [...selectedTags],
@@ -709,14 +786,16 @@ function factForm(
           const [url = "", ...label] = line.split(" | ");
           return { url, title: label.join(" | "), position };
         }),
-    }, detail).then(() => {
+      // The complete desired attachment set: kept existing ids plus new uploads.
+      image_ids: imagesField.imageIds(),
+    }, detail)).then(() => {
       close();
       changed();
     }).catch(() => { error.textContent = i18n.t("knowledge.error"); })
-      .finally(() => { save.disabled = false; });
+      .finally(() => { save.disabled = false; fields.disabled = false; });
   });
   if (detail && actions.remove) {
-    form.append(element("button", {
+    fields.append(element("button", {
       type: "button",
       className: "danger-button",
       onclick: (() => {
@@ -727,20 +806,94 @@ function factForm(
       }) as EventListener,
     }, i18n.t("knowledge.delete")));
   }
-  if (detail && actions.merge) {
-    const target = element("input", { "aria-label": i18n.t("knowledge.merge_target") });
-    form.append(target, element("button", {
-      type: "button",
-      className: "secondary-button",
-      onclick: (() => {
-        if (target.value && window.confirm(i18n.t("knowledge.merge"))) {
-          void actions.merge?.(detail, target.value).then(() => { close(); changed(); })
-            .catch(() => { error.textContent = i18n.t("knowledge.error"); });
-        }
-      }) as EventListener,
-    }, i18n.t("knowledge.merge")));
-  }
   return form;
+}
+
+/**
+ * The Images field of the fact editor: authenticated bounded uploads plus
+ * kept existing attachments. The fact save always carries the complete id set.
+ */
+function factImagesField(
+  i18n: KnowledgeI18n,
+  actions: KnowledgeActions,
+  detail: KnowledgeFactDetail | undefined,
+  error: HTMLElement,
+): { root: HTMLElement; imageIds: () => string[]; ready: () => Promise<void> } {
+  const kept: KnowledgeFactImage[] = [...(detail?.images ?? [])];
+  let queuedUploads = 0;
+  let pendingUploads = Promise.resolve();
+  const list = element("div", { className: "knowledge-images" });
+  const upload = actions.uploadImage;
+  const picker = element("input", {
+    type: "file",
+    multiple: "",
+    accept: "image/png,image/jpeg,image/webp",
+    "aria-label": i18n.t("knowledge.images_field"),
+  });
+  if (!upload) picker.disabled = true;
+  const report = (key: KnowledgeMessageKey): void => {
+    error.textContent = i18n.t(key);
+  };
+  const render = (): void => {
+    replaceChildren(list);
+    for (const [index, image] of kept.entries()) {
+      const remove = element("button", {
+        type: "button",
+        className: "secondary-button knowledge-image-remove",
+        "aria-label": `${i18n.t("knowledge.images.remove")} ${index + 1}`,
+        onclick: (() => {
+          kept.splice(index, 1);
+          render();
+        }) as EventListener,
+      }, "✕");
+      list.append(element("div", { className: "knowledge-image" },
+        element("img", { src: image.url, alt: i18n.t("knowledge.images_field") }),
+        remove));
+    }
+    if (upload) picker.disabled = queuedUploads > 0 || kept.length >= MAX_FACT_IMAGES;
+  };
+  picker.addEventListener("change", () => {
+    const files = [...(picker.files ?? [])].filter((file) => {
+      if (!IMAGE_TYPES.has(file.type)) {
+        report("knowledge.images.unsupported");
+        return false;
+      }
+      if (file.size > IMAGE_MAX_BYTES) {
+        report("knowledge.images.too_large");
+        return false;
+      }
+      return true;
+    });
+    picker.value = "";
+    if (!upload || !files.length) return;
+    ++queuedUploads;
+    render();
+    pendingUploads = pendingUploads.catch(() => {}).then(async (): Promise<void> => {
+      for (const file of files) {
+        if (kept.length >= MAX_FACT_IMAGES) {
+          report("knowledge.images.too_many");
+          break;
+        }
+        try {
+          const image = await upload(await fileBase64(file));
+          kept.push(image);
+          render();
+        } catch (failure) {
+          report("knowledge.error");
+          throw failure;
+        }
+      }
+    }).finally(() => {
+      --queuedUploads;
+      render();
+    });
+    void pendingUploads.catch(() => {});
+  });
+  const root = element("div", { className: "knowledge-images-field" },
+    element("span", { className: "knowledge-images-label" }, i18n.t("knowledge.images_field")),
+    picker, list);
+  render();
+  return { root, imageIds: () => kept.map((image) => image.id), ready: () => pendingUploads };
 }
 
 function shareLinkRow(
@@ -1007,16 +1160,24 @@ function packetCard(
   const dissected = packet.dissected_theme_count === null
     ? i18n.t("knowledge.packets.dissected_unknown")
     : i18n.t("knowledge.packets.dissected", { count: packet.dissected_theme_count });
+  // Provenance badges carry the actual tournament names, never a generic label.
+  const badges = packet.tournaments.length
+    ? element("div", { className: "knowledge-tournament-badges" },
+      ...packet.tournaments.map((tournament) =>
+        element("span", { className: "knowledge-scope-badge knowledge-tournament-badge" },
+          tournament.name)))
+    : element("div", { className: "knowledge-tournament-badges" },
+      element("span", { className: "knowledge-scope-badge" },
+        i18n.t(`knowledge.packets.scope.${packet.scope}` as KnowledgeMessageKey)));
   return element("article", {
     className: "resource-card lobby-packet-card knowledge-packet-card",
     "data-packet-id": packet.packet_id,
   },
     element("h3", {}, packet.name),
-    element("span", { className: "knowledge-scope-badge" }, i18n.t(`knowledge.packets.scope.${packet.scope}` as KnowledgeMessageKey)),
+    badges,
     element("dl", { className: "lobby-packet-details" },
       detail("lobby.packet_year", packet.year?.toString() ?? "—"),
       detail("lobby.packet_authors", packet.authors.map((author) => author.name).join(", ") || "—"),
-      detail("lobby.packet_tournaments", packet.tournaments.map((tournament) => tournament.name).join(", ") || "—"),
       detail("knowledge.packets.fresh_label",
         `${packet.fresh_theme_count} / ${packet.total_theme_count}`),
       detail("knowledge.packets.dissected_label", dissected)),
@@ -1035,11 +1196,11 @@ export function renderKnowledge(
   const reportError = (message: string): void => {
     errorText.textContent = message;
   };
-  const state: KnowledgeState = { tagPool: new Map() };
+  const state: KnowledgeState = { tagPool: new Map(), tagPoolReady: Promise.resolve() };
 
   const reloadTagPool = (propagateError = false): Promise<void> => {
     if (!actions.loadTags) return Promise.resolve();
-    return actions.loadTags().then((pool) => {
+    state.tagPoolReady = actions.loadTags().then((pool) => {
       if (actions.signal?.aborted) return;
       state.tagPool = new Map(pool.items.map((tag) => [tag.name, tag]));
       refreshTagFilterOptions();
@@ -1048,10 +1209,12 @@ export function renderKnowledge(
       if (propagateError) throw error;
       reportError(i18n.t("knowledge.error"));
     });
+    return state.tagPoolReady;
   };
 
   let search = data.facts.search ?? "";
-  let tagFilter = "";
+  // Additive multi-tag filter state: every selected tag joins the query (AND).
+  const selectedTags = new Set<string>();
   let order = data.facts.order;
   let queryRevision = 0;
 
@@ -1114,7 +1277,7 @@ export function renderKnowledge(
     loadMore.disabled = true;
     const revision = queryRevision;
     void actions.loadFacts({ cursor: data.facts.next_cursor, search, order,
-      ...(tagFilter ? { tag: tagFilter } : {}) })
+      ...(selectedTags.size ? { tags: [...selectedTags] } : {}) })
       .then((page) => {
         if (revision !== queryRevision || actions.signal?.aborted) return;
         data.facts.items.push(...page.items);
@@ -1129,7 +1292,7 @@ export function renderKnowledge(
   const reload = (propagateError = false): Promise<void> => {
     const revision = ++queryRevision;
     return actions.loadFacts({ search, order,
-      ...(tagFilter ? { tag: tagFilter } : {}) })
+      ...(selectedTags.size ? { tags: [...selectedTags] } : {}) })
       .then((page) => {
         if (revision !== queryRevision || actions.signal?.aborted) return;
         data.facts.items = [...page.items];
@@ -1158,20 +1321,34 @@ export function renderKnowledge(
     ...knowledgeOrders.map((value) =>
       element("option", { value }, i18n.t(orderKeys[value]))));
   orderSelect.value = order;
-  const tagFilterSelect = element("select", { "aria-label": i18n.t("knowledge.tag_filter") },
-    element("option", { value: "" }, i18n.t("knowledge.tag_filter_all")));
-  const refreshTagFilterOptions = (): void => {
-    const current = tagFilterSelect.value;
-    while (tagFilterSelect.options.length > 1) tagFilterSelect.options.remove(1);
-    for (const tag of [...state.tagPool.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-      tagFilterSelect.append(element("option", { value: tag.name }, tag.name));
-    }
-    tagFilterSelect.value = current;
-  };
-  tagFilterSelect.addEventListener("change", () => {
-    tagFilter = tagFilterSelect.value;
-    reload();
+  const tagFilter = element("div", {
+    className: "knowledge-tag-filter",
+    role: "group",
+    "aria-label": i18n.t("knowledge.tag_filter"),
   });
+  const refreshTagFilterOptions = (): void => {
+    // A tag deleted from the pool can no longer filter anything.
+    for (const name of selectedTags) if (!state.tagPool.has(name)) selectedTags.delete(name);
+    replaceChildren(tagFilter);
+    for (const tag of [...state.tagPool.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+      const pressed = selectedTags.has(tag.name);
+      const colour = tag.colour && TAG_COLOUR_PATTERN.test(tag.colour) ? tag.colour : DEFAULT_TAG_COLOUR;
+      const chip = element("button", {
+        type: "button",
+        className: "knowledge-tag-filter-chip",
+        "aria-pressed": String(pressed),
+      }, tag.name);
+      chip.style.color = colour;
+      chip.addEventListener("click", () => {
+        const active = selectedTags.has(tag.name);
+        if (active) selectedTags.delete(tag.name);
+        else selectedTags.add(tag.name);
+        chip.setAttribute("aria-pressed", String(!active));
+        reload();
+      });
+      tagFilter.append(chip);
+    }
+  };
 
   searchInput.addEventListener("input", () => { search = searchInput.value; });
   searchInput.addEventListener("change", () => { void reload(); });
@@ -1202,13 +1379,13 @@ export function renderKnowledge(
     ? element("button", {
       type: "button",
       className: "primary-button",
-      onclick: (() => { openFactDialog(i18n, state, actions, undefined, reload); }) as EventListener,
+      onclick: (() => { openFactDialog(i18n, state, actions, undefined, reload, reloadTagPool); }) as EventListener,
     }, i18n.t("knowledge.create"))
     : null;
 
   libraryPanel.append(
     element("div", { className: "knowledge-controls", role: "search" },
-      searchInput, orderSelect, tagFilterSelect,
+      searchInput, orderSelect, tagFilter,
       element("button", {
         type: "button", className: "secondary-button",
         onclick: (() => { void reload(); }) as EventListener,
@@ -1247,16 +1424,28 @@ export function renderKnowledge(
   const resetButton = element("button", {
     type: "button", className: "secondary-button",
     onclick: (() => {
-      for (const field of packetsControls.querySelectorAll("input")) field.value = "";
+      for (const field of packetsControls.querySelectorAll("input")) {
+        if (field instanceof HTMLInputElement && field.type === "checkbox") field.checked = false;
+        else field.value = "";
+      }
       for (const key of Object.keys(packetFilters)) delete packetFilters[key];
       orderSelectPackets.value = "id_asc";
       if (packetsActive && loader) loader.start({}, true);
     }) as EventListener,
   }, i18n.t("knowledge.packets.reset"));
+  // Own-uploads-only training packets: the server filters by uploader identity.
+  const ownerOnlyFilter = element("input", { type: "checkbox" });
+  ownerOnlyFilter.addEventListener("change", () => {
+    if (ownerOnlyFilter.checked) packetFilters.owner_uploads_only = "true";
+    else delete packetFilters.owner_uploads_only;
+    if (packetsActive && loader) loader.start({ ...packetFilters }, true);
+  });
   const packetsControls = element("div", { className: "knowledge-controls", role: "search" },
     packetInput("name", "knowledge.packets.search"),
     packetInput("author", "lobby.packet_authors"),
     orderSelectPackets,
+    element("label", { className: "knowledge-owner-filter" }, ownerOnlyFilter,
+      i18n.t("knowledge.packets.owner_only")),
     element("fieldset", { className: "lobby-packet-year-range" },
       element("legend", {}, i18n.t("lobby.packet_year")),
       packetInput("year_from", "lobby.packet_from", true),
@@ -1382,7 +1571,9 @@ export function renderKnowledge(
       stopJobs();
     }
   };
-  libraryTab.setAttribute("aria-current", "page");
+  // Apply the very first render through the same path as a click so the
+  // active tab is highlighted immediately, not only after re-pressing it.
+  setTab("library");
 
   renderList();
   reloadTagPool();

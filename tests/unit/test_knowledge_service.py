@@ -1,4 +1,3 @@
-from copy import deepcopy
 from uuid import UUID
 
 import pytest
@@ -129,9 +128,8 @@ async def test_stale_edits_conflict_and_content_changes_invalidate_statistics():
     assert [tag.name for tag in tagged.tags] == ["history"]
 
 
-async def test_dissection_delete_and_merge_require_explicit_confirmation():
+async def test_dissection_delete_requires_explicit_confirmation():
     knowledge = service()
-    manual = await knowledge.create_fact(OWNER, title="Manual", description="D")
     request = await knowledge.request_dissection(
         OWNER, packet_id=PACKET, packet_revision="rev-1"
     )
@@ -142,38 +140,6 @@ async def test_dissection_delete_and_merge_require_explicit_confirmation():
     with pytest.raises(ValueError):
         await knowledge.delete_fact(OWNER, imported_id)
     await knowledge.delete_fact(OWNER, imported_id, confirm_dissection_origin=True)
-    with pytest.raises(ValueError):
-        await knowledge.merge_facts(
-            OWNER,
-            manual.fact_id,
-            manual.fact_id,
-            expected_target_version=manual.content_version,
-        )
-    request_b = await knowledge.request_dissection(
-        OWNER, packet_id=PACKET, packet_revision="rev-2"
-    )
-    applied_b = await knowledge.apply_dissection_result(
-        OWNER, request_b.request_id, [payload(QUESTION_B, "Mergable")]
-    )
-    source_id = next(iter(applied_b.applied_fact_ids))
-    merged = await knowledge.merge_facts(
-        OWNER,
-        source_id,
-        manual.fact_id,
-        expected_target_version=manual.content_version,
-    )
-    assert merged.content_version == manual.content_version + 1
-    with pytest.raises(LookupError):
-        await knowledge.fact_detail(OWNER, source_id)
-    # Merging away a manually maintained fact needs explicit confirmation too.
-    manual_b = await knowledge.create_fact(OWNER, title="Manual B", description="D")
-    with pytest.raises(ValueError):
-        await knowledge.merge_facts(
-            OWNER,
-            manual_b.fact_id,
-            manual.fact_id,
-            expected_target_version=merged.content_version,
-        )
 
 
 async def test_listing_filters_sorts_and_paginates_with_stable_cursors():
@@ -242,40 +208,36 @@ async def test_recipient_lists_copies_without_source_collection_access():
         await knowledge.list_facts(RECIPIENT, owner_id=STRANGER)
 
 
-@pytest.mark.parametrize("target_start", [15, 17])
-async def test_merge_tag_union_remains_editable_or_rejects_without_mutation(target_start):
+async def test_additive_tag_search_requires_all_tags_and_stays_owner_scoped():
     knowledge = service()
-    source = await knowledge.create_fact(
-        OWNER, title="Source", description="Source fact",
-        tag_names=[f"tag-{index}" for index in range(17)],
+    await knowledge.create_fact(OWNER, title="Both", description="D", tag_names=["a", "b"])
+    await knowledge.create_fact(OWNER, title="One", description="D", tag_names=["a"])
+    await knowledge.create_fact(RECIPIENT, title="Other", description="D", tag_names=["a", "b"])
+    page = await knowledge.list_facts(OWNER, tag=" A ", tags=["b", "B"])
+    assert [item.title for item in page.items] == ["Both"]
+    assert (await knowledge.list_facts(OWNER, tags=["missing"])).total == 0
+    assert (await knowledge.list_facts(OWNER, tags=[])).total == 2
+
+
+async def test_images_are_separate_versioned_content_and_permanent_copies_retain_them():
+    knowledge = service()
+    image = UUID(int=999)
+    original = await knowledge.create_fact(
+        OWNER, title="Image fact", description="D", image_ids=[image]
     )
-    target = await knowledge.create_fact(
-        OWNER, title="Target", description="Target fact",
-        tag_names=[f"tag-{index}" for index in range(target_start, target_start + 17)],
+    assert original.content.links == ()
+    assert original.content.image_ids == (image,)
+    await knowledge.grant_collection_access(OWNER, RECIPIENT)
+    copy = (await knowledge.list_facts(RECIPIENT)).items[0]
+    edited = await knowledge.update_fact(
+        OWNER, original.fact_id, expected_version=1, image_ids=[]
     )
-    before = deepcopy((
-        knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]
-    ))
-    if target_start == 17:
-        with pytest.raises(ValueError, match="at most 32 tags"):
-            await knowledge.merge_facts(
-                OWNER, source.fact_id, target.fact_id,
-                expected_target_version=target.content_version, confirm_source_delete=True,
-            )
-        assert (
-            knowledge.store.facts[source.fact_id], knowledge.store.facts[target.fact_id]
-        ) == before
-        return
-    merged = await knowledge.merge_facts(
-        OWNER, source.fact_id, target.fact_id,
-        expected_target_version=target.content_version, confirm_source_delete=True,
-    )
-    assert len(merged.tags) == 32
-    saved = await knowledge.update_fact(
-        OWNER, merged.fact_id, expected_version=merged.content_version,
-        tag_names=[tag.name for tag in merged.tags],
-    )
-    assert saved.tags == merged.tags
+    assert edited.content_version == 2
+    assert edited.content.image_ids == ()
+    with pytest.raises(ValueError, match="changed"):
+        await knowledge.update_fact(OWNER, original.fact_id, expected_version=1, image_ids=[image])
+    await knowledge.delete_fact(OWNER, original.fact_id)
+    assert (await knowledge.fact_detail(RECIPIENT, copy.fact_id)).content.image_ids == (image,)
 
 
 async def test_old_dissection_identity_does_not_depend_on_the_history_window():
@@ -437,6 +399,34 @@ async def test_candidate_payloads_validate_provenance_and_links():
         dissection_candidate_from_payload(with_bad_url)
     with pytest.raises(ValueError):
         dissection_candidate_from_payload({"packet_id": str(PACKET)})
+
+
+async def test_candidate_lookup_preserves_deleted_and_edited_facts_without_other_owners():
+    knowledge = service()
+    payloads = [payload(QUESTION, "Deleted"), payload(QUESTION_B, "Edited")]
+    first = await knowledge.request_dissection(OWNER, packet_id=PACKET, packet_revision="r1")
+    await knowledge.apply_dissection_result(OWNER, first.request_id, payloads)
+    by_candidate = {fact.applied_candidate_id: fact for fact in knowledge.store.facts.values()}
+    deleted = by_candidate[payloads[0]["candidate_id"]]
+    edited = by_candidate[payloads[1]["candidate_id"]]
+    await knowledge.delete_fact(OWNER, deleted.id, confirm_dissection_origin=True)
+    await knowledge.update_fact(OWNER, edited.id, expected_version=1, description="Owner edit")
+    foreign = payload(QUESTION, "Foreign")
+    other = await knowledge.request_dissection(RECIPIENT, packet_id=PACKET, packet_revision="r1")
+    await knowledge.apply_dissection_result(RECIPIENT, other.request_id, [foreign])
+    identities = await knowledge.store.applied_candidates(
+        OWNER, [item["candidate_id"] for item in [*payloads, foreign]],
+    )
+    assert set(identities) == {item["candidate_id"] for item in payloads}
+    assert identities[payloads[0]["candidate_id"]].fact_id == deleted.id
+    assert identities[payloads[1]["candidate_id"]].manually_edited()
+    retry = await knowledge.request_dissection(
+        OWNER, packet_id=PACKET, packet_revision="r1", comment="retry",
+    )
+    result = await knowledge.apply_dissection_result(OWNER, retry.request_id, [*payloads, foreign])
+    assert len(result.applied_fact_ids) == 1
+    assert deleted.deleted_at is not None and edited.content.description == "Owner edit"
+    assert len([fact for fact in knowledge.store.facts.values() if fact.owner_id == OWNER]) == 3
 
 
 async def test_statistic_snapshots_are_immutable_history():
