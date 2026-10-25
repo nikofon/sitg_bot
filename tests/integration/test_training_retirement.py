@@ -1,9 +1,10 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
 from conftest import create_player
 from sqlalchemy import select
-from test_training import upload
+from test_training import open_question, upload
 
 from sitg_bot.services.training import TrainingService
 from sitg_bot.storage.models import TrainingAttemptRecord
@@ -15,12 +16,14 @@ async def test_private_packet_retirement_rejects_pending_ballot_without_changing
     owner = await create_player(database, 9491, "retire-ballot-owner")
     packet, _ = await upload(database, owner)
     service = TrainingService(database)
-    state = (await service.start(owner, packet, confirm=True))["session"]
+    now = datetime.now(UTC)
+    state = (await service.start(owner, packet, confirm=True, now=now))["session"]
+    state, now = await open_question(service, owner, state, now)
     run, question = UUID(state["id"]), UUID(state["question_revision_id"])
     for command, values in (("buzz", {}), ("answer", {"answer": "London"}), ("appeal", {})):
         state = (await service.act(
             owner, run, command, expected_version=state["version"],
-            question_revision_id=question, **values,
+            question_revision_id=question, now=now, **values,
         ))["session"]
     assert state["appeal_status"] == "voting"
     await service.packets.retire(owner, packet)

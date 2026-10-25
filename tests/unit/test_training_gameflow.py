@@ -25,24 +25,28 @@ def harness(settings=None, *, phase="reading", status="active"):
     settings = settings or TrainingSettings(token_delay=1, token_target_chars=3)
     record = SimpleNamespace(
         id=RUN, owner_id=OWNER, packet_version_id=UUID(int=4), version=1,
+        event_sequence=0, progression_stage=None,
         phase=phase, status=status, settings=settings.to_dict(), question_index=0,
         token_cursor=0, best_buzz_consumed=False, hidden_deadline=None, text_hidden=False,
         deadline=NOW + timedelta(seconds=1) if phase == "reading" else None,
         paused_at=None, paused_phase=None, paused_remaining=None, paused_hidden_remaining=None,
     )
     question = SimpleNamespace(
-        value=10, opened_at=NOW, paused_seconds=0, buzzed_at=None,
+        value=10, theme_revision_id=UUID(int=5), opened_at=NOW, paused_seconds=0, buzzed_at=None,
         buzz_delay_seconds=None, buzz_token_cursor=None, best_buzz=None,
     )
     revision = SimpleNamespace(
         id=QUESTION, text="One two three four", answer="Paris", accepted_answers=[],
-        rejected_answers=[], commentary="Commentary",
+        rejected_answers=[], commentary="Commentary", form="City", author_ids=(),
     )
     attempt = SimpleNamespace(
         answer="London", correct=False, original_correct=False, outcome="answered",
         appeal_status=None, appealed_at=None, appeal_resolved_at=None, appeal_was_paused=False,
     )
-    session = SimpleNamespace(add=lambda item: None, scalar=AsyncMock())
+    events = []
+    session = SimpleNamespace(add=events.append, scalar=AsyncMock(),
+                              get=AsyncMock(return_value=SimpleNamespace(presentation={})),
+                              events=events)
 
     @asynccontextmanager
     async def transaction():
@@ -71,7 +75,7 @@ async def test_accepted_buzz_catches_up_reading_and_records_actual_event_not_ans
     assert record.phase == "answering"
     assert question.buzzed_at == NOW + timedelta(seconds=2.5)
     assert question.buzz_delay_seconds == 2.5
-    assert question.buzz_token_cursor == 2
+    assert question.buzz_token_cursor == 1
     assert record.deadline == NOW + timedelta(seconds=17.5)
     await action(service, record, "stop", now=NOW + timedelta(seconds=3))
     assert question.buzzed_at == NOW + timedelta(seconds=2.5)
@@ -212,6 +216,25 @@ async def test_registered_keyboard_controls_are_actions_not_answer_text(text, co
     assert operation.answer is None
 
 
+async def test_registered_quit_dismisses_completed_training_and_restores_menu(monkeypatch):
+    menu = AsyncMock()
+    monkeypatch.setattr(training, "show_menu", menu)
+    state = {
+        "id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
+        "status": "completed", "phase": "revealed",
+    }
+    backend = SimpleNamespace(_execute=AsyncMock(
+        return_value=SimpleNamespace(data={"session": state}),
+    ))
+    await training.router.propagate_event(
+        "message", message("/quit"), backend=backend, telegram_update_claim=object(),
+        localization=LocalizationService(), locale="en",
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    assert backend._execute.await_args.args[1].command == "stop"
+    menu.assert_awaited_once()
+
+
 async def test_registered_score_command_reads_finished_score_without_mutation(monkeypatch):
     answer = AsyncMock()
     monkeypatch.setattr(Message, "answer", answer)
@@ -258,6 +281,27 @@ async def test_bare_buzz_is_bound_to_delivered_question_not_latest_server_questi
     await training.handle_training_control(message("+"), backend, object(),
                                             LocalizationService(), "en", "buzz")
     assert backend._execute.await_args.args[1].question_revision_id == old
+
+
+@pytest.mark.parametrize("text", ["Paris", "Yes"])
+async def test_old_answer_prompt_cannot_submit_text_to_a_later_question(monkeypatch, text):
+    monkeypatch.setattr(Message, "answer", AsyncMock())
+    state = {
+        "id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
+        "status": "active", "phase": "answering", "answer_prompts": {"99": str(UUID(int=99))},
+    }
+    backend = SimpleNamespace(_execute=AsyncMock(
+        return_value=SimpleNamespace(data={"session": state}),
+    ))
+    incoming = message(text).model_copy(update={
+        "reply_to_message": message("Old form").model_copy(update={"message_id": 99}),
+    })
+    await training.router.propagate_event(
+        "message", incoming, backend=backend, telegram_update_claim=object(),
+        localization=LocalizationService(), locale="en",
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    assert backend._execute.await_count == 1
 
 
 async def test_yes_is_still_answer_text_when_not_voting():
@@ -313,31 +357,16 @@ async def test_unchanged_reading_tick_does_not_fetch_question_again():
 
 
 async def test_ordinary_question_delivery_installs_reply_controls_and_replays_without_spam():
-    state = {
-        "telegram_user_id": 42, "locale": "ru", "presentation": {},
-        "session": {"id": str(RUN), "version": 1, "status": "active", "phase": "reading",
-                    "question_revision_id": str(QUESTION), "question_index": 0,
-                    "theme": "Тема", "value": 10, "hidden": False, "text": "Вопрос"},
-    }
+    from training_delivery_support import deliver, delivery_case, question_ids
 
-    async def request(action, **params):
-        if action.endswith(".record"):
-            state["presentation"] = params["presentation"]
-            return {"recorded": True}
-        return state
-
-    bot = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)),
-                          edit_message_text=AsyncMock())
-    delivery = TrainingDelivery(bot, LocalizationService(), SimpleNamespace(request=request))
-    payload = {"owner_id": str(OWNER), "session_id": str(RUN)}
-    await delivery(payload)
-    controls, question = bot.send_message.await_args_list
-    assert controls.kwargs["reply_markup"].keyboard[0][0].text == "+"
-    assert question.kwargs["reply_markup"] is None
-    assert state["presentation"]["question_revision_id"] == str(QUESTION)
-    await delivery(payload)
-    assert bot.send_message.await_count == 2
-    bot.edit_message_text.assert_not_awaited()
+    case = delivery_case(locale="ru", text="Вопрос")
+    await deliver(case)
+    assert case.sends[0][2].keyboard[0][0].text == "+"
+    assert case.messages[question_ids(case)[0]] == ("Вопрос", None)
+    count_before = len(case.sends)
+    await deliver(case)
+    assert len(case.sends) == count_before
+    assert not case.edits
 
 
 async def test_lobby_delivery_edits_one_durable_status_on_save_and_close_without_spam():

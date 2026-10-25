@@ -163,6 +163,7 @@ async def handle_training_menu(
             )
             if current.get("session"):
                 session_state = current["session"]
+                await track_input(backend, session_state, message, telegram_update_claim)
                 await call(
                     backend,
                     telegram_update_claim,
@@ -256,8 +257,6 @@ async def handle_training_action(
                 command=command,
             ),
         )
-        if command == "stop":
-            await show_menu(callback.message, backend, telegram_update_claim, localization, locale)
         await callback.answer()
     except (ValueError, GatewayCallError):
         await callback.answer(localization.text("training.unavailable", locale), show_alert=True)
@@ -381,6 +380,15 @@ async def handle_training_document_expected(message: Message, localization, loca
     await message.answer(localization.text("training.document_prompt", locale))
 
 
+async def track_input(backend, state, message, claim):
+    delivery = getattr(backend, "training_delivery", None)
+    if delivery is not None:
+        if "owner_id" not in state:
+            navigation = await backend.navigation(claim)
+            state = {**state, "owner_id": str(navigation.account.player_id)}
+        await delivery.track_input(state, message)
+
+
 class TrainingControl(Filter):
     async def __call__(self, message, localization):
         text = message.text or ""
@@ -389,8 +397,8 @@ class TrainingControl(Filter):
             return {"training_command": symbols[text]}
         if text.startswith("/"):
             command = text.split(maxsplit=1)[0].split("@")[0][1:]
-            if command in {"score", "pause", "resume", "appeal"}:
-                return {"training_command": command}
+            if command in {"score", "pause", "resume", "appeal", "quit"}:
+                return {"training_command": "stop" if command == "quit" else command}
         for locale in localization.catalogs:
             for command in ("next", "reveal", "skip", "score"):
                 if text == localization.text(f"training.{command}", locale):
@@ -413,10 +421,12 @@ async def handle_training_control(
         state = result.get("session")
         if state is None:
             raise ValueError("No training session")
+        await track_input(backend, state, message, telegram_update_claim)
         if training_command == "score":
-            await message.answer(localization.text(
+            sent = await message.answer(localization.text(
                 "training.score_value", locale, score=state["score"],
             ))
+            await track_input(backend, state, sent, telegram_update_claim)
             return
         command = training_command
         # Yes/No are ordinary answers outside a ballot, not reserved commands.
@@ -432,12 +442,19 @@ async def handle_training_control(
             question_id = state.get("presented_question_revision_id")
             if not question_id:
                 raise ValueError("Wait for the question to be delivered")
+        if command == "answer" and message.reply_to_message and (
+            state.get("answer_prompts", {}).get(str(message.reply_to_message.message_id))
+            != question_id
+        ):
+            raise ValueError("Answer prompt has changed")
         await call(backend, telegram_update_claim, TrainingActOperation(
             action=ActionCode.TRAINING_ACT, session_id=UUID(state["id"]),
             expected_version=state["version"], question_revision_id=UUID(question_id),
             command=command, approve=training_approve,
             answer=message.text if command == "answer" else None,
         ))
+        if command == "stop":
+            await show_menu(message, backend, telegram_update_claim, localization, locale)
     except (ValueError, GatewayCallError):
         await message.answer(localization.text("training.unavailable", locale))
 
@@ -459,6 +476,12 @@ async def handle_training_answer(
         await message.answer(localization.text("training.help", locale))
         return
     try:
+        await track_input(backend, state, message, telegram_update_claim)
+        reply = message.reply_to_message
+        if reply and state.get("answer_prompts", {}).get(str(reply.message_id)) != (
+            state["question_revision_id"]
+        ):
+            raise ValueError("Answer prompt has changed")
         await call(
             backend,
             telegram_update_claim,

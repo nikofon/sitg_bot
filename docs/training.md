@@ -2,7 +2,7 @@
 
 Solo training uses separate session, membership, question-pin and attempt tables.
 It never creates competitive games, rating entries or tournament results.
-Run `alembic upgrade head` (through `0027_training_history_flow`) before deployment.
+Run `alembic upgrade head` (through `0028_training_lifecycle`) before deployment.
 
 ## Access and uploads
 
@@ -47,12 +47,39 @@ session. A durable lobby status message shows the selected packet and localized 
 modifiers; packet/settings saves update that message through the transactional outbox.
 Reopening the menu recovers the same status instead of posting another copy.
 
-During a session, reply-keyboard controls use `+` to buzz, `||` to pause/resume,
-and `!` to appeal, like regular games. Next question, reveal, skip, score and quit
-are also keyboard actions. `/score` reads the current or latest finished training
-score. Ordinary question messages have no inline controls. Only the Best buzz pause
-has inline Continue reading; it resumes the configured token cadence rather than
-instantly revealing the remainder. Completion restores the home keyboard.
+Starting follows the regular SI lifecycle automatically: countdown, theme list,
+numbered theme and optional commentary, question value, incremental question text,
+answer/commentary/author, theme completion and scores, then final training score.
+Each question has its own stable message chunks; buzzing hides every chunk and opens
+the regular answer-form prompt. An incorrect answer closes a solo question because
+that player's attempt is spent. There is no manual Next requirement, including for
+the last question. Deadlines use regular SI's default announcement/intermission timings;
+training's saved token, buzz and answer timings still apply. Delayed workers reveal
+one frame at a time rather than silently consuming an unseen question's buzz window.
+
+Reply-keyboard controls use `+` to buzz, `||` to pause/resume, and `!` to appeal,
+like regular games. The existing Next, reveal, skip, score and quit actions remain
+available; Next follows the same progression boundaries. `/score` reads the current
+or latest finished training score. Ordinary question messages have no inline controls.
+Each Best buzz question retains inline Continue reading at its prepared pause;
+it resumes the configured token cadence rather than instantly revealing the remainder.
+Pauses and solo appeal voting also suspend automatic progression. Replies to old
+answer prompts cannot answer a later question.
+
+The Telegram host reuses regular `GameDelivery` event ordering, adjacent-frame
+coalescing, chunk rendering, question hiding, answer prompts, verdict/answer/theme
+presentation, appeal delivery delays and best-effort deletion. Training records ordered
+`training_events` and its own member presentation ledger, not competitive game rows.
+Terminal delivery removes play controls without replacing a newer navigation keyboard.
+Quit (or `/quit`) stops a running session or dismisses a completed run and restores
+the home menu. A retired/stopped session also recovers the home keyboard, but only
+when the player has not moved to a different navigation context.
+As in regular play, completed messages remain available until quit or the shared
+12-hour finished-game closure job. Cleanup snapshots the old session's gameplay,
+control and input IDs, records deletion progress across retries, and includes late
+send receipts without deleting a later run's messages. Source retirement also queues
+cleanup, without discarding training history. Pre-event-ledger sessions recover their
+current question and existing chunk IDs without inventing historical playback evidence.
 
 Lobby selections and settings persist across restarts and use an owner-locked,
 monotonically increasing version to reject stale saves, quits, and confirmations.

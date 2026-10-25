@@ -95,7 +95,7 @@ class GameDelivery:
         await self.record(chat, game, key=key, value=value)
         return ids[0]
 
-    async def _question(self, chat, game, messages, round_id, text):
+    async def _question(self, chat, game, messages, round_id, text, *, keyboard=None):
         chunks = plain_chunks(text) or [self.localization.text("flow.hidden", "ru")]
         prefix = f"question:{round_id}:"
         old_keys = [key for key in messages if key.startswith(prefix)]
@@ -105,7 +105,7 @@ class GameDelivery:
                 game,
                 messages,
                 prefix + str(index),
-                MessageModel(chunk),
+                MessageModel(chunk, keyboard if index == len(chunks) - 1 else None),
                 edit=True,
                 kind="question",
                 round_id=round_id,
@@ -152,45 +152,46 @@ class GameDelivery:
                 view, messages = delivery["view"], delivery["messages"]
                 view["bot_username"] = self.bot_username
                 events = delivery["events"]
-                index = 0
-                while index < len(events):
-                    event = events[index]
-                    pause = messages.get("_appeal_delay", {})
-                    remaining = pause.get("until", 0) - time.time()
-                    if event["sequence"] > pause.get("sequence", 0) and remaining > 0:
-                        raise RetryableDeliveryError(
-                            "Appeal message delay", retry_after_seconds=math.ceil(remaining)
-                        )
-                    # Collapse only consecutive reveal frames; never cross a buzz,
-                    # verdict, question cost, completion or other lifecycle boundary.
-                    if event["kind"] == "question_token_revealed":
-                        while (
-                            index + 1 < len(events)
-                            and events[index + 1]["kind"] == "question_token_revealed"
-                            and events[index + 1]["parameters"].get("round_id")
-                            == event["parameters"].get("round_id")
-                        ):
-                            index += 1
-                            event = events[index]
-                        if index + 1 < len(events) and events[index + 1]["kind"] == "player_buzzed":
-                            await self.record(chat, game, sequence=event["sequence"])
-                            index += 1
-                            continue
-                    await self._event(chat, str(game), messages, view, event)
-                    if (
-                        event["kind"] in {"appeal_resolved", "appeal_escalated"}
-                        and pause.get("sequence") != event["sequence"]
-                    ):
-                        pause = {
-                            "sequence": event["sequence"],
-                            "until": time.time() + view["message_delay"],
-                        }
-                        await self.record(chat, game, key="_appeal_delay", value=pause)
-                        messages["_appeal_delay"] = pause
-                    await self.record(chat, game, sequence=event["sequence"])
-                    index += 1
+                await self._deliver_events(chat, game, messages, view, events)
                 if len(events) < 100:
                     return
+
+    async def _deliver_events(self, chat, game, messages, view, events):
+        """Ordered event consumption shared by competitive and training hosts."""
+        index = 0
+        while index < len(events):
+            event = events[index]
+            pause = messages.get("_appeal_delay", {})
+            remaining = pause.get("until", 0) - time.time()
+            if event["sequence"] > pause.get("sequence", 0) and remaining > 0:
+                raise RetryableDeliveryError(
+                    "Appeal message delay", retry_after_seconds=math.ceil(remaining)
+                )
+            # Collapse only consecutive reveal frames, never lifecycle boundaries.
+            if event["kind"] == "question_token_revealed":
+                while (
+                    index + 1 < len(events)
+                    and events[index + 1]["kind"] == "question_token_revealed"
+                    and events[index + 1]["parameters"].get("round_id")
+                    == event["parameters"].get("round_id")
+                ):
+                    index += 1
+                    event = events[index]
+                if index + 1 < len(events) and events[index + 1]["kind"] == "player_buzzed":
+                    await self.record(chat, game, sequence=event["sequence"])
+                    index += 1
+                    continue
+            await self._event(chat, str(game), messages, view, event)
+            if (
+                event["kind"] in {"appeal_resolved", "appeal_escalated"}
+                and pause.get("sequence") != event["sequence"]
+            ):
+                pause = {"sequence": event["sequence"],
+                         "until": time.time() + view["message_delay"]}
+                await self.record(chat, game, key="_appeal_delay", value=pause)
+                messages["_appeal_delay"] = pause
+            await self.record(chat, game, sequence=event["sequence"])
+            index += 1
 
     async def _event(self, chat, game, messages, view, event):
         locale = view["locale"]
@@ -492,19 +493,25 @@ class GameDelivery:
             )
             messages = state["messages"]
             done = set(messages.get("_deleted", {}).get("ids", []))
-            ids = set(payload["message_ids"])
-            for mid in sorted(ids - done):
-                try:
-                    await self.bot.delete_message(chat, mid)
-                except TelegramRetryAfter as error:
-                    raise RetryableDeliveryError(
-                        "Telegram flood wait", retry_after_seconds=int(error.retry_after)
-                    ) from error
-                except (TelegramBadRequest, TelegramForbiddenError):
-                    # Telegram cannot delete old messages or messages in blocked chats.
-                    pass
-                done.add(mid)
-                await self.record(chat, game, key="_deleted", value={"ids": sorted(done)})
+            async def record(deleted):
+                await self.record(chat, game, key="_deleted", value={"ids": deleted})
+
+            await cleanup_messages(self.bot, chat, payload["message_ids"], done, record)
+
+
+async def cleanup_messages(bot, chat, message_ids, done, record):
+    """Best-effort deletion with durable per-message progress for every game host."""
+    for mid in sorted(set(message_ids) - done):
+        try:
+            await bot.delete_message(chat, mid)
+        except TelegramRetryAfter as error:
+            raise RetryableDeliveryError(
+                "Telegram flood wait", retry_after_seconds=int(error.retry_after)
+            ) from error
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass  # Telegram deletion limits / blocked chats are terminal for this ID.
+        done.add(mid)
+        await record(sorted(done))
 
 
 def game_delivery_handler(bot, localization, protocol, references, bot_username=None):
