@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 from conftest import create_player
 from sqlalchemy import func, select
+from test_training import open_question
 
 from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal, GatewayRequest
 from sitg_bot.application.gateway import ApplicationGateway
@@ -68,7 +69,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
                              "publish": True}, "publish")
     started = await twice(ActionCode.TRAINING_START,
                           {"version_id": published["version_id"], "confirm": True}, "start")
-    state = started["session"]
+    state, _ = await open_question(gateway.training, owner, started["session"], None)
     buzzed = await twice(ActionCode.TRAINING_ACT,
                          {"session_id": state["id"], "expected_version": state["version"],
                           "question_revision_id": state["question_revision_id"], "command": "buzz"},

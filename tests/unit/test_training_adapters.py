@@ -17,7 +17,6 @@ from sitg_bot.bot.handlers import knowledge, training
 from sitg_bot.bot.handlers.training import handle_training_action, router
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.presenters.common import menu_message
-from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.miniapp_http import MiniAppHttpServer
 
 
@@ -120,80 +119,31 @@ async def test_training_callback_keeps_encoded_version_and_uses_authorized_quest
 
 
 async def test_telegram_best_buzz_escapes_text_and_attaches_inline_continue_to_question():
-    bot = SimpleNamespace(
-        send_message=AsyncMock(return_value=SimpleNamespace(message_id=10)),
-        edit_message_text=AsyncMock(),
-    )
-    state = {
-        "id": str(UUID(int=1)),
-        "version": 4,
-        "status": "active",
-        "phase": "best_buzz",
-        "question_index": 0,
-        "theme": "<theme>",
-        "value": 10,
-        "hidden": False,
-        "text": "<question> & text",
-    }
-    protocol = SimpleNamespace(
-        request=AsyncMock(
-            return_value={
-                "telegram_user_id": 42,
-                "locale": "en",
-                "presentation": {},
-                "session": state,
-            }
-        )
-    )
-    delivery = TrainingDelivery(bot, LocalizationService(), protocol)
-    await delivery({"owner_id": str(UUID(int=3)), "session_id": str(UUID(int=1))})
-    args = bot.send_message.await_args
-    assert "&lt;question&gt; &amp; text" in args.args[1]
-    buttons = args.kwargs["reply_markup"].inline_keyboard
-    continuation = next(
-        button for row in buttons for button in row if button.text == "Continue reading"
-    )
-    assert continuation.callback_data == f"tr:{UUID(int=1).hex}:4:continue"
+    from training_delivery_support import RUN, deliver, delivery_case, question_ids
+
+    case = delivery_case(phase="best_buzz", text="<question> & text")
+    case.state["session"]["version"] = 4
+    await deliver(case)
+    text, markup = case.messages[question_ids(case)[0]]
+    assert text == "&lt;question&gt; &amp; text"
+    continuation = markup.inline_keyboard[0][0]
+    assert continuation.text == "Continue reading"
+    assert continuation.callback_data == f"tr:{UUID(RUN).hex}:4:continue"
     assert len(continuation.callback_data.encode()) <= 64
 
 
 async def test_hidden_telegram_recovery_clears_every_persisted_question_chunk():
-    bot = SimpleNamespace(send_message=AsyncMock(), edit_message_text=AsyncMock())
-    state = {
-        "id": str(UUID(int=1)),
-        "version": 5,
-        "status": "active",
-        "phase": "waiting",
-        "question_index": 0,
-        "theme": "Theme",
-        "value": 10,
-        "hidden": True,
-        "text": "",
-    }
-    protocol = SimpleNamespace(
-        request=AsyncMock(
-            return_value={
-                "telegram_user_id": 42,
-                "locale": "en",
-                "presentation": {"ids": [10, 11, 12], "controls": "play"},
-                "session": state,
-            }
-        )
-    )
-    await TrainingDelivery(bot, LocalizationService(), protocol)(
-        {
-            "owner_id": str(UUID(int=3)),
-            "session_id": str(UUID(int=1)),
-        }
-    )
-    assert bot.edit_message_text.await_count == 3
-    assert [call.kwargs["message_id"] for call in bot.edit_message_text.await_args_list] == [
-        10,
-        11,
-        12,
-    ]
-    assert all(call.args[0] == "…" for call in bot.edit_message_text.await_args_list[1:])
-    bot.send_message.assert_not_awaited()
+    from training_delivery_support import deliver, delivery_case, question_ids
+
+    case = delivery_case(text="word " * 1800)
+    await deliver(case)
+    ids = question_ids(case)
+    assert len(ids) >= 3
+    case.state["session"].update(hidden=True, text="", phase="waiting")
+    case.event("training_text_hidden")
+    await deliver(case)
+    assert {mid for mid, _, _ in case.edits} == set(ids)
+    assert all("word" not in case.messages[mid][0] for mid in ids)
 
 
 def training_message(text):

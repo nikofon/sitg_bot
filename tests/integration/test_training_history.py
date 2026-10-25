@@ -45,6 +45,9 @@ async def read_select_count(database, operation):
 async def play_one_question(database, owner, session_id, *, answer, now):
     training = TrainingService(database)
     state = (await training.view(owner, session_id, now=now))["session"]
+    from test_training import open_question
+
+    state, now = await open_question(training, owner, state, now)
     state = (
         await training.act(
             owner, session_id, "buzz", expected_version=state["version"],

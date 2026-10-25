@@ -413,11 +413,16 @@ class ConsoleApplicationServer:
         if action in {"telegram.training.delivery", "telegram.training.record"}:
             self._require_adapter(connection, channel="telegram_bot")
             presentation = params.get("presentation")
-            if action == "telegram.training.record" and not isinstance(presentation, dict):
+            if action == "telegram.training.record" and not (
+                isinstance(presentation, dict) or isinstance(params.get("key"), str)
+                or isinstance(params.get("sequence"), int)
+            ):
                 raise ValueError("Invalid training presentation")
             return await self.application_gateway.training.delivery(
                 self._uuid(params, "owner_id"), self._uuid(params, "session_id"),
                 presentation=presentation if action == "telegram.training.record" else None,
+                key=params.get("key") if action.endswith(".record") else None,
+                value=params.get("value"), sequence=params.get("sequence"),
             )
         if action == "telegram.chat.delivery":
             self._require_adapter(connection, channel="telegram_bot")
@@ -1759,6 +1764,7 @@ class ConsoleApplicationServer:
 
     async def _job_finished_game_closure(self, payload: dict[str, Any]) -> None:
         del payload
+        await self.application_gateway.training.close_finished_sessions()
         for game_id in await self.application_gateway.telegram_games.close_finished_games():
             await self._broadcast_game(game_id)
 

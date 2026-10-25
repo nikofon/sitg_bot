@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture
-from test_training import upload
+from test_training import open_question, upload
 
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.training import TrainingService
@@ -49,6 +49,7 @@ async def test_training_score_appeal_buzz_disclosure_and_no_competitive_writes(d
         now = datetime.now(UTC)
         service = TrainingService(database)
         state = (await service.start(owner, packet, confirm=True, now=now))["session"]
+        state, now = await open_question(service, owner, state, now)
         run, revision = UUID(state["id"]), UUID(state["question_revision_id"])
 
         async def act(command, *, seconds=0, **values):
@@ -76,7 +77,7 @@ async def test_training_score_appeal_buzz_disclosure_and_no_competitive_writes(d
             question = await session.get(TrainingQuestionRecord, (run, 0))
             assert question.buzzed_at == now + timedelta(seconds=10.5)
             assert float(question.buzz_delay_seconds) == pytest.approx(.5)
-            assert question.buzz_token_cursor == 0
+            assert question.buzz_token_cursor == 1
             assert not await session.scalar(select(TrainingAttemptRecord.id).where(
                 TrainingAttemptRecord.session_id == run,
             ))
@@ -100,7 +101,8 @@ async def test_training_score_appeal_buzz_disclosure_and_no_competitive_writes(d
             assert attempt.appealed_at == now + timedelta(seconds=12)
             assert attempt.appeal_resolved_at == now + timedelta(seconds=13)
         await act("next", seconds=14)
-        await act("buzz", seconds=14)
+        state, _ = await open_question(service, owner, state, now + timedelta(seconds=14))
+        await act("buzz", seconds=15)
         await service.tick(run, now=now + timedelta(seconds=30))
         state = (await service.view(owner, run, now=now + timedelta(seconds=30)))["session"]
         assert state["outcome"] == "timeout" and state["correct"] is False

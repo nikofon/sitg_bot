@@ -1246,10 +1246,17 @@ class TrainingSessionRecord(Base, TimestampMixin):
     paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     paused_hidden_remaining: Mapped[float | None] = mapped_column(Numeric)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    progression_stage: Mapped[str | None] = mapped_column(String(32))
+    event_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('active', 'paused', 'completed', 'stopped')"),
-        CheckConstraint("phase IN ('reading', 'waiting', 'answering', 'revealed', 'best_buzz')"),
+        CheckConstraint(
+            "phase IN ('reading', 'waiting', 'answering', 'revealed', 'best_buzz', 'intermission')",
+            name="ck_training_session_phase",
+        ),
         CheckConstraint("version >= 1 AND question_index >= 0 AND token_cursor >= 0"),
         Index(
             "uq_training_active_owner", "owner_id", unique=True,
@@ -1261,6 +1268,15 @@ class TrainingSessionRecord(Base, TimestampMixin):
         ),
         Index("ix_training_sessions_owner_created", "owner_id", "created_at", "id"),
     )
+
+
+class TrainingEventRecord(Base):
+    __tablename__ = "training_events"
+
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("training_sessions.id"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
 class TrainingMemberRecord(Base):

@@ -60,6 +60,10 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0028_training_lifecycle` adds training-only ordered presentation events and
+SI announcement/intermission stages. It schedules existing active revealed sessions
+for automatic progression; their original attempts and history remain intact. Apply
+it before deploying the shared training Telegram lifecycle/cleanup adapter.
 Revision `0027_training_history_flow` adds per-question playback/buzz evidence,
 pause accounting, solo appeal verdict fields and durable training-lobby presentation.
 Legacy playback/buzz timestamps remain null; only the existing answer verdict is

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -6,7 +7,7 @@ from alembic import command
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from test_initial_schema import baseline_database as _baseline_database
-from test_training import upload
+from test_training import open_question, upload
 
 from sitg_bot.services.training import TrainingService
 from sitg_bot.storage.database import Database
@@ -28,15 +29,17 @@ def test_training_upgrade_preserves_verdicts_without_inventing_playback(baseline
             owner = await create_player(database, 9481, "migration-trainee")
             packet, _ = await upload(database, owner)
             service = TrainingService(database)
-            state = (await service.start(owner, packet, confirm=True))["session"]
+            now = datetime.now(UTC)
+            state = (await service.start(owner, packet, confirm=True, now=now))["session"]
+            state, now = await open_question(service, owner, state, now)
             session_id, question_id = UUID(state["id"]), UUID(state["question_revision_id"])
             state = (await service.act(
                 owner, session_id, "buzz", expected_version=state["version"],
-                question_revision_id=question_id,
+                question_revision_id=question_id, now=now,
             ))["session"]
             await service.act(
                 owner, session_id, "answer", expected_version=state["version"],
-                question_revision_id=question_id, answer="Paris",
+                question_revision_id=question_id, answer="Paris", now=now,
             )
             async with database.sessions() as session:
                 attempt = await session.scalar(select(TrainingAttemptRecord).where(
