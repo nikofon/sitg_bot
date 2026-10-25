@@ -5,6 +5,7 @@ import type { MessageKey } from "../i18n/en";
 import { element, replaceChildren } from "./dom";
 import { PacketLoader, type PacketPage } from "./packet-loading";
 import { saveReminder } from "./save-reminder";
+import { createSettingDemo, type SettingDemo } from "./setting-demo";
 
 type ModifierKey = "reversed" | "hidden" | "best_buzz";
 
@@ -306,11 +307,53 @@ export function renderTraining(
       i18n.t(modifierView === "reversed" ? "training.reversed_description" : "training.hidden_description"));
     modifierConfig.append(enable, description);
     if (modifierView === "hidden") {
-      modifierConfig.append(settingLabel("training.hidden_seconds", seconds));
+      modifierConfig.append(hiddenAfterSetting);
       seconds.disabled = !hidden.checked;
     }
   };
   const tokenOverrideNote = element("p", { className: "training-setting-override", role: "note", hidden: true });
+  // Message-flow previews reuse the regular lobby demo component, mapped onto
+  // training field semantics: the Hidden modifier reveals the whole text at
+  // once, so the effective reading interval is 0 while the stored value stays.
+  const demoSettings = (): Record<string, unknown> => ({
+    buzz_timeout: Number(buzzSeconds.value),
+    answer_timeout: Number(answerSeconds.value),
+    question_token_delay: hidden.checked ? OVERRIDDEN_BY_HIDDEN : Number(tokenDelay.value),
+    question_token_target_chars: Number(tokenChars.value),
+    hidden_after: Number(seconds.value),
+  });
+  const settingDemos: SettingDemo[] = [];
+  const settingWithDemo = (key: MessageKey, control: HTMLElement, demoName: string): {
+    root: HTMLElement; demo: SettingDemo;
+  } => {
+    const demo = createSettingDemo(demoName, demoSettings, i18n);
+    settingDemos.push(demo);
+    control.addEventListener("input", () => demo.restart());
+    control.addEventListener("change", () => demo.restart());
+    return {
+      root: element("div", { className: "training-setting" }, settingLabel(key, control), demo.root),
+      demo,
+    };
+  };
+  const buzzSetting = settingWithDemo("training.buzz_seconds", buzzSeconds, "buzz_timeout").root;
+  const answerSetting = settingWithDemo("training.answer_seconds", answerSeconds, "answer_timeout").root;
+  const tokenDelayPair = settingWithDemo("training.token_delay", tokenDelay, "question_token_delay");
+  const tokenDelaySetting = tokenDelayPair.root;
+  const tokenDelayDemo = tokenDelayPair.demo;
+  const tokenCharsSetting = settingWithDemo("training.token_chars", tokenChars, "question_token_target_chars").root;
+  const hiddenAfterDemo = createSettingDemo("hidden_after", demoSettings, i18n);
+  settingDemos.push(hiddenAfterDemo);
+  seconds.addEventListener("input", () => hiddenAfterDemo.restart());
+  seconds.addEventListener("change", () => hiddenAfterDemo.restart());
+  const hiddenAfterSetting = element("div", { className: "training-setting" },
+    settingLabel("training.hidden_seconds", seconds), hiddenAfterDemo.root);
+  let overrideActive = false;
+  const restartSettingDemos = (): void => {
+    for (const demo of settingDemos) demo.restart();
+  };
+  const stopSettingDemos = (): void => {
+    for (const demo of settingDemos) demo.stop();
+  };
   const syncModifierUi = (): void => {
     // Hidden reveals the whole question instantly, so the effective reading
     // interval becomes 0: grey the stored value out and explain the override,
@@ -323,6 +366,11 @@ export function renderTraining(
       tokenOverrideNote.textContent = i18n.t("training.override_note", {
         value: String(OVERRIDDEN_BY_HIDDEN), modifier: i18n.t("training.hidden"),
       });
+    }
+    // The override changes the effective reading interval, so the preview reruns.
+    if (overridden !== overrideActive) {
+      overrideActive = overridden;
+      tokenDelayDemo.restart();
     }
     updateSelection();
     renderModifierConfig();
@@ -365,13 +413,13 @@ export function renderTraining(
         element("p", { className: "training-modifier-note" }, i18n.t("training.best_buzz_note"))),
       element("section", { className: "descriptor-category-group training-timing-group" },
         element("h3", { className: "descriptor-category" }, i18n.t("training.settings_timing")),
-        settingLabel("training.buzz_seconds", buzzSeconds),
-        settingLabel("training.answer_seconds", answerSeconds)),
+        buzzSetting,
+        answerSetting),
       element("section", { className: "descriptor-category-group training-reading-group" },
         element("h3", { className: "descriptor-category" }, i18n.t("training.settings_reading")),
-        settingLabel("training.token_delay", tokenDelay),
+        tokenDelaySetting,
         tokenOverrideNote,
-        settingLabel("training.token_chars", tokenChars))));
+        tokenCharsSetting)));
   const form = element("form", { className: "settings-form" });
   // Settings save is a separate, explicitly manual mutation: save_settings never
   // carries a packet, so a newly autosaved packet selection is never reverted.
@@ -633,6 +681,9 @@ export function renderTraining(
       onclick: (() => {
         panels.forEach((panel, position) => { panel.hidden = position !== index; });
         tabButtons.forEach((tab, position) => { tab.className = position === index ? "primary-button" : "secondary-button"; });
+        // Previews run only while their settings are on screen.
+        if (optionsPanel.hidden) stopSettingDemos();
+        else restartSettingDemos();
       }) as EventListener }, i18n.t(key));
     tabButtons.push(button); tabs.append(button);
   });

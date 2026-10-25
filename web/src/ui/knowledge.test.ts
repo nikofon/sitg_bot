@@ -34,6 +34,7 @@ const messages: Record<string, string> = {
   "knowledge.fact.read_only": "Read-only shared fact",
   "knowledge.fact.edit": "Edit",
   "knowledge.fact.edit_label": "Edit fact: {title}",
+  "knowledge.fact.delete_label": "Delete fact: {title}",
   "knowledge.images_field": "Images",
   "knowledge.images.remove": "Remove image",
   "knowledge.images.too_large": "Image is larger than 2 MiB.",
@@ -411,6 +412,110 @@ describe("collapsed fact cards", () => {
     expect(card.querySelector(".knowledge-tag-tool")).toBeNull();
     // Read-only facts never offer the pencil editor control.
     expect(card.querySelector<HTMLElement>(".knowledge-fact-edit")!.hidden).toBe(true);
+  });
+});
+
+describe("fact card controls", () => {
+  const editableDetail: KnowledgeFactDetail = {
+    id: "fact-1", title: "Battle of Austerlitz", description: "d",
+    links: [], tags: [], origin: "manual", content_version: 1, editable: true,
+    statistics: { status: "none" },
+  };
+
+  it("aligns the edit and delete controls at the card's bottom right", async () => {
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+      remove: vi.fn().mockResolvedValue(undefined),
+    });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    const controls = card.querySelector<HTMLElement>(".knowledge-fact-actions")!;
+    expect(controls.hidden).toBe(false);
+    // The aligned control row sits at the very bottom of the card, after the body.
+    expect(card.lastElementChild).toBe(controls);
+    const body = card.querySelector<HTMLElement>(".knowledge-fact-body")!;
+    expect(body.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const edit = controls.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!;
+    const del = controls.querySelector<HTMLButtonElement>(".knowledge-fact-delete")!;
+    // Keyboard-accessible real buttons with meaningful localized names and equal sizing.
+    expect(edit).toBeInstanceOf(HTMLButtonElement);
+    expect(del).toBeInstanceOf(HTMLButtonElement);
+    expect(edit.className).toContain("icon-button");
+    expect(del.className).toContain("icon-button");
+    expect(edit.getAttribute("aria-label")).toBe("Edit fact: Battle of Austerlitz");
+    expect(del.getAttribute("aria-label")).toBe("Delete fact: Battle of Austerlitz");
+    // The delete control is labelled with a drawn trash-bin icon, not text.
+    expect(del.querySelector("svg.icon-trash")).not.toBeNull();
+    expect(del.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("keeps the delete control hidden for read-only or unauthorized facts", async () => {
+    const detail: KnowledgeFactDetail = { ...editableDetail, editable: false };
+    const withRemove = actions({ loadFact: vi.fn().mockResolvedValue(detail), remove: vi.fn() });
+    const { root } = render(structuredClone(data), withRemove);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    expect(root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-actions')!.hidden).toBe(true);
+    // Editable facts without a remove action never offer the card delete control either.
+    const withoutRemove = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), save: vi.fn() });
+    const second = render(structuredClone(data), withoutRemove);
+    second.root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    expect(second.root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.hidden).toBe(true);
+    expect(second.root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.hidden).toBe(false);
+  });
+
+  it("cancelling the delete confirmation keeps the fact and the controls", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.click();
+    expect(confirm).toHaveBeenCalledWith("Delete this fact?");
+    expect(remove).not.toHaveBeenCalled();
+    expect(root.querySelector('[data-fact-id="fact-1"]')).not.toBeNull();
+    expect(root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.disabled).toBe(false);
+  });
+
+  it("deletes through the authorized remove contract and refreshes the list", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const loadFacts = vi.fn().mockResolvedValue(facts);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove, loadFacts });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.click();
+    await flush();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(editableDetail);
+    // One confirmation is asked; the removal refreshes the fact list.
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(loadFacts).toHaveBeenCalledTimes(1));
+  });
+
+  it("reports a failed deletion honestly and re-enables the controls", async () => {
+    const remove = vi.fn().mockRejectedValue(new Error("denied"));
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const del = root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!;
+    del.click();
+    await flush();
+    expect(root.querySelector('[data-fact-id="fact-1"]')).not.toBeNull();
+    const failure = root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete-error')!;
+    expect(failure.hidden).toBe(false);
+    expect(failure.textContent).toBe("Something went wrong.");
+    expect(del.disabled).toBe(false);
+    expect(root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.disabled).toBe(false);
   });
 });
 

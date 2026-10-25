@@ -131,6 +131,83 @@ describe("training lobby", () => {
     expect(options.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!.value).toBe("2");
   });
 
+  it("previews message flow for the timing and reading settings", () => {
+    const { root, request } = create();
+    tab(root, 2);
+    const timing = root.querySelector<HTMLElement>(".training-timing-group")!;
+    const reading = root.querySelector<HTMLElement>(".training-reading-group")!;
+    // One preview per message-flow setting, each with a repeat-arrow replay button.
+    expect(timing.querySelectorAll(".setting-demo")).toHaveLength(2);
+    expect(reading.querySelectorAll(".setting-demo")).toHaveLength(2);
+    for (const replay of root.querySelectorAll<HTMLButtonElement>(".setting-demo-replay")) {
+      expect(replay.textContent).not.toContain("⏵");
+      expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+      expect(replay.getAttribute("aria-label")).toBe("Replay");
+    }
+    // Previews start once their section is shown and render the live draft values.
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!.textContent)
+      .toContain("Time to buzz");
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[1]!.textContent)
+      .toContain("Time to answer");
+    expect(reading.querySelector<HTMLElement>(".setting-demo-status")!.textContent)
+      .toContain("Next message in");
+    // A draft edit reruns the preview; the preview never posts a mutation.
+    const buzz = settingInput(root, "Buzz timer (seconds)");
+    buzz.value = "21";
+    buzz.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!.textContent)
+      .toContain("21.0 s");
+    expect(request.mock.calls.filter(([path]) => path === "/api/miniapp/training/lobby")).toHaveLength(0);
+  });
+
+  it("reruns the reading preview when the Hidden modifier overrides the interval", () => {
+    const { root } = create({
+      initial: { version: 3, version_id: "one", packet_name: "Alpha packet",
+        settings: { reversed: false, hidden_after: null, buzz_timeout: 8, best_buzz: false } },
+    });
+    tab(root, 2);
+    const reading = root.querySelector<HTMLElement>(".training-reading-group")!;
+    const delayStatus = reading.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!;
+    const tokenDelay = settingInput(root, "Reading interval (seconds)");
+    tokenDelay.value = "5";
+    tokenDelay.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(delayStatus.textContent).toContain("5.0 s");
+    // Enable Hidden through the modifier picker: the effective interval becomes 0.
+    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    const hiddenBox = root.querySelector<HTMLInputElement>(".training-modifier-config input[type='checkbox']")!;
+    hiddenBox.checked = true;
+    hiddenBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(delayStatus.textContent).toContain("0.0 s");
+    // The stored draft value survives untouched and the field stays greyed out.
+    expect(tokenDelay.value).toBe("5");
+    expect(tokenDelay.disabled).toBe(true);
+    // The hidden seconds field carries its own message-flow preview.
+    expect(root.querySelector(".training-modifier-config .setting-demo")).not.toBeNull();
+  });
+
+  it("keeps preview replaying separate from the saved settings draft", () => {
+    const { root, request } = create();
+    tab(root, 2);
+    for (const replay of root.querySelectorAll<HTMLButtonElement>(".setting-demo-replay")) replay.click();
+    const numbers = [...root.querySelectorAll<HTMLInputElement>(
+      ".training-timing-group input[type='number'], .training-reading-group input[type='number']",
+    )].map((input) => input.value);
+    expect(numbers).toEqual(["8", "15", "0.6", "18"]);
+    expect(request.mock.calls.filter(([path]) => path === "/api/miniapp/training/lobby")).toHaveLength(0);
+  });
+
+  it("localizes the previews and their replay labels in Russian", () => {
+    const { root } = create({ locale: "ru" });
+    tab(root, 2);
+    const demo = root.querySelector<HTMLElement>(".training-setting .setting-demo")!;
+    expect(demo.querySelector(".setting-demo-caption")?.textContent).toBe("Предпросмотр потока сообщений");
+    const replay = demo.querySelector<HTMLButtonElement>(".setting-demo-replay")!;
+    expect(replay.getAttribute("aria-label")).toBe("Проиграть заново");
+    expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+  });
+
   it("describes every modifier and groups Best buzz separately", () => {
     const { root } = create();
     tab(root, 2);

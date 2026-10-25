@@ -1,4 +1,5 @@
 import { element, replaceChildren } from "./dom";
+import { icon } from "./icons";
 import { PacketLoader } from "./packet-loading";
 
 export type KnowledgeOrder = "title_asc" | "title_desc" | "updated_desc";
@@ -242,6 +243,7 @@ export const knowledgeMessageKeys = [
   "knowledge.fact.read_only",
   "knowledge.fact.edit",
   "knowledge.fact.edit_label",
+  "knowledge.fact.delete_label",
   "knowledge.images_field",
   "knowledge.images.remove",
   "knowledge.images.too_large",
@@ -511,7 +513,7 @@ function factCard(
     hidden: true,
   }, element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.loading")));
   let loaded: KnowledgeFactDetail | undefined;
-  // Compact pencil control at the card's top right; visible once an editable detail is loaded.
+  // Compact controls at the card's bottom right; visible once an editable detail is loaded.
   const editButton = element("button", {
     type: "button",
     className: "icon-button knowledge-fact-edit",
@@ -519,9 +521,24 @@ function factCard(
     title: i18n.t("knowledge.fact.edit"),
     hidden: true,
   }, "✎");
+  const deleteButton = element("button", {
+    type: "button",
+    className: "icon-button knowledge-fact-delete",
+    "aria-label": i18n.t("knowledge.fact.delete_label", { title: fact.title }),
+    title: i18n.t("knowledge.delete"),
+    hidden: true,
+  }, icon("trash"));
+  const deleteError = element("p", { className: "error-text knowledge-fact-delete-error", role: "alert", hidden: true });
+  const controls = element("div", { className: "knowledge-fact-actions", hidden: true },
+    deleteError, deleteButton, editButton);
+  const syncControls = (): void => {
+    editButton.hidden = !(loaded?.editable && actions.save !== undefined);
+    deleteButton.hidden = !(loaded?.editable && actions.remove !== undefined);
+    controls.hidden = editButton.hidden && deleteButton.hidden;
+  };
   const renderDetail = (detail: KnowledgeFactDetail): void => {
     loaded = detail;
-    renderFactDetail(detail, i18n, actions, body, editButton);
+    renderFactDetail(detail, i18n, body, syncControls);
   };
   editButton.addEventListener("click", () => {
     if (!loaded) return;
@@ -530,6 +547,23 @@ function factCard(
       void actions.loadFact(fact.id).then(renderDetail)
         .catch(() => { /* the changed-list reload surfaces failures */ });
     }, refreshTags);
+  });
+  // Deletion from the card reuses the dialog's authorized remove contract:
+  // one confirmation, busy lock while in flight, honest failure reporting.
+  deleteButton.addEventListener("click", () => {
+    if (!loaded || deleteButton.disabled) return;
+    if (!window.confirm(i18n.t("knowledge.confirm_delete"))) return;
+    deleteButton.disabled = true;
+    editButton.disabled = true;
+    deleteError.hidden = true;
+    void actions.remove?.(loaded).then(() => {
+      onChanged();
+    }).catch(() => {
+      deleteButton.disabled = false;
+      editButton.disabled = false;
+      deleteError.hidden = false;
+      deleteError.textContent = i18n.t("knowledge.error");
+    });
   });
   header.addEventListener("click", () => {
     const expanded = header.getAttribute("aria-expanded") === "true";
@@ -551,16 +585,15 @@ function factCard(
       }).finally(() => { delete body.dataset.loading; });
     }
   });
-  card.append(element("div", { className: "knowledge-fact-head-row" }, header, editButton), body);
+  card.append(element("div", { className: "knowledge-fact-head-row" }, header), body, controls);
   return card;
 }
 
 function renderFactDetail(
   detail: KnowledgeFactDetail,
   i18n: KnowledgeI18n,
-  actions: KnowledgeActions,
   container: HTMLElement,
-  editButton: HTMLElement,
+  syncControls: () => void,
 ): void {
   const links = detail.links.length
     ? element(
@@ -592,7 +625,7 @@ function renderFactDetail(
     detail.editable ? null : element("p", { className: "knowledge-readonly" }, i18n.t("knowledge.fact.read_only")),
   );
   // Tag and fact editing happens in the editor dialog, never inline on the card.
-  editButton.hidden = !(detail.editable && actions.save !== undefined);
+  syncControls();
 }
 
 function tagSelectionFieldset(

@@ -1,6 +1,7 @@
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
+import { icon } from "./icons";
 
 /** SI settings that control how in-game messages appear over time. */
 export const MESSAGE_FLOW_SETTINGS: ReadonlySet<string> = new Set([
@@ -31,6 +32,7 @@ const DEFAULTS: Record<string, number> = {
   buzz_timer_countdown_delay: 0,
   buzz_timeout: 10,
   answer_timeout: 15,
+  hidden_after: 3,
   between_questions_delay: 3,
   last_question_to_theme_complete_delay: 3,
   theme_complete_to_scoreboard_delay: 3,
@@ -89,11 +91,11 @@ export function createSettingDemo(
   const caption = element("p", { className: "setting-demo-caption" }, i18n.t("setting_demo.title"));
   const replay = element("button", {
     type: "button",
-    className: "secondary-button",
+    className: "icon-button setting-demo-replay",
     "aria-label": i18n.t("setting_demo.replay"),
     title: i18n.t("setting_demo.replay"),
     onclick: (() => run()) as EventListener,
-  }, "⏵");
+  }, icon("repeat"));
   const log = element("ol", { className: "setting-demo-log", "aria-live": "polite" });
   const status = element("p", { className: "setting-demo-status" });
   root.append(element("div", { className: "setting-demo-toolbar" }, caption, replay), log, status);
@@ -163,6 +165,13 @@ export function createSettingDemo(
           message("setting_demo.msg.buzz_open"),
           countdown(name, "setting_demo.buzz_label"),
           message("setting_demo.msg.no_buzz"),
+        ];
+      case "hidden_after":
+        // Training-only modifier pacing: the text stays hidden, then appears in full.
+        return [
+          message("setting_demo.msg.hidden"),
+          wait(name, true),
+          { kind: "message", text: i18n.t("setting_demo.question_text"), tone: "chunk" },
         ];
       case "answer_timeout":
         return [

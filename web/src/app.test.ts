@@ -595,6 +595,11 @@ describe("MiniAppShell", () => {
     const demos = root.querySelectorAll(".setting-demo");
     expect(demos).toHaveLength(1);
     expect(demos[0]!.textContent).toContain("Message flow preview");
+    // The replay control is labelled with a repeat-arrow icon, not a broken glyph.
+    const replay = demos[0]!.querySelector<HTMLButtonElement>(".setting-demo-replay")!;
+    expect(replay.textContent).not.toContain("⏵");
+    expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+    expect(replay.getAttribute("aria-label")).toBe("Replay");
     const input = root.querySelector<HTMLInputElement>('input[name="setting:ready_delay"]')!;
     input.value = "25";
     input.dispatchEvent(new Event("input", { bubbles: true }));
