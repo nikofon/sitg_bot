@@ -75,6 +75,11 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     expect(root.querySelector("history")).toBeNull();
     root.querySelector<HTMLButtonElement>(".knowledge-fact-header")!.click();
     await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.hidden).toBe(false));
+    // The card carries a trash-icon delete control with a localized accessible name.
+    const cardDelete = root.querySelector<HTMLButtonElement>(".knowledge-fact-delete")!;
+    expect(cardDelete.hidden).toBe(false);
+    expect(cardDelete.getAttribute("aria-label")).toBe(i18n.t("knowledge.fact.delete_label", { title: "<History>" }));
+    expect(cardDelete.querySelector("svg.icon-trash")).not.toBeNull();
     root.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!.click();
     const edit = document.querySelector<HTMLFormElement>(".knowledge-dialog form")!;
     edit.querySelector("input")!.value = "Updated";

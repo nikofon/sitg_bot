@@ -20,7 +20,9 @@ One TypeScript/Vite app shares authentication, navigation, localization, and Tel
 across routes. It uses direct DOM rendering, not a component framework. Production assets
 are served by the application server from `web/dist`. Descriptor editors for ruleset settings
 that pace in-game messages embed a live preview of the message flow (`ui/setting-demo.ts`),
-replayed through a `⏵` (U+23F5) button;
+replayed through a repeat-arrow icon button; the training lobby settings reuse the same
+preview component for their timing and reading fields, including the Hidden modifier's
+effective zero reading interval;
 the lobby settings section lists changeable options before fixed ones. Ruleset settings are
 grouped into categories (number of players, theme count, question values, question
 appearance, message timings, other); each category renders in its own bordered card with an

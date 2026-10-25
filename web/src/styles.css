@@ -639,6 +639,12 @@ p {
   font-size: 0.8rem;
 }
 
+/* One setting plus its message-flow preview, stacked with breathing room. */
+.training-setting {
+  display: grid;
+  gap: 0.5rem;
+}
+
 
 @media (max-width: 34rem) {
   .pricing-price-row {
@@ -977,6 +983,16 @@ p {
   padding: 0;
   font-size: 1.5rem;
 }
+
+/* Inline SVG icons drawn inside icon-only controls. */
+.icon {
+  display: inline-block;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
 
 .tournament-detail {
   margin: 0.65rem 0;
@@ -2115,8 +2131,28 @@ p {
   gap: 0.4rem;
 }
 
-/* Compact pencil control at the card's top right. */
-.knowledge-fact-edit {
+/* Compact fact-card controls, aligned together at the card's bottom right. */
+.knowledge-fact-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.knowledge-fact-actions[hidden],
+.knowledge-fact-delete-error[hidden] {
+  display: none;
+}
+
+.knowledge-fact-delete-error {
+  margin: 0;
+  flex: 1 1 auto;
+  text-align: right;
+}
+
+.knowledge-fact-edit,
+.knowledge-fact-delete {
   flex: 0 0 auto;
   min-width: 2.4rem;
   min-height: 2.4rem;
@@ -2124,7 +2160,14 @@ p {
   line-height: 1;
 }
 
-.knowledge-fact-edit[hidden] {
+.knowledge-fact-delete {
+  border-color: var(--tg-theme-destructive-text-color);
+  color: var(--tg-theme-destructive-text-color);
+  background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 8%, var(--tg-theme-section-bg-color));
+}
+
+.knowledge-fact-edit[hidden],
+.knowledge-fact-delete[hidden] {
   display: none;
 }
 
