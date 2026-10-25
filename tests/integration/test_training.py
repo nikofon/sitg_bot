@@ -78,6 +78,9 @@ async def open_question(training, owner, state, now):
         if state["phase"] != "intermission" or state["status"] == "completed":
             return state, now
         now = state["deadline"]
+        if isinstance(now, str):
+            # Gateway responses serialize datetimes to ISO strings.
+            now = datetime.fromisoformat(now)
         state = (await training.view(owner, UUID(state["id"]), now=now))["session"]
     raise AssertionError("Training announcements did not reach a question")
 
