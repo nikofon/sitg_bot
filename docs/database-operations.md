@@ -102,13 +102,94 @@ permission to create this extension. Downgrading preserves it because it may be 
 
 ## Database test constraints
 
-PostgreSQL tests use `TEST_DATABASE_URL` and the `integration` pytest marker.
-The local test database convention is `sitg_test`. An exported `DATABASE_URL` must be unset
-or target that same disposable database so migration commands cannot reach another database.
+PostgreSQL tests use the `integration` marker and **one explicitly disposable database
+per workstream**, assigned through a private environment record. Fixtures reset its `public`
+schema, apply migrations and sometimes downgrade it to verify rollback/recreation. They
+never create or drop databases. Never assign an existing development/production database.
+All consumers must use the lease wrapper below; direct or concurrent destructive pytest
+invocations are unsupported. `DATABASE_URL` is replaced with the assigned test URL inside
+the wrapper, so an inherited application URL cannot reach test migrations.
 
-Integration tests apply migrations and mutate data. Baseline tests create disposable databases
-and verify schema/ORM parity, seeds, repeated upgrade, rollback/recreation, and queue/audit
-behavior. They do not downgrade the database supplied through `TEST_DATABASE_URL`.
+### Reproducible validation
+
+Prerequisites: Python 3.12 with venv/pip, Node.js 20+ with npm, and reachable PostgreSQL
+17 with a test role allowed to create its own disposable DB/schema and install `pgcrypto`.
+From the repository root:
+
+```sh
+bash scripts/check.sh prepare       # .venv + pip install -e '.[dev]' + npm ci
+bash scripts/check.sh unit          # .venv/bin/python -m pytest tests/unit -q
+bash scripts/check.sh frontend      # typecheck, Vitest, Vite production build
+# Source the private DB record supplied by the workstream owner, then:
+bash scripts/check.sh integration   # serialized PostgreSQL suite, including migrations
+bash scripts/check.sh test          # all three scopes; propagates any failure
+bash scripts/check.sh lint          # Ruff on src, tests and migrations
+```
+
+These commands do not suppress baseline failures, select only passing tests, or count
+missing-DB skips as integration acceptance. An integration command without the private
+record fails before pytest. Report failures with their exact test IDs; previously recorded
+baseline evidence is not a waiver or proof for newly changed behavior. Preparation installs
+only declared Python/npm dependencies, not database servers or browser drivers.
+
+[`.no-mistakes.yaml`](../.no-mistakes.yaml) is the authoritative gate command/runbook owner;
+[`scripts/check.sh`](../scripts/check.sh) is the executable local equivalent. The missing
+SITGBot configuration caused the earlier Test agent to improvise commands/setup. This is
+separate from an LLM account's HTTP 402/out-of-credits failure, which affects that account
+across projects and is not repaired by changing this repository. Do not retry exhausted
+providers, alter shared daemon/account settings, or claim another project's setup was checked.
+
+No-mistakes reads `commands.*` and `test.instructions` from its **trusted forge default
+branch**, not necessarily the PR's `training_mode` base. Adding this file on a feature branch
+alone does not activate it for that run. Maintainers must publish the configuration through
+the normal approved default-branch process for subsequent automatic use; do not self-enable
+`allow_repo_commands` or bypass trust. Until then, a Test agent must explicitly use this
+checked-in runbook and the same commands. The database record must be supplied to every
+validation process by the owner; it is never committed or embedded in public configuration.
+
+Existing `tests/integration/test_website.py`, `test_training_gateway_retries.py` and the Knowledge
+HTTP unit tests exercise supported local HTTP interfaces with aiohttp test utilities; fake
+providers avoid paid calls. They are not deployed browser/Telegram/real-provider acceptance.
+For a separately authorized local HTTP drive, keep the server and driver within one lease's
+command lifetime and stop them before returning. Do not leave background servers behind.
+Browser acceptance needs pre-existing authorized browser tooling; do not install Playwright
+or drivers ad hoc when unavailable. Real-provider enablement/smoke is documented separately
+in [Training AI](training-ai.md); credentials, deployment and live acceptance remain explicit
+operator actions.
+
+### Shared test database lifecycle
+
+The workstream owner provisions once, shares the **same private record** with implementation,
+test and validation consumers, retains it across worker boundaries, and cleans up once after
+all consumers finish. Example (replace the name and private absolute path; no credentials
+belong in Git, logs or PRs):
+
+```sh
+# Set SITG_TEST_ADMIN_URL privately to a PostgreSQL maintenance connection first.
+.venv/bin/python tests/integration/database_support.py create \
+  --name sitg_test_section_unique --record /private/workstream/test-db.env
+. /private/workstream/test-db.env
+bash scripts/check.sh integration
+# Any other DB consumer, including a combined local server + HTTP driver:
+.venv/bin/python tests/integration/database_support.py run -- <command> <args>
+# Owner only, AFTER the final test/validation/HTTP consumer finishes:
+.venv/bin/python tests/integration/database_support.py cleanup
+```
+
+`create` refuses an existing record/database; it never adopts an unknown DB. The record is
+mode 0600 and contains the connection and random ownership token. The database name must
+start `sitg_test_`; a token-hash marker lives outside `public`. The wrapper verifies both,
+holds a PostgreSQL advisory lock for the **whole command**, and passes a live lease receipt to
+fixtures. Other consumers wait for that lock rather than resetting the active consumer.
+Fixtures verify the live lease before resetting `public`; pytest-xdist is unsupported.
+Even migration rollback tests use this same database, safely serialized, with no child DBs.
+
+Cleanup verifies ownership and refuses while a lease or another connection is active; it
+never force-disconnects sessions. It marks the DB closing before releasing the lock, so
+queued consumers cannot start in the cleanup gap. If ordinary DROP fails after that mark,
+close remaining connections and retry cleanup with the same record; do not provision a
+replacement or force-drop. Retain the cleanup receipt privately and stop sharing the record.
+An unknown old worker database is not cleanup-authorized merely because it looks unused.
 
 ## Project tools
 

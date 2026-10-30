@@ -1,5 +1,4 @@
 import asyncio
-import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -69,9 +68,5 @@ async def _exercise_authentication(database_url: str) -> None:
         await database.close()
 
 
-def test_telegram_admin_credential_activates_role_and_navigation() -> None:
-    database_url = os.environ.get("TEST_DATABASE_URL")
-    if not database_url:
-        pytest.skip("TEST_DATABASE_URL is not configured")
-
-    asyncio.run(_exercise_authentication(database_url))
+def test_telegram_admin_credential_activates_role_and_navigation(training_database) -> None:
+    asyncio.run(_exercise_authentication(training_database))

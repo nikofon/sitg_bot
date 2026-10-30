@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -10,7 +9,6 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import CheckConstraint, delete, inspect, select, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from sitg_bot.application.contracts import (
@@ -41,28 +39,8 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def baseline_database(monkeypatch):
-    source_url = os.environ.get("TEST_DATABASE_URL")
-    if not source_url:
-        pytest.skip("TEST_DATABASE_URL is not configured")
-    name = f"sitg_baseline_{uuid4().hex}"
-
-    async def manage(statement):
-        engine = create_async_engine(source_url, isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as connection:
-                await connection.execute(text(statement))
-        finally:
-            await engine.dispose()
-
-    asyncio.run(manage(f'CREATE DATABASE "{name}"'))
-    url = make_url(source_url).set(database=name).render_as_string(hide_password=False)
-    monkeypatch.setenv("DATABASE_URL", url)
-    config = Config("alembic.ini")
-    try:
-        yield url, config
-    finally:
-        asyncio.run(manage(f'DROP DATABASE "{name}"'))
+def baseline_database(empty_database):
+    return empty_database, Config("alembic.ini")
 
 
 async def assert_schema(database_url, *, empty=False):
