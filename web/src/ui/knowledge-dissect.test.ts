@@ -121,7 +121,7 @@ const themeActions = (): KnowledgeActions => ({
   loadPackets: vi.fn().mockResolvedValue({ items: [packet], next_cursor: null }),
   loadThemes: vi.fn().mockResolvedValue(themesResource),
   previewTheme: vi.fn(),
-  loadImports: vi.fn().mockResolvedValue({ items: [] }),
+  loadImports: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
 });
 
 async function openComposer(actionList: KnowledgeActions): Promise<HTMLDialogElement> {

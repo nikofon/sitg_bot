@@ -113,7 +113,7 @@ const importActions = (overrides: Partial<KnowledgeActions> = {}): KnowledgeActi
   loadFact: vi.fn(),
   loadTags: vi.fn().mockResolvedValue({ items: [] }),
   dissect: vi.fn(),
-  loadImports: vi.fn().mockResolvedValue({ items: [importCard({})] }),
+  loadImports: vi.fn().mockResolvedValue({ items: [importCard({})], next_cursor: null }),
   loadImportDetail: vi.fn().mockResolvedValue(importDetail),
   decideImport: vi.fn().mockResolvedValue(decision),
   ...overrides,
@@ -160,12 +160,83 @@ describe("pending imports tab", () => {
     expect(panel.textContent).toContain("3 facts");
   });
 
+  it("loads older pending imports beyond 100 and opens their review", async () => {
+    const first = Array.from({ length: 100 }, (_, index) =>
+      importCard({ id: `newer-${index}`, status: "approved" }));
+    const loadImports = vi.fn()
+      .mockResolvedValueOnce({ items: first, next_cursor: "older/page+1" })
+      .mockResolvedValueOnce({ items: [importCard({ id: "old-pending" })], next_cursor: null });
+    const actionList = importActions({
+      loadImports,
+      loadImportDetail: vi.fn().mockResolvedValue({ ...importDetail, id: "old-pending" }),
+    });
+    const { root } = openImports(actionList);
+    await flush();
+    expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(100);
+    expect(loadImports).toHaveBeenCalledWith(null);
+    const more = root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!;
+    expect(more.hidden).toBe(false);
+    more.click();
+    more.click();
+    await flush();
+    expect(loadImports).toHaveBeenCalledTimes(2);
+    expect(loadImports).toHaveBeenLastCalledWith("older/page+1");
+    expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(101);
+    expect(more.hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>(
+      '[data-import-id="old-pending"] .knowledge-import-review')!.click();
+    await flush();
+    expect(actionList.loadImportDetail).toHaveBeenCalledWith("old-pending");
+    expect(document.querySelector("[data-import-approve]")).not.toBeNull();
+  });
+
+  it("preserves loaded pages and the cursor when loading more fails", async () => {
+    const loadImports = vi.fn()
+      .mockResolvedValueOnce({ items: [importCard({})], next_cursor: "next" })
+      .mockRejectedValueOnce(new Error("net"))
+      .mockResolvedValueOnce({ items: [importCard({ id: "older" })], next_cursor: null });
+    const { root } = openImports(importActions({ loadImports }));
+    await flush();
+    const more = root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!;
+    more.click();
+    await flush();
+    expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(1);
+    expect(root.querySelector<HTMLElement>('[data-panel="imports"] > [role="alert"]')!.hidden)
+      .toBe(false);
+    expect(more.disabled).toBe(false);
+    more.click();
+    await flush();
+    expect(loadImports).toHaveBeenLastCalledWith("next");
+    expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(2);
+    expect(root.querySelector<HTMLElement>('[data-panel="imports"] > [role="alert"]')!.hidden)
+      .toBe(true);
+  });
+
+  it("refreshes from the first page and ignores an older in-flight page", async () => {
+    let resolvePage!: (page: { items: KnowledgeImportCard[]; next_cursor: null }) => void;
+    const loadImports = vi.fn()
+      .mockResolvedValueOnce({ items: [importCard({})], next_cursor: "next" })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolvePage = resolve; }))
+      .mockResolvedValueOnce({ items: [importCard({ id: "fresh" })], next_cursor: null });
+    const { root, button } = openImports(importActions({ loadImports }));
+    await flush();
+    root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!.click();
+    button("Refresh", root.querySelector('[data-panel="imports"]')!).click();
+    await flush();
+    resolvePage({ items: [importCard({ id: "stale" })], next_cursor: null });
+    await flush();
+    expect(loadImports).toHaveBeenLastCalledWith(null);
+    expect([...root.querySelectorAll(".knowledge-import-card")]
+      .map((card) => card.getAttribute("data-import-id"))).toEqual(["fresh"]);
+    expect(root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!.hidden).toBe(true);
+  });
+
   it("shows own dissection source packets but never collection provenance", async () => {
     const actionList = importActions({
       loadImports: vi.fn().mockResolvedValue({ items: [
         importCard({ type: "dissection", packet_name: "Cup 2026", status: "working" }),
         importCard({ id: "import-2", packet_name: null }),
-      ] }),
+      ], next_cursor: null }),
     });
     const { root } = openImports(actionList);
     await flush();
@@ -180,7 +251,9 @@ describe("pending imports tab", () => {
   });
 
   it("shows the empty state and reports loading failures honestly", async () => {
-    const actionList = importActions({ loadImports: vi.fn().mockResolvedValue({ items: [] }) });
+    const actionList = importActions({
+      loadImports: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    });
     const { root } = openImports(actionList);
     await flush();
     expect(root.querySelector('[data-panel="imports"]')!.textContent)
@@ -202,7 +275,9 @@ describe("import review dialog", () => {
     "opens %s imports read-only and permits decisions only after pending",
     async (status) => {
       const actionList = importActions({
-        loadImports: vi.fn().mockResolvedValue({ items: [importCard({ status })] }),
+        loadImports: vi.fn().mockResolvedValue({
+          items: [importCard({ status })], next_cursor: null,
+        }),
         loadImportDetail: vi.fn().mockResolvedValue({ ...importDetail, status }),
       });
       const { button } = openImports(actionList);

@@ -1887,9 +1887,9 @@ class MiniAppHttpServer:
         return self._gateway_response(result)
 
     async def _knowledge_imports(self, request: web.Request) -> web.Response:
-        _, result = await self._query(request, KnowledgeImportsOperation(
-            action=ActionCode.KNOWLEDGE_IMPORTS
-        ))
+        _, result = await self._query(request, KnowledgeImportsOperation.model_validate({
+            **request.query, "action": ActionCode.KNOWLEDGE_IMPORTS,
+        }))
         return self._gateway_response(result)
 
     async def _knowledge_import_detail(self, request: web.Request) -> web.Response:

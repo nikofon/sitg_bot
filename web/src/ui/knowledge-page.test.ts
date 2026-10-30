@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "../api/client";
 import { I18n } from "../i18n";
 import { renderKnowledgePage } from "./knowledge-page";
-import type { KnowledgeViewData, ShareLink } from "./knowledge";
+import type { KnowledgeImportCard, KnowledgeViewData, ShareLink } from "./knowledge";
 
 const initial: KnowledgeViewData = {
   facts: { state: "empty", items: [], total: 0, next_cursor: null, order: "title_asc" },
@@ -60,6 +60,41 @@ afterEach(() => {
 });
 
 describe("Knowledge page direct HTTP payload contract", () => {
+  it("forwards import cursors through authenticated requests and opens older reviews", async () => {
+    const newest: KnowledgeImportCard = {
+      id: "newest", type: "collection", author: "Sender", status: "approved", fact_count: 0,
+      packet_name: null, request_id: null, created_at: "2026-10-02T00:00:00Z",
+    };
+    const oldest = { ...newest, id: "oldest", status: "pending" as const };
+    const cursor = "timestamp/identity+==";
+    const responses: Record<string, unknown> = {
+      "/api/miniapp/knowledge/imports": { items: [newest], next_cursor: cursor },
+      "/api/miniapp/knowledge/imports/oldest": {
+        ...oldest, sections: { new: [], potential_duplicates: [], duplicates: [] }, approved_count: 0,
+      },
+    };
+    const { root, fetcher, controller } = setup(responses);
+    try {
+      button("Pending imports").click();
+      await vi.waitFor(() => expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(1));
+      responses["/api/miniapp/knowledge/imports"] = { items: [oldest], next_cursor: null };
+      root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!.click();
+      await vi.waitFor(() => expect(root.querySelectorAll(".knowledge-import-card")).toHaveLength(2));
+      const requests = fetcher.mock.calls.filter(([url]) =>
+        String(url).startsWith("/api/miniapp/knowledge/imports?"));
+      expect(requests).toHaveLength(2);
+      expect(new URL(String(requests[0]![0]), window.location.origin).searchParams.get("cursor"))
+        .toBeNull();
+      expect(new URL(String(requests[1]![0]), window.location.origin).searchParams.get("cursor"))
+        .toBe(cursor);
+      expect(requests[1]![1]?.credentials).toBe("include");
+      expect(root.querySelector<HTMLButtonElement>(".knowledge-imports-more")!.hidden).toBe(true);
+      root.querySelector<HTMLButtonElement>(
+        '[data-import-id="oldest"] .knowledge-import-review')!.click();
+      await vi.waitFor(() => expect(document.querySelector("[data-import-approve]")).not.toBeNull());
+    } finally { controller.abort(); }
+  });
+
   it("creates and deactivates actual bot links through authenticated typed mutations", async () => {
     const { fetcher, controller } = setup();
     try {

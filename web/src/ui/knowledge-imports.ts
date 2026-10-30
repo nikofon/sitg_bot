@@ -59,29 +59,52 @@ export function createImportsPanel(
   const loading = element("p", {
     className: "knowledge-fact-meta", role: "status", hidden: true,
   }, i18n.t("knowledge.imports.loading"));
+  const error = element("p", {
+    className: "error-text", role: "alert", hidden: true,
+  }, i18n.t("knowledge.error"));
+  const loadMore = element("button", {
+    type: "button", className: "secondary-button knowledge-imports-more", hidden: true,
+  }, i18n.t("knowledge.load_more"));
   let revision = 0;
+  let nextCursor: string | null = null;
 
-  const refresh = (): void => {
+  const loadPage = (cursor: string | null): void => {
     if (!actions.loadImports) return;
     const current = ++revision;
     loading.hidden = false;
-    void actions.loadImports()
+    loadMore.disabled = true;
+    error.hidden = true;
+    void actions.loadImports(cursor)
       .then((resource) => {
         if (current !== revision || actions.signal?.aborted) return;
-        renderCards(resource.items);
+        renderCards(resource.items, cursor !== null);
+        nextCursor = resource.next_cursor;
+        loadMore.hidden = !nextCursor;
       })
       .catch(() => {
         if (current !== revision || actions.signal?.aborted) return;
-        replaceChildren(list, element("li", { className: "knowledge-fact-meta" },
-          i18n.t("knowledge.error")));
+        error.hidden = false;
       })
-      .finally(() => { loading.hidden = true; });
+      .finally(() => {
+        if (current !== revision || actions.signal?.aborted) return;
+        loading.hidden = true;
+        loadMore.disabled = false;
+      });
   };
 
-  const renderCards = (items: KnowledgeImportCard[]): void => {
-    replaceChildren(list);
+  const refresh = (): void => {
+    nextCursor = null;
+    loadMore.hidden = true;
+    loadPage(null);
+  };
+  loadMore.addEventListener("click", () => {
+    if (nextCursor && !loadMore.disabled) loadPage(nextCursor);
+  });
+
+  const renderCards = (items: KnowledgeImportCard[], append: boolean): void => {
+    if (!append) replaceChildren(list);
     if (!items.length) {
-      list.append(element("li", { className: "knowledge-fact-meta" },
+      if (!append) list.append(element("li", { className: "knowledge-fact-meta" },
         i18n.t("knowledge.imports.empty")));
       return;
     }
@@ -129,7 +152,9 @@ export function createImportsPanel(
         onclick: (() => { refresh(); }) as EventListener,
       }, i18n.t("knowledge.refresh"))),
     loading,
+    error,
     list,
+    loadMore,
   );
   return { root, refresh };
 

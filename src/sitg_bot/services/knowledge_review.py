@@ -5,12 +5,13 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import defer
 
 from sitg_bot.domain.knowledge import FactContent, SourceLink
 from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.knowledge import _decode_cursor, _encode_cursor
 from sitg_bot.services.knowledge_images import image_view
 from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
 from sitg_bot.services.training_access import require_trainee
@@ -275,7 +276,19 @@ class KnowledgeReview:
             )
         return cards
 
-    async def list(self, actor):
+    async def list(self, actor, *, cursor=None, limit=100):
+        if not 1 <= limit <= 100:
+            raise ValueError("Import page size must be between 1 and 100")
+        conditions = [KnowledgeImportRecord.owner_id == actor]
+        if cursor:
+            created_at, identity = _decode_cursor(cursor)
+            moment = datetime.fromisoformat(created_at)
+            if moment.tzinfo is None:
+                raise ValueError("Invalid import cursor timestamp")
+            conditions.append(
+                tuple_(KnowledgeImportRecord.created_at, KnowledgeImportRecord.id)
+                < (moment, UUID(identity))
+            )
         async with self.database.transaction() as session:
             await require_trainee(session, actor)
             rows = list(
@@ -293,13 +306,23 @@ class KnowledgeReview:
                                 "fact_count"
                             ),
                         )
-                        .where(KnowledgeImportRecord.owner_id == actor)
-                        .order_by(KnowledgeImportRecord.created_at.desc(), KnowledgeImportRecord.id)
-                        .limit(100)
+                        .where(*conditions)
+                        .order_by(
+                            KnowledgeImportRecord.created_at.desc(), KnowledgeImportRecord.id.desc()
+                        )
+                        .limit(limit + 1)
                     )
                 ).all()
             )
-            return {"items": await self._cards(session, actor, rows)}
+            page = rows[:limit]
+            next_cursor = (
+                _encode_cursor((page[-1].created_at.isoformat(), str(page[-1].id)))
+                if len(rows) > limit else None
+            )
+            return {
+                "items": await self._cards(session, actor, page),
+                "next_cursor": next_cursor,
+            }
 
     @staticmethod
     async def _owned(session, actor, import_id):
@@ -459,9 +482,10 @@ class KnowledgeReview:
             dissection = await session.get(KnowledgeDissectionRecord, row.dissection_id)
             partial = dissection.status == "partially_succeeded"
             view = await service.apply_dissection_result(
-                row.owner_id, row.dissection_id,
-                [{**value, "candidate_id": value["id"]} for value in candidates],
+                row.owner_id, row.dissection_id, candidates,
             )
+            if view.failed_candidate_ids:
+                raise ValueError("Dissection candidates could not be applied")
             if partial:
                 dissection.status = "partially_succeeded"
                 dissection.theme_revision_ids = None

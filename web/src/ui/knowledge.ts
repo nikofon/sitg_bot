@@ -246,6 +246,11 @@ export interface KnowledgeImportCard {
   request_id: string | null;
 }
 
+export interface KnowledgeImportsResource {
+  items: KnowledgeImportCard[];
+  next_cursor: string | null;
+}
+
 export interface KnowledgeImportCandidate {
   id: string;
   title: string;
@@ -311,7 +316,7 @@ export interface KnowledgeActions {
     versionId: string, themeRevisionId: string, confirmExposure: boolean,
   ) => Promise<KnowledgeThemePreview>;
   /** Pending imports listing (dissections and incoming collections). */
-  loadImports?: () => Promise<{ items: KnowledgeImportCard[] }>;
+  loadImports?: (cursor?: string | null) => Promise<KnowledgeImportsResource>;
   loadImportDetail?: (importId: string) => Promise<KnowledgeImportDetail>;
   decideImport?: (
     importId: string,

@@ -192,7 +192,10 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
           : reply({ confirmation_required: true });
       }
       if (path.includes("/knowledge/imports/import-1")) return reply(importDetail);
-      if (path.includes("/knowledge/imports")) { importsReads += 1; return reply({ items: [importCard] }); }
+      if (path.includes("/knowledge/imports")) {
+        importsReads += 1;
+        return reply({ items: [importCard], next_cursor: null });
+      }
       if (path.endsWith("/knowledge/import_decide")) {
         return reply({ import_id: "import-1", status: "approved", approved_count: 2, skipped_count: 1 });
       }

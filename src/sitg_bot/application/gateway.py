@@ -1225,7 +1225,9 @@ class ApplicationGateway:
                 player_id, **operation.model_dump(exclude={"action"})
             )
         if isinstance(operation, KnowledgeImportsOperation):
-            return await self.knowledge.reviews.list(player_id)
+            return await self.knowledge.reviews.list(
+                player_id, **operation.model_dump(exclude={"action"})
+            )
         if isinstance(operation, KnowledgeImportDetailOperation):
             return await self.knowledge.reviews.detail(player_id, operation.import_id)
         if isinstance(operation, KnowledgeImportDecideOperation):

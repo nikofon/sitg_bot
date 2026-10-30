@@ -7,6 +7,8 @@ from conftest import create_player
 from sqlalchemy import event, func, inspect, select
 from test_training_knowledge import application
 
+from sitg_bot.domain.knowledge import dissection_candidate_id
+from sitg_bot.services.knowledge import _encode_cursor
 from sitg_bot.services.knowledge_review import content_of
 from sitg_bot.services.reliable_delivery import DurableJobWorker
 from sitg_bot.services.training import TrainingService
@@ -14,6 +16,7 @@ from sitg_bot.services.training_ai import FactCandidate, fact_candidate_id
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.models import (
     AuthorRecord,
+    KnowledgeDissectionRecord,
     KnowledgeFactRecord,
     KnowledgeImageRecord,
     KnowledgeImportHashRecord,
@@ -88,7 +91,17 @@ async def test_original_field_citations_survive_cache_staging_and_approval(datab
         facts = list(await session.scalars(select(KnowledgeFactRecord).where(
             KnowledgeFactRecord.owner_id == owner,
         )))
-        assert {fact.applied_candidate_id for fact in facts} == set(ids)
+        assert len(facts) == 5
+        assert {value["id"] for value in review.candidates} == set(ids)
+        assert review.decision["selected_candidate_ids"] == sorted(ids)
+        storage_ids = {
+            dissection_candidate_id(
+                UUID(value["packet_id"]), UUID(value["question_id"]),
+                value["question_revision"], content_of(value),
+            ) for value in review.candidates
+        }
+        assert {fact.applied_candidate_id for fact in facts} == storage_ids
+        assert all(len(identity) == 19 for identity in storage_ids)
         hashes = {content_of(value).fingerprint() for value in review.candidates}
         assert {fact.content_fingerprint for fact in facts} == hashes
         claims = set(await session.scalars(
@@ -102,6 +115,103 @@ async def test_original_field_citations_survive_cache_staging_and_approval(datab
     assert await app.reviews.decide(
         owner, import_id=request["import_id"], decision="approve", selected_candidate_ids=ids,
     ) == result
+
+
+async def test_invalid_application_rolls_back_facts_claims_and_decision(database):
+    owner = await create_player(database, 9977, "atomic-dissection")
+    app = await application(database, owner)
+    version = await publish(app, owner, [{
+        "name": "Theme", "questions": [{
+            "value": value, "text": "Question", "answer": "Answer",
+        } for value in (10, 20, 30, 40, 50)],
+    }])
+    request = await app.request_analysis(
+        owner, version_id=version, kind="dissection", confirm_exposure=True,
+        idempotency_key="atomic",
+    )
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    assert await worker.run_once() == 1
+    async with database.transaction() as session:
+        review = await session.get(KnowledgeImportRecord, request["import_id"])
+        original = review.candidates
+        review.candidates = [
+            *original[:-1], {**original[-1], "packet_id": str(uuid4())},
+        ]
+        ids = [value["id"] for value in review.candidates]
+        dissection = await session.get(KnowledgeDissectionRecord, request["dissection_id"])
+        status = dissection.status
+    with pytest.raises(ValueError, match="could not be applied"):
+        await app.reviews.decide(
+            owner, import_id=request["import_id"], decision="approve", selected_candidate_ids=ids,
+        )
+    async with database.transaction() as session:
+        review = await session.get(KnowledgeImportRecord, request["import_id"])
+        assert review.status == "pending" and review.decision is None
+        assert {value["id"] for value in review.candidates} == set(ids)
+        dissection = await session.get(KnowledgeDissectionRecord, request["dissection_id"])
+        assert dissection.status == status and dissection.application is None
+        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)
+                                    .where(KnowledgeFactRecord.owner_id == owner)) == 0
+        assert await session.scalar(select(func.count()).select_from(KnowledgeImportHashRecord)
+                                    .where(KnowledgeImportHashRecord.recipient_id == owner)) == 0
+        review.candidates = original
+    result = await app.reviews.decide(
+        owner, import_id=request["import_id"], decision="approve", selected_candidate_ids=ids,
+    )
+    assert result["approved_count"] == 5
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)
+                                    .where(KnowledgeFactRecord.owner_id == owner)) == 5
+        assert await session.scalar(select(func.count()).select_from(KnowledgeImportHashRecord)
+                                    .where(KnowledgeImportHashRecord.recipient_id == owner)) == 5
+
+
+async def test_all_imports_remain_reachable_with_tied_timestamps_and_owner_scoping(database):
+    owner = await create_player(database, 9978, "paged-imports")
+    other = await create_player(database, 9979, "other-paged-imports")
+    app = KnowledgeApplication(database)
+    created_at = datetime.now(UTC)
+    async with database.transaction() as session:
+        session.add_all([
+            KnowledgeImportRecord(
+                id=UUID(int=index), owner_id=owner, creator_id=other, type="collection",
+                status="pending" if index == 1 else "approved", candidates=[],
+                created_at=created_at,
+            ) for index in range(1, 102)
+        ])
+        session.add(KnowledgeImportRecord(
+            id=UUID(int=999), owner_id=other, creator_id=owner, type="collection",
+            status="pending", candidates=[], created_at=created_at,
+        ))
+    first = await app.reviews.list(owner)
+    assert len(first["items"]) == 100 and first["next_cursor"]
+    assert [value["id"] for value in first["items"]] == [
+        UUID(int=index) for index in range(101, 1, -1)
+    ]
+    second = await app.reviews.list(owner, cursor=first["next_cursor"])
+    assert [value["id"] for value in second["items"]] == [UUID(int=1)]
+    assert second["next_cursor"] is None and second["items"][0]["status"] == "pending"
+    assert (await app.reviews.detail(owner, UUID(int=1)))["status"] == "pending"
+    decided = await app.reviews.decide(owner, import_id=UUID(int=1), decision="reject")
+    assert decided["status"] == "rejected"
+    seen, cursor = [], None
+    while True:
+        page = await app.reviews.list(owner, cursor=cursor, limit=17)
+        assert len(page["items"]) <= 17
+        seen.extend(value["id"] for value in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == [value["id"] for value in first["items"]] + [UUID(int=1)]
+    assert [value["id"] for value in (await app.reviews.list(other))["items"]] == [UUID(int=999)]
+    for limit in (0, 101):
+        with pytest.raises(ValueError, match="page size"):
+            await app.reviews.list(owner, limit=limit)
+    for cursor in ("invalid", _encode_cursor(("2026-01-01T00:00:00", str(owner)))):
+        with pytest.raises(ValueError):
+            await app.reviews.list(owner, cursor=cursor)
 
 
 async def test_review_images_load_metadata_without_binary_data(database):

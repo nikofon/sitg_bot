@@ -3,9 +3,10 @@ from uuid import uuid4
 
 import pytest
 
-from sitg_bot.domain.knowledge import FactContent, SourceLink
+from sitg_bot.domain.knowledge import FactContent, SourceLink, dissection_candidate_id
 from sitg_bot.services.knowledge import InMemoryKnowledgeStore, KnowledgeService
 from sitg_bot.services.knowledge_review import DEFAULT_TAG_LABELS, category, content_of, title_key
+from sitg_bot.services.training_ai import fact_candidate_id
 
 
 async def test_author_independent_edit_search_and_validation():
@@ -31,8 +32,12 @@ async def test_linked_candidates_preserve_content_and_identity_through_applicati
         "Linked fact", "Body", (SourceLink("https://example.org/a", origin=origin),),
         author="Writer",
     )
+    review_id = fact_candidate_id(
+        question, content.title, content.description, (content.links[0].url,),
+    )
+    storage_id = dissection_candidate_id(packet, question, "rev", content)
     candidate = {
-        "candidate_id": "retained-identity",
+        "id": review_id,
         "packet_id": str(packet), "question_id": str(question), "question_revision": "rev",
         "content": asdict(content),
     }
@@ -40,7 +45,8 @@ async def test_linked_candidates_preserve_content_and_identity_through_applicati
     assert len(result.applied_fact_ids) == 1
     fact = await service.store.get_fact(next(iter(result.applied_fact_ids)))
     assert fact.content == content_of(candidate) == content
-    assert fact.applied_candidate_id == "retained-identity"
+    assert fact.applied_candidate_id == storage_id
+    assert len(storage_id) == 19 and candidate["id"] == review_id
     assert category(candidate, {fact.content.fingerprint()}, set()) == "duplicates"
     assert await service.apply_dissection_result(owner, request.request_id, [candidate]) == result
 

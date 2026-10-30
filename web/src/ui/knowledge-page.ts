@@ -10,7 +10,7 @@ import {
   type KnowledgeFactDetail,
   type KnowledgeFactImage,
   type KnowledgeFactsResource,
-  type KnowledgeImportCard,
+  type KnowledgeImportsResource,
   type KnowledgeImportDecision,
   type KnowledgeImportDetail,
   type KnowledgeImportResult,
@@ -107,8 +107,12 @@ export function renderKnowledgePage(
         theme_revision_id: themeRevisionId,
         confirm_exposure: confirmExposure,
       }),
-    loadImports: () => api.request<{ items: KnowledgeImportCard[] }>(
-      "/api/miniapp/knowledge/imports", { signal }),
+    loadImports: (cursor) => {
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      return api.request<KnowledgeImportsResource>(
+        `/api/miniapp/knowledge/imports?${query}`, { signal });
+    },
     loadImportDetail: (importId) => api.request<KnowledgeImportDetail>(
       `/api/miniapp/knowledge/imports/${encodeURIComponent(importId)}`, { signal }),
     decideImport: (importId, decision, selectedCandidateIds) =>

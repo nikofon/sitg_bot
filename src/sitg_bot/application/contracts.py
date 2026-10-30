@@ -301,6 +301,8 @@ class KnowledgeThemePreviewOperation(ContractModel):
 
 class KnowledgeImportsOperation(ContractModel):
     action: Literal[ActionCode.KNOWLEDGE_IMPORTS]
+    cursor: str | None = Field(default=None, max_length=1000)
+    limit: int = Field(default=100, ge=1, le=100)
 
 
 class KnowledgeImportDetailOperation(ContractModel):

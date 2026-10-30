@@ -152,8 +152,10 @@ HTTPS fallback as an externally working launch link. This uses the existing bot
 notifier/token and HTTPS `MINI_APP_BASE_URL` configuration, not new BotFather setup.
 The import response is `{import_id,status:'pending',owner_id,recipient_id,imported_count:0,
 skipped_count:0}`. Unknown/deactivated links fail without staging; self-import is rejected.
-Direct grants also stage recipient review. GET `knowledge/imports` lists the latest 100
-owner-private cards; GET `knowledge/imports/{import_id}` groups candidates under
+Direct grants also stage recipient review. GET `knowledge/imports` accepts `cursor` and
+`limit` (1–100, default 100), returning `{items,next_cursor}` with newest-first,
+owner-private cards. The Pending imports tab loads subsequent pages on demand so older
+pending and terminal imports remain reachable. GET `knowledge/imports/{import_id}` groups candidates under
 `sections:{new,potential_duplicates,duplicates}`. POST `knowledge/import_decide` accepts
 `{import_id,decision:'approve'|'reject',selected_candidate_ids?:string[]}`; approval requires
 an explicit list, including an empty list to add none. Identical decisions retry safely;
