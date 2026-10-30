@@ -5,7 +5,8 @@ metadata and migrations through `0026_knowledge_images` (following
 `0025_knowledge_catalogue` and `0024_training_lobby`). `PostgresKnowledgeStore`
 implements B's repository; `KnowledgeApplication` connects persistence, source
 access, staged fact review, statistics and Best buzz. Migration `0029_knowledge_review`
-adds fact authors, a one-time default tag seed marker and durable private reviews.
+adds fact authors, a one-time default tag seed marker and durable private reviews;
+`0030_public_analysis_cache` adds review-creation retry identity and a scoped public-cache index.
 
 ## Integration decisions
 
@@ -22,7 +23,9 @@ adds fact authors, a one-time default tag seed marker and durable private review
   checks, and no simultaneous normal play and active/paused training. Reverse
   means word order; hidden text appears immediately for a configurable duration,
   then disappears until reveal. Hidden/reverse combine; Best buzz excludes both.
-- Private analysis caches are owner-scoped. Instructions/comments remain verbatim,
+- Private uploads have no cross-request reusable analysis cache; only per-request
+  recovery records persist. Public bare cache routing is described in [training-ai.md](training-ai.md).
+  Instructions/comments remain verbatim,
   including whitespace and ambiguous dates such as “before 1500 A.C.”.
 - Production uses configurable OpenAI Responses with strict structured outputs.
   No model or credential is assumed. Without configuration, ordinary training,
@@ -90,7 +93,7 @@ Statistics run separately with quotas; unavailable metrics never prevent saving 
 
 Tags persist a normalized six-digit RGB `colour` (`#64748b` for existing tags).
 `GET /api/miniapp/knowledge/tags` returns `{items:[{tag_id,name,colour}]}`.
-Default tags are seeded once on first palette/mutation access for existing and new
+Default tags are seeded once on first palette/tag-mutation access for existing and new
 users; deleting a default never reseeds it. Custom tags are retained. Canonical names stay
 normalized; palette items add `label` with the requested display capitalization (including
 `Chemestry`). The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour

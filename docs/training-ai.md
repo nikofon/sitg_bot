@@ -13,8 +13,10 @@ boundary), [services/analysis_jobs.py](../src/sitg_bot/services/analysis_jobs.py
 
 ## Provider boundary
 
-`AnalysisProvider` exposes three structured operations: `extract_facts`
-(dissection), `best_buzz_boundaries` and `estimate_common_knowledge`.
+`AnalysisProvider` exposes structured `extract_facts` (dissection),
+`decide_cached_facts`, `transform_cached_facts`, `best_buzz_boundaries` and
+`estimate_common_knowledge` operations. Extraction/transformation assign only explicitly
+requested tag names; authorship is resolved from pinned source records, never model output.
 `ProviderSettings` bounds provider, model, timeout, chunk size, output fact
 count, concurrency and prompt/schema/tokenizer versions; credentials stay
 server-side and out of `redacted()` logging. Packet content and instructions
@@ -35,8 +37,27 @@ authorizes, reserves quota, persists the request and enqueues a durable
 idempotent; `status`, `result` and `cancel` check ownership. Artifacts are
 immutable validated results keyed by kind, source/revision fingerprint,
 language, model and prompt/schema/tokenizer versions plus instruction digest.
-Only empty instructions share the base artifact; custom instructions and
-private sources stay owner-scoped even when content hashes match. Concurrent
+Only bare public results share reusable artifacts. Public dissection cache v2 is scoped
+to provider identity, exact immutable source/revision/question/theme coverage, language,
+model and prompt/schema/tokenizer profile, with explicit tag coverage. Partial theme
+selection cannot hit a whole-packet artifact or vice versa. A partial index introduced
+by `0030_public_analysis_cache` bounds eligible public source/profile lookups.
+
+Routing is server-side: compatible bare same/subset-tag hits make zero provider calls;
+new tags transform only cached facts. Commentary first invokes a strict structured LLM
+`requires_source` decision using cached facts and verbatim commentary. A false decision
+transforms cached facts; true triggers a full scan of only the selected source. There is
+no keyword heuristic. Cached transformations have no packet/question text in their payload;
+question provenance, tag names, output bounds and references are revalidated. Existing
+public bare artifacts are immutable; commented results are owner-private and never eligible
+as public bases. The decision and transformed output checkpoint under the normal compute
+lease, avoiding repeated completed steps after restart.
+
+Private uploads never reuse a cross-request analysis artifact, even for the same owner;
+the idempotency key salts the compute identity. Same-request recovery checkpoints and
+prepared Best-buzz records remain durable, but do not count as reusable cache hits.
+Provider schema/prompt defaults are v2; Best-buzz playback payload shape is unchanged
+and the adapter explicitly accepts compatible v1/v2 producing artifacts. Concurrent
 requests coalesce onto one computation guarded by a lease; each waiter keeps
 its own request, authorization and refund. Cancelling one waiter never cancels
 work others need; cancelling the last waiter abandons the computation.
@@ -74,8 +95,8 @@ and plan purchase flows are deferred.
 
 All category, ledger, request and artifact records live in shared
 `storage/models.py`; migrations through `0023_copy_sharing_theme_quotas` create them.
-`KnowledgeApplication` supplies live packet/fact authorization and automatic fact
-application. Separate analysis and gameplay workers use explicit kind filters.
+`KnowledgeApplication` supplies live packet/fact authorization and persisted review
+candidates. Only explicit selected-candidate approval adds facts. Separate analysis and gameplay workers use explicit kind filters.
 Private retirement emits durable cleanup events; hourly maintenance expires
 cached results/request records after 30 days and reconciles orphaned reservations.
 Saved facts/copies, packet uploads and pinned training sessions remain intact.

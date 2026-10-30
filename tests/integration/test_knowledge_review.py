@@ -15,6 +15,7 @@ from sitg_bot.storage.models import (
     KnowledgeImportRecord,
     PacketQuestionRecord,
     PlayerExposureClaimRecord,
+    ThemeRevisionRecord,
     TrainingAnalysisRequestRecord,
     TrainingUsagePeriodRecord,
 )
@@ -212,9 +213,32 @@ async def test_selected_themes_preview_quota_and_durable_review(database):
     assert all(set(value) == {"theme_revision_id", "name"} for value in listed["themes"])
     theme = listed["themes"][0]["theme_revision_id"]
     second = listed["themes"][1]["theme_revision_id"]
+    confirmation = await app.themes.preview(owner, version_id=version, theme_revision_id=theme)
+    assert confirmation == {"confirmation_required": True, "fresh_unit_count": 1}
+    async with database.transaction() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(PlayerExposureClaimRecord)
+                .where(PlayerExposureClaimRecord.player_id == owner)
+            )
+            == 0
+        )
     preview = await app.themes.preview(
         owner, version_id=version, theme_revision_id=theme, confirm_exposure=True
     )
+    async with database.transaction() as session:
+        exposed = set(
+            await session.scalars(
+                select(PlayerExposureClaimRecord.claim_id).where(
+                    PlayerExposureClaimRecord.player_id == owner,
+                    PlayerExposureClaimRecord.claim_namespace == "theme",
+                )
+            )
+        )
+        selected_logical = (await session.get(ThemeRevisionRecord, theme)).theme_id
+        unselected_logical = (await session.get(ThemeRevisionRecord, second)).theme_id
+        assert selected_logical in exposed and unselected_logical not in exposed
     assert preview["theme"]["author"] == "Theme author"
     assert len(preview["theme"]["questions"]) == 5
     with pytest.raises(ValueError):

@@ -2606,6 +2606,11 @@ class TrainingAnalysisArtifactRecord(Base):
             "AND completed_at IS NULL AND failed_at IS NULL)"
         ),
         Index("ix_training_analysis_artifacts_owner", "owner_player_id", "kind", "created_at"),
+        Index(
+            "ix_training_analysis_public_source", "source_fingerprint", "model",
+            "prompt_version", "schema_version", "tokenizer_version",
+            postgresql_where=text("shared AND kind = 'dissection' AND status = 'succeeded'"),
+        ),
     )
 
 
@@ -2681,6 +2686,7 @@ class KnowledgeImportRecord(Base):
 
     __tablename__ = "knowledge_imports"
     id: Mapped[UUID] = uuid_column()
+    creation_key_hash: Mapped[str | None] = mapped_column(String(64))
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
     creator_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
     type: Mapped[str] = mapped_column(String(20))
@@ -2692,6 +2698,8 @@ class KnowledgeImportRecord(Base):
     decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (
+        UniqueConstraint("owner_id", "creator_id", "creation_key_hash",
+                         name="uq_knowledge_imports_owner_id_creator_id_creation_key_hash"),
         CheckConstraint("type IN ('dissection', 'collection')"),
         CheckConstraint("status IN ('working', 'pending', 'approved', 'rejected', 'failed')"),
     )

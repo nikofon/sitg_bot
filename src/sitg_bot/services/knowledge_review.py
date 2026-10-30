@@ -1,10 +1,11 @@
 """Durable owner-private review snapshots and atomic selected-candidate approval."""
 
+import hashlib
 from dataclasses import asdict
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from sitg_bot.domain.knowledge import FactContent, SourceLink
@@ -21,6 +22,8 @@ from sitg_bot.storage.models import (
     KnowledgeSnapshotRecord,
     KnowledgeTagRecord,
     KnowledgeTagSeedRecord,
+    LogicalPacketRecord,
+    PacketVersionRecord,
     PlayerRecord,
 )
 
@@ -104,9 +107,27 @@ class KnowledgeReview:
         self.app = application
         self.database = application.database
 
-    async def stage_collection(self, session, creator, recipient):
+    async def stage_collection(self, session, creator, recipient, creation_key=None):
         if creator == recipient:
             raise ValueError("A trainee cannot import their own collection")
+        key_hash = hashlib.sha256(creation_key.encode()).hexdigest() if creation_key else None
+        if key_hash:
+            existing = await session.scalar(
+                select(KnowledgeImportRecord).where(
+                    KnowledgeImportRecord.owner_id == recipient,
+                    KnowledgeImportRecord.creator_id == creator,
+                    KnowledgeImportRecord.creation_key_hash == key_hash,
+                )
+            )
+            if existing is not None:
+                return {
+                    "import_id": existing.id,
+                    "status": existing.status,
+                    "owner_id": creator,
+                    "recipient_id": recipient,
+                    "imported_count": 0,
+                    "skipped_count": 0,
+                }
         rows = list(
             await session.scalars(
                 select(KnowledgeFactRecord)
@@ -153,6 +174,7 @@ class KnowledgeReview:
             owner_id=recipient,
             creator_id=creator,
             type="collection",
+            creation_key_hash=key_hash,
             status="pending",
             candidates=candidates,
         )
@@ -167,42 +189,105 @@ class KnowledgeReview:
             "skipped_count": 0,
         }
 
-    async def _card(self, session, row):
-        creator = await session.get(PlayerRecord, row.creator_id)
-        packet_name, request_id = None, None
-        if row.dissection_id:
-            dissection = await session.get(KnowledgeDissectionRecord, row.dissection_id)
-            request_id = dissection.analysis_request_id
-            try:
-                version, _ = await self.app.packets.authorize(
-                    session, row.owner_id, UUID(dissection.packet_revision)
+    async def _cards(self, session, actor, rows):
+        if not rows:
+            return []
+        names = dict(
+            (
+                await session.execute(
+                    select(
+                        PlayerRecord.id,
+                        PlayerRecord.public_nickname,
+                    ).where(PlayerRecord.id.in_({row.creator_id for row in rows}))
                 )
-                packet_name = version.name
-            except (PermissionError, LookupError):
-                pass
-        return {
-            "id": row.id,
-            "type": row.type,
-            "status": row.status,
-            "author": creator.public_nickname or "",
-            "fact_count": len(row.candidates),
-            "packet_name": packet_name,
-            "request_id": request_id,
-            "created_at": row.created_at,
+            ).all()
+        )
+        dissections = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(
+                        KnowledgeDissectionRecord.id,
+                        KnowledgeDissectionRecord.packet_revision,
+                        KnowledgeDissectionRecord.analysis_request_id,
+                    ).where(
+                        KnowledgeDissectionRecord.id.in_(
+                            {row.dissection_id for row in rows if row.dissection_id}
+                        )
+                    )
+                )
+            ).all()
         }
+        packet_names = (
+            dict(
+                (
+                    await session.execute(
+                        select(
+                            PacketVersionRecord.id,
+                            PacketVersionRecord.name,
+                        )
+                        .join(
+                            LogicalPacketRecord,
+                            LogicalPacketRecord.id == PacketVersionRecord.packet_id,
+                        )
+                        .where(
+                            PacketVersionRecord.id.in_(
+                                {UUID(row.packet_revision) for row in dissections.values()}
+                            ),
+                            self.app.packets._readable(actor),
+                        )
+                    )
+                ).all()
+            )
+            if dissections
+            else {}
+        )
+        cards = []
+        for row in rows:
+            source = dissections.get(row.dissection_id)
+            cards.append(
+                {
+                    "id": row.id,
+                    "type": row.type,
+                    "status": row.status,
+                    "author": names.get(row.creator_id) or "",
+                    "fact_count": row.fact_count
+                    if hasattr(row, "fact_count")
+                    else len(row.candidates),
+                    "packet_name": packet_names.get(UUID(source.packet_revision))
+                    if source
+                    else None,
+                    "request_id": source.analysis_request_id if source else None,
+                    "created_at": row.created_at,
+                }
+            )
+        return cards
 
     async def list(self, actor):
         async with self.database.transaction() as session:
             await require_trainee(session, actor)
             rows = list(
-                await session.scalars(
-                    select(KnowledgeImportRecord)
-                    .where(KnowledgeImportRecord.owner_id == actor)
-                    .order_by(KnowledgeImportRecord.created_at.desc(), KnowledgeImportRecord.id)
-                    .limit(100)
-                )
+                (
+                    await session.execute(
+                        select(
+                            KnowledgeImportRecord.id,
+                            KnowledgeImportRecord.owner_id,
+                            KnowledgeImportRecord.creator_id,
+                            KnowledgeImportRecord.type,
+                            KnowledgeImportRecord.status,
+                            KnowledgeImportRecord.dissection_id,
+                            KnowledgeImportRecord.created_at,
+                            func.jsonb_array_length(KnowledgeImportRecord.candidates).label(
+                                "fact_count"
+                            ),
+                        )
+                        .where(KnowledgeImportRecord.owner_id == actor)
+                        .order_by(KnowledgeImportRecord.created_at.desc(), KnowledgeImportRecord.id)
+                        .limit(100)
+                    )
+                ).all()
             )
-            return {"items": [await self._card(session, row) for row in rows]}
+            return {"items": await self._cards(session, actor, rows)}
 
     @staticmethod
     async def _owned(session, actor, import_id):
@@ -275,7 +360,7 @@ class KnowledgeReview:
                     }
                 )
             return {
-                **await self._card(session, row),
+                **(await self._cards(session, actor, [row]))[0],
                 "sections": sections,
                 "approved_count": (row.decision or {}).get("approved_count", 0),
             }

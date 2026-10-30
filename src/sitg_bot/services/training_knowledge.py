@@ -367,7 +367,7 @@ class KnowledgeApplication:
             "active": row.deactivated_at is None,
         }
 
-    async def _import_link(self, session, actor, token):
+    async def _import_link(self, session, actor, token, creation_key=None):
         if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
             raise ValueError("Invalid sharing token")
         row = await session.scalar(select(KnowledgeShareLinkRecord).where(
@@ -384,13 +384,15 @@ class KnowledgeApplication:
         await session.refresh(row, with_for_update=True)
         if row.deactivated_at is not None:
             raise LookupError("Sharing link is unavailable")
-        return await self.reviews.stage_collection(session, row.owner_id, actor)
+        return await self.reviews.stage_collection(session, row.owner_id, actor, creation_key)
 
     async def mutate(self, actor, command, values):
         async with self.database.transaction() as session:
             if command == "import":
                 await require_trainee(session, actor)
-                return await self._import_link(session, actor, values.get("token"))
+                return await self._import_link(
+                    session, actor, values.get("token"), values.get("creation_key")
+                )
             if command == "grant":
                 await require_trainee(session, actor)
                 recipient = values["recipient"]
@@ -404,9 +406,12 @@ class KnowledgeApplication:
                     raise LookupError("Recipient not found")
                 for owner_id in sorted({actor, target.id}):
                     await require_trainee(session, owner_id, lock=True)
-                return await self.reviews.stage_collection(session, actor, target.id)
+                return await self.reviews.stage_collection(
+                    session, actor, target.id, values.get("creation_key")
+                )
             player = await require_trainee(session, actor, lock=True)
-            await seed_tags(session, actor)
+            if command.startswith("tag_"):
+                await seed_tags(session, actor)
             service = self.service(session)
             if command == "link_create":
                 key = values.get("creation_key")
@@ -798,6 +803,10 @@ class KnowledgeApplication:
                                KnowledgeDissectionRecord.status == "pending")
                         .values(status="failed")
                     )
+                    await session.execute(update(KnowledgeImportRecord).where(
+                        KnowledgeImportRecord.dissection_id == candidate.id,
+                        KnowledgeImportRecord.status == "working",
+                    ).values(status="failed"))
 
     async def analysis_job(self, payload):
         from sitg_bot.services.training_ai import (
@@ -1075,7 +1084,8 @@ class KnowledgeApplication:
         if pair is None:
             return None
         artifact, request = pair
-        if artifact.schema_version != "1" or artifact.tokenizer_version != "announcement-v1":
+        if (artifact.schema_version not in ("1", "2")
+                or artifact.tokenizer_version != "announcement-v1"):
             return None
         by_id = {question.revision_id: question for question in source.questions}
         target = request.source["question_token_target_chars"]

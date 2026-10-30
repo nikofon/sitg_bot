@@ -60,6 +60,10 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0029_knowledge_review` adds author text, one-time tag seed claims and private
+review snapshots without changing existing saved facts or replaying historical imports.
+Revision `0030_public_analysis_cache` adds review creation idempotency and an exact
+public source/profile cache lookup index. Apply both before deploying the new review API.
 Revision `0028_training_lifecycle` adds training-only ordered presentation events and
 SI announcement/intermission stages. It schedules existing active revealed sessions
 for automatic progression; their original attempts and history remain intact. Apply

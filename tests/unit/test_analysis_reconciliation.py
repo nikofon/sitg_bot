@@ -48,7 +48,8 @@ async def test_production_request_admits_entitled_requests_and_replays(monkeypat
             row.status = "queued"
 
     session = SimpleNamespace(
-        get=AsyncMock(), scalar=AsyncMock(return_value=0), add=added.append,
+        get=AsyncMock(), scalar=AsyncMock(return_value=0), scalars=AsyncMock(return_value=[]),
+        add=added.append,
         flush=AsyncMock(side_effect=flush),
     )
     entitlements = SimpleNamespace(
@@ -173,7 +174,11 @@ async def test_explicit_dissection_retry_links_pending_replacement(prior_status,
             return SimpleNamespace(id=identity)
         raise AssertionError(model)
 
-    session = SimpleNamespace(get=get, refresh=AsyncMock())
+    added = []
+    session = SimpleNamespace(
+        get=get, refresh=AsyncMock(), scalars=AsyncMock(return_value=[]),
+        scalar=AsyncMock(side_effect=[None, uuid4()]), add=added.append, flush=AsyncMock(),
+    )
 
     @asynccontextmanager
     async def transaction():
@@ -204,8 +209,10 @@ async def test_explicit_dissection_retry_links_pending_replacement(prior_status,
         owner, version_id=version, kind="dissection", confirm_exposure=True,
         idempotency_key="explicit-retry",
     )
-    assert result["request_id"] == row.analysis_request_id == "replacement-request"
-    assert row.status == "pending" and row.application is None
+    created = next(value for value in added if isinstance(value, KnowledgeDissectionRecord))
+    assert result["request_id"] == created.analysis_request_id == "replacement-request"
+    assert created.status == "pending" and created.application is None
+    assert row.analysis_request_id == "old-request"  # prior attempt remains immutable
     app.analysis.request.assert_awaited_once()
 
 

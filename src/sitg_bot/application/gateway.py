@@ -1296,6 +1296,8 @@ class ApplicationGateway:
             values = operation.model_dump(exclude={"action"})
             if action == ActionCode.KNOWLEDGE_LINK_CREATE:
                 values["creation_key"] = request.metadata.idempotency_key
+            elif action in (ActionCode.KNOWLEDGE_IMPORT, ActionCode.KNOWLEDGE_GRANT):
+                values["creation_key"] = action.value + ":" + request.metadata.idempotency_key
             return await self.knowledge.mutate(player_id, commands[action], values)
         if isinstance(operation, TrainingLobbyOperation):
             return await self.training.lobby(

@@ -8,6 +8,7 @@ from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.services.training_ai import (
     AnalysisValidationError,
     BuzzRequest,
+    CachedFactsRequest,
     CommonKnowledgeRequest,
     ExtractionRequest,
     ProviderSettings,
@@ -73,6 +74,7 @@ async def test_provider_uses_strict_private_structured_requests(monkeypatch):
                     "title": "A useful fact",
                     "description": "A self-contained description",
                     "links": [],
+                    "tags": [],
                     "question_revision_id": str(revision),
                 }
             ]
@@ -89,6 +91,20 @@ async def test_provider_uses_strict_private_structured_requests(monkeypatch):
     assert json.loads(body["input"])["custom_instructions"] == "  custom\n"
     assert "test-secret" not in json.dumps(body)
     assert instance.provider_request_ids == ["upstream-test"]
+
+
+async def test_provider_cached_decision_is_strict_and_supplies_no_source_text(monkeypatch):
+    request = CachedFactsRequest((), "  Keep useful facts\n", "en", ("art",), ("art",))
+    instance, calls = provider(monkeypatch, {"requires_source": False})
+    result = await instance.decide_cached_facts(request)
+    assert result.requires_source is False
+    supplied = json.loads(calls[0][1]["json"]["input"])
+    assert supplied == {"cached_facts": [], "custom_instructions": request.instructions,
+                        "language": "en", "available_tags": ["art"], "new_tags": ["art"]}
+    from pydantic import ValidationError
+    instance, _ = provider(monkeypatch, {"requires_source": "false"})
+    with pytest.raises(ValidationError):
+        await instance.decide_cached_facts(request)
 
 
 async def test_provider_maps_source_word_offsets_to_the_real_announcement_stream(monkeypatch):
