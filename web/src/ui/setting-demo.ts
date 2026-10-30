@@ -167,11 +167,10 @@ export function createSettingDemo(
           message("setting_demo.msg.no_buzz"),
         ];
       case "hidden_after":
-        // Training-only modifier pacing: the text stays hidden, then appears in full.
         return [
-          message("setting_demo.msg.hidden"),
-          wait(name, true),
           { kind: "message", text: i18n.t("setting_demo.question_text"), tone: "chunk" },
+          wait(name, true),
+          message("setting_demo.msg.hidden"),
         ];
       case "answer_timeout":
         return [
@@ -228,6 +227,7 @@ export function createSettingDemo(
   };
 
   const appendMessage = (step: Extract<DemoStep, { kind: "message" }>): void => {
+    if (name === "hidden_after") log.replaceChildren();
     log.append(element("li", {
       className: step.tone === "chunk"
         ? "setting-demo-message setting-demo-message--chunk"

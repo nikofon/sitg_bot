@@ -35,6 +35,7 @@ from sitg_bot.services.training_ai import (
     ProviderSettings,
     QuestionText,
     packet_chunks,
+    source_reference_urls,
     text_fingerprint,
 )
 from sitg_bot.services.training_packets import TrainingPacketService
@@ -135,6 +136,7 @@ class TrainingAnalysisAccess:
                     dissection_text(by_id[item])
                     if source["type"] == "dissection"
                     else by_id[item].text,
+                    reference_urls=source_reference_urls(by_id[item]),
                 )
                 for item in ids
             )
@@ -556,6 +558,7 @@ class KnowledgeApplication:
                 QuestionText(
                     question.revision_id,
                     dissection_text(question) if kind == "dissection" else question.text,
+                    reference_urls=source_reference_urls(question),
                 )
                 for question in source.questions
             )
@@ -722,12 +725,7 @@ class KnowledgeApplication:
             revision_id = UUID(value["question_revision_id"])
             if revision_id not in revisions:
                 raise ValueError("Unpinned question candidate")
-            references = set(
-                re.findall(
-                    r"https?://[^\s<>\[\]\"']+",
-                    revisions[revision_id].text + " " + revisions[revision_id].source,
-                )
-            )
+            references = set(source_reference_urls(revisions[revision_id]))
             candidates.append(
                 {
                     "id": value["candidate_id"],

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { I18n } from "../i18n";
 import type {
   KnowledgePacketCard,
   KnowledgeThemeDetail,
@@ -52,7 +53,7 @@ const messages: Record<string, string> = {
   "knowledge.dissection.themes_empty": "No themes available for dissection.",
   "knowledge.dissection.themes_loading": "Loading themes…",
   "knowledge.dissection.theme_author": "Author: {author}",
-  "knowledge.dissection.exposure_units": "This theme contains {count} fresh questions. Revealing it will mark them as seen.",
+  "knowledge.dissection.exposure_units": new I18n("en").t("knowledge.dissection.exposure_units"),
   "knowledge.confirm_exposure": "This discloses the packet. Continue?",
   "knowledge.ai_unavailable": "AI needs a configured provider.",
   "training_history.value": "Value",
@@ -150,6 +151,15 @@ afterEach(() => {
 });
 
 describe("dissection composer", () => {
+  it.each([
+    ["en", "Fresh themes to mark as seen: 1.", "all their questions"],
+    ["ru", "Свежих тем будет отмечено просмотренными: 1.", "все их вопросы"],
+  ] as const)("labels exposure counts as themes in %s", (locale, count, consequence) => {
+    const warning = new I18n(locale).t("knowledge.dissection.exposure_units", { count: 1 });
+    expect(warning).toContain(count);
+    expect(warning).toContain(consequence);
+  });
+
   it.each(["loading", "failed", "unavailable"])(
     "never starts an all-theme fallback when selected-theme metadata is %s", async (status) => {
       const actionList = themeActions();
@@ -245,7 +255,7 @@ describe("dissection composer", () => {
 
   it("reveals a theme only through the explicit exposure confirmation", async () => {
     const previewTheme = vi.fn()
-      .mockResolvedValueOnce({ confirmation_required: true, fresh_unit_count: 2 })
+      .mockResolvedValueOnce({ confirmation_required: true, fresh_unit_count: 1 })
       .mockResolvedValueOnce({ confirmation_required: false, theme: themeDetail });
     const actionList = { ...themeActions(), previewTheme };
     const dialog = await openComposer(actionList);
@@ -258,7 +268,8 @@ describe("dissection composer", () => {
     // The first preview asks for confirmation and discloses no content.
     expect(previewTheme).toHaveBeenCalledWith("packet-1", "theme-1", false);
     const body = row.querySelector<HTMLElement>(".knowledge-theme-body")!;
-    expect(body.textContent).toContain("This theme contains 2 fresh questions.");
+    expect(body.textContent).toContain("Fresh themes to mark as seen: 1.");
+    expect(body.textContent).toContain("all their questions as seen");
     expect(body.textContent).not.toContain("Trafalgar");
     expect(body.textContent).not.toContain("HMS Victory");
 

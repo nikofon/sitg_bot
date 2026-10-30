@@ -67,17 +67,19 @@ describe("createSettingDemo", () => {
     expect(messages(demo.root)).toHaveLength(2);
   });
 
-  it("previews the training hidden-text reveal with the hidden_after delay", () => {
+  it("shows training question text immediately and hides it after hidden_after", () => {
     vi.useFakeTimers();
     const i18n = new I18n("en");
     const demo = createSettingDemo("hidden_after", () => ({ hidden_after: 2 }), i18n);
     document.body.append(demo.root);
     demo.restart();
-    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.msg.hidden")]);
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.question_text")]);
     expect(demo.root.querySelector(".setting-demo-status")?.textContent).toContain("this delay");
-    vi.advanceTimersByTime(2_100);
-    // The hidden question text appears in full after the configured wait.
-    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.msg.hidden"), i18n.t("setting_demo.question_text")]);
+    vi.advanceTimersByTime(1_900);
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.question_text")]);
+    vi.advanceTimersByTime(200);
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.msg.hidden")]);
+    expect(demo.root.textContent).not.toContain(i18n.t("setting_demo.question_text"));
     expect(demo.root.querySelector(".setting-demo-status")?.textContent).toContain("Preview finished");
   });
 

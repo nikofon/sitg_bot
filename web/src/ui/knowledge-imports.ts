@@ -91,7 +91,7 @@ export function createImportsPanel(
   };
 
   const importCard = (item: KnowledgeImportCard): HTMLElement => {
-    const review = item.status !== "working" && actions.loadImportDetail
+    const review = actions.loadImportDetail
       ? element("button", {
         type: "button", className: "secondary-button knowledge-import-review",
         "aria-label": `${i18n.t("knowledge.imports.review")}: ${item.author}`,
@@ -174,16 +174,18 @@ export function createImportsPanel(
       });
 
     const renderReview = (loaded: KnowledgeImportDetail): void => {
-      const terminal = loaded.status === "approved" || loaded.status === "rejected";
+      const readOnly = loaded.status !== "pending";
       const sections = element("div", { className: "knowledge-import-sections" },
-        importSection("new", loaded.sections.new, terminal),
-        importSection("potential_duplicates", loaded.sections.potential_duplicates, terminal),
-        importSection("duplicates", loaded.sections.duplicates, terminal));
+        importSection("new", loaded.sections.new, readOnly),
+        importSection("potential_duplicates", loaded.sections.potential_duplicates, readOnly),
+        importSection("duplicates", loaded.sections.duplicates, readOnly));
       const actionBar = (): HTMLElement => {
-        if (terminal) return element("p", { className: "knowledge-fact-meta" },
+        if (readOnly) return element("p", { className: "knowledge-fact-meta" },
           i18n.t(loaded.status === "approved"
             ? "knowledge.imports.approved_note"
-            : "knowledge.imports.rejected_note"));
+            : loaded.status === "rejected"
+              ? "knowledge.imports.rejected_note"
+              : statusKeys[loaded.status]));
         const add = element("button", {
           type: "button", className: "primary-button knowledge-import-approve",
           "data-import-approve": "",
@@ -222,19 +224,19 @@ export function createImportsPanel(
     const importSection = (
       key: KnowledgeImportSectionKey,
       candidates: KnowledgeImportCandidate[],
-      terminal: boolean,
+      readOnly: boolean,
     ): HTMLElement => {
       const rows = element("ul", { className: "knowledge-candidate-list" });
       const checkboxes: HTMLInputElement[] = [];
       for (const candidate of candidates) {
         if (candidate.selected) selectedIds.add(candidate.id);
-        rows.append(candidateRow(candidate, terminal, checkboxes));
+        rows.append(candidateRow(candidate, readOnly, checkboxes));
       }
       const toggleAll = element("button", {
         type: "button", className: "secondary-button",
         "data-import-section-toggle": key,
       }, i18n.t("knowledge.imports.select_all"));
-      if (!terminal && candidates.length) {
+      if (!readOnly && candidates.length) {
         const syncToggle = (): void => {
           const all = checkboxes.length > 0 && checkboxes.every((checkbox) => checkbox.checked);
           toggleAll.textContent = i18n.t(all
@@ -263,7 +265,7 @@ export function createImportsPanel(
 
     const candidateRow = (
       candidate: KnowledgeImportCandidate,
-      terminal: boolean,
+      readOnly: boolean,
       checkboxes: HTMLInputElement[],
     ): HTMLElement => {
       const detailBody = element("div", {
@@ -297,7 +299,7 @@ export function createImportsPanel(
         detailBody.hidden = expanded;
       });
       const head = element("div", { className: "knowledge-theme-head" }, header);
-      if (!terminal) {
+      if (!readOnly) {
         // Selection is independent of the row's collapsed/expanded state.
         const checkbox = element("input", {
           type: "checkbox", value: candidate.id, "aria-label": candidate.title,

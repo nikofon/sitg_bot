@@ -175,8 +175,7 @@ describe("pending imports tab", () => {
     expect(cards[0]!.textContent).toContain("Working");
     // A collection import never leaks the sender's private packet provenance.
     expect(cards[1]!.textContent).not.toContain("Source packet");
-    // A working dissection has no facts to review yet: no review button.
-    expect(cards[0]!.querySelector(".knowledge-import-review")).toBeNull();
+    expect(cards[0]!.querySelector(".knowledge-import-review")).not.toBeNull();
     expect(cards[1]!.querySelector(".knowledge-import-review")).not.toBeNull();
   });
 
@@ -199,6 +198,35 @@ describe("pending imports tab", () => {
 });
 
 describe("import review dialog", () => {
+  it.each(["working", "failed", "approved", "rejected"] as const)(
+    "opens %s imports read-only and permits decisions only after pending",
+    async (status) => {
+      const actionList = importActions({
+        loadImports: vi.fn().mockResolvedValue({ items: [importCard({ status })] }),
+        loadImportDetail: vi.fn().mockResolvedValue({ ...importDetail, status }),
+      });
+      const { button } = openImports(actionList);
+      await flush();
+      button("Review").click();
+      await flush();
+      const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+      expect(dialog.querySelector(`[data-import-status="${status}"]`)).not.toBeNull();
+      expect(dialog.querySelector("input[type=checkbox]")).toBeNull();
+      expect(dialog.querySelector("[data-import-approve]")).toBeNull();
+      expect(dialog.querySelector(".knowledge-import-reject")).toBeNull();
+      expect(actionList.decideImport).not.toHaveBeenCalled();
+      dialog.querySelector<HTMLButtonElement>(".knowledge-dialog-close")!.click();
+      vi.mocked(actionList.loadImportDetail!).mockResolvedValue(importDetail);
+      button("Review").click();
+      await flush();
+      document.querySelector<HTMLButtonElement>("[data-import-approve]")!.click();
+      await flush();
+      expect(actionList.decideImport).toHaveBeenCalledWith(
+        "import-1", "approve", ["c-new", "c-pot"],
+      );
+    },
+  );
+
   it("lists the three sections with default selection only for new and potential facts", async () => {
     const actionList = importActions();
     const { button } = openImports(actionList);

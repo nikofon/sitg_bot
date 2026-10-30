@@ -9,7 +9,6 @@ under compute leases; stale completions are fenced by lease tokens.
 """
 
 import asyncio
-import re
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -810,9 +809,10 @@ class AnalysisService:
                 max_output_facts=self.settings.max_output_facts,
                 allowed_tag_names=descriptor.get("tag_names", []),
             )
-            references = {question.question_revision_id: set(re.findall(
-                r"https?://[^\s<>\[\]\"']+", question.text
-            )) for question in questions}
+            references = {
+                question.question_revision_id: set(question.reference_urls)
+                for question in questions
+            }
             safe = []
             for candidate in validated:
                 links = tuple(url for url in candidate.links

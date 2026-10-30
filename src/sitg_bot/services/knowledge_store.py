@@ -413,20 +413,21 @@ class PostgresKnowledgeStore:
         if search and search.strip():
             needle = (
                 search.strip()
-                .casefold()
                 .replace("\\", "\\\\")
                 .replace("%", "\\%")
                 .replace("_", "\\_")
             )
             conditions.append(
                 func.lower(model.title + " " + model.description + " " + model.author).like(
-                    "%" + needle + "%", escape="\\"
+                    func.lower("%" + needle + "%"), escape="\\"
                 )
             )
         if author and author.strip():
-            needle = (author.strip().casefold().replace("\\", "\\\\")
+            needle = (author.strip().replace("\\", "\\\\")
                       .replace("%", "\\%").replace("_", "\\_"))
-            conditions.append(func.lower(model.author).like("%" + needle + "%", escape="\\"))
+            conditions.append(
+                func.lower(model.author).like(func.lower("%" + needle + "%"), escape="\\")
+            )
         for tag in sorted(tags):
             conditions.append(
                 select(KnowledgeFactTagRecord.fact_id)

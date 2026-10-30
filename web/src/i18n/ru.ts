@@ -170,7 +170,7 @@ export const ru: Record<MessageKey, string> = {
   "knowledge.dissection.themes_empty": "Нет тем для разбора.",
   "knowledge.dissection.themes_loading": "Загрузка тем…",
   "knowledge.dissection.theme_author": "Автор: {author}",
-  "knowledge.dissection.exposure_units": "В этой теме {count} свежих вопросов. Их показ пометит вопросы как просмотренные.",
+  "knowledge.dissection.exposure_units": "Свежих тем будет отмечено просмотренными: {count}. Показ тем пометит все их вопросы как просмотренные.",
   "knowledge.dissection.confirm_theme": "Подтвердить и показать",
   "knowledge.dissection.submit_short": "Разобрать",
   "knowledge.dissection.confirm": "Подтвердить и начать",

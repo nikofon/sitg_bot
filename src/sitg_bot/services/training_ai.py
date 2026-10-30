@@ -9,6 +9,7 @@ are always data, never tools or authorization.
 """
 
 import asyncio
+import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextvars import ContextVar
@@ -124,6 +125,15 @@ class QuestionText:
 
     question_revision_id: UUID
     text: str
+    reference_urls: tuple[str, ...] = ()
+
+
+def source_reference_urls(question) -> tuple[str, ...]:
+    return tuple(sorted({
+        url
+        for value in (question.text, question.answer, question.commentary, question.source)
+        for url in re.findall(r"https?://[^\s<>\[\]\"']+", value)
+    }))
 
 
 @dataclass(frozen=True, slots=True)

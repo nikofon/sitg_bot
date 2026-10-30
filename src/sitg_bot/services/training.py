@@ -11,6 +11,7 @@ from sitg_bot.domain.game_rulesets import SIGameRuleset
 from sitg_bot.domain.game_settings import GameSettings
 from sitg_bot.domain.training import TrainingSettings, best_buzz_cursor
 from sitg_bot.services.concurrency import StaleWriteError
+from sitg_bot.services.knowledge_themes import source_authors
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.telegram_game import FINISHED_GAME_CLOSURE_TIMEOUT
@@ -22,7 +23,6 @@ from sitg_bot.services.training_packets import (
 )
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
-    AuthorRecord,
     GameParticipantRecord,
     GameRecord,
     PacketVersionRecord,
@@ -727,16 +727,15 @@ class TrainingService:
         await self._event(session, record, "question_completed", {
             "text": " ".join(TrainingSettings.from_mapping(record.settings).tokens(revision.text)),
             "answer": revision.answer, "commentary": revision.commentary,
-            "author": await self._authors(session, revision),
+            "author": await self._authors(session, record, revision),
         })
 
     @staticmethod
-    async def _authors(session, revision):
-        if not revision.author_ids:
-            return "—"
-        names = dict((await session.execute(select(AuthorRecord.id, AuthorRecord.display_name)
-                     .where(AuthorRecord.id.in_(revision.author_ids)))).all())
-        return ", ".join(names[value] for value in revision.author_ids)
+    async def _authors(session, record, revision):
+        themes, questions = await source_authors(
+            session, record.packet_version_id, [], [revision.id],
+        )
+        return themes.get(revision.id) or questions.get(revision.id) or "—"
 
     async def _event(self, session, record, kind, parameters):
         record.event_sequence = (record.event_sequence or 0) + 1
@@ -798,7 +797,7 @@ class TrainingService:
                 ))
             await self._event(session, record, "theme_started", {
                 "position": position, "name": theme, "packet_name": packet.name,
-                "author": await self._authors(session, theme_record),
+                "author": await self._authors(session, record, theme_record),
             })
             if theme_record.commentary.strip():
                 record.progression_stage = "theme_commentary"
@@ -870,7 +869,7 @@ class TrainingService:
                     TrainingSettings.from_mapping(record.settings).tokens(revision.text),
                 ),
                 "answer": revision.answer, "commentary": revision.commentary,
-                "author": await self._authors(session, revision),
+                "author": await self._authors(session, record, revision),
             })
         else:
             await self._reading_event(session, record, revision)

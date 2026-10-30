@@ -57,6 +57,7 @@ def harness(settings=None, *, phase="reading", status="active"):
     service._question = AsyncMock(return_value=(question, revision, "Theme"))
     service._attempt = AsyncMock(return_value=attempt)
     service._notice = AsyncMock()
+    service._authors = AsyncMock(return_value="—")
     service._view = AsyncMock(return_value={"session": {"id": str(RUN)}})
     service.packets.authorize = AsyncMock()
     return service, record, question, revision, attempt, session

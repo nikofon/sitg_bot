@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import defer
 
 from sitg_bot.domain.knowledge import FactContent, SourceLink
 from sitg_bot.services.concurrency import StaleWriteError
@@ -349,7 +350,9 @@ class KnowledgeReview:
                 {
                     image.id: image_view(image)
                     for image in await session.scalars(
-                        select(KnowledgeImageRecord).where(KnowledgeImageRecord.id.in_(image_ids))
+                        select(KnowledgeImageRecord)
+                        .options(defer(KnowledgeImageRecord.data))
+                        .where(KnowledgeImageRecord.id.in_(image_ids))
                     )
                 }
                 if image_ids
@@ -456,7 +459,8 @@ class KnowledgeReview:
             dissection = await session.get(KnowledgeDissectionRecord, row.dissection_id)
             partial = dissection.status == "partially_succeeded"
             view = await service.apply_dissection_result(
-                row.owner_id, row.dissection_id, candidates
+                row.owner_id, row.dissection_id,
+                [{**value, "candidate_id": value["id"]} for value in candidates],
             )
             if partial:
                 dissection.status = "partially_succeeded"

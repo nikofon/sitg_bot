@@ -357,6 +357,7 @@ def dissection_candidate_from_payload(payload: Mapping[str, object]) -> Dissecti
                 url=str(link["url"]),
                 title=str(link.get("title", "")),
                 position=int(link.get("position", index)),
+                origin=str(link.get("origin", "manual")),
             )
             for index, link in enumerate(links_payload)
             if isinstance(link, Mapping)
@@ -573,17 +574,17 @@ class KnowledgeService:
             if not fact.deleted_at
         ]
         if search and search.strip():
-            needle = search.strip().casefold()
+            needle = search.strip().lower()
             rows = [
                 fact
                 for fact in rows
-                if needle in fact.content.title.casefold()
-                or needle in fact.content.description.casefold()
-                or needle in fact.content.author.casefold()
+                if needle in fact.content.title.lower()
+                or needle in fact.content.description.lower()
+                or needle in fact.content.author.lower()
             ]
         if author and author.strip():
             rows = [fact for fact in rows
-                    if author.strip().casefold() in fact.content.author.casefold()]
+                    if author.strip().lower() in fact.content.author.lower()]
         if selected_tags:
             owner_tags = {tag.name: tag.id for tag in await self.store.tags_for_owner(view_owner)}
             if selected_tags - owner_tags.keys():
