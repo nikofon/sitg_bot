@@ -1,6 +1,20 @@
 import { element, replaceChildren } from "./dom";
 import { icon } from "./icons";
+import { dissectComposerDialog } from "./knowledge-dissect";
+import { createImportsPanel } from "./knowledge-imports";
 import { PacketLoader } from "./packet-loading";
+import {
+  DEFAULT_TAG_COLOUR,
+  TAG_COLOUR_PATTERN,
+  closeDialog,
+  dialogFrame,
+  openDialog,
+  tagBorderGradient,
+  tagChip,
+  type KnowledgeState,
+} from "./knowledge-shared";
+
+export type { KnowledgeState };
 
 export type KnowledgeOrder = "title_asc" | "title_desc" | "updated_desc";
 
@@ -12,7 +26,9 @@ export const knowledgePacketOrders: readonly KnowledgePacketOrder[] = [
   "id_asc", "name_asc", "name_desc", "year_asc", "year_desc",
 ];
 
-export type KnowledgeTab = "library" | "packets";
+export type KnowledgeTab = "library" | "packets" | "imports";
+
+export const knowledgeTabs: readonly KnowledgeTab[] = ["library", "packets", "imports"];
 
 export type KnowledgeStatisticStatus =
   | "none"
@@ -43,10 +59,12 @@ export interface KnowledgeTag {
   colour: string;
 }
 
-/** Tag as returned by the tag pool contract (tag_id + name + colour). */
+/** Tag as returned by the tag pool contract (tag_id + name + colour + display label). */
 export interface KnowledgeTagPoolEntry {
   tag_id: string;
   name: string;
+  /** Requested display capitalization; falls back to the canonical name. */
+  label?: string;
   colour: string;
 }
 
@@ -59,6 +77,8 @@ export interface KnowledgeFactSummary {
   title: string;
   tag_names: string[];
   origin: "manual" | "dissection";
+  /** Fact author per the facts contract; empty/absent means unknown. */
+  author?: string;
   statistics: KnowledgeStatistics;
   updated_at: string;
 }
@@ -86,7 +106,9 @@ export interface KnowledgeFactDetail {
   links: Array<{ url: string; title: string }>;
   tags: KnowledgeTag[];
   origin: "manual" | "dissection";
-  /** Packet provenance for automatically imported facts; null when absent. */
+  /** Fact author per the facts contract; empty/absent means unknown. */
+  author?: string;
+  /** Internal packet provenance; never displayed on fact cards. */
   packet_name?: string | null;
   content_version: number;
   editable: boolean;
@@ -118,6 +140,10 @@ export interface KnowledgeImportResult {
   recipient_id: string;
   imported_count: number;
   skipped_count: number;
+  /** Staged review identifier; present since imports became pending. */
+  import_id?: string;
+  /** "pending" when the import was staged for review instead of applied. */
+  status?: string;
 }
 
 export interface KnowledgePacketCard {
@@ -160,6 +186,93 @@ export interface KnowledgeDissectOutcome {
   confirmation_required?: boolean;
 }
 
+/** Dissection composer request per the knowledge LLM library contract. */
+export interface KnowledgeDissectRequest {
+  instructions?: string;
+  comment?: string;
+  theme_revision_ids?: string[];
+  tag_ids?: string[];
+  confirm_exposure?: boolean;
+}
+
+export interface KnowledgeDissectionQuota {
+  enabled: boolean;
+  remaining: number | null;
+  reset_at: string | null;
+}
+
+export interface KnowledgeThemeSummary {
+  theme_revision_id: string;
+  name: string;
+}
+
+export interface KnowledgeThemesResource {
+  version_id: string;
+  packet_name: string;
+  themes: KnowledgeThemeSummary[];
+  quota: KnowledgeDissectionQuota;
+}
+
+export interface KnowledgeThemeQuestion {
+  revision_id: string;
+  value: number;
+  text: string;
+  answer: string;
+  accepted_answers: string[];
+  rejected_answers: string[];
+  commentary: string | null;
+}
+
+export interface KnowledgeThemeDetail {
+  theme_revision_id: string;
+  name: string;
+  author: string;
+  commentary: string | null;
+  questions: KnowledgeThemeQuestion[];
+}
+
+export type KnowledgeThemePreview =
+  | { confirmation_required: true; fresh_unit_count: number }
+  | { confirmation_required: false; theme: KnowledgeThemeDetail };
+
+export interface KnowledgeImportCard {
+  id: string;
+  type: "dissection" | "collection";
+  author: string;
+  status: "working" | "pending" | "approved" | "rejected" | "failed";
+  fact_count: number;
+  packet_name: string | null;
+  created_at: string;
+  request_id: string | null;
+}
+
+export interface KnowledgeImportCandidate {
+  id: string;
+  title: string;
+  description: string;
+  author: string;
+  links: Array<{ url: string; title: string }>;
+  images: unknown[];
+  tag_names: string[];
+  selected: boolean;
+}
+
+export interface KnowledgeImportDetail extends KnowledgeImportCard {
+  sections: {
+    new: KnowledgeImportCandidate[];
+    potential_duplicates: KnowledgeImportCandidate[];
+    duplicates: KnowledgeImportCandidate[];
+  };
+  approved_count: number;
+}
+
+export interface KnowledgeImportDecision {
+  import_id: string;
+  status: string;
+  approved_count: number;
+  skipped_count: number;
+}
+
 export interface KnowledgeActions {
   signal?: AbortSignal;
   loadFacts: (params: {
@@ -167,6 +280,7 @@ export interface KnowledgeActions {
     tags?: string[];
     cursor?: string | null;
     search?: string;
+    author?: string;
     order?: KnowledgeOrder;
   }) => Promise<KnowledgeFactsResource>;
   loadFact: (factId: string) => Promise<KnowledgeFactDetail>;
@@ -186,10 +300,24 @@ export interface KnowledgeActions {
     items: KnowledgePacketCard[];
     next_cursor: string | null;
   }>;
-  dissect: (packetId: string, instructions: string, comment?: string, confirmExposure?: boolean)
+  dissect: (versionId: string, request: KnowledgeDissectRequest)
     => Promise<KnowledgeDissectOutcome>;
   loadDissections?: () => Promise<KnowledgeDissection["requests"]>;
   cancel?: (requestId: string) => Promise<void>;
+  /** Dissection composer: theme metadata (no content, no exposure). */
+  loadThemes?: (versionId: string) => Promise<KnowledgeThemesResource>;
+  /** Theme preview mutation: reveals one theme after explicit exposure confirmation. */
+  previewTheme?: (
+    versionId: string, themeRevisionId: string, confirmExposure: boolean,
+  ) => Promise<KnowledgeThemePreview>;
+  /** Pending imports listing (dissections and incoming collections). */
+  loadImports?: () => Promise<{ items: KnowledgeImportCard[] }>;
+  loadImportDetail?: (importId: string) => Promise<KnowledgeImportDetail>;
+  decideImport?: (
+    importId: string,
+    decision: "approve" | "reject",
+    selectedCandidateIds?: string[],
+  ) => Promise<KnowledgeImportDecision>;
 }
 
 export interface KnowledgeFactInput {
@@ -198,6 +326,7 @@ export interface KnowledgeFactInput {
   tag_names: string[];
   links: Array<{ url: string; title?: string; position: number }>;
   image_ids?: string[];
+  author?: string;
 }
 
 export const knowledgeMessageKeys = [
@@ -263,6 +392,10 @@ export const knowledgeMessageKeys = [
   "knowledge.statistic.bingo",
   "knowledge.tab.library",
   "knowledge.tab.packets",
+  "knowledge.tab.imports",
+  "knowledge.author_search",
+  "knowledge.fact.author",
+  "knowledge.fact.author_field",
   "knowledge.share",
   "knowledge.sharing.title",
   "knowledge.sharing.empty",
@@ -314,6 +447,51 @@ export const knowledgeMessageKeys = [
   "knowledge.dissection.submit",
   "knowledge.dissection.submit_short",
   "knowledge.dissection.confirm",
+  "knowledge.dissection.confirm_theme",
+  "knowledge.dissection.tab.general",
+  "knowledge.dissection.tab.themes",
+  "knowledge.dissection.selected_count",
+  "knowledge.dissection.themes_hint",
+  "knowledge.dissection.select_all",
+  "knowledge.dissection.deselect_all",
+  "knowledge.dissection.quota",
+  "knowledge.dissection.quota_unlimited",
+  "knowledge.dissection.quota_reset",
+  "knowledge.dissection.themes_empty",
+  "knowledge.dissection.themes_loading",
+  "knowledge.dissection.theme_author",
+  "knowledge.dissection.exposure_units",
+  "knowledge.imports.empty",
+  "knowledge.imports.loading",
+  "knowledge.imports.type.dissection",
+  "knowledge.imports.type.collection",
+  "knowledge.imports.status.working",
+  "knowledge.imports.status.pending",
+  "knowledge.imports.status.approved",
+  "knowledge.imports.status.rejected",
+  "knowledge.imports.status.failed",
+  "knowledge.imports.author",
+  "knowledge.imports.fact_count",
+  "knowledge.imports.source_packet",
+  "knowledge.imports.created",
+  "knowledge.imports.review",
+  "knowledge.imports.review_title",
+  "knowledge.imports.section.new",
+  "knowledge.imports.section.potential_duplicates",
+  "knowledge.imports.section.duplicates",
+  "knowledge.imports.select_all",
+  "knowledge.imports.deselect_all",
+  "knowledge.imports.add_selected",
+  "knowledge.imports.reject",
+  "knowledge.imports.reject_confirm",
+  "knowledge.imports.approved_note",
+  "knowledge.imports.rejected_note",
+  "knowledge.import.staged",
+  "training_history.value",
+  "training_history.answer",
+  "training_history.accepted",
+  "training_history.rejected",
+  "training_history.commentary",
   "knowledge.dissection.empty",
   "knowledge.dissection.status.pending",
   "knowledge.dissection.status.succeeded",
@@ -374,9 +552,6 @@ const dissectionStatusKeys: Record<string, KnowledgeMessageKey> = {
   failed: "knowledge.dissection.status.failed",
 };
 
-const DEFAULT_TAG_COLOUR = "#64748b";
-const TAG_COLOUR_PATTERN = /^#[0-9a-f]{6}$/;
-
 /** Fact image attachment limits per the image upload contract. */
 const MAX_FACT_IMAGES = 8;
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
@@ -405,6 +580,8 @@ async function fileBase64(file: File): Promise<string> {
 
 export interface KnowledgeI18n {
   t(key: KnowledgeMessageKey, parameters?: Record<string, unknown>): string;
+  /** Locale for date formatting; optional in test harnesses. */
+  readonly locale?: "en" | "ru" | string;
 }
 
 function statisticLines(
@@ -430,50 +607,6 @@ function statisticLines(
     lines.push(`${i18n.t("knowledge.statistic.bingo")}${value}`);
   }
   return lines;
-}
-
-/** Keep even a single-tag outline a valid gradient and include every selected tag. */
-function tagBorderGradient(colours: string[]): string {
-  const stops = colours.length === 1 ? [colours[0], colours[0]] : colours;
-  return `linear-gradient(120deg, ${stops.join(", ")})`;
-}
-
-function tagChip(tag: { name: string; colour?: string }): HTMLElement {
-  const colour = tag.colour && TAG_COLOUR_PATTERN.test(tag.colour) ? tag.colour : DEFAULT_TAG_COLOUR;
-  const chip = element("span", { className: "knowledge-tag-chip" }, tag.name);
-  chip.style.color = colour;
-  return chip;
-}
-
-function openDialog(dialog: HTMLDialogElement): void {
-  document.body.append(dialog);
-  if (typeof dialog.showModal === "function") dialog.showModal();
-  else dialog.setAttribute("open", "");
-}
-
-function closeDialog(dialog: HTMLDialogElement): void {
-  if (typeof dialog.close === "function") dialog.close();
-  dialog.remove();
-}
-
-function dialogFrame(title: string, i18n: KnowledgeI18n): { dialog: HTMLDialogElement; body: HTMLElement } {
-  const dialog = element("dialog", { className: "tournament-dialog knowledge-dialog", "aria-label": title });
-  const body = element("div", { className: "knowledge-dialog-body" });
-  const close = element("button", {
-    type: "button",
-    className: "icon-button knowledge-dialog-close",
-    "aria-label": i18n.t("common.close"),
-    onclick: (() => { closeDialog(dialog); }) as EventListener,
-  }, "×");
-  dialog.append(element("div", { className: "dialog-heading" },
-    element("h2", {}, title), close), body);
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
-  return { dialog, body };
-}
-
-interface KnowledgeState {
-  tagPool: Map<string, KnowledgeTagPoolEntry>;
-  tagPoolReady: Promise<void>;
 }
 
 function tagColoursFor(names: string[], state: KnowledgeState, detailTags?: KnowledgeTag[]): string[] {
@@ -610,16 +743,18 @@ function renderFactDetail(
     : null;
   replaceChildren(container,
     element("p", { className: "knowledge-fact-description" }, detail.description),
+    detail.author
+      ? element("p", { className: "knowledge-fact-meta" },
+        i18n.t("knowledge.fact.author", { author: detail.author }))
+      : null,
     images,
     links,
     detail.tags.length
       ? element("p", { className: "knowledge-fact-tags" },
         ...detail.tags.map((tag) => tagChip(tag)))
       : null,
-    detail.packet_name
-      ? element("p", { className: "knowledge-fact-meta" },
-        i18n.t("knowledge.fact.origin.packet", { name: detail.packet_name }))
-      : null,
+    // Internal packet provenance stays hidden: exposing it would leak other
+    // users' private packet names on imported fact libraries.
     element("p", { className: "knowledge-fact-meta" },
       statisticLines(detail.statistics, i18n).join(" · ")),
     detail.editable ? null : element("p", { className: "knowledge-readonly" }, i18n.t("knowledge.fact.read_only")),
@@ -789,6 +924,10 @@ function factForm(
   const title = element("input", { required: true, maxlength: "200", value: detail?.title ?? "" });
   const description = element("textarea", { required: true, maxlength: "4000" });
   description.value = detail?.description ?? "";
+  // Author is snapshotted and independently editable per the facts contract;
+  // leaving it empty on create falls back to the creator's nickname.
+  const author = element("input", { maxlength: "300", value: detail?.author ?? "",
+    "aria-label": i18n.t("knowledge.fact.author_field") });
   const selectedTags = new Set(detail?.tags.map((tag) => tag.name) ?? []);
   const links = element("textarea");
   links.value = detail?.links.map((link) => link.url + (link.title ? ` | ${link.title}` : "")).join("\n") ?? "";
@@ -802,6 +941,7 @@ function factForm(
   fields.append(
     element("label", {}, i18n.t("knowledge.title_field"), title),
     element("label", {}, i18n.t("knowledge.description"), description),
+    element("label", {}, i18n.t("knowledge.fact.author_field"), author),
     tagsField.root,
     element("label", {}, i18n.t("knowledge.links_field"), links),
     imagesField.root, save, error);
@@ -813,6 +953,9 @@ function factForm(
     void Promise.all([imagesField.ready(), tagsField.ready()]).then(() => actions.save?.({
       title: title.value,
       description: description.value,
+      // An empty author clears on update; creation omits it entirely so the
+      // server can apply the creator's public nickname.
+      author: author.value.trim() || (detail ? "" : undefined),
       tag_names: [...selectedTags],
       links: links.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
         .map((line, position) => {
@@ -1096,10 +1239,14 @@ function openImportDialog(
         .then(async (result) => {
           actions.consumeImportToken?.();
           await imported();
-          replaceChildren(body, element("p", {}, i18n.t("knowledge.import.done", {
-            imported: result.imported_count,
-            skipped: result.skipped_count,
-          })), element("button", {
+          // Imports now stage a pending review instead of applying directly.
+          const message = result.status === "pending"
+            ? i18n.t("knowledge.import.staged")
+            : i18n.t("knowledge.import.done", {
+              imported: result.imported_count,
+              skipped: result.skipped_count,
+            });
+          replaceChildren(body, element("p", {}, message), element("button", {
             type: "button",
             className: "secondary-button",
             onclick: (() => { closeDialog(dialog); }) as EventListener,
@@ -1123,68 +1270,20 @@ function openImportDialog(
   openDialog(dialog);
 }
 
-function dissectDialog(
-  packet: KnowledgePacketCard | { id: string; name: string },
-  i18n: KnowledgeI18n,
-  actions: KnowledgeActions,
-): HTMLDialogElement {
-  const { dialog, body } = dialogFrame(i18n.t("knowledge.dissection.title"), i18n);
-  const error = element("p", { className: "error-text", role: "alert" });
-  const instructions = element("textarea", {
-    "aria-label": i18n.t("knowledge.dissection.instructions"),
-  });
-  const comment = element("textarea", { "aria-label": i18n.t("knowledge.dissection.comment") });
-  const warning = element("p", { className: "knowledge-dissection-warning", hidden: true },
-    i18n.t("knowledge.confirm_exposure"));
-  const submit = element("button", { type: "button", className: "primary-button",
-    "data-confirm": "false" }, i18n.t("knowledge.dissection.submit"));
-  const run = (confirmExposure: boolean): void => {
-    if (submit.disabled) return;
-    submit.disabled = true;
-    void actions.dissect(packet.id, instructions.value, comment.value || undefined, confirmExposure)
-      .then((outcome) => {
-        if (outcome.confirmation_required && !confirmExposure) {
-          warning.hidden = false;
-          submit.textContent = i18n.t("knowledge.dissection.confirm");
-          submit.setAttribute("data-confirm", "true");
-          submit.classList.add("warning-button");
-          submit.disabled = false;
-          return;
-        }
-        closeDialog(dialog);
-      })
-      .catch(() => { error.textContent = i18n.t("knowledge.error"); })
-      .finally(() => { submit.disabled = false; });
-  };
-  submit.addEventListener("click", () => {
-    run(submit.getAttribute("data-confirm") === "true");
-  });
-  body.append(
-    element("h3", {}, packet.name),
-    element("label", {}, i18n.t("knowledge.dissection.instructions"), instructions),
-    element("label", {}, i18n.t("knowledge.dissection.comment"), comment),
-    warning,
-    submit,
-    error,
-  );
-  if ("total_theme_count" in packet) {
-    body.append(element("p", { className: "knowledge-fact-meta" },
-      i18n.t("knowledge.packets.fresh", { fresh: packet.fresh_theme_count, total: packet.total_theme_count })));
-    body.insertBefore(body.lastElementChild!, body.children[1]!);
-  }
-  return dialog;
-}
-
 function packetCard(
   packet: KnowledgePacketCard,
   i18n: KnowledgeI18n,
+  state: KnowledgeState,
   actions: KnowledgeActions,
+  onDissectStarted: () => void,
 ): HTMLElement {
   const dissect = element("button", {
     type: "button",
     className: "primary-button",
     onclick: (() => {
-      openDialog(dissectDialog(packet, i18n, actions));
+      // The composer window stays closable: the dissection job is durable
+      // server-side and closing never cancels it.
+      openDialog(dissectComposerDialog(packet, i18n, state, actions, onDissectStarted));
     }) as EventListener,
   }, i18n.t("knowledge.dissection.submit_short"));
   const detail = (key: KnowledgeMessageKey, value: string): HTMLElement => element(
@@ -1246,6 +1345,9 @@ export function renderKnowledge(
   };
 
   let search = data.facts.search ?? "";
+  // Dedicated author filter: a literal case-insensitive substring on the
+  // fact author, AND-combined with the search and tag filters.
+  let authorSearch = "";
   // Additive multi-tag filter state: every selected tag joins the query (AND).
   const selectedTags = new Set<string>();
   let order = data.facts.order;
@@ -1262,8 +1364,9 @@ export function renderKnowledge(
   };
   const libraryTab = tabButton("library", i18n.t("knowledge.tab.library"));
   const packetsTab = tabButton("packets", i18n.t("knowledge.tab.packets"));
+  const importsTab = tabButton("imports", i18n.t("knowledge.tab.imports"));
   const tabs = element("nav", { className: "settings-actions knowledge-tabs", role: "tablist",
-    "aria-label": i18n.t("knowledge.title") }, libraryTab, packetsTab);
+    "aria-label": i18n.t("knowledge.title") }, libraryTab, packetsTab, importsTab);
 
   // Library list
   const list = element("ul", { className: "resource-list knowledge-list" });
@@ -1310,6 +1413,7 @@ export function renderKnowledge(
     loadMore.disabled = true;
     const revision = queryRevision;
     void actions.loadFacts({ cursor: data.facts.next_cursor, search, order,
+      ...(authorSearch ? { author: authorSearch } : {}),
       ...(selectedTags.size ? { tags: [...selectedTags] } : {}) })
       .then((page) => {
         if (revision !== queryRevision || actions.signal?.aborted) return;
@@ -1325,6 +1429,7 @@ export function renderKnowledge(
   const reload = (propagateError = false): Promise<void> => {
     const revision = ++queryRevision;
     return actions.loadFacts({ search, order,
+      ...(authorSearch ? { author: authorSearch } : {}),
       ...(selectedTags.size ? { tags: [...selectedTags] } : {}) })
       .then((page) => {
         if (revision !== queryRevision || actions.signal?.aborted) return;
@@ -1350,6 +1455,11 @@ export function renderKnowledge(
     value: search,
     "aria-label": i18n.t("knowledge.search"),
   });
+  const authorInput = element("input", {
+    type: "search",
+    value: authorSearch,
+    "aria-label": i18n.t("knowledge.author_search"),
+  });
   const orderSelect = element("select", { "aria-label": i18n.t("knowledge.order.title_asc") },
     ...knowledgeOrders.map((value) =>
       element("option", { value }, i18n.t(orderKeys[value]))));
@@ -1363,14 +1473,15 @@ export function renderKnowledge(
     // A tag deleted from the pool can no longer filter anything.
     for (const name of selectedTags) if (!state.tagPool.has(name)) selectedTags.delete(name);
     replaceChildren(tagFilter);
-    for (const tag of [...state.tagPool.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const tag of [...state.tagPool.values()].sort((a, b) =>
+      (a.label ?? a.name).localeCompare(b.label ?? b.name))) {
       const pressed = selectedTags.has(tag.name);
       const colour = tag.colour && TAG_COLOUR_PATTERN.test(tag.colour) ? tag.colour : DEFAULT_TAG_COLOUR;
       const chip = element("button", {
         type: "button",
         className: "knowledge-tag-filter-chip",
         "aria-pressed": String(pressed),
-      }, tag.name);
+      }, tag.label ?? tag.name);
       chip.style.color = colour;
       chip.addEventListener("click", () => {
         const active = selectedTags.has(tag.name);
@@ -1385,6 +1496,8 @@ export function renderKnowledge(
 
   searchInput.addEventListener("input", () => { search = searchInput.value; });
   searchInput.addEventListener("change", () => { void reload(); });
+  authorInput.addEventListener("input", () => { authorSearch = authorInput.value; });
+  authorInput.addEventListener("change", () => { void reload(); });
   orderSelect.addEventListener("change", () => {
     order = orderSelect.value as KnowledgeOrder;
     reload();
@@ -1418,7 +1531,7 @@ export function renderKnowledge(
 
   libraryPanel.append(
     element("div", { className: "knowledge-controls", role: "search" },
-      searchInput, orderSelect, tagFilter,
+      searchInput, authorInput, orderSelect, tagFilter,
       element("button", {
         type: "button", className: "secondary-button",
         onclick: (() => { void reload(); }) as EventListener,
@@ -1550,7 +1663,8 @@ export function renderKnowledge(
     packetList.setAttribute("aria-busy", String(loading));
     for (const packet of items) packetNames.set(packet.id, packet.name);
     renderJobs(data.dissection.requests);
-    replaceChildren(packetList, ...items.map((packet) => packetCard(packet, i18n, actions)));
+    replaceChildren(packetList, ...items.map((packet) =>
+      packetCard(packet, i18n, state, actions, onDissectStarted)));
     if (!items.length && !loading) {
       packetList.append(element("p", {}, i18n.t(
         Object.values(packetFilters).some((value) => value) ? "knowledge.packets.no_matches" : "knowledge.packets.empty",
@@ -1580,18 +1694,28 @@ export function renderKnowledge(
   );
 
   let packetsActive = false;
+  // A started dissection refreshes the durable jobs projection and the
+  // pending imports list; facts only change after an approved import.
+  const onDissectStarted = (): void => {
+    void refreshJobs();
+    imports.refresh();
+  };
+  const imports = createImportsPanel(i18n, actions, () => reload());
+  const panels: Record<KnowledgeTab, HTMLElement> = {
+    library: libraryPanel, packets: packetsPanel, imports: imports.root,
+  };
+  const tabButtons: Record<KnowledgeTab, HTMLButtonElement> = {
+    library: libraryTab, packets: packetsTab, imports: importsTab,
+  };
   const setTab = (tab: KnowledgeTab): void => {
-    const target = tab === "library";
-    libraryPanel.hidden = !target;
-    packetsPanel.hidden = target;
-    libraryTab.className = target ? "primary-button knowledge-tab" : "secondary-button knowledge-tab";
-    packetsTab.className = target ? "secondary-button knowledge-tab" : "primary-button knowledge-tab";
-    if (target) {
-      libraryTab.setAttribute("aria-current", "page");
-      packetsTab.removeAttribute("aria-current");
-    } else {
-      packetsTab.setAttribute("aria-current", "page");
-      libraryTab.removeAttribute("aria-current");
+    for (const key of knowledgeTabs) {
+      const active = key === tab;
+      panels[key].hidden = !active;
+      tabButtons[key].className = active
+        ? "primary-button knowledge-tab"
+        : "secondary-button knowledge-tab";
+      if (active) tabButtons[key].setAttribute("aria-current", "page");
+      else tabButtons[key].removeAttribute("aria-current");
     }
     const nowPacketsActive = tab === "packets";
     if (nowPacketsActive && !packetsActive) {
@@ -1603,6 +1727,7 @@ export function renderKnowledge(
       loader?.stop();
       stopJobs();
     }
+    if (tab === "imports") imports.refresh();
   };
   // Apply the very first render through the same path as a click so the
   // active tab is highlighted immediately, not only after re-pressing it.
@@ -1613,6 +1738,7 @@ export function renderKnowledge(
   if (data.import_token && actions.importLibrary) {
     openImportDialog(data.import_token, i18n, actions, async () => {
       await Promise.all([reload(true), reloadTagPool(true)]);
+      imports.refresh();
     });
   }
 
@@ -1622,6 +1748,7 @@ export function renderKnowledge(
     errorText,
     libraryPanel,
     packetsPanel,
+    imports.root,
   );
   return root;
 }

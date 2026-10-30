@@ -218,9 +218,28 @@ collection imports and direct copying.
 
 ## Adapters
 
-The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit,
-source URLs, tags, delete, tag rename/delete, search, additive tag filtering, sorting,
-pagination, permanent copy sharing and dissection with comments. Job polling preserves
+The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit
+(with the independently editable snapshotted `author` field, omitted on manual create
+to fall back to the creator nickname), source URLs, tags, delete, tag rename/delete,
+search plus a dedicated case-insensitive `author` substring filter, additive tag filtering,
+sorting, pagination, and permanent copy sharing. Fact cards never display the internal
+source-packet provenance (privacy on imported libraries); the description renders as
+regular text. Dissection launches from a packet card into a closable General/Themes
+composer window: General carries the selected-theme counter, commentary, auto-assign
+tag selection (tag ids) and the start action; Themes lists collapsed theme rows whose
+checkboxes are independent of expansion, with select/deselect all, the remaining theme
+quota and reset time, and full theme reveal only through the exposure-confirmed
+`theme_preview` mutation. Started dissections are durable: closing the window never
+cancels them. Completion stages facts for review instead of applying them.
+The Knowledge window's **Pending imports** tab lists dissection and incoming
+collection imports with type, author, status (working/pending/approved/rejected/failed),
+fact count and — for the user's own authorized dissections — the source packet;
+collection imports never expose the sender's private provenance. Review opens the
+candidate lists in New / Potential duplicates / Duplicates sections (server-side
+classification defaults: new and potential selected, exact duplicates deselected), with
+per-section select/deselect all, per-fact checkboxes independent of expansion, and
+Add selected / Reject controls at the top and bottom; approval refreshes the library
+and the pending list. Job polling preserves
 form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.

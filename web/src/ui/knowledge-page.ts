@@ -6,14 +6,20 @@ import {
   type KnowledgeActions,
   type KnowledgeDissection,
   type KnowledgeDissectOutcome,
+  type KnowledgeDissectRequest,
   type KnowledgeFactDetail,
   type KnowledgeFactImage,
   type KnowledgeFactsResource,
+  type KnowledgeImportCard,
+  type KnowledgeImportDecision,
+  type KnowledgeImportDetail,
   type KnowledgeImportResult,
   type KnowledgePacketCard,
   type KnowledgeSharing,
   type KnowledgeTagPool,
   type KnowledgeTagPoolEntry,
+  type KnowledgeThemePreview,
+  type KnowledgeThemesResource,
   type KnowledgeViewData,
   type ShareLink,
 } from "./knowledge";
@@ -39,9 +45,9 @@ export function renderKnowledgePage(
   const post = <T>(command: string, body: unknown): Promise<T> =>
     api.request<T>(`/api/miniapp/knowledge/${command}`, { method: "POST", body, signal });
   const dissect = async (
-    versionId: string, instructions: string, comment = "", confirmExposure = false,
+    versionId: string, request: KnowledgeDissectRequest,
   ): Promise<KnowledgeDissectOutcome> =>
-    post("dissect", { version_id: versionId, instructions, comment, confirm_exposure: confirmExposure });
+    post("dissect", { version_id: versionId, ...request });
   const loadPacketPage = async (
     query: URLSearchParams, requestSignal: AbortSignal,
   ): Promise<{ items: KnowledgePacketCard[]; next_cursor: string | null }> => {
@@ -54,12 +60,14 @@ export function renderKnowledgePage(
     tags?: string[];
     cursor?: string | null;
     search?: string;
+    author?: string;
     order?: string;
   }): Promise<KnowledgeFactsResource> => {
     const query = new URLSearchParams();
     if (params.owner_id) query.set("owner_id", params.owner_id);
     if (params.cursor) query.set("cursor", params.cursor);
     if (params.search) query.set("search", params.search);
+    if (params.author) query.set("author", params.author);
     if (params.order) query.set("order", params.order);
     // Repeated `tags` entries: every selected tag must match (AND semantics).
     for (const tag of params.tags ?? []) query.append("tags", tag);
@@ -91,6 +99,24 @@ export function renderKnowledgePage(
     loadDissections: async () => (await api.request<{ items: KnowledgeDissection["requests"] }>(
       "/api/miniapp/knowledge/dissections", { signal })).items,
     cancel: async (requestId) => { await post("cancel", { request_id: requestId }); },
+    loadThemes: (versionId) => api.request<KnowledgeThemesResource>(
+      `/api/miniapp/knowledge/themes?version_id=${encodeURIComponent(versionId)}`, { signal }),
+    previewTheme: (versionId, themeRevisionId, confirmExposure) =>
+      post<KnowledgeThemePreview>("theme_preview", {
+        version_id: versionId,
+        theme_revision_id: themeRevisionId,
+        confirm_exposure: confirmExposure,
+      }),
+    loadImports: () => api.request<{ items: KnowledgeImportCard[] }>(
+      "/api/miniapp/knowledge/imports", { signal }),
+    loadImportDetail: (importId) => api.request<KnowledgeImportDetail>(
+      `/api/miniapp/knowledge/imports/${encodeURIComponent(importId)}`, { signal }),
+    decideImport: (importId, decision, selectedCandidateIds) =>
+      post<KnowledgeImportDecision>("import_decide", {
+        import_id: importId,
+        decision,
+        ...(selectedCandidateIds ? { selected_candidate_ids: selectedCandidateIds } : {}),
+      }),
   };
   const root = element("section", { className: "stack" },
     renderKnowledge({ ...initial, ...(pendingImport ? { import_token: pendingImport } : {}) },

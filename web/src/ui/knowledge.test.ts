@@ -60,6 +60,8 @@ const messages: Record<string, string> = {
   "knowledge.links_field": "Sources (URL | title, one per line)",
   "knowledge.confirm_delete": "Delete this fact?",
   "knowledge.tag_filter": "Filter by tag",
+  "knowledge.author_search": "Search by author",
+  "knowledge.fact.author": "Author: {author}",
   "knowledge.tag_rename": "Rename tag",
   "knowledge.tag_delete": "Delete tag",
   "knowledge.share": "Share library",
@@ -116,6 +118,9 @@ const messages: Record<string, string> = {
   "knowledge.dissection.instructions": "Instructions (optional)",
   "knowledge.dissection.submit": "Start dissection",
   "knowledge.dissection.submit_short": "Dissect",
+  "knowledge.dissection.tab.general": "General",
+  "knowledge.dissection.tab.themes": "Themes",
+  "knowledge.dissection.selected_count": "Selected themes: {count}",
   "knowledge.dissection.confirm": "Confirm and start",
   "knowledge.dissection.empty": "No dissections yet.",
   "knowledge.dissection.comment": "Follow-up comment (optional)",
@@ -390,10 +395,11 @@ describe("collapsed fact cards", () => {
     expect(fresh.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("shows packet provenance and attached images without version or manual-origin notes", async () => {
+  it("hides packet provenance but shows the fact author and attached images", async () => {
     const detail: KnowledgeFactDetail = {
       id: "fact-1", title: "Rosetta Stone", description: "d",
       links: [], tags: [], origin: "dissection", packet_name: "Cup 2026",
+      author: "Ada",
       content_version: 7, editable: false, statistics: { status: "none" },
       images: [{ id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" }],
     };
@@ -402,7 +408,10 @@ describe("collapsed fact cards", () => {
     root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
     await flush();
     const card = root.querySelector('[data-fact-id="fact-1"]')!;
-    expect(card.textContent).toContain("From packet: Cup 2026");
+    // The author is displayed; the source packet is kept internally but never shown.
+    expect(card.textContent).toContain("Author: Ada");
+    expect(card.textContent).not.toContain("From packet");
+    expect(card.textContent).not.toContain("Cup 2026");
     expect(card.querySelector(".knowledge-fact-images img")?.getAttribute("src"))
       .toBe("/api/miniapp/knowledge/images/image-1");
     // No fact version, no manual/dissection origin words, no card-level tag tools.
@@ -863,6 +872,19 @@ describe("tags with colours", () => {
     await flush();
     expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["history"] });
   });
+
+  it("filters the fact list by author", async () => {
+    const loadFacts = vi.fn().mockResolvedValue(facts);
+    const { field } = render(structuredClone(data), actions({ loadFacts }));
+    await flush();
+    const author = field<HTMLInputElement>("Search by author");
+    author.value = "ada";
+    author.dispatchEvent(new Event("input"));
+    author.dispatchEvent(new Event("change"));
+    await flush();
+    // The author filter is submitted as its own literal substring filter.
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", author: "ada", order: "title_asc" });
+  });
 });
 
 describe("sharing links", () => {
@@ -1124,27 +1146,52 @@ describe("packets tab", () => {
     }
   });
 
-  it("runs the two-step exposure confirmation from the Dissect dialog", async () => {
+  it("runs the two-step exposure confirmation from the Dissect composer", async () => {
     const controller = new AbortController();
     try {
       const dissect = vi.fn()
         .mockResolvedValueOnce({ confirmation_required: true })
         .mockResolvedValueOnce({});
+      const loadThemes = vi.fn().mockResolvedValue({
+        version_id: "packet-1", packet_name: "Cup 2026",
+        themes: [{ theme_revision_id: "theme-1", name: "Naval history" }],
+        quota: { enabled: true, remaining: 5, reset_at: null },
+      });
       const loadPackets = vi.fn()
         .mockResolvedValue({ items: [packet("packet-1", "Cup 2026")], next_cursor: null });
-      const { field, button } = renderPackets(actions({ dissect, loadPackets }), controller);
+      const { field, button } = renderPackets(actions({ dissect, loadPackets, loadThemes }), controller);
       await vi.advanceTimersByTimeAsync(0);
       button("Dissect")!.click();
+      await vi.advanceTimersByTimeAsync(0);
       const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
       expect(dialog.textContent).toContain("Cup 2026");
+      // General/Themes tab navigation.
+      button("Themes", dialog)!.click();
+      const themeRow = dialog.querySelector<HTMLElement>('[data-theme-id="theme-1"]')!;
+      themeRow.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
+      button("General", dialog)!.click();
+      expect(dialog.querySelector("[data-dissect-selected-count]")!.textContent)
+        .toBe("Selected themes: 1");
       field<HTMLTextAreaElement>("Instructions (optional)", dialog).value = "Focus on naval history";
       button("Start dissection", dialog)!.click();
       await flush();
-      expect(dissect).toHaveBeenCalledWith("packet-1", "Focus on naval history", undefined, false);
+      expect(dissect).toHaveBeenCalledWith("packet-1", {
+        instructions: "Focus on naval history",
+        comment: undefined,
+        theme_revision_ids: ["theme-1"],
+        tag_ids: [],
+        confirm_exposure: false,
+      });
       expect(dialog.textContent).toContain("This discloses the packet.");
       button("Confirm and start", dialog)!.click();
       await flush();
-      expect(dissect).toHaveBeenLastCalledWith("packet-1", "Focus on naval history", undefined, true);
+      expect(dissect).toHaveBeenLastCalledWith("packet-1", {
+        instructions: "Focus on naval history",
+        comment: undefined,
+        theme_revision_ids: ["theme-1"],
+        tag_ids: [],
+        confirm_exposure: true,
+      });
       expect(document.contains(dialog)).toBe(false);
     } finally {
       controller.abort();

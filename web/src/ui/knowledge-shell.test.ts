@@ -132,4 +132,149 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     await vi.waitFor(() => expect(root.textContent).toContain(new I18n("ru").t("error.authentication_required")));
     expect(fetcher).not.toHaveBeenCalled(); expect(root.querySelector(".knowledge-library")).toBeNull();
   });
+
+  it("wires the dissection composer and pending import review to their contracts", async () => {
+    const i18n = new I18n("en");
+    const resource = empty();
+    const packetCard = {
+      id: "packet-1", name: "Cup 2026", year: 2026, scope: "training" as const,
+      authors: [], tournaments: [], total_theme_count: 2, fresh_theme_count: 2,
+      dissected_theme_count: 0, dissected: false, best_buzz_calculated: false,
+    };
+    const themeDetail = {
+      theme_revision_id: "theme-1", name: "Naval history", author: "Ada", commentary: null,
+      questions: [{ revision_id: "q-1", value: 10, text: "Question text", answer: "Answer",
+        accepted_answers: [], rejected_answers: [], commentary: null }],
+    };
+    const importCard = {
+      id: "import-1", type: "dissection" as const, author: "Me", status: "pending" as const,
+      fact_count: 2, packet_name: "Cup 2026", created_at: "2026-10-02T12:00:00Z", request_id: "req-1",
+    };
+    const importDetail = {
+      ...importCard, approved_count: 0,
+      sections: {
+        new: [{ id: "c-1", title: "New fact", description: "d", author: "Ada",
+          links: [], images: [], tag_names: [], selected: true }],
+        potential_duplicates: [{ id: "c-2", title: "Maybe existing", description: "d", author: "Ada",
+          links: [], images: [], tag_names: [], selected: true }],
+        duplicates: [{ id: "c-3", title: "Existing", description: "d", author: "Ada",
+          links: [], images: [], tag_names: [], selected: false }],
+      },
+    };
+    const dissectBodies: unknown[] = [];
+    const previewBodies: unknown[] = [];
+    let importsReads = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input, options) => {
+      const path = String(input);
+      if (path.endsWith("/session")) return reply({ csrf_token: "csrf-fixture-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (path.includes("/routes/resolve")) return reply({ locale: "en", authorization: { allowed: true }, resource: { kind: "knowledge", state: "ready", ...resource } });
+      if (path.endsWith("/entitlements")) return reply({ features: {} });
+      if (path.endsWith("/knowledge/tags")) return reply({ items: [] });
+      if (path.includes("/knowledge/facts?")) return reply(resource.facts);
+      if (path.includes("/training/packets?")) return reply({ items: [packetCard], next_cursor: null });
+      if (path.includes("/knowledge/themes?")) return reply({
+        version_id: "packet-1", packet_name: "Cup 2026",
+        themes: [{ theme_revision_id: "theme-1", name: "Naval history" }],
+        quota: { enabled: true, remaining: 1, reset_at: null },
+      });
+      if (path.endsWith("/knowledge/theme_preview")) {
+        const body = JSON.parse(String(options?.body));
+        previewBodies.push(body);
+        return body.confirm_exposure
+          ? reply({ confirmation_required: false, theme: themeDetail })
+          : reply({ confirmation_required: true, fresh_unit_count: 2 });
+      }
+      if (path.endsWith("/knowledge/dissect")) {
+        const body = JSON.parse(String(options?.body));
+        dissectBodies.push(body);
+        return body.confirm_exposure
+          ? reply({ dissection_id: "dis-1", import_id: "import-1" })
+          : reply({ confirmation_required: true });
+      }
+      if (path.includes("/knowledge/imports/import-1")) return reply(importDetail);
+      if (path.includes("/knowledge/imports")) { importsReads += 1; return reply({ items: [importCard] }); }
+      if (path.endsWith("/knowledge/import_decide")) {
+        return reply({ import_id: "import-1", status: "approved", approved_count: 2, skipped_count: 1 });
+      }
+      if (path.includes("/knowledge/dissections")) return reply({ items: [] });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const { root } = start(fetcher);
+    await vi.waitFor(() => expect(root.querySelector(".knowledge-library")).not.toBeNull());
+
+    // Composer: Dissect opens the window, themes load as metadata only.
+    button(root, i18n.t("knowledge.tab.packets")).click();
+    const dissect = await vi.waitFor(() => button(root, i18n.t("knowledge.dissection.submit_short")));
+    dissect.click();
+    const dialog = await vi.waitFor(() => document.querySelector<HTMLDialogElement>(".knowledge-dialog")!);
+    await vi.waitFor(() => expect(fetcher.mock.calls.some(([path]) =>
+      String(path).includes("/knowledge/themes?version_id=packet-1"))).toBe(true));
+
+    // Theme preview goes through the explicit exposure confirmation.
+    button(dialog, i18n.t("knowledge.dissection.tab.themes")).click();
+    const themeRow = await vi.waitFor(() => {
+      const row = dialog.querySelector<HTMLElement>("[data-theme-id='theme-1']");
+      expect(row).not.toBeNull();
+      return row!;
+    });
+    themeRow.querySelector<HTMLButtonElement>(".knowledge-theme-toggle")!.click();
+    await vi.waitFor(() => expect(previewBodies).toHaveLength(1));
+    expect(previewBodies[0]).toMatchObject({ version_id: "packet-1", theme_revision_id: "theme-1", confirm_exposure: false });
+    button(dialog, i18n.t("knowledge.dissection.confirm_theme")).click();
+    await vi.waitFor(() => expect(previewBodies).toHaveLength(2));
+    expect(previewBodies[1]).toMatchObject({ confirm_exposure: true });
+    expect(dialog.textContent).toContain("Question text");
+
+    // Select the theme, submit commentary, and confirm the exposure warning.
+    dialog.querySelector<HTMLInputElement>("[data-theme-id='theme-1'] input[type=checkbox]")!.click();
+    button(dialog, i18n.t("knowledge.dissection.tab.general")).click();
+    const comment = [...dialog.querySelectorAll("textarea")]
+      .find((node) => node.getAttribute("aria-label") === i18n.t("knowledge.dissection.comment"))!;
+    comment.value = "Extract naval terms";
+    button(dialog, i18n.t("knowledge.dissection.submit")).click();
+    await vi.waitFor(() => expect(dissectBodies).toHaveLength(1));
+    expect(dissectBodies[0]).toMatchObject({
+      version_id: "packet-1", theme_revision_ids: ["theme-1"], tag_ids: [],
+      comment: "Extract naval terms", confirm_exposure: false,
+    });
+    button(dialog, i18n.t("knowledge.dissection.confirm")).click();
+    await vi.waitFor(() => expect(document.contains(dialog)).toBe(false));
+    expect(dissectBodies[1]).toMatchObject({ confirm_exposure: true });
+
+    // Pending imports: the staged dissection appears and is reviewed.
+    button(root, i18n.t("knowledge.tab.imports")).click();
+    await vi.waitFor(() => expect(importsReads).toBeGreaterThanOrEqual(1));
+    expect(root.querySelector('[data-panel="imports"]')!.textContent).toContain("Cup 2026");
+    button(root, i18n.t("knowledge.imports.review")).click();
+    const review = await vi.waitFor(() => document.querySelector<HTMLDialogElement>(".knowledge-dialog")!);
+    await vi.waitFor(() => expect(review.textContent).toContain(i18n.t("knowledge.imports.section.duplicates")));
+    const duplicate = review.querySelector<HTMLInputElement>("[data-candidate-id='c-3'] input")!;
+    expect(duplicate.checked).toBe(false);
+    // Exact duplicates stay deselected even after a manual reselect round-trip.
+    duplicate.click();
+    duplicate.click();
+    button(review, i18n.t("knowledge.imports.add_selected")).click();
+    await vi.waitFor(() => {
+      const decide = fetcher.mock.calls.find(([path, options]) =>
+        String(path).endsWith("/knowledge/import_decide") && options?.method === "POST");
+      expect(decide).toBeDefined();
+      expect(JSON.parse(String(decide![1]!.body))).toMatchObject({
+        import_id: "import-1", decision: "approve", selected_candidate_ids: ["c-1", "c-2"],
+      });
+    });
+    await vi.waitFor(() => expect(document.contains(review)).toBe(false));
+    // Approval refreshes the library and the pending import cards.
+    await vi.waitFor(() => expect(importsReads).toBeGreaterThanOrEqual(2));
+    expect(fetcher.mock.calls.some(([path]) => String(path).includes("/knowledge/facts?"))).toBe(true);
+
+    // Every knowledge mutation carries the session CSRF and idempotency headers.
+    const writes = fetcher.mock.calls.filter(([path, options]) =>
+      options?.method === "POST" && String(path).startsWith("/api/miniapp/knowledge/"));
+    expect(writes.length).toBeGreaterThanOrEqual(3);
+    for (const [, options] of writes) {
+      const headers = new Headers(options?.headers);
+      expect(headers.get("X-CSRF-Token")).toBe("csrf-fixture-token");
+      expect(headers.get("X-Idempotency-Key")).toBeTruthy();
+    }
+  });
 });

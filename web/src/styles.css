@@ -2196,14 +2196,172 @@ p {
   margin: 0;
 }
 
-/* The description is the fact's core: normal foreground text, visually grouped. */
+/* The description is the fact's core content: plain regular body text. */
 .knowledge-fact-description {
+  margin: 0;
   white-space: pre-line;
   color: var(--tg-theme-text-color);
-  padding: 0.6rem 0.75rem;
-  border-left: 3px solid color-mix(in srgb, var(--tg-theme-link-color) 55%, transparent);
-  border-radius: 0.5rem;
-  background: color-mix(in srgb, var(--tg-theme-text-color) 5%, var(--tg-theme-section-bg-color));
+}
+
+/* Dissection composer: theme rows and their collapsed/expanded states. */
+.knowledge-theme-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-row,
+.knowledge-candidate-row {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  border-radius: 0.9rem;
+  background: var(--tg-theme-section-bg-color);
+}
+
+.knowledge-theme-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-head .checkbox-label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.knowledge-theme-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: start;
+  min-height: 2.2rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 30%, transparent);
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--tg-theme-text-color);
+}
+
+.knowledge-theme-name {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-theme-body,
+.knowledge-candidate-body {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-theme-body[hidden],
+.knowledge-candidate-body[hidden] {
+  display: none;
+}
+
+.knowledge-theme-detail {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-theme-questions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-question {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 20%, transparent);
+  border-radius: 0.7rem;
+}
+
+.knowledge-theme-question-text {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--tg-theme-text-color);
+}
+
+.knowledge-theme-confirm {
+  justify-self: start;
+}
+
+.knowledge-dissection-quota {
+  margin: 0;
+}
+
+/* Pending imports tab and review dialog. */
+.knowledge-import-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.knowledge-import-card {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.knowledge-import-type {
+  margin: 0;
+}
+
+.knowledge-import-status {
+  justify-self: start;
+  padding: 0.14rem 0.65rem;
+  border-radius: 99rem;
+  border: 1px solid currentColor;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--tg-theme-hint-color);
+}
+
+.knowledge-import-status[data-import-status="approved"] {
+  color: #2e7d32;
+}
+
+.knowledge-import-status[data-import-status="rejected"],
+.knowledge-import-status[data-import-status="failed"] {
+  color: #c62828;
+}
+
+.knowledge-import-status[data-import-status="pending"],
+.knowledge-import-status[data-import-status="working"] {
+  color: var(--tg-theme-link-color);
+}
+
+.knowledge-import-sections {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.knowledge-import-section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-import-section h4 {
+  margin: 0;
+}
+
+.knowledge-import-section .secondary-button {
+  justify-self: start;
+}
+
+.knowledge-candidate-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
 }
 
 /* Sources are secondary: quieter than the description. */
