@@ -40,7 +40,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
         return first.data
 
     tag = await twice(ActionCode.KNOWLEDGE_TAG_CREATE,
-                      {"name": "History", "colour": "#123456"}, "tag-create")
+                      {"name": "Chronology", "colour": "#123456"}, "tag-create")
     await twice(ActionCode.KNOWLEDGE_TAG_RENAME,
                 {"tag_id": tag["tag_id"], "name": "Past"}, "tag-rename")
     fact = await twice(ActionCode.KNOWLEDGE_CREATE,

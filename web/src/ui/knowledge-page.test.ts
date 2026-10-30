@@ -101,6 +101,11 @@ describe("Knowledge page direct HTTP payload contract", () => {
     const { root, fetcher, controller } = setup({
       "/api/miniapp/training/packets": { items, next_cursor: null },
       "/api/miniapp/knowledge/dissect": {},
+      "/api/miniapp/knowledge/themes": {
+        version_id: "version", packet_name: "Packet",
+        themes: [{ theme_revision_id: "theme-1", name: "Selected theme" }],
+        quota: { enabled: true, remaining: 24, reset_at: null },
+      },
     });
     try {
       expect(fetcher.mock.calls.some(([url]) => String(url).includes("/training/packets"))).toBe(false);
@@ -109,6 +114,10 @@ describe("Knowledge page direct HTTP payload contract", () => {
       for (const [index, packet] of items.entries()) {
         root.querySelectorAll<HTMLElement>(".knowledge-packet-card")[index]!
           .querySelector<HTMLButtonElement>("button")!.click();
+        await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>(
+          '[data-theme-id="theme-1"] input[type="checkbox"]')).not.toBeNull());
+        document.querySelector<HTMLInputElement>(
+          '[data-theme-id="theme-1"] input[type="checkbox"]')!.click();
         document.querySelector<HTMLButtonElement>('[data-confirm="false"]')!.click();
         await vi.waitFor(() => expect(fetcher.mock.calls.filter(([url]) =>
           String(url).endsWith("/dissect")).length).toBe(index + 1));
