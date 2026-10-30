@@ -122,7 +122,7 @@ class KnowledgeReview:
             if existing is not None:
                 return {
                     "import_id": existing.id,
-                    "status": existing.status,
+                    "status": "pending",  # replay the original staging response
                     "owner_id": creator,
                     "recipient_id": recipient,
                     "imported_count": 0,
@@ -143,6 +143,16 @@ class KnowledgeReview:
             raise ValueError("Collection exceeds the 10000 fact review limit")
         tags = await PostgresKnowledgeStore(session)._tags([row.id for row in rows])
         snapshots = await self.app._latest_snapshots(session, [row.id for row in rows])
+        colours = dict(
+            (
+                await session.execute(
+                    select(
+                        KnowledgeTagRecord.name,
+                        KnowledgeTagRecord.colour,
+                    ).where(KnowledgeTagRecord.owner_id == creator)
+                )
+            ).all()
+        )
         candidates = []
         for row in rows:
             snapshot = snapshots.get(row.id)
@@ -158,6 +168,7 @@ class KnowledgeReview:
                         "image_ids": row.image_ids,
                     },
                     "tag_names": [name for _, name in tags.get(row.id, [])],
+                    "tag_colours": {name: colours[name] for _, name in tags.get(row.id, [])},
                     "snapshot": {
                         "mentions": snapshot.mentions,
                         "common": snapshot.common,
@@ -442,9 +453,14 @@ class KnowledgeReview:
                 continue
             candidates.append(value)
         if row.type == "dissection":
+            dissection = await session.get(KnowledgeDissectionRecord, row.dissection_id)
+            partial = dissection.status == "partially_succeeded"
             view = await service.apply_dissection_result(
                 row.owner_id, row.dissection_id, candidates
             )
+            if partial:
+                dissection.status = "partially_succeeded"
+                dissection.theme_revision_ids = None
             for fact_id in view.applied_fact_ids:
                 fact = await service.store.get_fact(fact_id)
                 candidate = next(
@@ -461,8 +477,36 @@ class KnowledgeReview:
             return len(view.applied_fact_ids), skipped + len(candidates) - len(
                 view.applied_fact_ids
             )
+        palette = {tag.name for tag in await service.store.tags_for_owner(row.owner_id)}
+        seeded = await session.get(KnowledgeTagSeedRecord, row.owner_id) is not None
         for candidate in candidates:
             content = content_of(candidate)
+            names = [
+                name
+                for name in candidate.get("tag_names", [])
+                if not seeded or name not in TAG_LABELS or name in palette
+            ]
+            colours = {
+                name: colour
+                for name, colour in candidate.get("tag_colours", {}).items()
+                if name in names
+            }
+            if colours:
+                await session.execute(
+                    insert(KnowledgeTagRecord)
+                    .values(
+                        [
+                            {
+                                "id": uuid4(),
+                                "owner_id": row.owner_id,
+                                "name": name,
+                                "colour": colour,
+                            }
+                            for name, colour in colours.items()
+                        ]
+                    )
+                    .on_conflict_do_nothing(index_elements=["owner_id", "name"])
+                )
             detail = await service.create_fact(
                 row.owner_id,
                 title=content.title,
@@ -470,7 +514,7 @@ class KnowledgeReview:
                 author=content.author,
                 links=content.links,
                 image_ids=content.image_ids,
-                tag_names=candidate.get("tag_names", []),
+                tag_names=names,
             )
             session.add(
                 KnowledgeFactCopyRecord(

@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 from conftest import create_player
+from knowledge_review_support import send_and_approve
 from sqlalchemy import select
 
 from sitg_bot.services.training_knowledge import KnowledgeApplication
@@ -15,7 +16,9 @@ pytestmark = pytest.mark.integration
 
 
 async def fact(app, owner, title="Fact"):
-    return await app.mutate(owner, "create", {"title": title, "description": "Original"})
+    return await app.mutate(owner, "create", {
+        "title": title, "description": "Original", "author": "Fact author",
+    })
 
 
 async def test_link_lifecycle_independent_recipients_and_permanent_copies(database):
@@ -30,10 +33,10 @@ async def test_link_lifecycle_independent_recipients_and_permanent_copies(databa
     assert (await app.sharing(owner))["links"] == [link]
     assert (await app.sharing(first))["links"] == []
     for recipient in (first, second):
-        result = await app.mutate(recipient, "import", {"token": link["token"]})
+        result = await send_and_approve(app, recipient, "import", {"token": link["token"]})
         assert result["imported_count"] == 1 and result["skipped_count"] == 0
         assert result["recipient_id"] == recipient
-    repeat = await app.mutate(first, "import", {"token": link["token"]})
+    repeat = await send_and_approve(app, first, "import", {"token": link["token"]})
     assert repeat["imported_count"] == 0 and repeat["skipped_count"] == 1
     copied = (await app.facts(first))["items"][0]["id"]
     assert copied != source["id"]
@@ -67,7 +70,7 @@ async def test_concurrent_imports_hash_dedup_across_links_and_senders(database):
     await fact(app, other)
     links = [await app.mutate(sender, "link_create", {}) for sender in (owner, owner, other)]
     results = await asyncio.gather(
-        *(app.mutate(recipient, "import", {"token": link["token"]}) for link in links)
+        *(send_and_approve(app, recipient, "import", {"token": link["token"]}) for link in links)
     )
     assert sum(result["imported_count"] for result in results) == 1
     assert (await app.facts(recipient))["total"] == 1
@@ -95,10 +98,10 @@ async def test_concurrent_imports_hash_dedup_across_links_and_senders(database):
         },
     )
     for link in links:
-        result = await app.mutate(recipient, "import", {"token": link["token"]})
+        result = await send_and_approve(app, recipient, "import", {"token": link["token"]})
         assert result["imported_count"] == 0
     await app.mutate(recipient, "delete", {"fact_id": copied, "confirm_dissection_origin": False})
-    assert (await app.mutate(recipient, "import", {"token": links[-1]["token"]}))[
+    assert (await send_and_approve(app, recipient, "import", {"token": links[-1]["token"]}))[
         "imported_count"
     ] == 0
     assert (await app.facts(recipient))["total"] == 0
@@ -111,7 +114,7 @@ async def test_import_existing_content_and_invalid_tokens_are_non_destructive(da
     await fact(app, owner)
     await fact(app, recipient)
     link = await app.mutate(owner, "link_create", {})
-    result = await app.mutate(recipient, "import", {"token": link["token"]})
+    result = await send_and_approve(app, recipient, "import", {"token": link["token"]})
     assert result["imported_count"] == 0 and result["skipped_count"] == 1
     with pytest.raises(ValueError):
         await app.mutate(owner, "import", {"token": link["token"]})
@@ -126,15 +129,15 @@ async def test_colour_persistence_copy_and_owner_boundaries(database):
     owner = await create_player(database, 9131, "sender")
     recipient = await create_player(database, 9132, "recipient")
     app = KnowledgeApplication(database)
-    tag = await app.mutate(owner, "tag_create", {"name": " History ", "colour": "#Aa33Ff"})
-    assert tag.name == "history" and tag.colour == "#aa33ff"
+    tag = await app.mutate(owner, "tag_create", {"name": " Timeline ", "colour": "#Aa33Ff"})
+    assert tag.name == "timeline" and tag.colour == "#aa33ff"
     created = await app.mutate(
         owner,
         "create",
         {
             "title": "Tag fact",
             "description": "Example",
-            "tag_names": ["history"],
+            "tag_names": ["timeline"],
         },
     )
     assert (await app.detail(owner, created["id"]))["tags"][0]["colour"] == "#aa33ff"
@@ -151,7 +154,7 @@ async def test_colour_persistence_copy_and_owner_boundaries(database):
             },
         )
     link = await app.mutate(owner, "link_create", {})
-    await app.mutate(recipient, "import", {"token": link["token"]})
+    await send_and_approve(app, recipient, "import", {"token": link["token"]})
     copied = (await app.facts(recipient))["items"][0]["id"]
     assert (await app.detail(recipient, copied))["tags"][0]["colour"] == "#aa33ff"
     with pytest.raises(ValueError):

@@ -2,6 +2,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from conftest import create_player
+from knowledge_review_support import send_and_approve
 from sqlalchemy import event, select
 from test_training import upload
 
@@ -50,7 +51,7 @@ async def test_persisted_images_are_owner_scoped_and_copies_survive_source_delet
         "title": "Illustrated", "description": "D", "image_ids": [image_id],
     })
     assert fact["images"][0]["id"] == image_id and fact["links"] == []
-    await app.mutate(owner, "grant", {"recipient": str(recipient)})
+    await send_and_approve(app, owner, "grant", {"recipient": str(recipient)})
     copied = (await app.facts(recipient))["items"][0]
     assert copied["images"] == fact["images"] and copied["packet_name"] is None
     await app.mutate(owner, "delete", {"fact_id": fact["id"], "confirm_dissection_origin": False})
@@ -62,8 +63,9 @@ async def test_persisted_images_are_owner_scoped_and_copies_survive_source_delet
         await images.read(other, image_id)
     await app.mutate(recipient, "update", {"fact_id": copied["id"], "expected_version": 2,
                                             "image_ids": []})
-    with pytest.raises(LookupError):
-        await images.read(recipient, image_id)
+    # The immutable owned review still references the original image, independently
+    # of later edits to both saved copies. No other recipient gains access.
+    assert (await images.read(recipient, image_id))["source_base64"] == PNG_BASE64
     async with database.sessions() as session:
         assert len(list(await session.scalars(select(KnowledgeImageRecord)))) == 1
 

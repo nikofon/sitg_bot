@@ -12,10 +12,13 @@ from sitg_bot.services.knowledge_review import DEFAULT_TAG_LABELS
 from sitg_bot.services.reliable_delivery import DurableJobWorker
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.models import (
+    KnowledgeDissectionRecord,
     KnowledgeImportRecord,
+    KnowledgeTagRecord,
     PacketQuestionRecord,
     PlayerExposureClaimRecord,
     ThemeRevisionRecord,
+    TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
     TrainingUsagePeriodRecord,
 )
@@ -40,8 +43,11 @@ def selected(detail):
 async def test_author_search_one_time_deletable_defaults(database):
     owner = await create_player(database, 9901, "author-owner")
     app = KnowledgeApplication(database)
+    async with database.transaction() as session:
+        session.add(KnowledgeTagRecord(id=uuid4(), owner_id=owner, name="custom", colour="#abcdef"))
     first = await app.tags(owner)
-    assert {item["label"] for item in first["items"]} == set(DEFAULT_TAG_LABELS)
+    assert {item["label"] for item in first["items"]} == set(DEFAULT_TAG_LABELS) | {"custom"}
+    assert next(item for item in first["items"] if item["name"] == "custom")["colour"] == "#abcdef"
     removed = next(item for item in first["items"] if item["label"] == "Chemestry")
     await app.mutate(owner, "tag_delete", {"tag_id": removed["tag_id"]})
     app = KnowledgeApplication(database)
@@ -71,6 +77,24 @@ async def test_author_search_one_time_deletable_defaults(database):
         },
     )
     assert cleared["author"] == ""
+    sender = await create_player(database, 9910, "default-tag-sender")
+    await app.mutate(
+        sender, "create", {"title": "Incoming", "description": "Tagged", "tag_names": ["Chemestry"]}
+    )
+    staged = await app.mutate(sender, "grant", {"recipient": str(owner), "creation_key": "once"})
+    same = await app.mutate(sender, "grant", {"recipient": str(owner), "creation_key": "once"})
+    assert staged == same
+    detail = await app.reviews.detail(owner, staged["import_id"])
+    await app.reviews.decide(
+        owner,
+        import_id=staged["import_id"],
+        decision="approve",
+        selected_candidate_ids=selected(detail),
+    )
+    assert "Chemestry" not in {item["label"] for item in (await app.tags(owner))["items"]}
+    assert (await app.mutate(sender, "grant", {"recipient": str(owner), "creation_key": "once"}))[
+        "import_id"
+    ] == staged["import_id"]
 
 
 async def test_review_dedupe_snapshot_decisions_and_no_resurrection(database):
@@ -258,7 +282,11 @@ async def test_selected_themes_preview_quota_and_durable_review(database):
         idempotency_key="selected-only",
     )
     async with database.transaction() as session:
-        row = await session.get(TrainingAnalysisRequestRecord, request["request_id"])
+        row = await session.scalar(
+            select(TrainingAnalysisRequestRecord).where(
+                TrainingAnalysisRequestRecord.request_id == request["request_id"]
+            )
+        )
         assert row.source["quota_units"] == 1
         placements = set(
             await session.scalars(
@@ -305,3 +333,40 @@ async def test_selected_themes_preview_quota_and_durable_review(database):
         stored = await session.get(KnowledgeImportRecord, request["import_id"])
         assert stored.status == "approved"
         assert await session.scalar(select(func.count()).select_from(PlayerExposureClaimRecord)) > 0
+
+
+async def test_partial_dissection_approval_cannot_claim_full_theme_coverage(database):
+    from test_training import upload
+
+    owner = await create_player(database, 9911, "partial-review")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    request = await app.request_analysis(
+        owner,
+        version_id=version,
+        kind="dissection",
+        confirm_exposure=True,
+        idempotency_key="partial-review",
+    )
+    async with database.transaction() as session:
+        analysis = await app.analysis._request_row(session, request["request_id"])
+        artifact_id = analysis.artifact_id
+    # Execute without application reconciliation, then simulate a partial producer result.
+    await app.analysis.execute_job({"artifact_id": str(artifact_id), "generation": 1})
+    async with database.transaction() as session:
+        analysis = await app.analysis._request_row(session, request["request_id"])
+        artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+        analysis.status = artifact.status = "partially_succeeded"
+    await app.reconcile()
+    detail = await app.reviews.detail(owner, request["import_id"])
+    await app.reviews.decide(
+        owner,
+        import_id=request["import_id"],
+        decision="approve",
+        selected_candidate_ids=selected(detail)[:1],
+    )
+    async with database.transaction() as session:
+        row = await session.get(KnowledgeDissectionRecord, request["dissection_id"])
+        assert row.status == "partially_succeeded" and row.theme_revision_ids is None
+    card = (await app.packets.list_packets(owner))["items"][0]
+    assert card["dissected"] and card["dissected_theme_count"] is None

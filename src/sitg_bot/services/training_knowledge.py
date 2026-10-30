@@ -760,6 +760,8 @@ class KnowledgeApplication:
             review.candidates = candidates
             review.status = "pending"
         row.status = request.status
+        if request.status != "succeeded":
+            row.theme_revision_ids = None  # incomplete analysis cannot claim full selected coverage
         if request.status == "succeeded":
             # Keep non-content coverage after the expiring request/cache is pruned.
             row.theme_revision_ids = sorted({str(value) for value in await session.scalars(

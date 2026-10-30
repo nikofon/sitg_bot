@@ -120,7 +120,7 @@ PNG/JPEG/WebP headers and dimensions are checked; uploads are limited to 2 MiB a
 20 million pixels. SVG and remote fetching are unsupported. Fact create/update
 accepts up to eight distinct `image_ids`; omission preserves existing images and
 an empty array removes them. GET `/api/miniapp/knowledge/images/{image_id}` checks
-live uploader or owned-fact reference access, and serves raster bytes with
+live uploader, owned-fact or owner-private review snapshot reference access, and serves raster bytes with
 `no-store`/`nosniff`. List/detail `images` contains `{id,url,content_type}` metadata,
 never image bytes. Permanent copies retain immutable attachments independently of
 source edits/deletion and grant no packet metadata. Apply migration
@@ -185,7 +185,8 @@ Each card retains version `id`, logical `packet_id`, name/year/scope and adds:
 - `tournaments:[{id,name}]`: only currently readable associations for this user.
 - `total_theme_count`, `fresh_theme_count`: existing SI content-adapter freshness,
   including reserved/burnt question/theme identities and user packet blocks.
-- `dissected`: this user has a successful/partial applied dissection for this version.
+- `dissected`: this user has a successful/partial completed dissection for this version,
+  including a staged review not yet approved.
 - `dissected_theme_count`: distinct known fully dissected themes; **null**, not zero,
   if partial/legacy data prevents exact coverage (unless another complete request
   covers all themes). No dissection is known zero.

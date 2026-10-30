@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 from conftest import create_player
-from test_analysis_jobs import artifact_id_of, artifact_of, make_stack
+from test_analysis_jobs import artifact_id_of, artifact_of, make_stack, payload
 
 from sitg_bot.services.training_ai import CachedFactsDecision, DissectionSource
 
@@ -34,7 +34,9 @@ def counts(stack):
 
 async def test_all_four_routes_provider_counts_payloads_and_base_immutability(database):
     owners = [await create_player(database, 9980 + i, f"cache-route-{i}") for i in range(5)]
-    stack = await make_stack(database, owners)
+    stack = await make_stack(
+        database, owners, policy=payload(dissection={"cache_hit_charging": False})
+    )
     question = stack.loader.add("RAW SOURCE SECRET: unique original question and answer")
     source = DissectionSource(uuid4(), (question,))
     await request(stack, owners[0], source, "base", tags=("history", "art"))

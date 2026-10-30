@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from conftest import create_player, seed_category
+from knowledge_review_support import approve_all, send_and_approve
 from sqlalchemy import event, select
 from test_training import upload
 
@@ -75,7 +76,7 @@ async def test_persistent_crud_pagination_and_permanent_independent_copies(datab
     assert other["items"][0]["title"] == "Beta"
     with pytest.raises(PermissionError):
         await app.detail(recipient, fact_id)
-    await app.mutate(owner, "grant", {"recipient": "reader"})
+    await send_and_approve(app, owner, "grant", {"recipient": "reader"})
     copied_id = (await app.facts(recipient))["items"][0]["id"]
     shared = await app.detail(recipient, copied_id)
     assert copied_id != fact_id and shared["editable"] is True and "provenance" not in shared
@@ -94,7 +95,7 @@ async def test_persistent_crud_pagination_and_permanent_independent_copies(datab
         await app.mutate(owner, "revoke", {"grant_id": grants[0]["id"]})
     with pytest.raises(PermissionError):
         await app.detail(recipient, fact_id)
-    await app.mutate(owner, "grant", {"recipient": "reader"})
+    await send_and_approve(app, owner, "grant", {"recipient": "reader"})
     assert (await app.detail(recipient, copied_id))["title"] == "Alpha"
     await app.mutate(
         recipient,
@@ -136,17 +137,19 @@ async def test_dissection_retry_applies_replacement_result(database, outcome):
         owner, version_id=version, kind="dissection", instructions="Keep history",
         idempotency_key="replacement",
     )
-    assert second["dissection_id"] == first["dissection_id"]
+    assert second["dissection_id"] != first["dissection_id"]
     assert second["request_id"] != first["request_id"]
     await worker.run_once()
     await app.reconcile()
     assert (await app.dissections(owner))["items"][0]["status"] == "succeeded"
+    assert (await app.facts(owner))["total"] == 0
+    await approve_all(app, owner, second)
     assert (await app.facts(owner))["total"] == 5
     await app.reconcile()
     assert (await app.facts(owner))["total"] == 5
 
 
-async def test_dissection_automatic_application_and_best_buzz_bridge(database):
+async def test_dissection_explicit_approval_and_best_buzz_bridge(database):
     owner = await create_player(database, 8201, "trainee")
     app = await application(database, owner)
     version, _ = await upload(database, owner)
@@ -168,6 +171,8 @@ async def test_dissection_automatic_application_and_best_buzz_bridge(database):
         batch_size=1,
     )
     await worker.run_once()
+    assert (await app.facts(owner))["total"] == 0
+    await approve_all(app, owner, result)
     page = await app.facts(owner)
     assert page["total"] == 5
     async with database.transaction() as session:
@@ -242,9 +247,9 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
         owner, version_id=version, kind="dissection", idempotency_key="retry-dissection",
     )
     assert retried["request_id"] != first["request_id"]
-    assert retried["dissection_id"] == first["dissection_id"]
+    assert retried["dissection_id"] != first["dissection_id"]
     async with database.sessions() as session:
-        row = await session.get(KnowledgeDissectionRecord, first["dissection_id"])
+        row = await session.get(KnowledgeDissectionRecord, retried["dissection_id"])
         assert row.status == "pending" and row.application is None
         assert row.analysis_request_id == retried["request_id"]
     worker = DurableJobWorker(
@@ -252,6 +257,7 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
     )
     for _ in range(3):
         await worker.run_once()
+    await approve_all(app, owner, retried)
     facts = await app.facts(owner)
     assert facts["total"] == 5
     await app.mutate(owner, "delete", {
@@ -260,16 +266,19 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
     repeated = await app.request_analysis(
         owner, version_id=version, kind="dissection", idempotency_key="after-application",
     )
-    assert repeated["request_id"] == retried["request_id"]
+    assert repeated["request_id"] != retried["request_id"]
+    for _ in range(3):
+        await worker.run_once()
+    await approve_all(app, owner, repeated)
     await app.reconcile()
     assert (await app.facts(owner))["total"] == 4
     async with database.sessions() as session:
-        row = await session.get(KnowledgeDissectionRecord, first["dissection_id"])
+        row = await session.get(KnowledgeDissectionRecord, retried["dissection_id"])
         assert row.status == "succeeded" and row.application is not None
         periods = list(await session.scalars(select(TrainingUsagePeriodRecord).where(
             TrainingUsagePeriodRecord.feature == "dissection",
         )))
-        assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 1
+        assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 2
 
 
 async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks(
@@ -315,7 +324,7 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
             owner, version_id=version, kind="best_buzz", idempotency_key="second-best-buzz",
         ))
         _, result = await asyncio.wait_for(asyncio.gather(terminal, waiter), timeout=10)
-        assert result["status"] == "succeeded"
+        assert result["status"] == "queued"  # private packets have no cross-request cache
     finally:
         waiter_lookup.set()
         for task in (terminal, waiter):
@@ -324,9 +333,9 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         await asyncio.gather(terminal, *([waiter] if waiter else []), return_exceptions=True)
     async with database.sessions() as session:
         requests = list(await session.scalars(select(TrainingAnalysisRequestRecord)))
-        assert len(requests) == 2 and all(row.status == "succeeded" for row in requests)
+        assert len(requests) == 2 and {row.status for row in requests} == {"succeeded", "queued"}
         periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
-        assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 1
+        assert len(periods) == 1 and periods[0].reserved == 1 and periods[0].settled == 1
         assert len(list(await session.scalars(select(TrainingBestBuzzCompletionRecord)))) == 1
 
 
@@ -395,7 +404,8 @@ async def test_statistics_lock_owners_in_the_same_order_as_collection_imports(
     async with database.sessions() as session:
         snapshots = list(await session.scalars(select(KnowledgeSnapshotRecord)))
         assert len(snapshots) == 2
-        assert all(row.common["model"] == "fixture" and row.common["prompt_version"] == "1"
+        assert all(row.common["model"] == "fixture"
+                   and row.common["prompt_version"] == app.analysis.settings.prompt_version
                    for row in snapshots)
     link = await app.mutate(owner, "link_create", {})
     acquired.clear()
@@ -470,7 +480,17 @@ async def test_gateway_shares_owned_copies_and_rejects_revocation(database):
         {"action": "knowledge.grant.create.v1", "recipient": "gateway-reader"},
         "gateway-grant-fact",
     )
-    assert grant.ok
+    assert grant.ok and grant.data["status"] == "pending"
+    staged = await execute(reader, 8402, {
+        "action": "knowledge.import.view.v1", "import_id": grant.data["import_id"],
+    }, None)
+    approved = await execute(reader, 8402, {
+        "action": "knowledge.import.decide.v1", "import_id": grant.data["import_id"],
+        "decision": "approve", "selected_candidate_ids": [
+            value["id"] for values in staged.data["sections"].values() for value in values
+        ],
+    }, "gateway-approve-copy")
+    assert approved.ok and approved.data["approved_count"] == 1
     shared = await execute(
         reader, 8402, {"action": "knowledge.fact.view.v1", "fact_id": fact_id}, None
     )
@@ -590,6 +610,7 @@ async def test_packet_analysis_charges_themes_with_independent_24_theme_daily_bu
     assert (
         await app.analysis.status(owner_player_id=owner, request_id=dissect["request_id"])
     ).status == "succeeded"
+    await approve_all(app, owner, dissect)
     await app.request_analysis(
         owner, version_id=version, kind="best_buzz", idempotency_key="new-buzz"
     )
@@ -597,7 +618,7 @@ async def test_packet_analysis_charges_themes_with_independent_24_theme_daily_bu
     cached = await app.request_analysis(
         owner, version_id=version, kind="best_buzz", idempotency_key="cached-buzz"
     )
-    assert cached["status"] == "succeeded"
+    assert cached["status"] == "queued"  # new private requests must recompute
     async with database.transaction() as session:
         periods = list(
             await session.scalars(
@@ -608,8 +629,9 @@ async def test_packet_analysis_charges_themes_with_independent_24_theme_daily_bu
         )
         assert {period.feature: (period.settled, period.reserved) for period in periods} == {
             "dissection": (12, 0),
-            "best_buzz": (12, 0),
+            "best_buzz": (12, 12),
         }
+    await app.analysis.cancel(owner_player_id=owner, request_id=cached["request_id"])
     small = await upload_theme_packet(app, owner, 2)
     app.analysis.provider.buzz_failures.append(AnalysisValidationError("Malformed provider output"))
     failed = await app.request_analysis(

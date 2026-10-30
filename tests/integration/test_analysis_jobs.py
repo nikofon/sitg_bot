@@ -466,7 +466,8 @@ async def test_custom_instructions_and_owners_isolate_artifacts(database):
     assert job_count == 3
 
     assert await stack.worker.run_once() == 3
-    assert len(stack.provider.extract_calls) == 3
+    assert len(stack.provider.extract_calls) == 1
+    assert len(stack.provider.decision_calls) == len(stack.provider.transform_calls) == 2
     for owner, key in ((owner_a, "c-a"), (owner_b, "c-b"), (owner_c, "c-c")):
         view = await stack.service.status(owner_player_id=owner, request_id=key)
         assert view.status == "succeeded"
