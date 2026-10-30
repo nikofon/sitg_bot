@@ -1,10 +1,14 @@
+from copy import deepcopy
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
 from conftest import create_player
+from sqlalchemy import insert
 from test_analysis_jobs import artifact_id_of, artifact_of, make_stack, payload
 
 from sitg_bot.services.training_ai import CachedFactsDecision, DissectionSource
+from sitg_bot.storage.models import TrainingAnalysisArtifactRecord
 
 pytestmark = pytest.mark.integration
 
@@ -109,3 +113,36 @@ async def test_private_cross_request_no_cache_same_request_recovery_and_coverage
     assert await artifact_id_of(database, "larger-coverage") != await artifact_id_of(
         database, "public-1"
     )
+
+
+async def test_older_compatible_tag_cache_is_filtered_before_bounded_lookup(database):
+    owners = [await create_player(database, 9990 + i, f"old-cache-{i}") for i in range(2)]
+    stack = await make_stack(database, owners)
+    question = stack.loader.add("Public original")
+    source = DissectionSource(uuid4(), (question,))
+    await request(stack, owners[0], source, "original-base", tags=("art",))
+    assert await stack.worker.run_once() == 1
+    base_id = await artifact_id_of(database, "original-base")
+    async with database.transaction() as session:
+        base = await session.get(TrainingAnalysisArtifactRecord, base_id)
+        clones = []
+        for index in range(101):
+            value = {
+                column.name: getattr(base, column.name)
+                for column in TrainingAnalysisArtifactRecord.__table__.columns
+            }
+            value.update(
+                id=uuid4(),
+                artifact_key=uuid4().hex,
+                created_at=base.created_at + timedelta(seconds=index + 1),
+            )
+            value["payload"] = deepcopy(base.payload)
+            value["payload"]["tag_coverage"] = [f"unrelated-{index}"]
+            for candidate in value["payload"]["candidates"]:
+                candidate["tags"] = [f"unrelated-{index}"]
+            clones.append(value)
+        await session.execute(insert(TrainingAnalysisArtifactRecord), clones)
+    hit = await request(stack, owners[1], source, "older-hit", tags=("art",))
+    assert hit.status == "succeeded"
+    assert await artifact_id_of(database, "older-hit") == base_id
+    assert counts(stack) == (1, 0, 0, 1)

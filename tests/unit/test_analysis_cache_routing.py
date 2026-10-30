@@ -116,6 +116,14 @@ async def test_full_read_only_when_provider_requires_it_and_never_private_cache(
     assert not harness.provider.transform_calls and not harness.provider.decision_calls
 
 
+async def test_bare_retagging_cannot_drop_cached_facts(monkeypatch):
+    harness = RoutingHarness(monkeypatch)
+    harness.descriptor["tag_names"] = ["art"]
+    harness.provider.cached_response = lambda request: ()
+    with pytest.raises(AnalysisValidationError, match="preserve every cached fact"):
+        await harness.run()
+
+
 async def test_invalid_decision_and_invented_provenance_rejected(monkeypatch):
     harness = RoutingHarness(monkeypatch)
     harness.provider.cached_decision = CachedFactsDecision("false")

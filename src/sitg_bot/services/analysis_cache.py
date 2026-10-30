@@ -44,23 +44,24 @@ def candidate_payload(value):
 
 async def public_base(service, session, fingerprint, tags, *, require_coverage=False):
     model = TrainingAnalysisArtifactRecord
+    statement = select(model).where(
+        model.kind == "dissection",
+        model.shared.is_(True),
+        model.owner_player_id.is_(None),
+        model.source_fingerprint == fingerprint,
+        model.status == "succeeded",
+        model.model == service.settings.model,
+        model.prompt_version == service.settings.prompt_version,
+        model.schema_version == service.settings.schema_version,
+        model.tokenizer_version == service.settings.tokenizer_version,
+        model.payload["cache_version"].as_integer() == 2,
+    )
+    if require_coverage:
+        # Filter before the bounded page: an older compatible base must not be
+        # hidden by newer artifacts carrying unrelated tag palettes.
+        statement = statement.where(model.payload["tag_coverage"].contains(sorted(tags)))
     rows = list(
-        await session.scalars(
-            select(model)
-            .where(
-                model.kind == "dissection",
-                model.shared.is_(True),
-                model.owner_player_id.is_(None),
-                model.source_fingerprint == fingerprint,
-                model.status == "succeeded",
-                model.model == service.settings.model,
-                model.prompt_version == service.settings.prompt_version,
-                model.schema_version == service.settings.schema_version,
-                model.tokenizer_version == service.settings.tokenizer_version,
-            )
-            .order_by(model.created_at.desc(), model.id)
-            .limit(100)
-        )
+        await session.scalars(statement.order_by(model.created_at.desc(), model.id).limit(100))
     )
     requested = set(tags)
     eligible = [
@@ -143,6 +144,12 @@ async def run_cached_dissection(service, artifact_id, lease_token, instructions,
             max_output_facts=service.settings.max_output_facts,
             allowed_tag_names=tags,
         )
+        if not instructions and {value.candidate_id for value in transformed} != {
+            value.candidate_id for value in cached
+        }:
+            raise AnalysisValidationError(
+                "Bare retagging must preserve every cached fact unchanged"
+            )
         allowed_links = {}
         for value in cached:
             allowed_links.setdefault(value.question_revision_id, set()).update(value.links)

@@ -112,6 +112,28 @@ usage separately from trainee quota. Uncertain outcomes become failed, refundabl
 requests requiring an explicit retry; no automatic repeated provider charge is assumed.
 Credentials and models are server configuration, with no fake production fallback.
 
+## Enabling and live acceptance (operator steps, not automated-test claims)
+
+1. Apply `alembic upgrade head` (through `0030_public_analysis_cache`) on the intended
+   application database before deploying this source. Do not use test database URLs for it.
+2. Configure the existing server-only `SITG_TRAINING_AI_API_KEY` secret and
+   `SITG_TRAINING_AI_MODEL` structured-output-capable model. The analysis worker starts with
+   the application server; no fake provider substitutes for missing configuration.
+3. Existing disabled administrator policies are not overwritten by configuration. Enable the
+   desired category using `EntitlementService.create_policy` and its `policy_version` explicitly.
+   Verify `training/entitlements` reports enabled features and the intended daily budgets.
+4. With authorized test accounts, preview/confirm one theme, select tags and start dissection.
+   Close/reopen the window, verify the durable pending review, then approve only selected facts.
+   Confirm author attribution, source privacy and that unselected themes remain undisclosed.
+5. For the same authorized public source/coverage, repeat with compatible/subset tags, new tags,
+   cache-sufficient commentary and source-required commentary. Inspect recorded provider calls,
+   usage and supplied payloads; the LLM, not a keyword list, chooses commentary routing.
+   Repeat a private upload with a new request identity and verify it recomputes rather than hits
+   reusable cache. Do not infer real-provider quality/cost from fake-provider test counts.
+
+Credentials, operator policy changes, deployed browser/Telegram delivery and real-provider
+smoke acceptance remain explicit deployment prerequisites; implementation tests make no live calls.
+
 ## Testing
 
 Run the targeted suites: `tests/unit/test_training_ai.py`,
