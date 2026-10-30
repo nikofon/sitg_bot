@@ -257,7 +257,7 @@ export interface KnowledgeImportCandidate {
   description: string;
   author: string;
   links: Array<{ url: string; title: string }>;
-  images: unknown[];
+  images: KnowledgeFactImage[];
   tag_names: string[];
   selected: boolean;
 }
@@ -1427,12 +1427,21 @@ export function renderKnowledge(
         data.facts.next_cursor = page.next_cursor;
         if (page.next_cursor === null) loadMore.remove();
       })
-      .catch(() => reportError(i18n.t("knowledge.error")))
-      .finally(() => { loadMore.disabled = false; });
+      .catch(() => {
+        if (revision !== queryRevision || actions.signal?.aborted) return;
+        reportError(i18n.t("knowledge.error"));
+      })
+      .finally(() => {
+        if (revision !== queryRevision || actions.signal?.aborted) return;
+        loadMore.disabled = false;
+      });
   });
 
   const reload = (propagateError = false): Promise<void> => {
     const revision = ++queryRevision;
+    data.facts.next_cursor = null;
+    loadMore.hidden = true;
+    loadMore.disabled = true;
     return actions.loadFacts({ search, order,
       ...(authorSearch ? { author: authorSearch } : {}),
       ...(selectedTags.size ? { tags: [...selectedTags] } : {}) })
@@ -1444,6 +1453,7 @@ export function renderKnowledge(
         renderList();
         total.textContent = i18n.t("knowledge.total", { total: page.total });
         loadMore.hidden = page.next_cursor === null;
+        loadMore.disabled = false;
         if (page.next_cursor !== null && !loadMore.isConnected) pagination.append(loadMore);
       })
       .catch((error: unknown) => {
@@ -1705,7 +1715,9 @@ export function renderKnowledge(
     void refreshJobs();
     imports.refresh();
   };
-  const imports = createImportsPanel(i18n, actions, () => reload());
+  const imports = createImportsPanel(i18n, actions, async () => {
+    await Promise.all([reload(), reloadTagPool()]);
+  });
   const panels: Record<KnowledgeTab, HTMLElement> = {
     library: libraryPanel, packets: packetsPanel, imports: imports.root,
   };

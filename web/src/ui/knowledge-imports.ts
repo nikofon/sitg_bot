@@ -277,6 +277,7 @@ export function createImportsPanel(
           }
           syncToggle();
         });
+        rows.addEventListener("change", syncToggle);
         syncToggle();
       } else {
         toggleAll.hidden = true;
@@ -302,6 +303,11 @@ export function createImportsPanel(
         candidate.author
           ? element("p", { className: "knowledge-fact-meta" },
             i18n.t("knowledge.fact.author", { author: candidate.author }))
+          : null,
+        candidate.images.length
+          ? element("div", { className: "knowledge-fact-images" },
+            ...candidate.images.map((image) =>
+              element("img", { src: image.url, alt: candidate.title, loading: "lazy" })))
           : null,
         candidate.links.length
           ? element("ul", { className: "knowledge-fact-links" },

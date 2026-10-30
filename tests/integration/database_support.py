@@ -74,19 +74,18 @@ async def reset_database():
 async def create(name, record):
     if not re.fullmatch(r"sitg_test_[a-z0-9_]+", name):
         raise RuntimeError("Database name must start sitg_test_ and contain only a-z, 0-9, _")
-    # Exclusive record creation avoids replacing another section's ownership receipt.
-    fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     admin = make_url(os.environ["SITG_TEST_ADMIN_URL"])
     token = secrets.token_hex(32)
     url = admin.set(database=name, drivername="postgresql+asyncpg")
     conn = await connect(admin)
     try:
-        # No IF NOT EXISTS: an existing DB is never adopted or overwritten.
-        await conn.execute(f'CREATE DATABASE "{name}"')
-    except BaseException:
-        os.close(fd)
-        Path(record).unlink()
-        raise
+        fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            await conn.execute(f'CREATE DATABASE "{name}"')
+        except BaseException:
+            os.close(fd)
+            Path(record).unlink()
+            raise
     finally:
         await conn.close()
     # Persist ownership immediately, even if initialization is interrupted.

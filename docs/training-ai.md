@@ -119,6 +119,10 @@ Credentials and models are server configuration, with no fake production fallbac
 2. Configure the existing server-only `SITG_TRAINING_AI_API_KEY` secret and
    `SITG_TRAINING_AI_MODEL` structured-output-capable model. The analysis worker starts with
    the application server; no fake provider substitutes for missing configuration.
+   For `compose.vps.yaml`, set both values in the deployment's private `.env` before
+   creating or recreating the `server` service. Compose forwards these optional variables
+   only to `server`, not to the Telegram bot or migration service. Leaving either value
+   unset keeps AI unconfigured; never print or commit the API key.
 3. Existing disabled administrator policies are not overwritten by configuration. Enable the
    desired category using `EntitlementService.create_policy` and its `policy_version` explicitly.
    Verify `training/entitlements` reports enabled features and the intended daily budgets.

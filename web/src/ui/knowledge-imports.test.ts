@@ -355,6 +355,60 @@ describe("import review dialog", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it.each(["pending", "approved"] as const)("shows authorized candidate images in %s reviews", async (status) => {
+    const detail = structuredClone(importDetail);
+    detail.status = status;
+    for (const [key, candidates] of Object.entries(detail.sections)) {
+      candidates[0]!.images = [{ id: `image-${key}`,
+        url: `/api/miniapp/knowledge/images/${key}?authorization=opaque`, content_type: "image/png" }];
+    }
+    const { button } = openImports(importActions({ loadImportDetail: vi.fn().mockResolvedValue(detail) }));
+    await flush();
+    button("Review").click();
+    await flush();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    for (const [key, candidates] of Object.entries(detail.sections)) {
+      const row = dialog.querySelector<HTMLElement>(`[data-import-section="${key}"] .knowledge-candidate-row`)!;
+      row.querySelector<HTMLButtonElement>(".knowledge-theme-toggle")!.click();
+      expect(row.querySelector<HTMLElement>(".knowledge-candidate-body")!.hidden).toBe(false);
+      const image = row.querySelector<HTMLImageElement>(".knowledge-fact-images img")!;
+      expect(image.getAttribute("src")).toBe(candidates[0]!.images[0]!.url);
+      expect(image.alt).toBe(candidates[0]!.title);
+      expect(image.getAttribute("loading")).toBe("lazy");
+    }
+  });
+
+  it.each(["new", "potential_duplicates", "duplicates"] as const)(
+    "synchronizes the %s bulk action after individual selection changes", async (key) => {
+      const detail = structuredClone(importDetail);
+      detail.sections[key] = [candidate("one", "One", true), candidate("two", "Two", true)];
+      const actionList = importActions({ loadImportDetail: vi.fn().mockResolvedValue(detail) });
+      const { button } = openImports(actionList);
+      await flush();
+      button("Review").click();
+      await flush();
+      const section = document.querySelector<HTMLElement>(`[data-import-section="${key}"]`)!;
+      const boxes = [...section.querySelectorAll<HTMLInputElement>("input[type=checkbox]")];
+      const toggle = section.querySelector<HTMLButtonElement>("[data-import-section-toggle]")!;
+      expect(toggle.textContent).toBe("Deselect all");
+      boxes[0]!.click();
+      expect(toggle.textContent).toBe("Select all");
+      toggle.click();
+      expect(boxes.every((box) => box.checked)).toBe(true);
+      expect(toggle.textContent).toBe("Deselect all");
+      toggle.click();
+      expect(boxes.every((box) => !box.checked)).toBe(true);
+      boxes[0]!.click();
+      expect(toggle.textContent).toBe("Select all");
+      boxes[1]!.click();
+      expect(toggle.textContent).toBe("Deselect all");
+      document.querySelector<HTMLButtonElement>("[data-import-approve]")!.click();
+      await flush();
+      expect(actionList.decideImport).toHaveBeenCalledWith("import-1", "approve",
+        expect.arrayContaining(["one", "two"]));
+    },
+  );
+
   it("selects and deselects all candidates within one section", async () => {
     const detail: KnowledgeImportDetail = {
       ...importDetail,
@@ -409,6 +463,45 @@ describe("import review dialog", () => {
       expect(actionList.loadImports).toHaveBeenCalledTimes(2);
       expect(document.contains(dialog)).toBe(false);
     }
+  });
+
+  it("refreshes imported tags for filters, card styling, editors and the composer", async () => {
+    const tag = { tag_id: "imported-tag", name: "imported", colour: "#123456" };
+    const facts = structuredClone(data.facts);
+    facts.items[0]!.tag_names = [tag.name];
+    const actionList = importActions({
+      loadTags: vi.fn().mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [tag] }),
+      loadFacts: vi.fn().mockResolvedValue(facts), save: vi.fn(),
+      loadPackets: vi.fn().mockResolvedValue({ items: [{ id: "packet", packet_id: "packet",
+        name: "Packet", year: null, scope: "training", authors: [], tournaments: [],
+        total_theme_count: 1, fresh_theme_count: 1, dissected_theme_count: 0,
+        dissected: false, best_buzz_calculated: false }], next_cursor: null }),
+    });
+    const { root, button } = openImports(actionList);
+    await flush();
+    expect(root.querySelectorAll(".knowledge-tag-filter-chip")).toHaveLength(0);
+    button("Review").click();
+    await flush();
+    document.querySelector<HTMLButtonElement>("[data-import-approve]")!.click();
+    await flush();
+    expect(actionList.loadTags).toHaveBeenCalledTimes(2);
+    const filter = root.querySelector<HTMLButtonElement>(".knowledge-tag-filter-chip")!;
+    expect(filter.textContent).toBe(tag.name);
+    expect(root.querySelector<HTMLElement>("[data-fact-id]")!.classList.contains("knowledge-fact-tagged"))
+      .toBe(true);
+    filter.click();
+    await flush();
+    expect(actionList.loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: [tag.name] });
+    button("Library").click();
+    button("knowledge.create", root).click();
+    await flush();
+    expect(document.querySelector<HTMLInputElement>(".knowledge-tag-options input")!.value).toBe(tag.name);
+    document.querySelector<HTMLButtonElement>(".knowledge-dialog-close")!.click();
+    button("Packets").click();
+    await vi.waitFor(() => expect(root.querySelector(".knowledge-packet-card")).not.toBeNull());
+    button("knowledge.dissection.submit_short", root).click();
+    await flush();
+    expect(document.querySelector<HTMLInputElement>(".knowledge-tag-options input")!.value).toBe(tag.tag_id);
   });
 
   it("rejects an import after confirmation and refreshes nothing into the library", async () => {
