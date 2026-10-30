@@ -365,6 +365,7 @@ def dissection_candidate_from_payload(payload: Mapping[str, object]) -> Dissecti
             title=str(content_payload["title"]),
             description=str(content_payload["description"]),
             links=links,
+            author=str(content_payload.get("author", "")),
         )
         packet_id = UUID(str(payload["packet_id"]))
         question_id = UUID(str(payload["question_id"]))
@@ -462,9 +463,11 @@ class KnowledgeService:
         links: Iterable[SourceLink] = (),
         tag_names: Iterable[str] = (),
         image_ids: Iterable[UUID] = (),
+        author: str = "",
     ) -> FactView:
         content = FactContent(
-            title=title, description=description, links=tuple(links), image_ids=tuple(image_ids)
+            title=title, description=description, links=tuple(links), image_ids=tuple(image_ids),
+            author=author,
         )
         now = self._now()
         fact = StoredFact(
@@ -496,18 +499,20 @@ class KnowledgeService:
         links: tuple[SourceLink, ...] | None = None,
         tag_names: Iterable[str] | None = None,
         image_ids: Iterable[UUID] | None = None,
+        author: str | None = None,
     ) -> FactView:
         fact = await self._get_live_fact(fact_id)
         self._require_owner(owner_id, fact.owner_id)
         if fact.content_version != expected_version:
             raise ValueError("Fact changed since it was read")
         new_content = fact.content
-        if any(value is not None for value in (title, description, links, image_ids)):
+        if any(value is not None for value in (title, description, links, image_ids, author)):
             new_content = FactContent(
                 title=fact.content.title if title is None else title,
                 description=fact.content.description if description is None else description,
                 links=fact.content.links if links is None else links,
                 image_ids=fact.content.image_ids if image_ids is None else tuple(image_ids),
+                author=fact.content.author if author is None else author,
             )
         if new_content.changed(fact.content):
             fact.content = new_content
@@ -539,6 +544,7 @@ class KnowledgeService:
         *,
         owner_id: UUID | None = None,
         search: str | None = None,
+        author: str | None = None,
         tag: str | None = None,
         tags: Iterable[str] = (),
         order: FactOrder = "title_asc",
@@ -558,7 +564,7 @@ class KnowledgeService:
         page_limit = self.page_size if limit is None else max(1, min(limit, self.page_size))
         if hasattr(self.store, "fact_page"):
             return await self.store.fact_page(
-                view_owner, search=search, tags=selected_tags, order=order,
+                view_owner, search=search, author=author, tags=selected_tags, order=order,
                 cursor=cursor, limit=page_limit
             )
         rows = [
@@ -573,7 +579,11 @@ class KnowledgeService:
                 for fact in rows
                 if needle in fact.content.title.casefold()
                 or needle in fact.content.description.casefold()
+                or needle in fact.content.author.casefold()
             ]
+        if author and author.strip():
+            rows = [fact for fact in rows
+                    if author.strip().casefold() in fact.content.author.casefold()]
         if selected_tags:
             owner_tags = {tag.name: tag.id for tag in await self.store.tags_for_owner(view_owner)}
             if selected_tags - owner_tags.keys():

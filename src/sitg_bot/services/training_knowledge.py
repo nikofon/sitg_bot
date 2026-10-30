@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select, tuple_, update
+from sqlalchemy import String, delete, or_, select, tuple_, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
@@ -23,7 +23,9 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
 from sitg_bot.services.knowledge import DEFAULT_TAG_COLOUR, KnowledgeService
 from sitg_bot.services.knowledge_images import authorized_images, image_view
+from sitg_bot.services.knowledge_review import TAG_LABELS, KnowledgeReview, seed_tags
 from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
+from sitg_bot.services.knowledge_themes import KnowledgeThemes, source_authors
 from sitg_bot.services.reliable_delivery import DurableJobQueue, TransactionalOutbox
 from sitg_bot.services.training_access import require_trainee
 from sitg_bot.services.training_ai import (
@@ -40,8 +42,10 @@ from sitg_bot.services.training_provider import ResponsesAnalysisProvider
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     KnowledgeFactRecord,
+    KnowledgeImportRecord,
     KnowledgeShareLinkRecord,
     KnowledgeSnapshotRecord,
+    KnowledgeTagRecord,
     LogicalPacketRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
@@ -115,7 +119,8 @@ class TrainingAnalysisAccess:
                         )
                         .where(
                             PacketQuestionRecord.packet_version_id
-                            == UUID(source["packet_revision_id"])
+                            == UUID(source["packet_revision_id"]),
+                            PacketQuestionRecord.question_revision_id.in_(ids),
                         )
                         .order_by(PacketQuestionRecord.position)
                     )
@@ -140,6 +145,8 @@ class KnowledgeApplication:
         self.database = database
         self.packets = TrainingPacketService(database)
         self.entitlements = EntitlementService(database)
+        self.reviews = KnowledgeReview(self)
+        self.themes = KnowledgeThemes(self)
         self.settings = settings or provider_settings_from_environment()
         self.analysis = analysis or AnalysisService(
             database,
@@ -179,7 +186,6 @@ class KnowledgeApplication:
             rows = {row.id: row for row in await session.scalars(
                 select(KnowledgeFactRecord).where(KnowledgeFactRecord.id.in_(ids))
             )} if ids else {}
-            names = await self._packet_names(session, actor, ids)
             image_ids = {UUID(value) for row in rows.values() for value in row.image_ids}
             images = {row.id: image_view(row) for row in
                       await authorized_images(session, actor, image_ids)}
@@ -192,7 +198,8 @@ class KnowledgeApplication:
                     "description": rows[item.fact_id].description,
                     "links": rows[item.fact_id].links,
                     "images": [images[UUID(value)] for value in rows[item.fact_id].image_ids],
-                    "packet_name": names.get(item.fact_id),
+                    "packet_name": None,
+                    "author": rows[item.fact_id].author,
                     "content_version": rows[item.fact_id].content_version,
                     "tag_names": item.tag_names,
                     "origin": item.origin,
@@ -262,8 +269,7 @@ class KnowledgeApplication:
             result["images"] = [image_view(row) for row in await authorized_images(
                 session, actor, detail.content.image_ids
             )]
-            names = await self._packet_names(session, actor, [fact_id])
-            result["packet_name"] = names.get(fact_id)
+            result["packet_name"] = None
             return result
 
     @staticmethod
@@ -293,6 +299,7 @@ class KnowledgeApplication:
             "owner_id": detail.owner_id,
             "title": detail.content.title,
             "description": detail.content.description,
+            "author": detail.content.author,
             "links": [asdict(link) for link in detail.content.links],
             "images": [],
             "packet_name": None,
@@ -377,12 +384,7 @@ class KnowledgeApplication:
         await session.refresh(row, with_for_update=True)
         if row.deactivated_at is not None:
             raise LookupError("Sharing link is unavailable")
-        total = await session.scalar(select(func.count()).select_from(KnowledgeFactRecord).where(
-            KnowledgeFactRecord.owner_id == row.owner_id, KnowledgeFactRecord.deleted_at.is_(None)
-        ))
-        copied = await self.service(session).grant_collection_access(row.owner_id, actor)
-        return {"owner_id": row.owner_id, "recipient_id": actor,
-                "imported_count": copied.copied_count, "skipped_count": total - copied.copied_count}
+        return await self.reviews.stage_collection(session, row.owner_id, actor)
 
     async def mutate(self, actor, command, values):
         async with self.database.transaction() as session:
@@ -402,8 +404,9 @@ class KnowledgeApplication:
                     raise LookupError("Recipient not found")
                 for owner_id in sorted({actor, target.id}):
                     await require_trainee(session, owner_id, lock=True)
-                return await self.service(session).grant_collection_access(actor, target.id)
-            await require_trainee(session, actor, lock=True)
+                return await self.reviews.stage_collection(session, actor, target.id)
+            player = await require_trainee(session, actor, lock=True)
+            await seed_tags(session, actor)
             service = self.service(session)
             if command == "link_create":
                 key = values.get("creation_key")
@@ -436,7 +439,8 @@ class KnowledgeApplication:
                 fields = {
                     key: values[key]
                     for key in (
-                        "title", "description", "tag_names", "expected_version", "image_ids"
+                        "title", "description", "tag_names", "expected_version",
+                        "image_ids", "author"
                     )
                     if values.get(key) is not None
                 }
@@ -446,6 +450,7 @@ class KnowledgeApplication:
                     fields["links"] = tuple(SourceLink(**link) for link in values["links"])
                 if command == "create":
                     fields.pop("expected_version", None)
+                    fields.setdefault("author", player.public_nickname or "")
                     detail = await service.create_fact(actor, **fields)
                 else:
                     if values.get("fact_id") is None or "expected_version" not in fields:
@@ -463,9 +468,7 @@ class KnowledgeApplication:
                 result["images"] = [image_view(row) for row in await authorized_images(
                     session, actor, detail.content.image_ids
                 )]
-                result["packet_name"] = (await self._packet_names(
-                    session, actor, [detail.fact_id]
-                )).get(detail.fact_id)
+                result["packet_name"] = None
                 return result
             if command == "delete":
                 await service.delete_fact(
@@ -488,6 +491,14 @@ class KnowledgeApplication:
             else:
                 raise ValueError("Unknown knowledge command")
             return {"updated": True}
+
+    async def tags(self, actor):
+        async with self.database.transaction() as session:
+            await require_trainee(session, actor, lock=True)
+            await seed_tags(session, actor)
+            tags = await self.service(session).list_tags(actor)
+            return {"items": [{**asdict(tag), "label": TAG_LABELS.get(tag.name, tag.name)}
+                              for tag in tags]}
 
     async def _schedule_statistics(self, session, owner, fact_id, version):
         await DurableJobQueue.schedule_in_session(
@@ -519,12 +530,23 @@ class KnowledgeApplication:
         comment="",
         confirm_exposure=False,
         token_target_chars=18,
+        theme_revision_ids=None,
+        tag_ids=None,
         idempotency_key,
     ):
         async with self.database.transaction() as session:
             source = await self.packets.disclose(
-                session, actor, version_id, confirm=confirm_exposure
+                session, actor, version_id, confirm=confirm_exposure,
+                theme_revision_ids=theme_revision_ids if kind == "dissection" else None,
             )
+            selected_tag_ids = set(tag_ids or [])
+            tags = list(await session.scalars(select(KnowledgeTagRecord).where(
+                KnowledgeTagRecord.id.in_(selected_tag_ids), KnowledgeTagRecord.owner_id == actor
+            )))
+            if {tag.id for tag in tags} != selected_tag_ids:
+                raise ValueError("Select only your own available tags")
+            tag_names = sorted(tag.name for tag in tags)
+            selected_themes = sorted({str(q.theme_revision_id) for q in source.questions})
             questions = tuple(
                 QuestionText(
                     question.revision_id,
@@ -550,22 +572,29 @@ class KnowledgeApplication:
                 version.language if version.language in ("en", "ru") else player.preferred_locale
             )
             if kind == "dissection":
-                view = await self.service(session).request_dissection(
-                    actor,
-                    packet_id=source.packet_id,
-                    packet_revision=str(version_id),
-                    instructions=instructions,
-                    comment=comment,
-                )
-                row = await session.get(KnowledgeDissectionRecord, view.request_id)
-                if row.analysis_request_id:
-                    await self._apply_ready(session, row)
-                    if row.status != "failed" or row.application is not None:
-                        return {
-                            "request_id": row.analysis_request_id,
-                            "dissection_id": row.id,
-                            "status": row.status,
-                        }
+                identity = hashlib.sha256(json.dumps(
+                    [instructions, comment, selected_themes, tag_names, idempotency_key],
+                    ensure_ascii=False,
+                ).encode()).hexdigest()[:16]
+                row = await session.scalar(select(KnowledgeDissectionRecord).where(
+                    KnowledgeDissectionRecord.owner_id == actor,
+                    KnowledgeDissectionRecord.packet_revision == str(version_id),
+                    KnowledgeDissectionRecord.instruction_digest == identity,
+                ))
+                if row is None:
+                    row = KnowledgeDissectionRecord(
+                        id=uuid4(), owner_id=actor, packet_id=source.packet_id,
+                        packet_revision=str(version_id), instructions=instructions, comment=comment,
+                        instruction_digest=identity, base=not instructions and not comment,
+                        status="pending", theme_revision_ids=selected_themes,
+                    )
+                    session.add(row)
+                    await session.flush()
+                    session.add(KnowledgeImportRecord(
+                        id=uuid4(), owner_id=actor, creator_id=actor, type="dissection",
+                        status="working", dissection_id=row.id, candidates=[],
+                    ))
+                    await session.flush()
                 typed = DissectionSource(
                     version_id, tuple(q.revision_id for q in source.questions), language=language
                 )
@@ -594,14 +623,18 @@ class KnowledgeApplication:
                 idempotency_key=request_id,
                 private=source.scope == "training",
                 content_fingerprint=source.fingerprint,
-                units=len({question.theme_revision_id for question in source.questions}),
+                units=len(selected_themes),
+                source_context={"tag_names": tag_names, "theme_revision_ids": selected_themes}
+                if kind == "dissection" else None,
             )
             if row is not None:
-                row.status = "pending"
                 row.analysis_request_id = result.request_id
-                row.status = "pending"
                 await self._apply_ready(session, row)
-            return {**asdict(result), "dissection_id": row.id if row else None}
+            review_id = await session.scalar(select(KnowledgeImportRecord.id).where(
+                KnowledgeImportRecord.dissection_id == row.id
+            )) if row else None
+            return {**asdict(result), "dissection_id": row.id if row else None,
+                    "import_id": review_id}
 
     async def dissections(self, actor):
         async with self.database.transaction() as session:
@@ -656,6 +689,10 @@ class KnowledgeApplication:
                 await session.refresh(request)
         if request.status in ("failed", "cancelled"):
             row.status = "failed"
+            await session.execute(update(KnowledgeImportRecord).where(
+                KnowledgeImportRecord.dissection_id == row.id,
+                KnowledgeImportRecord.status == "working",
+            ).values(status="failed"))
             return
         if request.status not in ("succeeded", "partially_succeeded"):
             return
@@ -672,6 +709,9 @@ class KnowledgeApplication:
                 select(QuestionRevisionRecord).where(QuestionRevisionRecord.id.in_(ids))
             )
         }
+        _, authors = await source_authors(
+            session, UUID(row.packet_revision), row.theme_revision_ids or [], ids
+        )
         candidates = []
         for value in artifact.payload["candidates"]:
             revision_id = UUID(value["question_revision_id"])
@@ -685,7 +725,11 @@ class KnowledgeApplication:
             )
             candidates.append(
                 {
+                    "id": value["candidate_id"],
+                    "tag_names": [tag for tag in value.get("tags", [])
+                                  if tag in request.source.get("tag_names", [])],
                     "content": {
+                        "author": authors.get(revision_id, ""),
                         "title": value["title"],
                         "description": value["description"],
                         "links": [
@@ -699,8 +743,19 @@ class KnowledgeApplication:
                     "question_revision": str(revision_id),
                 }
             )
-        view = await self.service(session).apply_dissection_result(row.owner_id, row.id, candidates)
-        if request.status == "succeeded" and view.status == "succeeded":
+        review = await session.scalar(select(KnowledgeImportRecord).where(
+            KnowledgeImportRecord.dissection_id == row.id
+        ).with_for_update())
+        if review is None:
+            review = KnowledgeImportRecord(id=uuid4(), owner_id=row.owner_id,
+                                           creator_id=row.owner_id, type="dissection",
+                                           dissection_id=row.id, candidates=[])
+            session.add(review)
+        if review.status in (None, "working"):
+            review.candidates = candidates
+            review.status = "pending"
+        row.status = request.status
+        if request.status == "succeeded":
             # Keep non-content coverage after the expiring request/cache is pruned.
             row.theme_revision_ids = sorted({str(value) for value in await session.scalars(
                 select(PacketQuestionRecord.theme_revision_id).where(
@@ -708,8 +763,6 @@ class KnowledgeApplication:
                     PacketQuestionRecord.question_revision_id.in_(ids),
                 )
             )})
-        for fact_id in view.applied_fact_ids:
-            await self._schedule_statistics(session, row.owner_id, fact_id, 1)
 
     async def reconcile(self):
         async with self.database.sessions() as session:

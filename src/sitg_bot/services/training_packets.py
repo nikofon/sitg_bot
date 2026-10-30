@@ -352,6 +352,7 @@ class TrainingPacketService:
         version_id: UUID,
         *,
         confirm: bool,
+        theme_revision_ids: list[UUID] | None = None,
     ) -> TrainingPacketSource:
         await self.lock_access(session, player_id, version_id)
         await require_trainee(session, player_id, lock=True)
@@ -360,6 +361,12 @@ class TrainingPacketService:
             await session.refresh(logical, with_for_update=True)
             if logical.retired_at is not None:
                 raise LookupError("Training packet not found")
+        available = set(await session.scalars(select(ThemeRevisionRecord.id).where(
+            ThemeRevisionRecord.packet_version_id == version_id
+        )))
+        selected = available if theme_revision_ids is None else set(theme_revision_ids)
+        if not selected or not selected <= available:
+            raise ValueError("Select at least one theme from this packet version")
         rows = (
             await session.execute(
                 select(
@@ -385,6 +392,7 @@ class TrainingPacketService:
                 .join(ThemeRevisionRecord)
                 .where(
                     PacketQuestionRecord.packet_version_id == version_id,
+                    PacketQuestionRecord.theme_revision_id.in_(selected),
                 )
                 .order_by(ThemeRevisionRecord.position, PacketQuestionRecord.position)
             )

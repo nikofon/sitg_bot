@@ -237,6 +237,7 @@ class PostgresKnowledgeStore:
                         "title": row.title,
                         "title_key": row.title_key,
                         "description": row.description,
+                        "author": row.author,
                         "links": row.links,
                         "image_ids": row.image_ids,
                         "provenance": {"origin": "manual"},
@@ -311,6 +312,7 @@ class PostgresKnowledgeStore:
             content=FactContent(
                 row.title, row.description, tuple(SourceLink(**link) for link in row.links),
                 tuple(UUID(value) for value in row.image_ids),
+                author=row.author,
             ),
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -376,6 +378,7 @@ class PostgresKnowledgeStore:
             fact.content.title.casefold(),
             fact.content.description,
         )
+        row.author = fact.content.author
         row.links = [asdict(link) for link in fact.content.links]
         row.image_ids = [str(image) for image in fact.content.image_ids]
         row.provenance = json_data(fact.provenance)
@@ -404,7 +407,7 @@ class PostgresKnowledgeStore:
         )
         await self.session.flush()
 
-    async def fact_page(self, owner_id, *, search, tags, order, cursor, limit):
+    async def fact_page(self, owner_id, *, search, tags, order, cursor, limit, author=None):
         model = KnowledgeFactRecord
         conditions = [model.owner_id == owner_id, model.deleted_at.is_(None)]
         if search and search.strip():
@@ -416,10 +419,14 @@ class PostgresKnowledgeStore:
                 .replace("_", "\\_")
             )
             conditions.append(
-                func.lower(model.title + " " + model.description).like(
+                func.lower(model.title + " " + model.description + " " + model.author).like(
                     "%" + needle + "%", escape="\\"
                 )
             )
+        if author and author.strip():
+            needle = (author.strip().casefold().replace("\\", "\\\\")
+                      .replace("%", "\\%").replace("_", "\\_"))
+            conditions.append(func.lower(model.author).like("%" + needle + "%", escape="\\"))
         for tag in sorted(tags):
             conditions.append(
                 select(KnowledgeFactTagRecord.fact_id)

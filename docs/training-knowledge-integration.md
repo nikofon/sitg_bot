@@ -4,12 +4,14 @@ B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
 metadata and migrations through `0026_knowledge_images` (following
 `0025_knowledge_catalogue` and `0024_training_lobby`). `PostgresKnowledgeStore`
 implements B's repository; `KnowledgeApplication` connects persistence, source
-access, automatic fact application, statistics and Best buzz.
+access, staged fact review, statistics and Best buzz. Migration `0029_knowledge_review`
+adds fact authors, a one-time default tag seed marker and durable private reviews.
 
 ## Integration decisions
 
-- Sharing sends permanent, independently editable copies of the current collection
-  to the recipient's own library. Later edits/deletions never propagate. Repeating
+- Sharing stages an immutable private review of the current collection. Only the
+  recipient's explicitly selected candidates become permanent, independently editable copies
+  in their own library. Later edits/deletions never propagate. Repeating
   a send adds only uncopied facts; it never overwrites or resurrects prior copies.
   Durable recipient/content-fingerprint claims also deduplicate equivalent facts
   arriving through different sources or sharing links, including after editing or
@@ -75,16 +77,23 @@ application outcomes and immutable statistic snapshots use JSONB; tags and
 ownership-enforced associations are relational. SQL filters, keyset cursors and
 batched tags/statistics bound fact pages to 25 cards without per-card reads.
 
-Dissection applies automatically after another source-access check. Deterministic
-candidate mappings prevent duplicates, manual overwrites and resurrection of
-deleted/merged imports. Follow-up comments create another analysis revision.
+Dissection stages a durable owner-private review after another source-access check;
+completion never silently adds facts. Approval adds only explicit selected candidate IDs.
+New and normalized-name duplicate candidates default selected; exact editable-content
+matches default unselected. Approval rechecks current content and durable source/hash claims
+under account locks: it never overwrites or resurrects deleted/edited imports. Decisions
+are terminal and retryable with the same selection. Follow-up comments create another
+analysis revision; rejected reviews add nothing.
 Statistics run separately with quotas; unavailable metrics never prevent saving facts.
 
 ## Coloured tags, durable links and packet cards
 
 Tags persist a normalized six-digit RGB `colour` (`#64748b` for existing tags).
 `GET /api/miniapp/knowledge/tags` returns `{items:[{tag_id,name,colour}]}`.
-The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
+Default tags are seeded once on first palette/mutation access for existing and new
+users; deleting a default never reseeds it. Custom tags are retained. Canonical names stay
+normalized; palette items add `label` with the requested display capitalization (including
+`Chemestry`). The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
 on rename preserves it. Fact detail tags add `colour` while fact lists keep
 `tag_names`. Fact create/update still accept selected `tag_names` for compatibility.
 The Mini App should select from this palette, with explicit new-tag creation.
@@ -94,8 +103,12 @@ from HTTP, gateway and services. Historical merge tombstones remain intact.
 
 Facts retain internal content versions for stale-write protection. List cards now
 include description, links, images and the version without separate detail reads.
-Original dissection facts expose `packet_name` only while their source remains
-readable; copied facts do not inherit packet metadata or source access.
+Fact cards and details always expose `packet_name:null`; packet provenance remains
+internal. `author` is independently editable text, unknown as an empty string. Manual
+create defaults to the creator's public nickname; extraction uses trusted pinned
+question/theme authors, never model guesses. Search includes author, and the optional
+`author` query filters by a literal case-insensitive substring. Sender attribution on
+an import card is separate from fact authorship.
 
 Images are immutable persisted raster attachments, not URLs embedded in fact text
 or source links. POST `/api/miniapp/knowledge/image_upload` with `{source_base64}`
@@ -134,8 +147,15 @@ in-session fragment route) and `launch_available`. If bot identity is unavailabl
 `url` is null and `launch_available` is false: the UI must not offer the plain
 HTTPS fallback as an externally working launch link. This uses the existing bot
 notifier/token and HTTPS `MINI_APP_BASE_URL` configuration, not new BotFather setup.
-The import response is `{owner_id,recipient_id,imported_count,skipped_count}`. Unknown/deactivated links
-fail without copying; self-import is rejected. Creator account locks and a locked
+The import response is `{import_id,status:'pending',owner_id,recipient_id,imported_count:0,
+skipped_count:0}`. Unknown/deactivated links fail without staging; self-import is rejected.
+Direct grants also stage recipient review. GET `knowledge/imports` lists the latest 100
+owner-private cards; GET `knowledge/imports/{import_id}` groups candidates under
+`sections:{new,potential_duplicates,duplicates}`. POST `knowledge/import_decide` accepts
+`{import_id,decision:'approve'|'reject',selected_candidate_ids?:string[]}`; approval requires
+an explicit list, including an empty list to add none. Identical decisions retry safely;
+changed terminal decisions return stale-write. Review snapshots survive source edits and
+application restarts and never grant source packet rights. Creator account locks and a locked
 link recheck serialize revocation against import. Sorted two-account locks and the
 unique `(recipient_id,content_fingerprint)` claim make concurrent imports safe.
 Copies retain separate source/owner/recipient provenance rows; sharing grants no
@@ -174,8 +194,13 @@ cleanup. Migration backfills surviving successful requests; information purged
 before upgrade cannot be reconstructed. Per-user analysis state is never inferred
 from another user's shared cache. All metadata loads are page-batched, never
 per-card HTTP or SQL fetches. Listing does not disclose/consume exposures or run
-analysis. Existing dissection instructions/comments, explicit exposure confirmation,
-quotas and cancellation remain unchanged. Dissection identity lookup is exact even
+analysis. Dissection accepts optional `theme_revision_ids` (omitted = all; explicit empty/foreign
+IDs are rejected) and up to 32 owned `tag_ids`. Only selected themes are disclosed and
+charged. GET `knowledge/themes?version_id=...` returns metadata-only theme IDs/names and
+`quota:{enabled,remaining,reset_at}` without burning content. POST `knowledge/theme_preview`
+with `{version_id,theme_revision_id,confirm_exposure}` reveals only that theme after explicit
+exposure confirmation, including trusted author, theme commentary, questions and answers.
+Existing instructions/comments, quotas and cancellation remain enforced server-side. Dissection identity lookup is exact even
 when the request is older than the bounded 100-row history listing.
 
 Queued or expired/checkpointed analysis is rejected and its reservations released

@@ -9,7 +9,7 @@ from sqlalchemy import String, func, or_, select
 from sqlalchemy.orm import defer
 
 from sitg_bot.services.training_access import require_trainee
-from sitg_bot.storage.models import KnowledgeFactRecord, KnowledgeImageRecord
+from sitg_bot.storage.models import KnowledgeFactRecord, KnowledgeImageRecord, KnowledgeImportRecord
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
@@ -88,6 +88,14 @@ def accessible_image(actor):
             KnowledgeFactRecord.image_ids.contains(
                 func.jsonb_build_array(KnowledgeImageRecord.id.cast(String))
             ),
+        ).exists(),
+        select(KnowledgeImportRecord.id).where(
+            KnowledgeImportRecord.owner_id == actor,
+            KnowledgeImportRecord.candidates.contains(func.jsonb_build_array(
+                func.jsonb_build_object("content", func.jsonb_build_object(
+                    "image_ids", func.jsonb_build_array(KnowledgeImageRecord.id.cast(String))
+                ))
+            )),
         ).exists(),
     )
 

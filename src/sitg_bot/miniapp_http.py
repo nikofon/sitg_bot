@@ -47,9 +47,14 @@ from sitg_bot.application.contracts import (
     KnowledgeFactsOperation,
     KnowledgeImageOperation,
     KnowledgeImageUploadOperation,
+    KnowledgeImportDecideOperation,
+    KnowledgeImportDetailOperation,
+    KnowledgeImportsOperation,
     KnowledgeSaveOperation,
     KnowledgeSharingOperation,
     KnowledgeTagOperation,
+    KnowledgeThemePreviewOperation,
+    KnowledgeThemesOperation,
     LibraryAccessOperation,
     LibraryListOperation,
     LobbyEventsOperation,
@@ -201,6 +206,11 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/knowledge/sharing", self._knowledge_sharing)
         app.router.add_get("/api/miniapp/knowledge/tags", self._knowledge_tags)
         app.router.add_get("/api/miniapp/knowledge/dissections", self._knowledge_dissections)
+        app.router.add_get("/api/miniapp/knowledge/themes", self._knowledge_themes)
+        app.router.add_get("/api/miniapp/knowledge/imports", self._knowledge_imports)
+        app.router.add_get(
+            "/api/miniapp/knowledge/imports/{import_id}", self._knowledge_import_detail
+        )
         app.router.add_post("/api/miniapp/knowledge/{command}", self._knowledge_mutation)
         app.router.add_get("/api/miniapp/training/entitlements", self._training_entitlements)
         app.router.add_get("/api/miniapp/training/analysis", self._analysis_status)
@@ -1870,6 +1880,25 @@ class MiniAppHttpServer:
         )
         return self._gateway_response(result)
 
+    async def _knowledge_themes(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, KnowledgeThemesOperation.model_validate({
+            **request.query, "action": ActionCode.KNOWLEDGE_THEMES,
+        }))
+        return self._gateway_response(result)
+
+    async def _knowledge_imports(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, KnowledgeImportsOperation(
+            action=ActionCode.KNOWLEDGE_IMPORTS
+        ))
+        return self._gateway_response(result)
+
+    async def _knowledge_import_detail(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, KnowledgeImportDetailOperation(
+            action=ActionCode.KNOWLEDGE_IMPORT_DETAIL,
+            import_id=UUID(request.match_info["import_id"]),
+        ))
+        return self._gateway_response(result)
+
     async def _training_entitlements(self, request: web.Request) -> web.Response:
         _, result = await self._query(
             request, TrainingEntitlementsOperation(action=ActionCode.TRAINING_ENTITLEMENTS)
@@ -1900,6 +1929,8 @@ class MiniAppHttpServer:
             "grant": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_GRANT),
             "revoke": (KnowledgeSharingOperation, ActionCode.KNOWLEDGE_REVOKE),
             "dissect": (PacketAnalysisOperation, ActionCode.KNOWLEDGE_DISSECT),
+            "theme_preview": (KnowledgeThemePreviewOperation, ActionCode.KNOWLEDGE_THEME_PREVIEW),
+            "import_decide": (KnowledgeImportDecideOperation, ActionCode.KNOWLEDGE_IMPORT_DECIDE),
             "best_buzz": (PacketAnalysisOperation, ActionCode.BEST_BUZZ_PREPARE),
             "cancel": (AnalysisStatusOperation, ActionCode.ANALYSIS_CANCEL),
         }

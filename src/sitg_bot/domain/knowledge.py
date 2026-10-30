@@ -99,8 +99,13 @@ class FactContent:
     description: str
     links: tuple[SourceLink, ...] = ()
     image_ids: tuple[UUID, ...] = ()
+    author: str = ""
 
     def __post_init__(self) -> None:
+        author = _WHITESPACE_RE.sub(" ", self.author).strip()
+        if len(author) > 300:
+            raise ValueError("Fact author must be at most 300 characters")
+        object.__setattr__(self, "author", author)
         title = _WHITESPACE_RE.sub(" ", self.title).strip()
         description = self.description.strip()
         if not title:
@@ -137,6 +142,7 @@ class FactContent:
                     {"url": link.url, "title": link.title, "origin": link.origin}
                     for link in self.links
                 ],
+                **({"author": self.author} if self.author else {}),
                 # Preserve existing no-image fingerprints and import claims.
                 **({"image_ids": [str(image) for image in self.image_ids]}
                    if self.image_ids else {}),

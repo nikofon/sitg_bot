@@ -2671,9 +2671,36 @@ class KnowledgeImageRecord(Base, TimestampMixin):
     )
 
 
+class KnowledgeTagSeedRecord(Base):
+    __tablename__ = "knowledge_tag_seeds"
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+
+
+class KnowledgeImportRecord(Base):
+    """Owner-private durable review snapshot; never a source-access grant."""
+
+    __tablename__ = "knowledge_imports"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    creator_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
+    type: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    dissection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_dissection_requests.id"), unique=True
+    )
+    candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        CheckConstraint("type IN ('dissection', 'collection')"),
+        CheckConstraint("status IN ('working', 'pending', 'approved', 'rejected', 'failed')"),
+    )
+
+
 class KnowledgeFactRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_facts"
     id: Mapped[UUID] = uuid_column()
+    author: Mapped[str] = mapped_column(String(300), default="", server_default="")
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
     title_key: Mapped[str] = mapped_column(String(400))

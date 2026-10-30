@@ -57,9 +57,14 @@ from sitg_bot.application.contracts import (
     KnowledgeFactsOperation,
     KnowledgeImageOperation,
     KnowledgeImageUploadOperation,
+    KnowledgeImportDecideOperation,
+    KnowledgeImportDetailOperation,
+    KnowledgeImportsOperation,
     KnowledgeSaveOperation,
     KnowledgeSharingOperation,
     KnowledgeTagOperation,
+    KnowledgeThemePreviewOperation,
+    KnowledgeThemesOperation,
     LibraryAccessOperation,
     LibraryListOperation,
     LobbyCreateOperation,
@@ -357,6 +362,15 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.KNOWLEDGE_REVOKE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_THEMES: ActionPolicy(sensitive_response=True),
+        ActionCode.KNOWLEDGE_IMPORTS: ActionPolicy(sensitive_response=True),
+        ActionCode.KNOWLEDGE_IMPORT_DETAIL: ActionPolicy(sensitive_response=True),
+        ActionCode.KNOWLEDGE_THEME_PREVIEW: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.KNOWLEDGE_IMPORT_DECIDE: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.KNOWLEDGE_DISSECT: ActionPolicy(
@@ -1204,6 +1218,20 @@ class ApplicationGateway:
             return await self.knowledge.facts(player_id, **operation.model_dump(exclude={"action"}))
         if isinstance(operation, KnowledgeFactOperation):
             return await self.knowledge.detail(player_id, operation.fact_id)
+        if isinstance(operation, KnowledgeThemesOperation):
+            return await self.knowledge.themes.list(player_id, operation.version_id)
+        if isinstance(operation, KnowledgeThemePreviewOperation):
+            return await self.knowledge.themes.preview(
+                player_id, **operation.model_dump(exclude={"action"})
+            )
+        if isinstance(operation, KnowledgeImportsOperation):
+            return await self.knowledge.reviews.list(player_id)
+        if isinstance(operation, KnowledgeImportDetailOperation):
+            return await self.knowledge.reviews.detail(player_id, operation.import_id)
+        if isinstance(operation, KnowledgeImportDecideOperation):
+            return await self.knowledge.reviews.decide(
+                player_id, **operation.model_dump(exclude={"action"})
+            )
         if isinstance(operation, KnowledgeDissectionsOperation):
             return await self.knowledge.dissections(player_id)
         if (
@@ -1242,11 +1270,7 @@ class ApplicationGateway:
                 return await images.upload(player_id, operation.source_base64)
             return await images.read(player_id, operation.image_id)
         if isinstance(operation, KnowledgeTagOperation) and action == ActionCode.KNOWLEDGE_TAGS:
-            from sitg_bot.services.training_access import require_trainee
-
-            async with self.database.transaction() as session:
-                await require_trainee(session, player_id)
-                return {"items": await self.knowledge.service(session).list_tags(player_id)}
+            return await self.knowledge.tags(player_id)
         if isinstance(
             operation,
             (
