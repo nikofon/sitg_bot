@@ -270,6 +270,6 @@ legacy source access. Downgrading retains the copied facts. The deprecated revok
 operation is rejected; legacy `/sharedfacts` lists the recipient's own library.
 
 Tests cover migration upgrade/downgrade, PostgreSQL CRUD/copy independence, bounded
-query counts, private isolation/cleanup, automatic fact application, Best buzz
+query counts, private isolation/cleanup, staged review and selected approval, Best buzz
 conversion, quotas/refunds/recovery, authenticated contracts and browser views.
 Live Telegram delivery and a configured-provider smoke test remain deployment checks.

@@ -167,8 +167,8 @@ storage regression explicitly requires 0027.
 
 [Contracts](training-contracts.md) describe source access and Best buzz ports.
 Knowledge library is enabled in Telegram and at `/knowledge` in the Mini App.
-Facts, tags, permanent copy sharing, automatic dissection application and metered analysis
-use persistent storage. See the [integration guide](training-knowledge-integration.md)
+Facts, tags, staged permanent-copy sharing/dissection review, explicit selected-candidate
+approval and metered analysis use persistent storage. See the [integration guide](training-knowledge-integration.md)
 for configuration, commands, limits, decisions and remaining placeholders.
 
 Targeted tests: `tests/unit/test_training*.py`, `tests/integration/test_training.py`

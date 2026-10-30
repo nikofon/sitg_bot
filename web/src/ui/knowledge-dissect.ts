@@ -39,6 +39,7 @@ export function dissectComposerDialog(
   const themeCheckboxes = new Map<string, HTMLInputElement>();
   let allThemes: KnowledgeThemeSummary[] = [];
   let themesLoaded = false;
+  let submitting = false;
   let quota: KnowledgeDissectionQuota | undefined;
 
   // Tab navigation between General and Themes.
@@ -88,14 +89,14 @@ export function dissectComposerDialog(
     i18n.t("knowledge.dissection.themes_hint"));
   const error = element("p", { className: "error-text", role: "alert" });
   const submit = element("button", { type: "button", className: "primary-button",
-    "data-confirm": "false" }, i18n.t("knowledge.dissection.submit"));
+    "data-confirm": "false", disabled: true }, i18n.t("knowledge.dissection.submit"));
 
   const syncSelectedCount = (): void => {
     selectedCount.textContent = i18n.t("knowledge.dissection.selected_count",
       { count: selectedThemes.size });
-    // An explicit empty theme list is rejected by the contract: require at
-    // least one selected theme whenever the theme list is known.
-    submit.disabled = themesLoaded && selectedThemes.size === 0;
+    // Never fall back to all themes while metadata is loading, failed or absent.
+    submit.disabled = submitting || !themesLoaded || selectedThemes.size === 0
+      || quota?.enabled === false;
     hint.hidden = !(themesLoaded && selectedThemes.size === 0);
   };
 
@@ -122,15 +123,16 @@ export function dissectComposerDialog(
   void state.tagPoolReady.then(renderTagOptions).catch(() => { /* the pool reload surfaces failures */ });
 
   const run = (confirmExposure: boolean): void => {
-    if (submit.disabled) return;
-    submit.disabled = true;
+    if (submit.disabled || !themesLoaded || selectedThemes.size === 0 || submitting) return;
+    submitting = true;
+    syncSelectedCount();
     const request: KnowledgeDissectRequest = {
+      theme_revision_ids: [...selectedThemes],
       instructions: instructions.value || undefined,
       comment: comment.value || undefined,
       tag_ids: [...selectedTags],
       confirm_exposure: confirmExposure,
     };
-    if (themesLoaded || selectedThemes.size > 0) request.theme_revision_ids = [...selectedThemes];
     void actions.dissect(packet.id, request)
       .then((outcome) => {
         if (outcome.confirmation_required && !confirmExposure) {
@@ -138,7 +140,6 @@ export function dissectComposerDialog(
           submit.textContent = i18n.t("knowledge.dissection.confirm");
           submit.setAttribute("data-confirm", "true");
           submit.classList.add("warning-button");
-          submit.disabled = false;
           return;
         }
         // The job is durable server-side: the window closes freely.
@@ -146,7 +147,10 @@ export function dissectComposerDialog(
         onStarted();
       })
       .catch(() => { error.textContent = i18n.t("knowledge.error"); })
-      .finally(() => { if (document.contains(dialog)) submit.disabled = false; });
+      .finally(() => {
+        submitting = false;
+        if (document.contains(dialog)) syncSelectedCount();
+      });
   };
   submit.addEventListener("click", () => {
     run(submit.getAttribute("data-confirm") === "true");
@@ -354,6 +358,8 @@ export function dissectComposerDialog(
       .catch(() => {
         themesError.textContent = i18n.t("knowledge.error");
       });
+  } else {
+    themesError.textContent = i18n.t("knowledge.error");
   }
 
   themesPanel.append(

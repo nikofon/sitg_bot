@@ -150,6 +150,21 @@ afterEach(() => {
 });
 
 describe("dissection composer", () => {
+  it.each(["loading", "failed", "unavailable"])(
+    "never starts an all-theme fallback when selected-theme metadata is %s", async (status) => {
+      const actionList = themeActions();
+      actionList.loadThemes = status === "unavailable" ? undefined
+        : status === "failed" ? vi.fn().mockRejectedValue(new Error("Unavailable"))
+          : vi.fn().mockImplementation(() => new Promise(() => {}));
+      const dialog = await openComposer(actionList);
+      await flush();
+      const start = [...dialog.querySelectorAll("button")]
+        .find((item) => item.textContent === "Start dissection")!;
+      expect(start.disabled).toBe(true);
+      start.click();
+      expect(actionList.dissect).not.toHaveBeenCalled();
+    });
+
   it("opens on General and navigates to Themes with collapsed theme rows", async () => {
     const actionList = themeActions();
     const dialog = await openComposer(actionList);
