@@ -20,6 +20,8 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from sitg_bot.domain.knowledge import SOURCE_URL_MAX
+
 ANALYSIS_DISSECTION = "dissection"
 ANALYSIS_BEST_BUZZ = "best_buzz"
 ANALYSIS_COMMON_KNOWLEDGE = "common_knowledge"
@@ -133,6 +135,7 @@ def source_reference_urls(question) -> tuple[str, ...]:
         url
         for value in (question.text, question.answer, question.commentary, question.source)
         for url in re.findall(r"https?://[^\s<>\[\]\"']+", value)
+        if len(url) <= SOURCE_URL_MAX
     }))
 
 
@@ -405,12 +408,17 @@ class AnalysisProvider(Protocol):
 
 
 def validate_http_url(url: str) -> str:
-    """Accept only absolute http(s) URLs as authoritative references."""
-    parsed = urlsplit(url.strip())
+    """Accept only absolute, bounded http(s) URLs as references."""
+    value = url.strip()
+    parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise AnalysisValidationError(
             f"Reference link is not an absolute http(s) URL: {url!r}"
         )
+    if len(value) > SOURCE_URL_MAX or any(
+        character.isspace() for character in value
+    ):
+        raise AnalysisValidationError("Reference link exceeds the bounded URL length")
     return parsed.geturl()
 
 

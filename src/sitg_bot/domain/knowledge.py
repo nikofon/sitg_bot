@@ -21,6 +21,7 @@ from uuid import UUID
 FACT_TITLE_MAX = 200
 FACT_DESCRIPTION_MAX = 4000
 FACT_LINKS_MAX = 16
+FACT_AUTHOR_MAX = 300
 FACT_TAGS_MAX = 32
 SOURCE_URL_MAX = 2000
 SOURCE_TITLE_MAX = 200
@@ -103,7 +104,7 @@ class FactContent:
 
     def __post_init__(self) -> None:
         author = _WHITESPACE_RE.sub(" ", self.author).strip()
-        if len(author) > 300:
+        if len(author) > FACT_AUTHOR_MAX:
             raise ValueError("Fact author must be at most 300 characters")
         object.__setattr__(self, "author", author)
         title = _WHITESPACE_RE.sub(" ", self.title).strip()

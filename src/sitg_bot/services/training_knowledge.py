@@ -12,7 +12,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import String, delete, or_, select, tuple_, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
-from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
+from sitg_bot.domain.knowledge import (
+    FACT_AUTHOR_MAX,
+    BingoScore,
+    CommonKnowledgeEstimate,
+    SourceLink,
+)
 from sitg_bot.domain.training import text_digest
 from sitg_bot.services.analysis_jobs import (
     AnalysisFeatureDisabledError,
@@ -454,7 +459,36 @@ class KnowledgeApplication:
                 if values.get("image_ids") is not None:
                     await authorized_images(session, actor, values["image_ids"])
                 if values.get("links") is not None:
-                    fields["links"] = tuple(SourceLink(**link) for link in values["links"])
+                    links = tuple(values["links"])
+                    if command == "update":
+                        # Editor round-trips carry no origins; preserve the trusted
+                        # dissection attribution of unchanged URLs so an unchanged
+                        # save keeps fingerprints, versions and statistics stable.
+                        current = (
+                            await service.store.get_fact(UUID(str(values["fact_id"])))
+                            if values.get("fact_id") is not None
+                            else None
+                        )
+                        origins = {
+                            link.url: link.origin
+                            for link in (
+                                current.content.links
+                                if current is not None and current.deleted_at is None
+                                else ()
+                            )
+                        }
+                        links = tuple(
+                            SourceLink(
+                                link["url"],
+                                link.get("title", ""),
+                                link.get("position", 0),
+                                origin=origins.get(link["url"], "manual"),
+                            )
+                            for link in links
+                        )
+                    else:
+                        links = tuple(SourceLink(**link) for link in links)
+                    fields["links"] = links
                 if command == "create":
                     fields.pop("expected_version", None)
                     fields.setdefault("author", player.public_nickname or "")
@@ -732,7 +766,11 @@ class KnowledgeApplication:
                     "tag_names": [tag for tag in value.get("tags", [])
                                   if tag in request.source.get("tag_names", [])],
                     "content": {
-                        "author": authors.get(revision_id, ""),
+                        # Joined source attribution must satisfy FactContent author
+                        # bounds before the charged result is admitted as pending.
+                        "author": " ".join(
+                            authors.get(revision_id, "").split()
+                        )[:FACT_AUTHOR_MAX],
                         "title": value["title"],
                         "description": value["description"],
                         "links": [

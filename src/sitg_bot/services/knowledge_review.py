@@ -61,6 +61,9 @@ DEFAULT_TAG_LABELS = (
 )
 TAG_LABELS = {name.casefold(): name for name in DEFAULT_TAG_LABELS}
 
+# asyncpg allows at most 32767 bound parameters per statement; stay far below.
+ATTACHMENT_METADATA_BATCH = 1000
+
 
 async def seed_tags(session, actor):
     # The claim and inserts commit atomically; deletion never removes the claim.
@@ -361,26 +364,24 @@ class KnowledgeReview:
                 await self.app.packets.authorize(session, actor, UUID(dissection.packet_revision))
             hashes, titles = await self._dedupe(session, actor, row.candidates)
             sections = {"new": [], "potential_duplicates": [], "duplicates": []}
-            image_ids = {
+            image_ids = sorted({
                 UUID(image)
                 for value in row.candidates
                 for image in value["content"].get("image_ids", [])
-            }
-            # Review snapshots retain attachment access without granting source packet rights.
+            })
+            # Review snapshots retain attachment access without granting source
+            # packet rights; metadata loads in bounded batches (asyncpg bind limit).
             from sitg_bot.storage.models import KnowledgeImageRecord
 
-            images = (
-                {
-                    image.id: image_view(image)
-                    for image in await session.scalars(
-                        select(KnowledgeImageRecord)
-                        .options(defer(KnowledgeImageRecord.data))
-                        .where(KnowledgeImageRecord.id.in_(image_ids))
-                    )
-                }
-                if image_ids
-                else {}
-            )
+            images = {}
+            for offset in range(0, len(image_ids), ATTACHMENT_METADATA_BATCH):
+                batch = image_ids[offset:offset + ATTACHMENT_METADATA_BATCH]
+                for image in await session.scalars(
+                    select(KnowledgeImageRecord)
+                    .options(defer(KnowledgeImageRecord.data))
+                    .where(KnowledgeImageRecord.id.in_(batch))
+                ):
+                    images[image.id] = image_view(image)
             for candidate in row.candidates:
                 bucket = category(candidate, hashes, titles)
                 content = content_of(candidate)

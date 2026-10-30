@@ -258,6 +258,171 @@ async def test_unicode_search_uses_matching_database_normalization(database, fie
     assert (await app.facts(owner, search="absent"))["total"] == 0
 
 
+async def test_unchanged_editor_round_trip_preserves_dissection_link_origins(database):
+    owner = await create_player(database, 9980, "origin-preserving-editor")
+    app = await application(database, owner)
+    url = "https://example.org/question"
+    version = await publish(app, owner, [{
+        "name": "Theme", "questions": [{
+            "value": value, "text": f"Question {url}", "answer": "Answer",
+        } for value in (10, 20, 30, 40, 50)],
+    }])
+
+    def extract(request):
+        return tuple(
+            FactCandidate(
+                fact_candidate_id(identity, f"Fact {identity}", "Body", (url,)),
+                f"Fact {identity}", "Body", (url,), identity,
+            )
+            for chunk in request.chunks for identity in chunk.question_revision_ids
+        )
+
+    app.analysis.provider.fact_response = extract
+    request = await app.request_analysis(
+        owner, version_id=version, kind="dissection", confirm_exposure=True,
+        idempotency_key="origin-preserve",
+    )
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    assert await worker.run_once() == 1
+    detail = await app.reviews.detail(owner, request["import_id"])
+    assert len(detail["sections"]["new"]) == 5
+    assert detail["sections"]["new"][0]["links"] == [
+        {"url": url, "title": "", "position": 0, "origin": "dissection"}
+    ]
+    ids = [value["id"] for value in detail["sections"]["new"]]
+    await app.reviews.decide(
+        owner, import_id=request["import_id"], decision="approve", selected_candidate_ids=ids,
+    )
+    facts = (await app.facts(owner))["items"]
+    assert len(facts) == 5
+    fact = facts[0]
+    assert fact["links"] == [{"url": url, "title": "", "position": 0, "origin": "dissection"}]
+    assert fact["content_version"] == 1
+    # The editor round-trip reconstructs links without origins; unchanged URLs
+    # must keep the trusted dissection origin so fingerprints stay stable.
+    saved = await app.mutate(owner, "update", {
+        "fact_id": fact["fact_id"], "expected_version": 1,
+        "title": fact["title"], "description": "Body",
+        "links": [{"url": url, "title": "", "position": 0}],
+    })
+    assert saved["content_version"] == 1
+    assert saved["links"] == [{"url": url, "title": "", "position": 0, "origin": "dissection"}]
+    async with database.sessions() as session:
+        record = await session.get(KnowledgeFactRecord, fact["fact_id"])
+        assert record.content_version == 1
+        assert record.statistic_status == "pending"  # not re-invalidated by the round-trip
+    # A genuinely new URL becomes a manual link and bumps the version.
+    added = await app.mutate(owner, "update", {
+        "fact_id": fact["fact_id"], "expected_version": 1,
+        "title": fact["title"], "description": "Body",
+        "links": [
+            {"url": url, "title": "", "position": 0},
+            {"url": "https://example.org/added", "title": "", "position": 1},
+        ],
+    })
+    assert added["content_version"] == 2
+    assert added["links"] == [
+        {"url": url, "title": "", "position": 0, "origin": "dissection"},
+        {"url": "https://example.org/added", "title": "", "position": 1, "origin": "manual"},
+    ]
+
+
+async def test_bounded_source_attribution_and_reference_urls_stay_readable(database):
+    owner = await create_player(database, 9981, "bounded-attribution")
+    app = await application(database, owner)
+    bounded = "https://example.org/bounded"
+    overlong = "https://example.org/" + "a" * 2000
+    version = await publish(app, owner, [{
+        "name": "Theme",
+        "authors": ["Long Author " + "x" * 160, "Long Author " + "y" * 160,
+                    "Long Author " + "z" * 160],
+        "questions": [{
+            "value": value, "text": f"Question {bounded} {overlong}", "answer": "Answer",
+        } for value in (10, 20, 30, 40, 50)],
+    }])
+
+    def extract(request):
+        # A faithful provider cites only the reference URLs it was given.
+        candidates = []
+        for chunk in request.chunks:
+            for question in chunk.questions:
+                links = question.reference_urls
+                title = f"Fact {question.question_revision_id}"
+                candidates.append(FactCandidate(
+                    fact_candidate_id(question.question_revision_id, title, "Body", links),
+                    title, "Body", links, question.question_revision_id,
+                ))
+        return tuple(candidates)
+
+    app.analysis.provider.fact_response = extract
+    request = await app.request_analysis(
+        owner, version_id=version, kind="dissection", confirm_exposure=True,
+        idempotency_key="bounded-attribution",
+    )
+    worker = DurableJobWorker(
+        app.analysis.jobs, {"training.analysis": app.analysis_job}, kinds=("training.analysis",),
+    )
+    assert await worker.run_once() == 1
+    for chunk in app.analysis.provider.extract_calls[0].chunks:
+        for question in chunk.questions:
+            assert question.reference_urls == (bounded,)
+    detail = await app.reviews.detail(owner, request["import_id"])
+    assert len(detail["sections"]["new"]) == 5
+    for candidate in detail["sections"]["new"]:
+        assert len(candidate["author"]) <= 300
+        assert [link["url"] for link in candidate["links"]] == [bounded]
+    async with database.sessions() as session:
+        review = await session.get(KnowledgeImportRecord, request["import_id"])
+        for value in review.candidates:
+            content = content_of(value)
+            assert len(content.author) <= 300
+            assert [link.url for link in content.links] == [bounded]
+    ids = [value["id"] for value in detail["sections"]["new"]]
+    result = await app.reviews.decide(
+        owner, import_id=request["import_id"], decision="approve", selected_candidate_ids=ids,
+    )
+    assert result["approved_count"] == 5
+    async with database.sessions() as session:
+        facts = list(await session.scalars(select(KnowledgeFactRecord).where(
+            KnowledgeFactRecord.owner_id == owner,
+        )))
+        assert {len(fact.author) for fact in facts} == {300}
+
+
+async def test_review_attachment_metadata_fetch_is_batched_beyond_bind_limits(database):
+    owner = await create_player(database, 9982, "batched-images-sender")
+    recipient = await create_player(database, 9983, "batched-images-recipient")
+    app = KnowledgeApplication(database)
+    image_ids = [uuid4() for _ in range(70000)]  # above any statement bind limit
+    candidates = []
+    for offset in range(0, len(image_ids), 8):
+        batch = image_ids[offset:offset + 8]
+        candidates.append({
+            "id": str(uuid4()),
+            "source_fact_id": str(uuid4()),
+            "content": {
+                "title": f"Fact {offset}", "description": "Body", "links": [],
+                "image_ids": [str(value) for value in batch],
+            },
+            "tag_names": [],
+        })
+    import_id = uuid4()
+    async with database.transaction() as session:
+        session.add(KnowledgeImportRecord(
+            id=import_id, owner_id=recipient, creator_id=owner, type="collection",
+            status="pending", candidates=candidates,
+        ))
+    detail = await app.reviews.detail(recipient, import_id)
+    assert detail["status"] == "pending"
+    assert sum(len(section) for section in detail["sections"].values()) == len(candidates)
+    assert all(
+        not candidate["images"]
+        for section in detail["sections"].values() for candidate in section
+    )
+
+
 async def test_private_training_attribution_in_announcements_completion_and_recovery(database):
     owner = await create_player(database, 9975, "private-training-authors")
     other = await create_player(database, 9976, "private-training-outsider")
