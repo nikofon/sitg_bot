@@ -390,12 +390,14 @@ async def test_uncertain_provider_error_is_written_with_the_current_compute_toke
     )
     error = ProviderOutcomeUncertain("Disconnected", provider_request_id="old-call")
     service._run_common_knowledge = AsyncMock(side_effect=error)
-    service._record_uncertain = AsyncMock()
+    service._complete_requests = AsyncMock()
     with pytest.raises(ProviderOutcomeUncertain):
         await service.execute_job({"artifact_id": str(artifact.id), "generation": 1})
-    token = service._run_common_knowledge.await_args.args[1]
-    assert token is not None and token == artifact.lease_token
-    service._record_uncertain.assert_awaited_once_with(artifact.id, token, error)
+    assert service._run_common_knowledge.await_args.args[1] is not None
+    assert artifact.status == "failed" and artifact.lease_token is None
+    assert artifact.provider_request_ids == ["old-call"]
+    assert artifact.last_error == "Disconnected"
+    service._complete_requests.assert_awaited_once()
 
 
 async def test_applied_dissection_is_not_reset_or_requeued_by_an_explicit_retry():

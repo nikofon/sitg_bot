@@ -17,7 +17,6 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    case,
     delete,
     func,
     literal,
@@ -43,6 +42,7 @@ from sitg_bot.services.training_ai import (
     ANALYSIS_COMMON_KNOWLEDGE,
     ANALYSIS_DISSECTION,
     PROVIDER_CALL_METADATA,
+    AnalysisValidationError,
     BuzzBoundary,
     BuzzRequest,
     CommonKnowledgeRequest,
@@ -279,6 +279,13 @@ class AnalysisService:
             reusable = await public_base(
                 self, session, fingerprint, descriptor.get("tag_names", []), require_coverage=True
             )
+        if reusable is not None:
+            reusable = await session.get(
+                TrainingAnalysisArtifactRecord, reusable.id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
+            if reusable is not None and reusable.status != "succeeded":
+                reusable = None
         artifact = reusable or await self._artifact_for_key(
             session,
             key,
@@ -621,18 +628,29 @@ class AnalysisService:
                 await self._run_packet_scan(
                     artifact_id, lease_token, kind, instructions, descriptor, initiating_owner
                 )
-        except ProviderOutcomeUncertain as error:
-            await self._record_uncertain(artifact_id, lease_token, error)
-            raise
-        except Exception:
+        except Exception as error:
             async with self.database.transaction() as session:
                 artifact = await session.get(
                     TrainingAnalysisArtifactRecord, artifact_id,
                     with_for_update={"key_share": True}, populate_existing=True,
                 )
-                if artifact is not None and artifact.lease_token == lease_token:
+                if (
+                    artifact is not None and artifact.status == "running"
+                    and artifact.lease_token == lease_token
+                ):
                     artifact.provider_request_ids = self._provider_request_ids()
                     artifact.provider_usage = self._usage_payload()
+                    if isinstance(error, ProviderOutcomeUncertain):
+                        artifact.provider_request_ids = list(dict.fromkeys([
+                            *artifact.provider_request_ids, error.provider_request_id,
+                        ]))
+                    if isinstance(error, (
+                        AnalysisValidationError, ProviderOutcomeUncertain, ProviderTimeout,
+                        ValueError, PermissionError, LookupError,
+                    )):
+                        await self._fail_artifact(session, artifact, str(error), datetime.now(UTC))
+                    else:
+                        artifact.lease_expires_at = datetime.now(UTC)
             raise
         finally:
             self._provider_metadata.reset(usage_token)
@@ -1077,30 +1095,6 @@ class AnalysisService:
         )
         if updated.rowcount != 1:
             raise RuntimeError("Stale analysis compute lease")
-
-    async def _record_uncertain(
-        self, artifact_id: UUID, lease_token: UUID, error: ProviderOutcomeUncertain
-    ) -> None:
-        """Record possibly-billed upstream request IDs before retrying."""
-        async with self.database.transaction() as session:
-            model = TrainingAnalysisArtifactRecord
-            request_ids = [error.provider_request_id]
-            await session.execute(
-                update(model).where(
-                    model.id == artifact_id,
-                    model.lease_token == lease_token,
-                    model.status == "running",
-                ).values(
-                    provider_request_ids=case(
-                        (model.provider_request_ids.contains(request_ids),
-                         model.provider_request_ids),
-                        else_=model.provider_request_ids + request_ids,
-                    ),
-                    last_error=(
-                        f"Uncertain provider outcome for request {error.provider_request_id}"
-                    ),
-                )
-            )
 
     def _view(
         self,

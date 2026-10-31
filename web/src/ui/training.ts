@@ -75,8 +75,9 @@ export function renderTraining(
   const post = <T>(command: string, body: unknown): Promise<T> => api.request<T>(
     `/api/miniapp/training/${command}`, { method: "POST", body, signal },
   );
-  const show = (result: TrainingResult): void => {
-    if (signal.aborted) return;
+  let requestRevision = 0;
+  const show = (result: TrainingResult, revision: number): void => {
+    if (signal.aborted || revision !== requestRevision) return;
     // Presentation-only refresh: adopt the authoritative lobby version/selection,
     // but never overwrite the local unsaved settings draft or focused inputs.
     if (result.lobby && queued === 0 && !pending) {
@@ -100,8 +101,11 @@ export function renderTraining(
   };
   const refresh = async (): Promise<void> => {
     if (signal.aborted || busy) return;
-    try { show(await api.request<TrainingResult>("/api/miniapp/training/current", { signal })); }
-    catch (error) { failure(error); schedule(); }
+    const revision = ++requestRevision;
+    try { show(await api.request<TrainingResult>("/api/miniapp/training/current", { signal }), revision); }
+    catch (error) {
+      if (revision === requestRevision) { failure(error); schedule(); }
+    }
   };
   const schedule = (): void => {
     window.clearTimeout(timer);
@@ -138,12 +142,13 @@ export function renderTraining(
   const act = async (command: string, answer?: string): Promise<void> => {
     if (!state || busy) return;
     busy = true;
+    const revision = ++requestRevision;
     const current = state;
     try {
       show(await post<TrainingResult>("act", {
         session_id: current.id, expected_version: current.version,
         question_revision_id: current.question_revision_id, command, answer,
-      }));
+      }), revision);
     } catch (error) {
       failure(error);
       if (error instanceof ApiError && error.code === "stale_write") {
@@ -533,12 +538,13 @@ export function renderTraining(
         serialize(async () => {
           try {
             await post("retire", { version_id: packet.id });
+            const revision = ++requestRevision;
             const current = await api.request<TrainingResult>("/api/miniapp/training/current", { signal });
-            if (signal.aborted) return;
+            if (signal.aborted || revision !== requestRevision) return;
             // Retirement does not deselect a saved packet. Retain the authoritative
             // selection/version, explain its unavailability, and preserve drafts.
             lobby = current.lobby ?? null;
-            show(current);
+            show(current, revision);
             notice.textContent = lobby?.version_id === packet.id
               ? i18n.t("training.retired_selected") : i18n.t("training.retired");
             updateSelection();

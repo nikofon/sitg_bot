@@ -1,5 +1,5 @@
 from copy import deepcopy
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -7,6 +7,7 @@ from conftest import create_player
 from sqlalchemy import insert
 from test_analysis_jobs import artifact_id_of, artifact_of, make_stack, payload
 
+from sitg_bot.services import analysis_jobs
 from sitg_bot.services.training_ai import CachedFactsDecision, DissectionSource
 from sitg_bot.storage.models import TrainingAnalysisArtifactRecord
 
@@ -146,3 +147,47 @@ async def test_older_compatible_tag_cache_is_filtered_before_bounded_lookup(data
     assert hit.status == "succeeded"
     assert await artifact_id_of(database, "older-hit") == base_id
     assert counts(stack) == (1, 0, 0, 1)
+
+
+@pytest.mark.parametrize("cleanup_boundary", ["before_lock", "after_lock"])
+async def test_public_cache_registration_survives_cleanup(database, monkeypatch, cleanup_boundary):
+    owners = [await create_player(database, 9995 + i, f"admission-cleanup-{i}") for i in range(2)]
+    stack = await make_stack(database, owners)
+    question = stack.loader.add("Public cached question")
+    source = DissectionSource(uuid4(), (question,))
+    await request(stack, owners[0], source, "cleanup-base", tags=("history", "art"))
+    assert await stack.worker.run_once() == 1
+    base_id = await artifact_id_of(database, "cleanup-base")
+    cutoff = datetime.now(UTC)
+    deleted = []
+    if cleanup_boundary == "before_lock":
+        original = analysis_jobs.public_base
+
+        async def select_then_cleanup(*args, **kwargs):
+            base = await original(*args, **kwargs)
+            assert base.id == base_id
+            deleted.append(await stack.service.cleanup(before=cutoff))
+            return base
+
+        monkeypatch.setattr(analysis_jobs, "public_base", select_then_cleanup)
+    else:
+        original = stack.service._authorize_request
+
+        async def cleanup_then_authorize(*args, **kwargs):
+            deleted.append(await stack.service.cleanup(before=cutoff))
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(stack.service, "_authorize_request", cleanup_then_authorize)
+    result = await request(stack, owners[1], source, "cleanup-admission", tags=("art",))
+    new_id = await artifact_id_of(database, "cleanup-admission")
+    if cleanup_boundary == "before_lock":
+        assert deleted == [2] and result.status == "queued" and new_id != base_id
+        assert await artifact_of(database, base_id) is None
+        assert await stack.worker.run_once() == 1
+        assert counts(stack) == (2, 0, 0, 2)
+    else:
+        assert deleted == [1] and result.status == "succeeded" and new_id == base_id
+        assert counts(stack) == (1, 0, 0, 1)
+    assert await stack.service.result(owner_player_id=owners[1], request_id="cleanup-admission")
+    assert await stack.service.cleanup(before=cutoff) == 0
+    assert await artifact_of(database, new_id) is not None

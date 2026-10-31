@@ -710,7 +710,7 @@ async def test_analysis_jobs_are_isolated_from_gameplay_workers(database):
     assert await stack.jobs.claim(limit=10) == ()
 
 
-async def test_uncertain_outcomes_are_recorded_and_retried(database):
+async def test_uncertain_outcomes_are_recorded_refunded_and_explicitly_retried(database):
     owner = await create_player(database, 219, "uncertain")
     stack = await make_stack(database, [owner], lease_duration=timedelta(milliseconds=80))
     source = CommonKnowledgeSource("An uncertain fact about electricity.")
@@ -727,19 +727,17 @@ async def test_uncertain_outcomes_are_recorded_and_retried(database):
 
     artifact = await artifact_of(database, artifact_id)
     assert "upstream-1" in artifact.provider_request_ids
-    assert "upstream-1" in (artifact.last_error or "")
-    for _ in range(2):
-        await stack.service._record_uncertain(
-            artifact_id, artifact.lease_token,
-            ProviderOutcomeUncertain("Disconnected", provider_request_id="upstream-1"),
-        )
-    assert (await artifact_of(database, artifact_id)).provider_request_ids.count("upstream-1") == 1
-
-    await asyncio.sleep(0.1)
-    await stack.service.execute_job(payload)
+    assert artifact.status == "failed" and artifact.lease_token is None
+    assert artifact.last_error == "gateway died mid-call"
     view = await stack.service.status(owner_player_id=owner, request_id="unc-1")
+    assert view.status == "failed"
+    assert (await stack.entitlements.capabilities(owner))["common_knowledge"].remaining == 10
+
+    await submit(stack.service, owner, source, "unc-2")
+    await stack.service.execute_job({**payload, "generation": 2})
+    view = await stack.service.status(owner_player_id=owner, request_id="unc-2")
     assert view.status == "succeeded"
-    result = await stack.service.result(owner_player_id=owner, request_id="unc-1")
+    result = await stack.service.result(owner_player_id=owner, request_id="unc-2")
     assert result["value"] == 50
 
 

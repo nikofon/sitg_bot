@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client";
-import type { TrainingPacket, TrainingSession } from "../api/types";
+import type { TrainingPacket, TrainingResult, TrainingSession } from "../api/types";
 import { I18n } from "../i18n";
 import { renderTraining } from "./training";
 
@@ -14,7 +14,7 @@ const controllers: AbortController[] = [];
 afterEach(() => { controllers.forEach((controller) => controller.abort()); vi.useRealTimers(); });
 function create(session: TrainingSession | null, packets: TrainingPacket[] = []) {
   const controller = new AbortController(); controllers.push(controller);
-  const request = vi.fn(async (path: string) => path.includes("packets")
+  const request = vi.fn(async (path: string): Promise<TrainingResult | { items: TrainingPacket[]; next_cursor: null }> => path.includes("packets")
     ? { items: packets, next_cursor: null } : { session });
   const root = renderTraining({ session }, { request } as unknown as ApiClient, new I18n("en"), controller.signal);
   return { root, request, controller };
@@ -81,6 +81,64 @@ describe("training", () => {
     expect(next).not.toBe(answer);
     expect(next.value).toBe("");
     root.remove();
+  });
+
+  it.each(["buzz", "pause"])("ignores a pre-%s poll after the action response", async (command) => {
+    vi.useFakeTimers();
+    const { root, request, controller } = create({ ...state, phase: "reading" });
+    let finishPoll!: (result: TrainingResult) => void;
+    let finishAction!: (result: TrainingResult) => void;
+    request.mockImplementation((path: string) => {
+      if (path.endsWith("/current")) return new Promise((resolve) => { finishPoll = resolve; });
+      return new Promise((resolve) => { finishAction = resolve; });
+    });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(finishPoll).toBeTypeOf("function");
+    const label = command === "buzz" ? "Buzz" : "Pause";
+    const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+      .find((value) => value.textContent === label)!;
+    button.click();
+    finishAction({ session: {
+      ...state, version: 2, phase: command === "buzz" ? "answering" : "reading",
+      status: command === "pause" ? "paused" : "active",
+    } });
+    await vi.advanceTimersByTimeAsync(0);
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]');
+    if (command === "buzz") { expect(input).not.toBeNull(); input!.value = "Typed answer"; }
+    finishPoll({ session: { ...state, phase: "reading" } });
+    await vi.advanceTimersByTimeAsync(0);
+    if (command === "buzz") {
+      expect(root.querySelector('input[aria-label="Submit answer"]')).toBe(input);
+      expect(input!.value).toBe("Typed answer");
+    } else {
+      expect(root.textContent).toContain("Resume");
+      const count = request.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(request.mock.calls.length).toBe(count);
+    }
+    controller.abort();
+  });
+
+  it("ignores a poll that arrives while the newer action is still pending", async () => {
+    vi.useFakeTimers();
+    const { root, request } = create({ ...state, phase: "answering" });
+    let finishPoll!: (result: TrainingResult) => void;
+    let finishAction!: (result: TrainingResult) => void;
+    request.mockImplementation((path: string) => path.endsWith("/current")
+      ? new Promise((resolve) => { finishPoll = resolve; })
+      : new Promise((resolve) => { finishAction = resolve; }));
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Submit answer"]')!;
+    input.value = "Answer in flight";
+    await vi.advanceTimersByTimeAsync(600);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    finishPoll({ session: { ...state, phase: "reading" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelector('input[aria-label="Submit answer"]')).toBe(input);
+    expect(input.value).toBe("Answer in flight");
+    finishAction({ session: { ...state, version: 2, phase: "revealed", answer: "Correct answer" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(root.querySelector('input[aria-label="Submit answer"]')).toBeNull();
+    expect(root.textContent).toContain("Correct answer");
   });
 
   it("allows hidden plus reversed and displaces Best buzz", () => {

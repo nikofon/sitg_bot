@@ -413,6 +413,8 @@ class KnowledgeReview:
                 dissection = await session.get(KnowledgeDissectionRecord, preview.dissection_id)
                 await self.app.packets.lock_access(session, actor, UUID(dissection.packet_revision))
             await require_trainee(session, actor, lock=True)
+            if preview.dissection_id:
+                await self.app.packets.authorize(session, actor, UUID(dissection.packet_revision))
             row = await self._owned(session, actor, import_id)
             if decision == "approve" and selected_candidate_ids is None:
                 raise ValueError("Explicit selected candidate IDs are required")

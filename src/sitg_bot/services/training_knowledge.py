@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -853,43 +854,11 @@ class KnowledgeApplication:
             ProviderTimeout,
         )
 
-        try:
+        with suppress(
+            AnalysisValidationError, ProviderOutcomeUncertain, ProviderTimeout,
+            ValueError, PermissionError, LookupError,
+        ):
             await AnalysisJobHandler(self.analysis)(payload)
-        except (
-            AnalysisValidationError,
-            ProviderOutcomeUncertain,
-            ProviderTimeout,
-            ValueError,
-            PermissionError,
-            LookupError,
-        ) as error:
-            async with self.database.transaction() as session:
-                artifact = await session.get(
-                    TrainingAnalysisArtifactRecord,
-                    UUID(payload["artifact_id"]),
-                    with_for_update={"key_share": True}, populate_existing=True,
-                )
-                if (
-                    artifact is not None and artifact.status == "running"
-                    and artifact.generation == int(payload.get("generation", 1))
-                ):
-                    await self.analysis._fail_artifact(
-                        session, artifact, str(error), datetime.now(UTC)
-                    )
-        except Exception:
-            # A retry resumes its checkpoint immediately after an ordinary worker failure.
-            async with self.database.transaction() as session:
-                artifact = await session.get(
-                    TrainingAnalysisArtifactRecord,
-                    UUID(payload["artifact_id"]),
-                    with_for_update={"key_share": True}, populate_existing=True,
-                )
-                if (
-                    artifact is not None and artifact.status == "running"
-                    and artifact.generation == int(payload.get("generation", 1))
-                ):
-                    artifact.lease_expires_at = datetime.now(UTC)
-            raise
         await self.reconcile()
 
     async def cleanup_retired(self):
@@ -954,6 +923,10 @@ class KnowledgeApplication:
                     )
                     for row in rows:
                         row.status = "failed"
+                        await session.execute(update(KnowledgeImportRecord).where(
+                            KnowledgeImportRecord.dissection_id == row.id,
+                            KnowledgeImportRecord.status == "working",
+                        ).values(status="failed"))
                 await outbox.acknowledge(event.event_id, event.lease_token)
             except Exception:
                 await outbox.reject(
