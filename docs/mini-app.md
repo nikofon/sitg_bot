@@ -300,6 +300,9 @@ screens load pages of at most 25 on explicit request. Retired/revoked content an
 unvisited questions remain redacted; legacy unknown timings say unavailable. See
 [training](training.md#training-history) for disclosure and schema dependencies.
 
+The `/training` solo lobby and `/knowledge` fact library are implemented; see
+[training execution](training.md#execution-and-presentation) and
+[Knowledge adapters](training-knowledge-integration.md#adapters) for their screens and controls.
 Other shared routes may return placeholders. Native SI gameplay stays in Telegram.
 
 ## HTTP route families

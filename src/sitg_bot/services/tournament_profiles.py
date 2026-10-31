@@ -18,8 +18,8 @@ from sitg_bot.storage.models import (
     GameParticipantRecord,
     GameRecord,
     GameRulesetVersionRecord,
-    PlayerRecord,
     PlatformAdministratorRecord,
+    PlayerRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
     TournamentRecord,
@@ -44,16 +44,12 @@ class TournamentProfileService:
     ) -> dict[str, object]:
         async with self.database.sessions() as session:
             tournament = await session.get(TournamentRecord, tournament_id)
-            if tournament is None or not await self._visible(
-                session, tournament, viewer_player_id
-            ):
+            if tournament is None or not await self._visible(session, tournament, viewer_player_id):
                 raise LookupError("Tournament not found")
             type_version = await session.get(
                 TournamentTypeVersionRecord, tournament.type_version_id
             )
-            ruleset_version = await session.get(
-                GameRulesetVersionRecord, tournament.game_ruleset_version_id
-            )
+            await session.get(GameRulesetVersionRecord, tournament.game_ruleset_version_id)
             memberships = await self._membership_rows(session, tournament_id)
             classic = type_version.key == "classic" if type_version else False
             now = datetime.now(UTC)
@@ -148,9 +144,7 @@ class TournamentProfileService:
                 .order_by(PlayerRecord.public_nickname, PlayerRecord.id)
             )
         ).scalars()
-        return [
-            {"player_id": str(manager.id), "name": manager.public_nickname} for manager in rows
-        ]
+        return [{"player_id": str(manager.id), "name": manager.public_nickname} for manager in rows]
 
     async def _games_projection(
         self, session: AsyncSession, tournament: TournamentRecord, classic: bool
@@ -169,16 +163,14 @@ class TournamentProfileService:
         self, session: AsyncSession, tournament_id: UUID
     ) -> list[dict[str, object]]:
         games = list(
-            (
-                await session.scalars(
-                    select(GameRecord)
-                    .where(
-                        GameRecord.tournament_id == tournament_id,
-                        GameRecord.status == "finalized",
-                    )
-                    .order_by(GameRecord.completed_at.desc().nullslast(), GameRecord.id.desc())
-                    .limit(PROFILE_GAME_LIMIT)
+            await session.scalars(
+                select(GameRecord)
+                .where(
+                    GameRecord.tournament_id == tournament_id,
+                    GameRecord.status == "finalized",
                 )
+                .order_by(GameRecord.completed_at.desc().nullslast(), GameRecord.id.desc())
+                .limit(PROFILE_GAME_LIMIT)
             )
         )
         participants = await self._participant_rows(session, tuple(game.id for game in games))
@@ -225,9 +217,7 @@ class TournamentProfileService:
         memberships: list[tuple[str, str, str, object]],
         now: datetime,
     ) -> dict[str, object]:
-        type_version = await session.get(
-            TournamentTypeVersionRecord, tournament.type_version_id
-        )
+        type_version = await session.get(TournamentTypeVersionRecord, tournament.type_version_id)
         ruleset_version = await session.get(
             GameRulesetVersionRecord, tournament.game_ruleset_version_id
         )
@@ -277,9 +267,7 @@ class TournamentProfileService:
             ),
             "managers": await self._manager_rows(session, tournament.id),
             "authors": list(
-                await TournamentService(self.database).tournament_authors(
-                    session, tournament.id
-                )
+                await TournamentService(self.database).tournament_authors(session, tournament.id)
             ),
             "registration_count": len(memberships),
             "participant_count": sum(
@@ -292,19 +280,15 @@ class TournamentProfileService:
     ) -> list[dict[str, object]]:
         names = dict(
             (player_id, nickname)
-            for player_id, nickname, _, _ in await self._membership_rows(
-                session, tournament_id
-            )
+            for player_id, nickname, _, _ in await self._membership_rows(session, tournament_id)
         )
         result = []
         for stage in await self._stage_rows(session, tournament_id):
             rounds = list(
-                (
-                    await session.scalars(
-                        select(ClassicRoundRecord)
-                        .where(ClassicRoundRecord.stage_id == stage.id)
-                        .order_by(ClassicRoundRecord.number)
-                    )
+                await session.scalars(
+                    select(ClassicRoundRecord)
+                    .where(ClassicRoundRecord.stage_id == stage.id)
+                    .order_by(ClassicRoundRecord.number)
                 )
             )
             matches = await self._stage_matches(session, stage.id)
@@ -332,9 +316,7 @@ class TournamentProfileService:
                         {
                             "number": round_record.number,
                             "matches": [
-                                self._match_projection(
-                                    match, participants, games_by_id, names
-                                )
+                                self._match_projection(match, participants, games_by_id, names)
                                 for match in matches
                                 if match.round_id == round_record.id
                             ],
@@ -405,7 +387,9 @@ class TournamentProfileService:
             matches = await self._stage_matches(session, stage.id)
             if stage.kind == "first" and stage.stage_type in {"groups", "quiz", "swiss"}:
                 ranking = standings(
-                    matches, quiz=stage.stage_type == "quiz", seed=stage.random_seed,
+                    matches,
+                    quiz=stage.stage_type == "quiz",
+                    seed=stage.random_seed,
                     swiss=stage.stage_type == "swiss",
                 )
                 projected.append(
@@ -418,8 +402,11 @@ class TournamentProfileService:
                                 "nickname": names.get(row["seat"], row["seat"]),
                                 "points": row["points"],
                                 "score": row["score"],
-                                **({"opponent_place_sum": row["opponent_place_sum"]}
-                                   if stage.stage_type == "swiss" else {}),
+                                **(
+                                    {"opponent_place_sum": row["opponent_place_sum"]}
+                                    if stage.stage_type == "swiss"
+                                    else {}
+                                ),
                             }
                             for row in ranking
                             if not is_chair(row["seat"])
@@ -468,30 +455,24 @@ class TournamentProfileService:
     @staticmethod
     async def _stage_rows(session: AsyncSession, tournament_id: UUID) -> list:
         return list(
-            (
-                await session.scalars(
-                    select(ClassicStageRecord)
-                    .where(ClassicStageRecord.tournament_id == tournament_id)
-                    .order_by(ClassicStageRecord.kind)
-                )
+            await session.scalars(
+                select(ClassicStageRecord)
+                .where(ClassicStageRecord.tournament_id == tournament_id)
+                .order_by(ClassicStageRecord.kind)
             )
         )
 
     @staticmethod
     async def _stage_matches(session: AsyncSession, stage_id: UUID) -> list:
         return list(
-            (
-                await session.scalars(
-                    select(ClassicMatchRecord)
-                    .join(
-                        ClassicRoundRecord, ClassicRoundRecord.id == ClassicMatchRecord.round_id
-                    )
-                    .where(ClassicRoundRecord.stage_id == stage_id)
-                    .order_by(
-                        ClassicRoundRecord.number,
-                        ClassicMatchRecord.group_number,
-                        ClassicMatchRecord.number,
-                    )
+            await session.scalars(
+                select(ClassicMatchRecord)
+                .join(ClassicRoundRecord, ClassicRoundRecord.id == ClassicMatchRecord.round_id)
+                .where(ClassicRoundRecord.stage_id == stage_id)
+                .order_by(
+                    ClassicRoundRecord.number,
+                    ClassicMatchRecord.group_number,
+                    ClassicMatchRecord.number,
                 )
             )
         )

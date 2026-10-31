@@ -1,5 +1,11 @@
 # Backend review handoff
 
+Historical verification record for earlier training integration checkpoints, not a
+current release status or migration-head contract. Current behavior is owned by
+[training](training.md), [Knowledge integration](training-knowledge-integration.md) and
+[Training AI](training-ai.md); migration requirements belong in
+[database operations](database-operations.md#schema-baseline).
+
 ## Selected fixes
 
 - r06: the existing gateway idempotency record retains original successful fact,

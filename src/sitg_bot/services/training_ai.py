@@ -3,9 +3,9 @@
 Agent C module (see `docs/training-mode-plan.md`). It defines the structured
 operations shared by dissection, Best buzz and Common knowledge analyses, their
 validation rules, and a scripted provider used by tests and recorded fixtures.
-The concrete provider/model choice is a pending Stage 0 decision; nothing in
-this module contacts a network by itself, and packet content or instructions
-are always data, never tools or authorization.
+Production provider configuration belongs to training_provider.py and
+training_knowledge.py; nothing in this module contacts a network by itself.
+Packet content or instructions are always data, never tools or authorization.
 """
 
 import asyncio
@@ -114,7 +114,7 @@ def text_fingerprint(*parts: str) -> str:
 
 
 def instruction_digest(instructions: str) -> str:
-    """Digest normalized instruction text; empty instructions are shared."""
+    """Digest verbatim instruction text; empty instructions are shared."""
     return text_fingerprint(instructions)
 
 

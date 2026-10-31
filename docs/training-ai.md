@@ -94,17 +94,15 @@ and plan purchase flows are deferred.
 ## Application integration
 
 All category, ledger, request and artifact records live in shared
-`storage/models.py`; migrations through `0023_copy_sharing_theme_quotas` create them.
+`storage/models.py`; see [schema setup](database-operations.md#schema-baseline).
 `KnowledgeApplication` supplies live packet/fact authorization and persisted review
 candidates. Only explicit selected-candidate approval adds facts. Separate analysis and gameplay workers use explicit kind filters.
 Private retirement emits durable cleanup events; hourly maintenance expires
 cached results/request records after 30 days and reconciles orphaned reservations.
 Saved facts/copies, packet uploads and pinned training sessions remain intact.
 
-The basic free plan includes separate daily budgets of 24 themes for dissection
-and 24 themes for Best buzz, resetting at midnight UTC. Each packet request reserves
-its distinct theme count; settlement and refunds use that count. Common knowledge
-continues to count individual estimates. Cache hits remain free.
+Default budgets, reset times and request caps are recorded in the
+[integration decisions](training-knowledge-integration.md#integration-decisions).
 
 The configured `ResponsesAnalysisProvider` uses strict structured outputs with
 bounded response size, timeouts and concurrency. It records upstream IDs and token
@@ -114,7 +112,7 @@ Credentials and models are server configuration, with no fake production fallbac
 
 ## Enabling and live acceptance (operator steps, not automated-test claims)
 
-1. Apply `alembic upgrade head` (through `0030_public_analysis_cache`) on the intended
+1. Apply the [required migrations](database-operations.md#schema-baseline) on the intended
    application database before deploying this source. Do not use test database URLs for it.
 2. Configure the existing server-only `SITG_TRAINING_AI_API_KEY` secret and
    `SITG_TRAINING_AI_MODEL` structured-output-capable model. The analysis worker starts with
@@ -143,7 +141,8 @@ smoke acceptance remain explicit deployment prerequisites; implementation tests 
 Run the targeted suites: `tests/unit/test_training_ai.py`,
 `tests/unit/test_entitlements_policy.py`, then the PostgreSQL integration
 tests `tests/integration/test_entitlements.py` and
-`tests/integration/test_analysis_jobs.py` with `TEST_DATABASE_URL`. Coverage
+`tests/integration/test_analysis_jobs.py` through the
+[shared database lease](database-operations.md#shared-test-database-lifecycle). Coverage
 includes fake-provider timeout/malformed-output handling, restart and
 checkpoint resume, expired leases and fencing, cancellation, gameplay-worker
 isolation, coalescing, cache reuse and isolation, owner scoping, concurrent

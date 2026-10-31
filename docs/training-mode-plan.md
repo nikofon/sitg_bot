@@ -46,8 +46,8 @@ here instead of letting agents independently choose behavior:
    of access revoked during a session and active training versus normal play.
 2. Reversed text granularity; hidden-text delay, trigger and redisplay controls;
    allowed modifier combinations, especially reversed text with Best buzz.
-3. Sharing now sends permanent, recipient-owned copies. Both parties edit their
-   own facts independently; later source changes never propagate. Public links remain deferred.
+3. Sharing and reusable public-link behavior are defined in the
+   [knowledge integration guide](training-knowledge-integration.md#coloured-tags-durable-links-and-packet-cards).
 4. LLM provider/model, population/language assumptions for Common knowledge%,
    category limits/reset periods, cache-hit charging, and private upload limits.
 5. Bingo examples/calibration and the intended era in “before 1500 A.C.”; preserve
@@ -62,11 +62,9 @@ all other modifiers for now.
 Group training, exact commercial tiers and normal-game modifier availability are
 deferred. The interfaces must support later decisions without implementing them now.
 
-Integration uses permanent copy sharing and configurable OpenAI structured analysis.
-The basic free plan grants 24 themes/day each for dissection and Best buzz (UTC).
-These defaults, provider configuration
-and explicit Bingo/GotQuestions/date placeholders are recorded in the
-[integration decisions](training-knowledge-integration.md).
+Current sharing behavior, quota defaults and unresolved product inputs belong in the
+[integration guide](training-knowledge-integration.md); provider configuration belongs in
+[Training AI](training-ai.md).
 
 ### Stage 1: freeze the parallel-development boundary
 
@@ -232,19 +230,19 @@ states and statistic invalidation tests pass without live provider calls.
 
 Let trainees select an authorized packet and optionally provide prompt-style
 instructions. Preserve the instruction text, source revision and request identity.
-C performs extraction; B applies successful candidates automatically to the
-trainee's collection. Persist candidate-to-fact mappings so retries never duplicate
-facts or overwrite later manual edits. Record question provenance and validate
-external links before accepting them as authoritative references.
+Extraction now stages private review candidates rather than automatically saving facts;
+see [review and approval](training-knowledge-integration.md#configuration-and-persistence)
+for the authoritative application contract.
 
 Comments create a new dissection revision/job; they never mutate a shared base
 artifact. Support exclusions and requests for additional historical detail.
-Merge/delete behavior for facts from an earlier dissection must be explicit;
-do not silently remove manually maintained facts. Track partial application and
+Fact edit/delete compatibility is specified in the
+[integration guide](training-knowledge-integration.md#coloured-tags-durable-links-and-packet-cards).
+Do not silently remove manually maintained facts. Track partial application and
 allow retry of failed work without reapplying successes. Schedule statistics as
 separate bounded jobs so extraction need not wait for every metric.
 
-**Exit:** base/custom instructions, automatic addition, duplicate suppression,
+**Exit:** base/custom instructions, selected-candidate approval, duplicate suppression,
 manual-edit preservation and partial-retry tests pass.
 
 ### B4. Presentation
@@ -282,25 +280,9 @@ cancellation and gameplay-worker isolation tests pass.
 
 ### C2. Persistent analysis caching
 
-Store immutable validated analysis artifacts in PostgreSQL. Keys include analysis
-kind, exact content/revision fingerprint, language, model, prompt/schema/tokenizer
-versions and instruction digest. Only empty instructions use the shared base
-dissection key. Custom instructions produce separate, trainee-scoped artifacts;
-they cannot be replaced by filtering base facts when additional research is asked.
-
-Cache Best buzz per question revision/text fingerprint and relevant settings, with
-a packet manifest for completeness. Cache common-knowledge estimates by fact
-content and population assumptions; B caches mention queries with freshness/TTL.
-Versioned content changes invalidate by key. Refresh estimates explicitly rather
-than silently rewriting active session snapshots.
-
-Unique artifact keys and leases coalesce concurrent requests. Maintain separate
-trainee requests/waiters so each receives authorized results and independent
-fact application. Cancelling one waiter must not cancel work needed by others.
-Check source permissions before lookup, processing, result delivery and application;
-a cached result never grants access. Private uploads stay owner-scoped even when
-their hashes match another packet. Do not cache failures as successful empty data.
-Define bounded retention/cleanup and avoid logging packet text or credentials.
+The implemented cache contract, including public tag-coverage reuse, LLM-decided
+commentary routing, private-request isolation, leases and cleanup, belongs in
+[Training AI](training-ai.md#analysis-requests-jobs-and-caching).
 
 **Exit:** simultaneous base requests produce one computation; custom/private
 requests remain isolated; version changes, revocation and retries behave correctly.
@@ -344,8 +326,9 @@ failure/refund and crash-reconciliation PostgreSQL tests pass.
 For packet lists, follow [existing loading practices](packet-loading.md): 25-card
 pages, stable cursors, filtering before expensive work, batched metadata/permissions,
 the shared background limiter, cancellable/debounced browser loading and lazy details.
-Training lists need no freshness calculation. Do not copy the current library's
-full-list/per-item query loop. Keep permission checks live; avoid caching grants.
+Training and Knowledge packet-card metadata and batching are specified in the
+[integration guide](training-knowledge-integration.md#coloured-tags-durable-links-and-packet-cards).
+Keep permission checks live; avoid caching grants.
 
 Each agent starts with targeted unit tests, then relevant disposable-PostgreSQL
 integration tests and browser/adapter tests. Add query-count regression checks proving

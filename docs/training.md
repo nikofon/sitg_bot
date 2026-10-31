@@ -2,7 +2,8 @@
 
 Solo training uses separate session, membership, question-pin and attempt tables.
 It never creates competitive games, rating entries or tournament results.
-Run `alembic upgrade head` (through `0028_training_lifecycle`) before deployment.
+For required migrations and deployment setup, see
+[database operations](database-operations.md#schema-baseline).
 
 ## Access and uploads
 
@@ -26,18 +27,18 @@ game reservations prevent disclosure. Rights are checked again on protected read
 Private deletion retires access while retaining pinned history. The retirement
 event drives durable analysis payload/checkpoint cleanup.
 
-Packet pages contain at most 25 cards, use UUID cursors and apply permissions and
-name filters in SQL. Each page uses three SELECTs, independent of card count;
-freshness is not calculated. Browser loading reuses the paced, cancellable loader.
+Training and Knowledge share the authorized, batched packet catalogue; filters,
+opaque cursors, freshness and analysis metadata are specified in the
+[integration guide](training-knowledge-integration.md#coloured-tags-durable-links-and-packet-cards).
 Content and downloads load only on request. Queued downloads recheck rights before
 constructing the document.
 
 ## Execution and presentation
 
 Telegram training is keyboard-driven, without training-specific slash commands. The home
-keyboard contains Start training, Knowledge library, Upload packet for training,
-and Change mode. Start training creates a persistent solo lobby, replacing the
-keyboard with Packets and settings, Start, and Quit. Packets and settings launches
+keyboard contains Start training, Training history, Knowledge library,
+Upload packet for training, and Change mode. Start training creates a persistent solo
+lobby, replacing the keyboard with Packets and settings, Start, and Quit. Packets and settings launches
 the `/training` Mini App, using the regular lobby's Overview / Packets / Options
 sections. Packet selection autosaves independently, while settings require an
 explicit save. Selecting a packet never starts questions.
@@ -154,14 +155,12 @@ whole-packet exposure claims do not prove playback: unvisited questions remain
 redacted even after stopping the run. Recorded opening/buzz or a finished legacy
 attempt proves play; unanswered questions of active/paused runs stay redacted so
 history cannot bypass hidden/incremental reading. These forward-recorded timing
-and appeal fields depend on integration-owned migration `0027_training_history_flow`;
-this component creates no separate migration.
+and appeal fields depend on migration `0027_training_history_flow`;
+the timing writer and history reader share these persisted fields.
 
 Targeted checks: `tests/unit/test_training_history*.py`,
 `tests/integration/test_training_history.py`, `web/src/ui/training-history.test.ts`
-and the real shell navigation regression in `web/src/app.test.ts`. Base-schema
-checks are not acceptance of the forthcoming timing writer/migration; the timing
-storage regression explicitly requires 0027.
+and the real shell navigation regression in `web/src/app.test.ts`.
 
 ## Knowledge and AI integration
 
@@ -172,6 +171,7 @@ approval and metered analysis use persistent storage. See the [integration guide
 for configuration, commands, limits, decisions and remaining placeholders.
 
 Targeted tests: `tests/unit/test_training*.py`, `tests/integration/test_training.py`
-and `web/src/ui/training.test.ts`. PostgreSQL tests require a disposable
-`TEST_DATABASE_URL`. Live Telegram delivery and deployed concurrent-AI performance
+and `web/src/ui/training.test.ts`. PostgreSQL tests must use the
+[shared database lease](database-operations.md#shared-test-database-lifecycle).
+Live Telegram delivery and deployed concurrent-AI performance
 still require deployment validation. Provider tests use fixtures without live calls.

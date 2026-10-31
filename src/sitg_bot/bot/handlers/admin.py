@@ -761,7 +761,9 @@ async def handle_admin_ban_reason(
     value = (message.text or "").strip()
     if _is_back(value, localization):
         await state.clear()
-        await send_message_model(message, MessageModel(localization.text("admin.ban.cancelled", locale)))
+        await send_message_model(
+            message, MessageModel(localization.text("admin.ban.cancelled", locale))
+        )
         return
     skip = any(
         value == localization.text("button.skip", candidate) for candidate in localization.catalogs

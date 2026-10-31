@@ -1,12 +1,9 @@
 # Training knowledge and analysis integration
 
-B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
-metadata and migrations through `0026_knowledge_images` (following
-`0025_knowledge_catalogue` and `0024_training_lobby`). `PostgresKnowledgeStore`
-implements B's repository; `KnowledgeApplication` connects persistence, source
-access, staged fact review, statistics and Best buzz. Migration `0029_knowledge_review`
-adds fact authors, a one-time default tag seed marker and durable private reviews;
-`0030_public_analysis_cache` adds review-creation retry identity and a scoped public-cache index.
+Knowledge and analysis/entitlement services use shared SQLAlchemy metadata.
+`PostgresKnowledgeStore` implements the knowledge repository; `KnowledgeApplication`
+connects persistence, source access, staged fact review, statistics and Best buzz.
+See [database operations](database-operations.md#schema-baseline) for migrations.
 
 ## Integration decisions
 
@@ -58,22 +55,10 @@ adds fact authors, a one-time default tag seed marker and durable private review
 
 ## Configuration and persistence
 
-Run `alembic upgrade head`. Set these on the application server:
-
-```text
-SITG_TRAINING_AI_API_KEY=<provider credential>
-SITG_TRAINING_AI_MODEL=<chosen structured-output-capable model>
-```
-
-Credentials stay server-side. Production never substitutes the fake provider.
+Provider setup, policy enablement and live acceptance prerequisites belong in
+[Training AI](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
 The implementation follows the official
 [structured outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
-Tests make no live provider calls.
-
-Default policies are installed once. For an existing disabled installation, create
-a policy with `EntitlementService.create_policy` and update the selected category's
-`policy_version`; configuration does not replace administrator choices. Policies
-support disabled, finite/unlimited, daily/monthly/no reset and cache-hit charging.
 
 Facts keep content and provenance in separate fields. Ordered links, provenance,
 application outcomes and immutable statistic snapshots use JSONB; tags and
@@ -83,7 +68,11 @@ batched tags/statistics bound fact pages to 25 cards without per-card reads.
 Dissection stages a durable owner-private review after another source-access check;
 completion never silently adds facts. Approval adds only explicit selected candidate IDs.
 New and normalized-name duplicate candidates default selected; exact editable-content
-matches default unselected. Approval rechecks current content and durable source/hash claims
+matches default unselected. Editable equality compares normalized title, description,
+author, ordered link URLs/titles and image IDs, ignoring internal link origin and packet
+provenance; tags and statistics do not affect equality. Classification and approval use
+the same comparison without changing stored provenance or historical retry fingerprints.
+Approval rechecks current content and durable source/hash claims
 under account locks: it never overwrites or resurrects deleted/edited imports. Decisions
 are terminal and retryable with the same selection. Follow-up comments create another
 analysis revision; rejected reviews add nothing.
@@ -148,7 +137,9 @@ No GET imports data. The token stays in the WebApp URL fragment, outside server
 HTTP access logs/referrers. The HTTP response also includes `app_url` (the relative
 in-session fragment route) and `launch_available`. If bot identity is unavailable,
 `url` is null and `launch_available` is false: the UI must not offer the plain
-HTTPS fallback as an externally working launch link. This uses the existing bot
+HTTPS fallback as an externally working launch link. Active links still offer Deactivate
+when launch identity is unavailable; hiding URL/copy controls does not revoke existing links.
+This uses the existing bot
 notifier/token and HTTPS `MINI_APP_BASE_URL` configuration, not new BotFather setup.
 The import response is `{import_id,status:'pending',owner_id,recipient_id,imported_count:0,
 skipped_count:0}`. Unknown/deactivated links fail without staging; self-import is rejected.
@@ -260,7 +251,7 @@ for the keyboard-driven training lobby and settings flow.
 
 | Item | Placeholder |
 | --- | --- |
-| Provider | Deployment model and credential above |
+| Provider | [Operator configuration](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims) |
 | Bingo examples | `<high-bingo fact, Mentions, Common knowledge estimate, desired score>` |
 | Bingo formula | `<calibrated versioned formula>` |
 | Ambiguous dates | `<meaning of A.C.>`; passed through verbatim |

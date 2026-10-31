@@ -134,7 +134,11 @@ class FactContent:
         object.__setattr__(self, "image_ids", images)
 
     def fingerprint(self) -> str:
-        """Stable digest of editable content; drives statistic invalidation."""
+        """Historical content/link-origin digest for retries and statistic invalidation.
+
+        Review equality ignores link origin separately in knowledge_review.py;
+        changing this digest would invalidate existing candidate/import identities.
+        """
         payload = json.dumps(
             {
                 "title": self.title,
