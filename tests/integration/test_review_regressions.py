@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -109,7 +110,13 @@ async def test_original_field_citations_survive_cache_staging_and_approval(datab
                 KnowledgeImportHashRecord.recipient_id == owner,
             ),
         ))
-        assert claims == hashes
+        editable_hashes = {
+            replace(content_of(value), links=tuple(
+                replace(link, origin="manual") for link in content_of(value).links
+            )).fingerprint()
+            for value in review.candidates
+        }
+        assert claims == hashes | editable_hashes
     after = await app.reviews.detail(owner, request["import_id"])
     assert {value["id"] for value in after["sections"]["duplicates"]} == set(ids)
     assert await app.reviews.decide(

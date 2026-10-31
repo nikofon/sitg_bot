@@ -1089,41 +1089,42 @@ function shareLinkRow(
     return element("li", { className: "knowledge-link-row resource-card knowledge-link-row-inactive" },
       element("span", { className: "knowledge-link-state" }, i18n.t("knowledge.sharing.deactivated")));
   }
+  const row = element("li", { className: "knowledge-link-row resource-card" });
   if (!link.launch_available || link.url === null) {
-    return element("li", { className: "knowledge-link-row resource-card" },
-      element("p", { className: "knowledge-fact-meta" },
-        i18n.t("knowledge.sharing.launch_unavailable")));
-  }
-  // Share the actual returned Telegram bot URL unchanged; never substitute app_url.
-  const shared = link.url;
-  const url = element("input", {
-    type: "text",
-    readonly: true,
-    className: "knowledge-link-url",
-    value: shared,
-    "aria-label": i18n.t("knowledge.sharing.link_url"),
-  });
-  const copy = element("button", {
-    type: "button",
-    className: "secondary-button",
-    onclick: (() => {
-      void (navigator.clipboard?.writeText(shared) ?? Promise.reject())
-        .then(() => { copy.textContent = i18n.t("knowledge.sharing.copied"); })
-        .catch(() => { url.select(); });
-    }) as EventListener,
-  }, i18n.t("knowledge.sharing.copy"));
-  return element("li", { className: "knowledge-link-row resource-card" },
-    element("div", { className: "knowledge-link-url-row" }, url, copy),
-    element("button", {
+    row.append(element("p", { className: "knowledge-fact-meta" },
+      i18n.t("knowledge.sharing.launch_unavailable")));
+  } else {
+    // Share the actual returned Telegram bot URL unchanged; never substitute app_url.
+    const shared = link.url;
+    const url = element("input", {
+      type: "text",
+      readonly: true,
+      className: "knowledge-link-url",
+      value: shared,
+      "aria-label": i18n.t("knowledge.sharing.link_url"),
+    });
+    const copy = element("button", {
       type: "button",
-      className: "danger-button",
+      className: "secondary-button",
       onclick: (() => {
-        if (!window.confirm(i18n.t("knowledge.sharing.confirm_deactivate"))) return;
-        void actions.deactivateLink?.(link.id)
-          .then(refresh)
-          .catch(() => reportError(i18n.t("knowledge.error")));
+        void (navigator.clipboard?.writeText(shared) ?? Promise.reject())
+          .then(() => { copy.textContent = i18n.t("knowledge.sharing.copied"); })
+          .catch(() => { url.select(); });
       }) as EventListener,
-    }, i18n.t("knowledge.sharing.deactivate")));
+    }, i18n.t("knowledge.sharing.copy"));
+    row.append(element("div", { className: "knowledge-link-url-row" }, url, copy));
+  }
+  row.append(element("button", {
+    type: "button",
+    className: "danger-button",
+    onclick: (() => {
+      if (!window.confirm(i18n.t("knowledge.sharing.confirm_deactivate"))) return;
+      void actions.deactivateLink?.(link.id)
+        .then(refresh)
+        .catch(() => reportError(i18n.t("knowledge.error")));
+    }) as EventListener,
+  }, i18n.t("knowledge.sharing.deactivate")));
+  return row;
 }
 
 function openShareDialog(

@@ -1,11 +1,17 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from uuid import uuid4
 
 import pytest
 
 from sitg_bot.domain.knowledge import FactContent, SourceLink, dissection_candidate_id
 from sitg_bot.services.knowledge import InMemoryKnowledgeStore, KnowledgeService
-from sitg_bot.services.knowledge_review import DEFAULT_TAG_LABELS, category, content_of, title_key
+from sitg_bot.services.knowledge_review import (
+    DEFAULT_TAG_LABELS,
+    category,
+    content_of,
+    editable_fingerprint,
+    title_key,
+)
 from sitg_bot.services.training_ai import fact_candidate_id
 
 
@@ -47,7 +53,7 @@ async def test_linked_candidates_preserve_content_and_identity_through_applicati
     assert fact.content == content_of(candidate) == content
     assert fact.applied_candidate_id == storage_id
     assert len(storage_id) == 19 and candidate["id"] == review_id
-    assert category(candidate, {fact.content.fingerprint()}, set()) == "duplicates"
+    assert category(candidate, {editable_fingerprint(fact.content)}, set()) == "duplicates"
     assert await service.apply_dissection_result(owner, request.request_id, [candidate]) == result
 
 
@@ -62,6 +68,35 @@ async def test_unicode_search_matches_lowercased_content(field):
         if field == "author":
             assert (await service.list_facts(owner, author=needle)).total == 1
     assert (await service.list_facts(owner, search="absent")).total == 0
+
+
+@pytest.mark.parametrize("field", ["title", "description", "author", "links", "image_ids"])
+def test_review_equality_ignores_only_internal_link_origins(field):
+    content = FactContent(
+        "Linked", "Body", (
+            SourceLink("https://example.org/a", "First", 0, "manual"),
+            SourceLink("https://example.org/b", "Second", 1, "dissection"),
+        ), (uuid4(),), author="Writer",
+    )
+    other = replace(content, links=tuple(
+        replace(link, origin="dissection" if link.origin == "manual" else "manual")
+        for link in content.links
+    ))
+    original_hash = content.fingerprint()
+    assert other.fingerprint() != original_hash
+    assert editable_fingerprint(content) == editable_fingerprint(other)
+    candidate = {"content": {**asdict(other), "image_ids": [str(other.image_ids[0])]}}
+    assert category(candidate, {editable_fingerprint(content)}, set()) == "duplicates"
+    assert content.fingerprint() == original_hash
+    assert [link.origin for link in content.links] == ["manual", "dissection"]
+    changes = {
+        "title": "Different", "description": "Different", "author": "Different",
+        "links": (replace(content.links[0], title="Different"), content.links[1]),
+        "image_ids": (uuid4(),),
+    }
+    assert editable_fingerprint(replace(other, **{field: changes[field]})) != editable_fingerprint(
+        content,
+    )
 
 
 def test_dedupe_uses_editable_content_and_normalized_name():

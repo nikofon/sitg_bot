@@ -1034,6 +1034,37 @@ describe("sharing links", () => {
     expect([...dialog.querySelectorAll("button")].some((item) => item.textContent === "Copy")).toBe(false);
   });
 
+  it.each([
+    { url: null, launch_available: false },
+    { url: null, launch_available: true },
+    { url: "https://t.me/sitg_bot?start=kl_token-link-1", launch_available: false },
+  ])("keeps active links deactivatable without a usable launch URL: %j", async (unavailable) => {
+    const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1", true, unavailable)] };
+    const afterDeactivate: KnowledgeSharing = { ...sharing, links: [link("link-1", false, unavailable)] };
+    const actionList = actions({
+      loadSharing: vi.fn().mockResolvedValueOnce(withLinks).mockResolvedValue(afterDeactivate),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { button } = render(structuredClone(data), actionList);
+    button("Share library")!.click();
+    await flush();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.textContent).toContain("Sharing links are unavailable right now");
+    expect(dialog.querySelector("[aria-label='Import link']")).toBeNull();
+    expect(button("Copy", dialog)).toBeUndefined();
+    button("Deactivate", dialog)!.click();
+    expect(confirm).toHaveBeenCalledWith("Deactivate this link?");
+    expect(actionList.deactivateLink).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    button("Deactivate", dialog)!.click();
+    await flush();
+    expect(actionList.deactivateLink).toHaveBeenCalledWith("link-1");
+    expect(actionList.loadSharing).toHaveBeenCalledTimes(2);
+    expect(dialog.textContent).toContain("Deactivated links");
+    expect(button("Deactivate", dialog)).toBeUndefined();
+    expect(button("Copy", dialog)).toBeUndefined();
+  });
+
   it("deactivated links never offer a copyable URL", async () => {
     const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1", false)] };
     const actionList = actions({ loadSharing: vi.fn().mockResolvedValue(withLinks) });

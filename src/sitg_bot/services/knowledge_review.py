@@ -1,7 +1,7 @@
 """Durable owner-private review snapshots and atomic selected-candidate approval."""
 
 import hashlib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -101,8 +101,14 @@ def title_key(title):
     return " ".join(title.split()).casefold()
 
 
+def editable_fingerprint(content):
+    return replace(
+        content, links=tuple(replace(link, origin="manual") for link in content.links),
+    ).fingerprint()
+
+
 def category(candidate, hashes, titles):
-    if content_of(candidate).fingerprint() in hashes:
+    if editable_fingerprint(content_of(candidate)) in hashes:
         return "duplicates"
     return "potential_duplicates" if title_key(candidate["content"]["title"]) in titles else "new"
 
@@ -337,24 +343,28 @@ class KnowledgeReview:
         return row
 
     @staticmethod
-    async def _dedupe(session, actor, candidates):
-        hashes = {content_of(value).fingerprint() for value in candidates}
+    async def _dedupe(session, actor, candidates, *, include_deleted=False):
         titles = {title_key(value["content"]["title"]) for value in candidates}
+        conditions = [
+            KnowledgeFactRecord.owner_id == actor,
+            KnowledgeFactRecord.title_key.in_(titles),
+        ]
+        if not include_deleted:
+            conditions.append(KnowledgeFactRecord.deleted_at.is_(None))
         rows = (
             await session.execute(
-                select(KnowledgeFactRecord.content_fingerprint, KnowledgeFactRecord.title).where(
-                    KnowledgeFactRecord.owner_id == actor,
-                    KnowledgeFactRecord.deleted_at.is_(None),
-                    (
-                        KnowledgeFactRecord.content_fingerprint.in_(hashes)
-                        | KnowledgeFactRecord.title_key.in_(titles)
-                    ),
-                )
+                select(
+                    KnowledgeFactRecord.title,
+                    KnowledgeFactRecord.description,
+                    KnowledgeFactRecord.author,
+                    KnowledgeFactRecord.links,
+                    KnowledgeFactRecord.image_ids,
+                ).where(*conditions)
             )
         ).all()
         return (
-            {digest for digest, _ in rows if digest in hashes},
-            {title_key(name) for _, name in rows if title_key(name) in titles},
+            {editable_fingerprint(content_of({"content": value._mapping})) for value in rows},
+            {title_key(value.title) for value in rows},
         )
 
     async def detail(self, actor, import_id):
@@ -452,20 +462,17 @@ class KnowledgeReview:
     async def _approve(self, session, row, selected):
         service = self.app.service(session)
         candidates, skipped = [], 0
+        hashes, _ = await self._dedupe(
+            session, row.owner_id,
+            [value for value in row.candidates if value["id"] in selected],
+            include_deleted=True,
+        )
         for value in row.candidates:
             if value["id"] not in selected:
                 continue
             content = content_of(value)
-            digest = content.fingerprint()
-            # Include tombstones and durable historical claims: never resurrect deletions.
-            existing = await session.scalar(
-                select(KnowledgeFactRecord.id)
-                .where(
-                    KnowledgeFactRecord.owner_id == row.owner_id,
-                    KnowledgeFactRecord.content_fingerprint == digest,
-                )
-                .limit(1)
-            )
+            digest = editable_fingerprint(content)
+            digests = {digest, content.fingerprint()}
             copied = (
                 await session.get(
                     KnowledgeFactCopyRecord, (UUID(value["source_fact_id"]), row.owner_id)
@@ -473,13 +480,16 @@ class KnowledgeReview:
                 if value.get("source_fact_id")
                 else None
             )
-            claimed = await session.scalar(
+            claimed = set(await session.scalars(
                 insert(KnowledgeImportHashRecord)
-                .values(recipient_id=row.owner_id, content_fingerprint=digest)
+                .values([
+                    {"recipient_id": row.owner_id, "content_fingerprint": value}
+                    for value in sorted(digests)
+                ])
                 .on_conflict_do_nothing()
                 .returning(KnowledgeImportHashRecord.content_fingerprint)
-            )
-            if existing is not None or copied is not None or claimed is None:
+            ))
+            if digest in hashes or copied is not None or claimed != digests:
                 skipped += 1
                 continue
             candidates.append(value)
