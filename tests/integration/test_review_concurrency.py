@@ -9,12 +9,15 @@ from test_lobby_architecture import tournament_fixture
 from test_training import upload
 from test_training_knowledge import application
 
+from sitg_bot.services import knowledge_review
+from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.reliable_delivery import DurableJobWorker
 from sitg_bot.services.training_ai import (
     AnalysisValidationError,
     ProviderOutcomeUncertain,
     ProviderTimeout,
 )
+from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     KnowledgeFactRecord,
@@ -101,6 +104,125 @@ async def test_approval_rechecks_source_after_concurrent_access_loss(database, m
         assert await session.scalar(
             select(func.count()).select_from(KnowledgeImportHashRecord)
         ) == 0
+
+
+@pytest.mark.parametrize("kind", ["collection", "dissection"])
+@pytest.mark.parametrize(("first_decision", "second_decision", "same_selection"), [
+    ("approve", "reject", False),
+    ("approve", "approve", False),
+    ("approve", "approve", True),
+    ("reject", "approve", False),
+    ("reject", "reject", True),
+])
+async def test_concurrent_same_import_decisions_preserve_final_identity(
+    database, monkeypatch, kind, first_decision, second_decision, same_selection,
+):
+    recipient = await create_player(database, 9997, "final-review-recipient")
+    if kind == "collection":
+        owner = await create_player(database, 9998, "final-review-sender")
+        app = KnowledgeApplication(database)
+        for title in ("First fact", "Second fact"):
+            await app.mutate(owner, "create", {"title": title, "description": "Body"})
+        result = await app.mutate(owner, "grant", {"recipient": str(recipient)})
+    else:
+        app = await application(database, recipient)
+        version, _ = await upload(database, recipient)
+        result = await app.request_analysis(
+            recipient, version_id=version, kind="dissection", confirm_exposure=True,
+            idempotency_key="final-review",
+        )
+        worker = DurableJobWorker(
+            app.analysis.jobs, {"training.analysis": app.analysis_job},
+            kinds=("training.analysis",),
+        )
+        assert await worker.run_once() == 1
+    import_id = result["import_id"]
+    detail = await app.reviews.detail(recipient, import_id)
+    candidates = detail["sections"]["new"]
+    assert len(candidates) >= 2
+    first_selected = [candidates[0]["id"]] if first_decision == "approve" else []
+    second_selected = first_selected if same_selection else (
+        [candidates[1]["id"]] if second_decision == "approve" else []
+    )
+    first_locked, second_preloaded, release_first = (
+        asyncio.Event(), asyncio.Event(), asyncio.Event()
+    )
+    original = knowledge_review.require_trainee
+    arrivals = 0
+    second_pid = None
+
+    async def guard(session, actor, *, lock=False):
+        nonlocal arrivals, second_pid
+        if not lock:
+            return await original(session, actor, lock=lock)
+        arrivals += 1
+        if arrivals == 1:
+            player = await original(session, actor, lock=True)
+            first_locked.set()
+            await release_first.wait()
+            return player
+        if arrivals == 2:
+            preview = await session.get(KnowledgeImportRecord, import_id)
+            assert preview.status == "pending" and preview.decision is None
+            second_pid = await session.scalar(select(func.pg_backend_pid()))
+            second_preloaded.set()
+        return await original(session, actor, lock=True)
+
+    monkeypatch.setattr(knowledge_review, "require_trainee", guard)
+    first_task = asyncio.create_task(app.reviews.decide(
+        recipient, import_id=import_id, decision=first_decision,
+        selected_candidate_ids=first_selected,
+    ))
+    second_task = None
+    try:
+        await asyncio.wait_for(first_locked.wait(), 5)
+        second_task = asyncio.create_task(app.reviews.decide(
+            recipient, import_id=import_id, decision=second_decision,
+            selected_candidate_ids=second_selected,
+        ))
+        await asyncio.wait_for(second_preloaded.wait(), 5)
+        async with asyncio.timeout(5), database.sessions() as session:
+            while not await session.scalar(select(func.pg_blocking_pids(second_pid))):
+                await asyncio.sleep(0.01)
+        assert not first_task.done() and not second_task.done()
+        release_first.set()
+        first = await asyncio.wait_for(first_task, 5)
+        if same_selection:
+            assert await asyncio.wait_for(second_task, 5) == first
+        else:
+            with pytest.raises(StaleWriteError, match="already final"):
+                await asyncio.wait_for(second_task, 5)
+    finally:
+        release_first.set()
+        await asyncio.gather(
+            first_task, *([second_task] if second_task else []), return_exceptions=True,
+        )
+        monkeypatch.setattr(knowledge_review, "require_trainee", original)
+    assert first["status"] == ("approved" if first_decision == "approve" else "rejected")
+    assert first["approved_count"] == (1 if first_decision == "approve" else 0)
+    assert first["skipped_count"] == 0
+    assert await app.reviews.decide(
+        recipient, import_id=import_id, decision=first_decision,
+        selected_candidate_ids=first_selected,
+    ) == first
+    async with database.sessions() as session:
+        review = await session.get(KnowledgeImportRecord, import_id)
+        assert review.status == first["status"]
+        assert review.decision == {
+            "decision": first_decision, "selected_candidate_ids": sorted(first_selected),
+            "approved_count": first["approved_count"], "skipped_count": 0,
+        }
+        facts = list(await session.scalars(select(KnowledgeFactRecord).where(
+            KnowledgeFactRecord.owner_id == recipient,
+        )))
+        assert [fact.title for fact in facts] == (
+            [candidates[0]["title"]] if first_decision == "approve" else []
+        )
+        assert await session.scalar(
+            select(func.count()).select_from(KnowledgeImportHashRecord).where(
+                KnowledgeImportHashRecord.recipient_id == recipient,
+            )
+        ) == first["approved_count"]
 
 
 def provider_error(kind):

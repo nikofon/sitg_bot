@@ -329,7 +329,9 @@ class KnowledgeReview:
 
     @staticmethod
     async def _owned(session, actor, import_id):
-        row = await session.get(KnowledgeImportRecord, import_id, with_for_update=True)
+        row = await session.get(
+            KnowledgeImportRecord, import_id, with_for_update=True, populate_existing=True,
+        )
         if row is None or row.owner_id != actor:
             raise LookupError("Import not found")
         return row
