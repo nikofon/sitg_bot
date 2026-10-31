@@ -1163,7 +1163,7 @@ class AnalysisService:
 
     def _provider_request_ids(self) -> list[str]:
         calls = self._provider_metadata.get()
-        if calls:
+        if calls is not None:
             return [call["request_id"] for call in calls if call.get("request_id")]
         return list(getattr(self.provider, "provider_request_ids", ()) or [])
 
