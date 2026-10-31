@@ -163,7 +163,9 @@ async def test_packet_upload_accepts_several_files_in_one_session() -> None:
         )
         assert f"Packet {index}" in message.answer.await_args.args[0]
     operations = [call.args[1] for call in gateway.execute_update.await_args_list]
-    uploads = [operation for operation in operations if operation.action == ActionCode.PACKET_UPLOAD]
+    uploads = [
+        operation for operation in operations if operation.action == ActionCode.PACKET_UPLOAD
+    ]
     assert [upload.source_filename for upload in uploads] == ["first.docx", "second.pdf"]
     assert all(
         upload.tournament_id == UUID(int=3) and upload.source_base64 for upload in uploads

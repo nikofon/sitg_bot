@@ -508,7 +508,9 @@ async def test_packet_upload_defaults_namesake_authors_to_existing_identity(
         session.add(existing)
         await session.flush()
     override = packet()
-    override = replace(override, themes=(replace(override.themes[0], author=f"leo tolstoy {suffix}"),))
+    override = replace(
+        override, themes=(replace(override.themes[0], author=f"leo tolstoy {suffix}"),),
+    )
     override_id = await packets.create_draft(
         override,
         source_filename="namesake-override.json",
@@ -2307,7 +2309,9 @@ async def test_owner_can_kick_lobby_members(database_url: str, role: str, contex
         if context == "manager":
             await navigation.set_mode(guest, "manager", expected_version=nav.navigation_version)
         elif context == "tournament":
-            await navigation.set_context(guest, "tournament", expected_version=nav.navigation_version)
+            await navigation.set_context(
+                guest, "tournament", expected_version=nav.navigation_version,
+            )
         for actor in (guest, outsider):
             with pytest.raises(PermissionError):
                 await service.kick(lobby.id, actor, target, expected_version=lobby.version)

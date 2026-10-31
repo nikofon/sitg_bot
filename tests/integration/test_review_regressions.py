@@ -43,7 +43,9 @@ async def publish(app, owner, themes):
 async def test_original_field_citations_survive_cache_staging_and_approval(database):
     owner = await create_player(database, 9971, "linked-dissection")
     app = await application(database, owner)
-    links = tuple(f"https://example.org/{name}" for name in ("question", "answer", "note", "a", "b"))
+    links = tuple(
+        f"https://example.org/{name}" for name in ("question", "answer", "note", "a", "b")
+    )
     version = await publish(app, owner, [{
         "name": "Theme", "authors": ["Private author"],
         "questions": [{
@@ -246,7 +248,8 @@ async def test_review_images_load_metadata_without_binary_data(database):
         event.remove(KnowledgeImageRecord, "load", observe)
     assert loaded == [True]
     assert detail["sections"]["new"][0]["images"] == [{
-        "id": image_id, "url": f"/api/miniapp/knowledge/images/{image_id}", "content_type": "image/png",
+        "id": image_id, "url": f"/api/miniapp/knowledge/images/{image_id}",
+        "content_type": "image/png",
     }]
 
 

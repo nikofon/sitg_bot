@@ -38,7 +38,9 @@ def test_source_reference_urls_drop_unbounded_packet_links():
 
 async def test_original_fields_bound_cached_citations_without_json_escape_loss():
     identity = uuid4()
-    links = tuple(f"https://example.org/{name}" for name in ("question", "answer", "note", "a", "b"))
+    links = tuple(
+        f"https://example.org/{name}" for name in ("question", "answer", "note", "a", "b")
+    )
     original = SimpleNamespace(
         text="Question " + links[0], answer=links[1], commentary=links[2],
         source="\n".join(links[3:]),
@@ -47,7 +49,9 @@ async def test_original_fields_bound_cached_citations_without_json_escape_loss()
         identity, dissection_text(original), reference_urls=source_reference_urls(original),
     )
     output_links = (*links, "https://invented.example/untrusted")
-    worker = SimpleNamespace(settings=ProviderSettings("fake", "fixture"), _write_terminal=AsyncMock())
+    worker = SimpleNamespace(
+        settings=ProviderSettings("fake", "fixture"), _write_terminal=AsyncMock(),
+    )
     await AnalysisService._finalize_packet_scan(
         worker, uuid4(), uuid4(), "dissection", (question,), [{
             "candidate_id": fact_candidate_id(identity, "Fact", "Body", output_links),

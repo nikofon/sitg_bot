@@ -4,7 +4,9 @@ from sitg_bot.domain.classic import SCHEMES, playoff_places
 
 
 def _ordered(seats: list[str]) -> list[dict]:
-    return [{"seat": seat, "score": "0", "place": str(index)} for index, seat in enumerate(seats, 1)]
+    return [
+        {"seat": seat, "score": "0", "place": str(index)} for index, seat in enumerate(seats, 1)
+    ]
 
 
 def test_playoff_places_match_shared_elimination_places() -> None:
