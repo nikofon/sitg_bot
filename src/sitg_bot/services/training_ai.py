@@ -395,9 +395,11 @@ def source_fingerprint_of(source: AnalysisSource) -> str:
 class AnalysisProvider(Protocol):
     """Structured analysis operations every provider must implement.
 
-    Implementations keep credentials server-side, expose upstream request IDs
-    through the optional ``provider_request_ids`` attribute for accounting,
-    and treat packet content and instructions strictly as data.
+    Implementations keep credentials server-side and treat packet content and
+    instructions strictly as data. Durable job accounting reads the active
+    ``PROVIDER_CALL_METADATA`` dictionary, not a provider-wide request-ID buffer;
+    the optional ``provider_request_ids`` attribute is a legacy fallback only
+    outside a scoped job.
     """
 
     async def extract_facts(self, request: ExtractionRequest) -> tuple[FactCandidate, ...]: ...
