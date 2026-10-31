@@ -53,6 +53,7 @@ services:
       SITG_ADMIN_TOKEN: ${SITG_ADMIN_TOKEN:?Set a 32+ character administrator credential}
       SITG_TOKEN_DELIVERY_KEY: ${SITG_TOKEN_DELIVERY_KEY:?Set a separate 32+ character token delivery key}
       APPLICATION_SECURITY_KEY: ${APPLICATION_SECURITY_KEY:?Set a 32+ character application security key}
+      SITG_TRAINING_AI_PROVIDER: ${SITG_TRAINING_AI_PROVIDER:-}
       SITG_TRAINING_AI_API_KEY: ${SITG_TRAINING_AI_API_KEY:-}
       SITG_TRAINING_AI_MODEL: ${SITG_TRAINING_AI_MODEL:-}
       MINI_APP_HOST: 0.0.0.0

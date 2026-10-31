@@ -251,7 +251,10 @@ class AnalysisService:
             if existing.instructions != instructions or existing.source != descriptor:
                 raise AnalysisIdempotencyConflictError("Analysis request content changed")
             return self._view(existing, artifact=None)
-        fingerprint = text_fingerprint(source_fingerprint_of(source), content_fingerprint or "")
+        fingerprint = text_fingerprint(
+            source_fingerprint_of(source), content_fingerprint or "",
+            self.settings.execution_profile,
+        )
         digest = instruction_digest(normalized)
         if kind == ANALYSIS_DISSECTION:
             fingerprint = text_fingerprint(
@@ -299,6 +302,7 @@ class AnalysisService:
             prompt_version=self.settings.prompt_version,
             schema_version=self.settings.schema_version,
             tokenizer_version=self.settings.tokenizer_version,
+            provider_usage=self._usage_payload(),
             created_at=moment,
         )
         cache_hit = artifact.status in ("succeeded", "partially_succeeded")
@@ -531,9 +535,13 @@ class AnalysisService:
                 and artifact.lease_token is not None
             ):
                 raise RuntimeError("Analysis compute lease is still held by another worker")
-            if any(
-                getattr(artifact, field) != getattr(self.settings, field)
-                for field in ("model", "prompt_version", "schema_version", "tokenizer_version")
+            if (
+                (artifact.provider_usage or {}).get("execution_profile")
+                != self.settings.execution_profile
+                or any(
+                    getattr(artifact, field) != getattr(self.settings, field)
+                    for field in ("model", "prompt_version", "schema_version", "tokenizer_version")
+                )
             ):
                 await self._fail_artifact(
                     session, artifact, "Analysis execution profile changed", moment
@@ -1163,6 +1171,7 @@ class AnalysisService:
         return {
             "provider": self.settings.provider,
             "model": self.settings.model,
+            "execution_profile": self.settings.execution_profile,
             "cache_hit": cache_hit,
             "calls": [] if cache_hit else list(self._provider_metadata.get() or []),
         }

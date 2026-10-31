@@ -9,6 +9,7 @@ Packet content or instructions are always data, never tools or authorization.
 """
 
 import asyncio
+import json
 import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -88,6 +89,13 @@ class ProviderSettings:
             raise ValueError("Provider chunk bound must allow at least 100 characters")
         if self.max_concurrent_requests < 1:
             raise ValueError("Provider concurrency must be positive")
+
+    @property
+    def execution_profile(self) -> str:
+        """Versioned compute identity, never salted with a credential."""
+        return text_fingerprint(
+            "training-responses-v1", json.dumps(self.redacted(), sort_keys=True)
+        )
 
     def redacted(self) -> dict[str, Any]:
         """Return the settings without the credential, for safe logging."""
