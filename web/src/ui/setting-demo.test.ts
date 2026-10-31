@@ -34,6 +34,55 @@ describe("createSettingDemo", () => {
     (node) => node.textContent ?? "",
   );
 
+  it("labels the replay button with a repeat-arrow icon, not a broken glyph", () => {
+    const i18n = new I18n("en");
+    const demo = createSettingDemo("message_delay", () => ({ message_delay: 1 }), i18n);
+    const replay = demo.root.querySelector<HTMLButtonElement>(".setting-demo-replay")!;
+    expect(replay).toBeInstanceOf(HTMLButtonElement);
+    // No font-dependent play symbol remains as the visible label.
+    expect(replay.textContent).not.toContain("⏵");
+    expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+    // The drawn arrow is decorative; the localized name carries the meaning.
+    expect(replay.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+    expect(replay.getAttribute("aria-label")).toBe("Replay");
+    expect(replay.title).toBe("Replay");
+  });
+
+  it("keeps the localized replay label in Russian", () => {
+    const demo = createSettingDemo("message_delay", () => ({}), new I18n("ru"));
+    expect(demo.root.querySelector<HTMLButtonElement>(".setting-demo-replay")!.getAttribute("aria-label"))
+      .toBe("Проиграть заново");
+  });
+
+  it("replays from scratch through the repeat-arrow button", () => {
+    vi.useFakeTimers();
+    const demo = createSettingDemo("message_delay", () => ({ message_delay: 1 }), new I18n("en"));
+    document.body.append(demo.root);
+    demo.restart();
+    vi.advanceTimersByTime(1_100);
+    expect(messages(demo.root)).toHaveLength(2);
+    demo.root.querySelector<HTMLButtonElement>(".setting-demo-replay")!.click();
+    expect(messages(demo.root)).toHaveLength(1);
+    vi.advanceTimersByTime(1_100);
+    expect(messages(demo.root)).toHaveLength(2);
+  });
+
+  it("shows training question text immediately and hides it after hidden_after", () => {
+    vi.useFakeTimers();
+    const i18n = new I18n("en");
+    const demo = createSettingDemo("hidden_after", () => ({ hidden_after: 2 }), i18n);
+    document.body.append(demo.root);
+    demo.restart();
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.question_text")]);
+    expect(demo.root.querySelector(".setting-demo-status")?.textContent).toContain("this delay");
+    vi.advanceTimersByTime(1_900);
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.question_text")]);
+    vi.advanceTimersByTime(200);
+    expect(messages(demo.root)).toEqual([i18n.t("setting_demo.msg.hidden")]);
+    expect(demo.root.textContent).not.toContain(i18n.t("setting_demo.question_text"));
+    expect(demo.root.querySelector(".setting-demo-status")?.textContent).toContain("Preview finished");
+  });
+
   it("plays messages with the configured spacing and marks the focused delay", () => {
     vi.useFakeTimers();
     const demo = createSettingDemo("message_delay", () => ({ message_delay: 2 }), new I18n("en"));

@@ -72,6 +72,19 @@ async def upload(database, owner):
     return UUID(published["version_id"]), UUID(draft["draft_id"])
 
 
+async def open_question(training, owner, state, now):
+    """Follow persisted SI announcements without sleeping or contacting Telegram."""
+    for _ in range(12):
+        if state["phase"] != "intermission" or state["status"] == "completed":
+            return state, now
+        now = state["deadline"]
+        if isinstance(now, str):
+            # Gateway responses serialize datetimes to ISO strings.
+            now = datetime.fromisoformat(now)
+        state = (await training.view(owner, UUID(state["id"]), now=now))["session"]
+    raise AssertionError("Training announcements did not reach a question")
+
+
 async def test_owner_isolation_private_publication_and_retirement(database_url):
     database = Database(database_url)
     try:
@@ -154,6 +167,7 @@ async def test_finish_restart_replay_stale_commands_and_no_competitive_accountin
                 await session.flush()
         for index in range(5):
             training = TrainingService(database)
+            state, now = await open_question(training, owner, state, now)
             state = (await training.view(owner, session_id, now=now))["session"]
             assert state["question_index"] == index
             params = {
@@ -172,6 +186,7 @@ async def test_finish_restart_replay_stale_commands_and_no_competitive_accountin
             assert state["correct"] is False
             params["expected_version"] = state["version"]
             state = (await training.act(owner, session_id, "next", **params))["session"]
+        state, now = await open_question(training, owner, state, now)
         assert state["status"] == "completed"
         replay = await training.start(owner, version_id, now=now)
         assert replay["session"]["question_revision_id"] == pinned
@@ -212,6 +227,7 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
             )
         )["session"]
         session_id = UUID(state["id"])
+        state, now = await open_question(training, owner, state, now)
         assert state["text"] == "five <four> three two One"
         await training.act(
             owner, session_id, "pause", expected_version=state["version"],
@@ -220,9 +236,9 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
         )
         queue = AsyncMock()
         await AutomaticJobScheduler(database, queue).reconcile(now=now + timedelta(seconds=1))
-        assert any(call.args[0] == "training.deadline"
-                   and call.args[2].get("session_id") == str(session_id)
-                   for call in queue.schedule.await_args_list)
+        assert not any(call.args[0] == "training.deadline"
+                       and call.args[2].get("session_id") == str(session_id)
+                       for call in queue.schedule.await_args_list)
         await training.tick(session_id, now=now + timedelta(seconds=3))
         state = (
             await TrainingService(database).view(
@@ -231,17 +247,25 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
                 now=now + timedelta(seconds=3),
             )
         )["session"]
-        assert state["hidden"] and state["text"] == ""
+        assert not state["hidden"] and state["text"] == "five <four> three two One"
         assert state["status"] == "paused"
         async with database.sessions() as session:
-            assert (await session.get(TrainingSessionRecord, session_id)).text_hidden
+            assert not (await session.get(TrainingSessionRecord, session_id)).text_hidden
+        state = (await training.act(
+            owner, session_id, "resume", expected_version=state["version"],
+            question_revision_id=UUID(state["question_revision_id"]),
+            now=now + timedelta(seconds=3),
+        ))["session"]
+        assert state["hidden_deadline"] == now + timedelta(seconds=4)
+        state = (await training.view(owner, session_id, now=now + timedelta(seconds=4)))["session"]
+        assert state["hidden"] and state["text"] == ""
         await training.act(
             owner,
             session_id,
             "stop",
             expected_version=state["version"],
             question_revision_id=UUID(state["question_revision_id"]),
-            now=now + timedelta(seconds=3),
+            now=now + timedelta(seconds=4),
         )
 
         async def prepared(session, player_id, source):
@@ -268,6 +292,7 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
             )
         )["session"]
         session_id = UUID(state["id"])
+        state, now = await open_question(training, owner, state, now)
         state = (await training.view(owner, session_id, now=now + timedelta(seconds=2)))["session"]
         assert state["phase"] == "best_buzz" and state["text"] == "One two"
         params = {
@@ -279,7 +304,7 @@ async def test_hidden_deadline_recovery_and_best_buzz_continue_once(database_url
         with pytest.raises(StaleWriteError):
             await training.act(owner, session_id, "continue", **params)
         state = (await training.view(owner, session_id, now=now + timedelta(seconds=4)))["session"]
-        assert state["phase"] != "best_buzz" and state["token_cursor"] > 2
+        assert state["phase"] != "best_buzz" and state["token_cursor"] == 3
         await TrainingPacketService(database).retire(owner, version_id)
         with pytest.raises(LookupError):
             await training.view(owner, session_id)
@@ -449,6 +474,7 @@ async def test_reserved_content_and_parallel_training_starts(database_url):
         assert sum(isinstance(result, ValueError) for result in results) == 1
         initial = next(result["session"] for result in results if isinstance(result, dict))
         training = TrainingService(database)
+        initial, now = await open_question(training, owner, initial, now)
         advanced = (
             await training.view(owner, UUID(initial["id"]), now=now + timedelta(seconds=1))
         )["session"]

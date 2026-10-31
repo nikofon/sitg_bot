@@ -21,6 +21,7 @@ from uuid import UUID
 FACT_TITLE_MAX = 200
 FACT_DESCRIPTION_MAX = 4000
 FACT_LINKS_MAX = 16
+FACT_AUTHOR_MAX = 300
 FACT_TAGS_MAX = 32
 SOURCE_URL_MAX = 2000
 SOURCE_TITLE_MAX = 200
@@ -98,8 +99,14 @@ class FactContent:
     title: str
     description: str
     links: tuple[SourceLink, ...] = ()
+    image_ids: tuple[UUID, ...] = ()
+    author: str = ""
 
     def __post_init__(self) -> None:
+        author = _WHITESPACE_RE.sub(" ", self.author).strip()
+        if len(author) > FACT_AUTHOR_MAX:
+            raise ValueError("Fact author must be at most 300 characters")
+        object.__setattr__(self, "author", author)
         title = _WHITESPACE_RE.sub(" ", self.title).strip()
         description = self.description.strip()
         if not title:
@@ -119,9 +126,19 @@ class FactContent:
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "links", links)
+        images = tuple(self.image_ids)
+        if len(images) > 8 or len(set(images)) != len(images):
+            raise ValueError("A fact allows at most eight distinct images")
+        if any(not isinstance(image, UUID) for image in images):
+            raise ValueError("Images must be attachment UUIDs")
+        object.__setattr__(self, "image_ids", images)
 
     def fingerprint(self) -> str:
-        """Stable digest of editable content; drives statistic invalidation."""
+        """Historical content/link-origin digest for retries and statistic invalidation.
+
+        Review equality ignores link origin separately in knowledge_review.py;
+        changing this digest would invalidate existing candidate/import identities.
+        """
         payload = json.dumps(
             {
                 "title": self.title,
@@ -130,6 +147,10 @@ class FactContent:
                     {"url": link.url, "title": link.title, "origin": link.origin}
                     for link in self.links
                 ],
+                **({"author": self.author} if self.author else {}),
+                # Preserve existing no-image fingerprints and import claims.
+                **({"image_ids": [str(image) for image in self.image_ids]}
+                   if self.image_ids else {}),
             },
             ensure_ascii=False,
             sort_keys=True,

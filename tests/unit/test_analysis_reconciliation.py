@@ -12,6 +12,7 @@ from sitg_bot.services.training_ai import (
     CommonKnowledgeSource,
     DissectionSource,
     FakeAnalysisProvider,
+    ProviderOutcomeUncertain,
     ProviderSettings,
     source_descriptor,
 )
@@ -47,7 +48,8 @@ async def test_production_request_admits_entitled_requests_and_replays(monkeypat
             row.status = "queued"
 
     session = SimpleNamespace(
-        get=AsyncMock(), scalar=AsyncMock(return_value=0), add=added.append,
+        get=AsyncMock(), scalar=AsyncMock(return_value=0), scalars=AsyncMock(return_value=[]),
+        add=added.append,
         flush=AsyncMock(side_effect=flush),
     )
     entitlements = SimpleNamespace(
@@ -172,7 +174,11 @@ async def test_explicit_dissection_retry_links_pending_replacement(prior_status,
             return SimpleNamespace(id=identity)
         raise AssertionError(model)
 
-    session = SimpleNamespace(get=get, refresh=AsyncMock())
+    added = []
+    session = SimpleNamespace(
+        get=get, refresh=AsyncMock(), scalars=AsyncMock(return_value=[]),
+        scalar=AsyncMock(side_effect=[None, uuid4()]), add=added.append, flush=AsyncMock(),
+    )
 
     @asynccontextmanager
     async def transaction():
@@ -203,8 +209,10 @@ async def test_explicit_dissection_retry_links_pending_replacement(prior_status,
         owner, version_id=version, kind="dissection", confirm_exposure=True,
         idempotency_key="explicit-retry",
     )
-    assert result["request_id"] == row.analysis_request_id == "replacement-request"
-    assert row.status == "pending" and row.application is None
+    created = next(value for value in added if isinstance(value, KnowledgeDissectionRecord))
+    assert result["request_id"] == created.analysis_request_id == "replacement-request"
+    assert created.status == "pending" and created.application is None
+    assert row.analysis_request_id == "old-request"  # prior attempt remains immutable
     app.analysis.request.assert_awaited_once()
 
 
@@ -288,7 +296,7 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
 
 async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):
     request = SimpleNamespace(
-        status="succeeded", source={"content_version": 1}, artifact_id=uuid4()
+        id=uuid4(), status="succeeded", source={"content_version": 1}, artifact_id=uuid4()
     )
     fact = SimpleNamespace(owner_id=uuid4(), id=uuid4(), content_version=1,
                            statistic_status="pending", deleted_at=None)
@@ -312,6 +320,84 @@ async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch)
     assert common.value == 25 and common.model == "producing-model"
     assert common.prompt_version == "producing-prompt"
     assert common.schema_version == "producing-schema"
+
+
+async def test_statistics_reconciliation_advances_past_unavailable_owner_batches(monkeypatch):
+    unavailable, owner = uuid4(), uuid4()
+    blocked = [(
+        SimpleNamespace(id=uuid4(), source={"content_version": 1}),
+        SimpleNamespace(id=uuid4(), owner_id=unavailable),
+    ) for _ in range(100)]
+    fact = SimpleNamespace(
+        id=uuid4(), owner_id=owner, content_version=1, statistic_status="pending", deleted_at=None,
+    )
+    request = SimpleNamespace(
+        id=uuid4(), status="succeeded", source={"content_version": 1}, artifact_id=uuid4(),
+    )
+    artifact = SimpleNamespace(
+        payload={"value": 25}, model="model", prompt_version="1", schema_version="1",
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[blocked, [(request, fact)]]), refresh=AsyncMock(),
+        get=AsyncMock(return_value=artifact),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    async def guard(session, player_id, *, lock=False):
+        if player_id == unavailable:
+            raise PermissionError("Unavailable owner")
+
+    monkeypatch.setattr("sitg_bot.services.training_knowledge.require_trainee", guard)
+    app = KnowledgeApplication(SimpleNamespace(transaction=transaction))
+    record = AsyncMock()
+    app.service = lambda session: SimpleNamespace(record_statistics=record)
+    await app.reconcile_statistics()
+    record.assert_awaited_once()
+    assert record.await_args.args == (owner, fact.id)
+    assert record.await_args.kwargs["common"].value == 25
+    assert session.execute.await_count == 2
+    session.refresh.assert_awaited_once_with(fact)
+
+
+async def test_uncertain_provider_error_is_written_with_the_current_compute_token():
+    settings = ProviderSettings("fake", "m")
+    artifact = SimpleNamespace(
+        id=uuid4(), generation=1, status="pending", kind="common_knowledge",
+        lease_token=None, lease_expires_at=None, provider_usage=None,
+        **{name: getattr(settings, name) for name in (
+            "model", "prompt_version", "schema_version", "tokenizer_version",
+        )},
+    )
+    request = SimpleNamespace(
+        owner_player_id=uuid4(), instructions="", source={}, status="queued",
+    )
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=artifact),
+        execute=AsyncMock(return_value=SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [request]),
+        )),
+    )
+
+    @asynccontextmanager
+    async def transaction():
+        yield session
+
+    service = AnalysisService(
+        SimpleNamespace(transaction=transaction), object(), FakeAnalysisProvider(), settings,
+    )
+    error = ProviderOutcomeUncertain("Disconnected", provider_request_id="old-call")
+    service._run_common_knowledge = AsyncMock(side_effect=error)
+    service._complete_requests = AsyncMock()
+    with pytest.raises(ProviderOutcomeUncertain):
+        await service.execute_job({"artifact_id": str(artifact.id), "generation": 1})
+    assert service._run_common_knowledge.await_args.args[1] is not None
+    assert artifact.status == "failed" and artifact.lease_token is None
+    assert artifact.provider_request_ids == ["old-call"]
+    assert artifact.last_error == "Disconnected"
+    service._complete_requests.assert_awaited_once()
 
 
 async def test_applied_dissection_is_not_reset_or_requeued_by_an_explicit_retry():

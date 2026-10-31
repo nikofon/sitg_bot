@@ -18,6 +18,10 @@ SITG is a tournament platform for Jeopardy-style multiplayer games.
 6. Press `+` to buzz and reply to the bot's answer prompt before time runs out.
    Use `/score` to check scores and `/quit` after the game ends.
 
+For solo training and the Knowledge library, see the
+[common usage guide](README.md#тренировки-и-библиотека-фактов) and
+[training reference](docs/training.md).
+
 ## How to set up your own tournament
 
 1. Complete `/start` registration, then choose **Switch mode → Manager**.

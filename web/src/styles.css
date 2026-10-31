@@ -372,6 +372,13 @@ p {
   background: var(--tg-theme-section-bg-color);
 }
 
+.settings-form .knowledge-fact-fields {
+  gap: 1rem;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .settings-form legend {
   padding-inline: 0.35rem;
   font-weight: 800;
@@ -630,6 +637,12 @@ p {
   min-height: 1.2em;
   color: var(--tg-theme-hint-color);
   font-size: 0.8rem;
+}
+
+/* One setting plus its message-flow preview, stacked with breathing room. */
+.training-setting {
+  display: grid;
+  gap: 0.5rem;
 }
 
 
@@ -970,6 +983,16 @@ p {
   padding: 0;
   font-size: 1.5rem;
 }
+
+/* Inline SVG icons drawn inside icon-only controls. */
+.icon {
+  display: inline-block;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
 
 .tournament-detail {
   margin: 0.65rem 0;
@@ -1793,6 +1816,35 @@ p {
   display: none;
 }
 
+/* Modifier descriptions, incompatibility notes and modifier-driven overrides. */
+.training-lobby .training-modifier-description,
+.training-lobby .training-modifier-note,
+.training-lobby .training-setting-override {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.training-lobby .training-modifier-note,
+.training-lobby .training-setting-override {
+  color: var(--tg-theme-hint-color);
+}
+
+.training-lobby .training-setting-override {
+  font-weight: 700;
+}
+
+.training-lobby .training-best-buzz-group {
+  display: grid;
+  gap: 0.65rem;
+}
+
+/* A modifier-driven override greys the stored setting value out instead of wiping it. */
+.training-lobby .settings-form input:disabled {
+  opacity: 0.55;
+  cursor: default;
+  background: color-mix(in srgb, var(--tg-theme-hint-color) 8%, var(--tg-theme-bg-color));
+}
+
 /* The training packets filter bubble gets its own padded surface so search and
    sorting read as one clearly distinct section. */
 .training-lobby .training-packet-filters {
@@ -1828,6 +1880,116 @@ p {
 
   .training-modifier-badges {
     gap: 0.4rem;
+  }
+}
+
+/* Training history screen (namespaced: training-history-*, scoped to
+   .training-history set by the screen component). */
+.training-history {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.training-history > p[role="status"]:empty {
+  display: none;
+}
+
+.training-history .training-history-list,
+.training-history .training-history-questions {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.training-history .training-history-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.training-history .training-history-card h3 {
+  margin: 0;
+}
+
+.training-history .training-history-packet,
+.training-history .training-history-score,
+.training-history .training-history-status {
+  margin: 0;
+}
+
+.training-history .training-history-more {
+  align-self: flex-start;
+  margin-top: 0.35rem;
+}
+
+.training-history .training-history-summary-card .lobby-packet-details {
+  margin: 0.5rem 0 0;
+}
+
+.training-history .training-history-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.training-history .training-history-theme-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.training-history .training-history-question {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.training-history .training-history-question-title {
+  margin: 0;
+}
+
+.training-history dd,
+.training-history h3,
+.training-history h4,
+.training-history .training-history-packet {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.training-history .training-history-settings {
+  margin: 0.4rem 0;
+}
+
+.training-history button {
+  min-height: 44px;
+}
+
+.training-history .training-history-stats,
+.training-history .training-history-own {
+  margin: 0;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.training-history .training-history-stats-title {
+  margin: 0.3rem 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.training-history .training-history-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+@media (max-width: 34rem) {
+  .training-history .training-history-more {
+    align-self: stretch;
   }
 }
 
@@ -1876,6 +2038,21 @@ p {
 .knowledge-controls select,
 .knowledge-controls input {
   min-width: 0;
+}
+
+/* Label text sits above its field with clear breathing room. */
+.knowledge-controls label {
+  display: grid;
+  gap: 0.45rem;
+  flex: 1 1 9rem;
+  align-content: start;
+  font-weight: 600;
+}
+
+.knowledge-controls label > input,
+.knowledge-controls label > select {
+  width: 100%;
+  font-weight: 400;
 }
 
 .knowledge-controls select {
@@ -1927,7 +2104,8 @@ p {
 
 .knowledge-fact-header {
   display: flex;
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
@@ -1945,6 +2123,52 @@ p {
   margin: 0;
   font-size: 1.02rem;
   font-weight: 700;
+}
+
+.knowledge-fact-head-row {
+  display: flex;
+  align-items: start;
+  gap: 0.4rem;
+}
+
+/* Compact fact-card controls, aligned together at the card's bottom right. */
+.knowledge-fact-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.knowledge-fact-actions[hidden],
+.knowledge-fact-delete-error[hidden] {
+  display: none;
+}
+
+.knowledge-fact-delete-error {
+  margin: 0;
+  flex: 1 1 auto;
+  text-align: right;
+}
+
+.knowledge-fact-edit,
+.knowledge-fact-delete {
+  flex: 0 0 auto;
+  min-width: 2.4rem;
+  min-height: 2.4rem;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.knowledge-fact-delete {
+  border-color: var(--tg-theme-destructive-text-color);
+  color: var(--tg-theme-destructive-text-color);
+  background: color-mix(in srgb, var(--tg-theme-destructive-text-color) 8%, var(--tg-theme-section-bg-color));
+}
+
+.knowledge-fact-edit[hidden],
+.knowledge-fact-delete[hidden] {
+  display: none;
 }
 
 .knowledge-fact-chevron {
@@ -1972,14 +2196,199 @@ p {
   margin: 0;
 }
 
-.knowledge-fact-description {
+/* The description is the fact's core content: plain regular body text. */
+p.knowledge-fact-description {
+  margin: 0;
   white-space: pre-line;
+  color: var(--tg-theme-text-color);
 }
 
+/* Dissection composer: theme rows and their collapsed/expanded states. */
+.knowledge-theme-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-row,
+.knowledge-candidate-row {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+  border-radius: 0.9rem;
+  background: var(--tg-theme-section-bg-color);
+}
+
+.knowledge-theme-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-head .checkbox-label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.knowledge-theme-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: start;
+  min-height: 2.2rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 30%, transparent);
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--tg-theme-text-color);
+}
+
+.knowledge-theme-name {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-theme-body,
+.knowledge-candidate-body {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-theme-body[hidden],
+.knowledge-candidate-body[hidden] {
+  display: none;
+}
+
+.knowledge-theme-detail {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-theme-questions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.knowledge-theme-question {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 20%, transparent);
+  border-radius: 0.7rem;
+}
+
+.knowledge-theme-question-text {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--tg-theme-text-color);
+}
+
+.knowledge-theme-confirm {
+  justify-self: start;
+}
+
+.knowledge-dissection-quota {
+  margin: 0;
+}
+
+/* Pending imports tab and review dialog. */
+.knowledge-import-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.knowledge-import-card {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.knowledge-import-type {
+  margin: 0;
+}
+
+.knowledge-import-status {
+  justify-self: start;
+  padding: 0.14rem 0.65rem;
+  border-radius: 99rem;
+  border: 1px solid currentColor;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--tg-theme-hint-color);
+}
+
+.knowledge-import-status[data-import-status="approved"] {
+  color: #2e7d32;
+}
+
+.knowledge-import-status[data-import-status="rejected"],
+.knowledge-import-status[data-import-status="failed"] {
+  color: #c62828;
+}
+
+.knowledge-import-status[data-import-status="pending"],
+.knowledge-import-status[data-import-status="working"] {
+  color: var(--tg-theme-link-color);
+}
+
+.knowledge-import-sections {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.knowledge-import-section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.knowledge-import-section h4 {
+  margin: 0;
+}
+
+.knowledge-import-section .secondary-button {
+  justify-self: start;
+}
+
+.knowledge-candidate-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* Sources are secondary: quieter than the description. */
 .knowledge-fact-links {
   padding-left: 1.25rem;
   display: grid;
-  gap: 0.35rem;
+  gap: 0.3rem;
+  color: var(--tg-theme-hint-color);
+  font-size: 0.85rem;
+}
+
+.knowledge-fact-links a {
+  color: inherit;
+}
+
+/* Attached fact images. */
+.knowledge-fact-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.knowledge-fact-images img {
+  max-width: 100%;
+  width: 9rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
 }
 
 .knowledge-fact-meta {
@@ -2029,25 +2438,6 @@ p {
   line-height: 1.5;
 }
 
-.knowledge-tag-tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.knowledge-tag-tool {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.knowledge-tag-button {
-  min-height: 1.9rem;
-  padding: 0.1rem 0.5rem;
-  border-radius: 0.6rem;
-  font-size: 0.85rem;
-}
-
 .knowledge-tag-select {
   display: grid;
   gap: 0.65rem;
@@ -2066,7 +2456,82 @@ p {
 .knowledge-tag-option {
   display: inline-flex;
   align-items: center;
+  gap: 0.3rem;
+}
+
+.knowledge-tag-option .knowledge-tag-button {
+  min-height: 1.9rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.6rem;
+  font-size: 0.85rem;
+}
+
+/* Additive multi-tag search chips. */
+.knowledge-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
+  flex: 1 1 100%;
+  align-content: end;
+}
+
+.knowledge-tag-filter:empty {
+  display: none;
+}
+
+.knowledge-tag-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.65rem;
+  border: 1px solid currentColor;
+  border-radius: 99rem;
+  background: color-mix(in srgb, currentColor 8%, var(--tg-theme-section-bg-color));
+  color: var(--tg-theme-link-color);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.knowledge-tag-filter-chip[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 28%, var(--tg-theme-section-bg-color));
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+/* Fact editor Images field. */
+.knowledge-images-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.knowledge-images-label {
+  font-weight: 600;
+}
+
+.knowledge-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.knowledge-image {
+  position: relative;
+  display: grid;
+  justify-items: end;
+  gap: 0.25rem;
+}
+
+.knowledge-image img {
+  width: 7rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color) 25%, transparent);
+}
+
+.knowledge-image-remove {
+  min-height: 1.9rem;
+  padding: 0.05rem 0.55rem;
+  border-radius: 0.6rem;
+  font-size: 0.85rem;
 }
 
 .knowledge-tag-options p {
@@ -2193,6 +2658,31 @@ dialog[open].knowledge-dialog {
   color: var(--tg-theme-hint-color);
 }
 
+/* Provenance badges with real tournament names. */
+.knowledge-tournament-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.knowledge-tournament-badge {
+  border: 1px solid color-mix(in srgb, var(--tg-theme-link-color) 45%, transparent);
+  color: var(--tg-theme-link-color);
+}
+
+.knowledge-controls .knowledge-owner-filter {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-direction: row;
+  align-items: center;
+  font-weight: 600;
+}
+
+.knowledge-controls .knowledge-owner-filter input[type="checkbox"] {
+  width: auto;
+  justify-self: start;
+}
+
 .knowledge-dissected-badge {
   border: 0;
   background: color-mix(in srgb, var(--tg-theme-button-color) 16%, transparent);
@@ -2244,10 +2734,6 @@ dialog[open].knowledge-dialog {
   background: #fff0b3;
   color: #664d03;
   font-weight: 600;
-}
-
-.knowledge-back {
-  justify-self: start;
 }
 
 .knowledge-empty {

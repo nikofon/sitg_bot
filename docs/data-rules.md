@@ -38,6 +38,18 @@ independently of ORM metadata. [test_initial_schema.py](../tests/integration/tes
 checks schema parity and migration lifecycle; other integration tests exercise transactional
 constraints. Migration procedure belongs in the operations guide.
 
+## Knowledge review and attribution
+
+Facts have independently editable author attribution; packet provenance is internal and
+never grants packet access through copying. Dissections and collection sends stage immutable,
+owner-private review snapshots. Only explicit selected-candidate approval creates saved facts,
+under account locks with a current-library exact-content recheck and durable source/content
+claims. Existing facts are never overwritten or resurrected after edits/deletion. Terminal
+review decisions are immutable; identical retries return the same recorded result. Default
+tag seeds have a permanent per-user claim independent of the tag rows, so deleting a default
+stays effective. Public bare analysis artifacts are immutable and exact-source/profile/tag
+scoped; private upload checkpoints cannot become reusable cross-request caches.
+
 ## Assignment and versioning
 
 - Every game belongs to one tournament and pins its tournament-type, game-ruleset, and

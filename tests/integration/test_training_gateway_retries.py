@@ -5,6 +5,7 @@ from uuid import UUID
 import pytest
 from conftest import create_player
 from sqlalchemy import func, select
+from test_training import open_question
 
 from sitg_bot.application.contracts import ActionCode, ApplicationPrincipal, GatewayRequest
 from sitg_bot.application.gateway import ApplicationGateway
@@ -39,21 +40,15 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
         return first.data
 
     tag = await twice(ActionCode.KNOWLEDGE_TAG_CREATE,
-                      {"name": "History", "colour": "#123456"}, "tag-create")
+                      {"name": "Chronology", "colour": "#123456"}, "tag-create")
     await twice(ActionCode.KNOWLEDGE_TAG_RENAME,
                 {"tag_id": tag["tag_id"], "name": "Past"}, "tag-rename")
     fact = await twice(ActionCode.KNOWLEDGE_CREATE,
                        {"title": "Fact", "description": "Private fact", "tag_names": ["Past"]},
                        "fact-create")
-    updated = await twice(ActionCode.KNOWLEDGE_UPDATE,
+    await twice(ActionCode.KNOWLEDGE_UPDATE,
                           {"fact_id": fact["id"], "expected_version": fact["content_version"],
                            "description": "Edited private fact"}, "fact-update")
-    source = await twice(ActionCode.KNOWLEDGE_CREATE,
-                         {"title": "Other fact", "description": "Merge source"}, "source-create")
-    await twice(ActionCode.KNOWLEDGE_MERGE,
-                {"source_fact_id": source["id"], "target_fact_id": fact["id"],
-                 "expected_target_version": updated["content_version"],
-                 "confirm_source_delete": True}, "fact-merge")
     await twice(ActionCode.KNOWLEDGE_DELETE, {"fact_id": fact["id"]}, "fact-delete")
     await twice(ActionCode.KNOWLEDGE_TAG_DELETE, {"tag_id": tag["tag_id"]}, "tag-delete")
 
@@ -74,7 +69,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
                              "publish": True}, "publish")
     started = await twice(ActionCode.TRAINING_START,
                           {"version_id": published["version_id"], "confirm": True}, "start")
-    state = started["session"]
+    state, _ = await open_question(gateway.training, owner, started["session"], None)
     buzzed = await twice(ActionCode.TRAINING_ACT,
                          {"session_id": state["id"], "expected_version": state["version"],
                           "question_revision_id": state["question_revision_id"], "command": "buzz"},
@@ -95,7 +90,7 @@ async def test_gateway_private_mutations_replay_without_duplicate_or_stale_write
                  "publish": False}, "reject")
 
     async with database.sessions() as session:
-        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)) == 2
+        assert await session.scalar(select(func.count()).select_from(KnowledgeFactRecord)) == 1
         assert await session.scalar(select(func.count()).select_from(PacketDraftRecord)) == 2
         assert await session.scalar(select(func.count()).select_from(TrainingSessionRecord)) == 1
         assert await session.scalar(select(func.count()).select_from(TrainingAttemptRecord)) == 1

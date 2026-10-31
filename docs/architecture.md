@@ -45,6 +45,9 @@ All Python paths below are relative to [src/sitg_bot](../src/sitg_bot).
 | Packet import, publication, revisions, authorship | `domain/packet.py`, `services/packets.py`, `storage/packets.py` | [Packet administration](packet-administration.md) |
 | Assembly, validation, exposure planning, matching | `services/matchmaking.py`, `services/ruleset_content.py` | [Lobbies and assignment](lobby-architecture.md) |
 | SI progression, answers, scoring, appeals | `domain/game*.py`, `services/persistent_game.py` | [Game rulesets and execution](game-rulesets.md) |
+| Solo training, private uploads, history | `services/training*.py`, `bot/training_delivery.py` | [Training](training.md) |
+| Knowledge library, sharing and import review | `domain/knowledge.py`, `services/knowledge*.py` | [Knowledge integration](training-knowledge-integration.md) |
+| AI analysis, public caching and quotas | `services/analysis*.py`, `services/entitlements.py`, `services/training_provider.py` | [Training AI](training-ai.md) |
 | Persistence and cross-cutting invariants | `storage/models.py`, `storage/database.py`, [migrations](../migrations) | [Data model and invariants](data-rules.md) |
 | Rating, trust, analytics, privacy helpers | `domain/rating.py`, `services/trust.py`, `services/privacy.py` | [Ratings, trust, and statistics](data-and-statistics.md) |
 | Startup, migrations, diagnostics, tests, CLI tools | `config.py`, `__main__.py`, [pyproject.toml](../pyproject.toml) | [Development and operations](database-operations.md) |

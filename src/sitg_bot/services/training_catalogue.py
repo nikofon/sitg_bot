@@ -116,8 +116,8 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
     covered = defaultdict(set)
     dissected = set()
     unknown = set()
-    # Applied library requests, not merely generated cache artifacts, are the
-    # authority for per-user library dissection state. Never read other owners.
+    # Completed owner requests (including staged reviews), not another user's
+    # generated cache artifact, are the dissection authority. Never read other owners.
     for revision, status, source, saved_themes, request_status in await session.execute(
         select(
             KnowledgeDissectionRecord.packet_revision,
@@ -135,7 +135,6 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
             KnowledgeDissectionRecord.owner_id == player_id,
             KnowledgeDissectionRecord.packet_revision.in_([str(value) for value in ids]),
             KnowledgeDissectionRecord.status.in_(("succeeded", "partially_succeeded")),
-            KnowledgeDissectionRecord.application.is_not(None),
         )
     ):
         dissected.add(revision)

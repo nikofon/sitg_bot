@@ -1,15 +1,15 @@
 # Training knowledge and analysis integration
 
-B's knowledge and C's analysis/entitlement services now use shared SQLAlchemy
-metadata and migrations through `0025_knowledge_catalogue` (following the approved
-`0024_training_lobby` persistence prerequisite). `PostgresKnowledgeStore`
-implements B's repository; `KnowledgeApplication` connects persistence, source
-access, automatic fact application, statistics and Best buzz.
+Knowledge and analysis/entitlement services use shared SQLAlchemy metadata.
+`PostgresKnowledgeStore` implements the knowledge repository; `KnowledgeApplication`
+connects persistence, source access, staged fact review, statistics and Best buzz.
+See [database operations](database-operations.md#schema-baseline) for migrations.
 
 ## Integration decisions
 
-- Sharing sends permanent, independently editable copies of the current collection
-  to the recipient's own library. Later edits/deletions never propagate. Repeating
+- Sharing stages an immutable private review of the current collection. Only the
+  recipient's explicitly selected candidates become permanent, independently editable copies
+  in their own library. Later edits/deletions never propagate. Repeating
   a send adds only uncopied facts; it never overwrites or resurrects prior copies.
   Durable recipient/content-fingerprint claims also deduplicate equivalent facts
   arriving through different sources or sharing links, including after editing or
@@ -20,7 +20,9 @@ access, automatic fact application, statistics and Best buzz.
   checks, and no simultaneous normal play and active/paused training. Reverse
   means word order; hidden text appears immediately for a configurable duration,
   then disappears until reveal. Hidden/reverse combine; Best buzz excludes both.
-- Private analysis caches are owner-scoped. Instructions/comments remain verbatim,
+- Private uploads have no cross-request reusable analysis cache; only per-request
+  recovery records persist. Public bare cache routing is described in [training-ai.md](training-ai.md).
+  Instructions/comments remain verbatim,
   including whitespace and ambiguous dates such as “before 1500 A.C.”.
 - Production uses configurable OpenAI Responses with strict structured outputs.
   No model or credential is assumed. Without configuration, ordinary training,
@@ -53,43 +55,65 @@ access, automatic fact application, statistics and Best buzz.
 
 ## Configuration and persistence
 
-Run `alembic upgrade head`. Set these on the application server:
-
-```text
-SITG_TRAINING_AI_API_KEY=<provider credential>
-SITG_TRAINING_AI_MODEL=<chosen structured-output-capable model>
-```
-
-Credentials stay server-side. Production never substitutes the fake provider.
+Provider setup, policy enablement and live acceptance prerequisites belong in
+[Training AI](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
 The implementation follows the official
 [structured outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
-Tests make no live provider calls.
-
-Default policies are installed once. For an existing disabled installation, create
-a policy with `EntitlementService.create_policy` and update the selected category's
-`policy_version`; configuration does not replace administrator choices. Policies
-support disabled, finite/unlimited, daily/monthly/no reset and cache-hit charging.
 
 Facts keep content and provenance in separate fields. Ordered links, provenance,
 application outcomes and immutable statistic snapshots use JSONB; tags and
 ownership-enforced associations are relational. SQL filters, keyset cursors and
 batched tags/statistics bound fact pages to 25 cards without per-card reads.
 
-Dissection applies automatically after another source-access check. Deterministic
-candidate mappings prevent duplicates, manual overwrites and resurrection of
-deleted/merged imports. Follow-up comments create another analysis revision.
+Dissection stages a durable owner-private review after another source-access check;
+completion never silently adds facts. Approval adds only explicit selected candidate IDs.
+New and normalized-name duplicate candidates default selected; exact editable-content
+matches default unselected. Editable equality compares normalized title, description,
+author, ordered link URLs/titles and image IDs, ignoring internal link origin and packet
+provenance; tags and statistics do not affect equality. Classification and approval use
+the same comparison without changing stored provenance or historical retry fingerprints.
+Approval rechecks current content and durable source/hash claims
+under account locks: it never overwrites or resurrects deleted/edited imports. Decisions
+are terminal and retryable with the same selection. Follow-up comments create another
+analysis revision; rejected reviews add nothing.
 Statistics run separately with quotas; unavailable metrics never prevent saving facts.
 
 ## Coloured tags, durable links and packet cards
 
 Tags persist a normalized six-digit RGB `colour` (`#64748b` for existing tags).
 `GET /api/miniapp/knowledge/tags` returns `{items:[{tag_id,name,colour}]}`.
-The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
+Default tags are seeded once on first palette/tag-mutation access for existing and new
+users; deleting a default never reseeds it. Custom tags are retained. Canonical names stay
+normalized; palette items add `label` with the requested display capitalization (including
+`Chemestry`). The existing `tag_create`/`tag_rename` POSTs accept `colour`; omitting colour
 on rename preserves it. Fact detail tags add `colour` while fact lists keep
 `tag_names`. Fact create/update still accept selected `tag_names` for compatibility.
 The Mini App should select from this palette, with explicit new-tag creation.
-The existing 32-tag fact limit also applies to merged tag unions; an oversized
-merge is rejected without changing or retiring either fact.
+Fact search accepts repeated `tags` query parameters and matches **all** selected
+normalized tags (at most 32); legacy `tag` intersects them. Fact merging is removed
+from HTTP, gateway and services. Historical merge tombstones remain intact.
+
+Facts retain internal content versions for stale-write protection. List cards now
+include description, links, images and the version without separate detail reads.
+Fact cards and details always expose `packet_name:null`; packet provenance remains
+internal. `author` is independently editable text, unknown as an empty string. Manual
+create defaults to the creator's public nickname; extraction uses trusted pinned
+question/theme authors, never model guesses. Search includes author, and the optional
+`author` query filters by a literal case-insensitive substring. Sender attribution on
+an import card is separate from fact authorship.
+
+Images are immutable persisted raster attachments, not URLs embedded in fact text
+or source links. POST `/api/miniapp/knowledge/image_upload` with `{source_base64}`
+uses normal session, CSRF and idempotency protection and returns `{id,url,content_type}`.
+PNG/JPEG/WebP headers and dimensions are checked; uploads are limited to 2 MiB and
+20 million pixels. SVG and remote fetching are unsupported. Fact create/update
+accepts up to eight distinct `image_ids`; omission preserves existing images and
+an empty array removes them. GET `/api/miniapp/knowledge/images/{image_id}` checks
+live uploader, owned-fact or owner-private review snapshot reference access, and serves raster bytes with
+`no-store`/`nosniff`. List/detail `images` contains `{id,url,content_type}` metadata,
+never image bytes. Permanent copies retain immutable attachments independently of
+source edits/deletion and grant no packet metadata. Apply migration
+`0026_knowledge_images` before deploying this API.
 
 `GET /api/miniapp/knowledge/sharing` retains historical `grants` and `shared`
 copy summaries and adds the creator's `links`. POST `knowledge/link_create`
@@ -113,10 +137,21 @@ No GET imports data. The token stays in the WebApp URL fragment, outside server
 HTTP access logs/referrers. The HTTP response also includes `app_url` (the relative
 in-session fragment route) and `launch_available`. If bot identity is unavailable,
 `url` is null and `launch_available` is false: the UI must not offer the plain
-HTTPS fallback as an externally working launch link. This uses the existing bot
+HTTPS fallback as an externally working launch link. Active links still offer Deactivate
+when launch identity is unavailable; hiding URL/copy controls does not revoke existing links.
+This uses the existing bot
 notifier/token and HTTPS `MINI_APP_BASE_URL` configuration, not new BotFather setup.
-The import response is `{owner_id,recipient_id,imported_count,skipped_count}`. Unknown/deactivated links
-fail without copying; self-import is rejected. Creator account locks and a locked
+The import response is `{import_id,status:'pending',owner_id,recipient_id,imported_count:0,
+skipped_count:0}`. Unknown/deactivated links fail without staging; self-import is rejected.
+Direct grants also stage recipient review. GET `knowledge/imports` accepts `cursor` and
+`limit` (1–100, default 100), returning `{items,next_cursor}` with newest-first,
+owner-private cards. The Pending imports tab loads subsequent pages on demand so older
+pending and terminal imports remain reachable. GET `knowledge/imports/{import_id}` groups candidates under
+`sections:{new,potential_duplicates,duplicates}`. POST `knowledge/import_decide` accepts
+`{import_id,decision:'approve'|'reject',selected_candidate_ids?:string[]}`; approval requires
+an explicit list, including an empty list to add none. Identical decisions retry safely;
+changed terminal decisions return stale-write. Review snapshots survive source edits and
+application restarts and never grant source packet rights. Creator account locks and a locked
 link recheck serialize revocation against import. Sorted two-account locks and the
 unique `(recipient_id,content_fingerprint)` claim make concurrent imports safe.
 Copies retain separate source/owner/recipient provenance rows; sharing grants no
@@ -128,7 +163,9 @@ readable-packet predicate (own unretired uploads and authorized published tourna
 versions). It adds regular catalogue-style literal case-insensitive `name`/`author`
 filters and inclusive `year_from`, `year_to`, `publication_from`, `publication_to`.
 Orders are `id_asc` (legacy default), `name_asc`, `name_desc`, `year_asc`, `year_desc`;
-unknown years sort as 0 and UUID breaks ties. Preserve opaque `next_cursor` values
+unknown years sort as 0 and UUID breaks ties. `owner_uploads_only=true` intersects
+readability with private training scope and uploader=caller before pagination;
+this filter is shared by Knowledge and the training lobby. Preserve opaque `next_cursor` values
 and reset them on filter/order changes. Legacy UUID cursors remain valid with
 `id_asc`. Pages remain at most 25 and use the shared background batch pacer.
 
@@ -141,7 +178,8 @@ Each card retains version `id`, logical `packet_id`, name/year/scope and adds:
 - `tournaments:[{id,name}]`: only currently readable associations for this user.
 - `total_theme_count`, `fresh_theme_count`: existing SI content-adapter freshness,
   including reserved/burnt question/theme identities and user packet blocks.
-- `dissected`: this user has a successful/partial applied dissection for this version.
+- `dissected`: this user has a successful/partial completed dissection for this version,
+  including a staged review not yet approved.
 - `dissected_theme_count`: distinct known fully dissected themes; **null**, not zero,
   if partial/legacy data prevents exact coverage (unless another complete request
   covers all themes). No dissection is known zero.
@@ -153,8 +191,13 @@ cleanup. Migration backfills surviving successful requests; information purged
 before upgrade cannot be reconstructed. Per-user analysis state is never inferred
 from another user's shared cache. All metadata loads are page-batched, never
 per-card HTTP or SQL fetches. Listing does not disclose/consume exposures or run
-analysis. Existing dissection instructions/comments, explicit exposure confirmation,
-quotas and cancellation remain unchanged. Dissection identity lookup is exact even
+analysis. Dissection accepts optional `theme_revision_ids` (omitted = all; explicit empty/foreign
+IDs are rejected) and up to 32 owned `tag_ids`. Only selected themes are disclosed and
+charged. GET `knowledge/themes?version_id=...` returns metadata-only theme IDs/names and
+`quota:{enabled,remaining,reset_at}` without burning content. POST `knowledge/theme_preview`
+with `{version_id,theme_revision_id,confirm_exposure}` reveals only that theme after explicit
+exposure confirmation, including trusted author, theme commentary, questions and answers.
+Existing instructions/comments, quotas and cancellation remain enforced server-side. Dissection identity lookup is exact even
 when the request is older than the bounded 100-row history listing.
 
 Queued or expired/checkpointed analysis is rejected and its reservations released
@@ -168,9 +211,28 @@ collection imports and direct copying.
 
 ## Adapters
 
-The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit,
-source URLs, tags, delete/merge, tag rename/delete, search, tag filtering, sorting,
-pagination, permanent copy sharing and dissection with comments. Job polling preserves
+The Mini App links `/training` and `/knowledge`. Knowledge supports fact create/edit
+(with the independently editable snapshotted `author` field, omitted on manual create
+to fall back to the creator nickname), source URLs, tags, delete, tag rename/delete,
+search plus a dedicated case-insensitive `author` substring filter, additive tag filtering,
+sorting, pagination, and permanent copy sharing. Fact cards never display the internal
+source-packet provenance (privacy on imported libraries); the description renders as
+regular text. Dissection launches from a packet card into a closable General/Themes
+composer window: General carries the selected-theme counter, commentary, auto-assign
+tag selection (tag ids) and the start action; Themes lists collapsed theme rows whose
+checkboxes are independent of expansion, with select/deselect all, the remaining theme
+quota and reset time, and full theme reveal only through the exposure-confirmed
+`theme_preview` mutation. Started dissections are durable: closing the window never
+cancels them. Completion stages facts for review instead of applying them.
+The Knowledge window's **Pending imports** tab lists dissection and incoming
+collection imports with type, author, status (working/pending/approved/rejected/failed),
+fact count and — for the user's own authorized dissections — the source packet;
+collection imports never expose the sender's private provenance. Review opens the
+candidate lists in New / Potential duplicates / Duplicates sections (server-side
+classification defaults: new and potential selected, exact duplicates deselected), with
+per-section select/deselect all, per-fact checkboxes independent of expansion, and
+Add selected / Reject controls at the top and bottom; approval refreshes the library
+and the pending list. Job polling preserves
 form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
@@ -181,7 +243,7 @@ to the read-only Telegram library with lazy detail callbacks. Training and
 knowledge slash commands are no longer registered; editing, tags, sharing,
 analysis preparation/status, and entitlements use Mini App controls instead.
 
-Deleting a dissection import or merging away a manual fact requires confirmation.
+Deleting a dissection import requires confirmation.
 Exposure prompts use explicit confirmation controls. See [training.md](training.md)
 for the keyboard-driven training lobby and settings flow.
 
@@ -189,7 +251,7 @@ for the keyboard-driven training lobby and settings flow.
 
 | Item | Placeholder |
 | --- | --- |
-| Provider | Deployment model and credential above |
+| Provider | [Operator configuration](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims) |
 | Bingo examples | `<high-bingo fact, Mentions, Common knowledge estimate, desired score>` |
 | Bingo formula | `<calibrated versioned formula>` |
 | Ambiguous dates | `<meaning of A.C.>`; passed through verbatim |
@@ -201,6 +263,6 @@ legacy source access. Downgrading retains the copied facts. The deprecated revok
 operation is rejected; legacy `/sharedfacts` lists the recipient's own library.
 
 Tests cover migration upgrade/downgrade, PostgreSQL CRUD/copy independence, bounded
-query counts, private isolation/cleanup, automatic fact application, Best buzz
+query counts, private isolation/cleanup, staged review and selected approval, Best buzz
 conversion, quotas/refunds/recovery, authenticated contracts and browser views.
 Live Telegram delivery and a configured-provider smoke test remain deployment checks.

@@ -54,6 +54,7 @@ import { PacketLoader, type PacketPage } from "./ui/packet-loading";
 import { MESSAGE_FLOW_SETTINGS, createSettingDemo, type SettingDemo } from "./ui/setting-demo";
 import { renderLibrary, renderLibraryReader } from "./ui/library";
 import { renderTraining } from "./ui/training";
+import { renderTrainingHistory, renderTrainingHistoryDetail } from "./ui/training-history";
 import { renderKnowledgePage } from "./ui/knowledge-page";
 import { renderPlayerGame, renderPlayerProfile } from "./ui/profile";
 import { renderTournamentProfile } from "./ui/tournament";
@@ -207,7 +208,28 @@ export class MiniAppShell {
       return;
     }
     if ("kind" in payload.resource && payload.resource.kind === "training" && this.request) {
-      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal, route.query.get("view") === "upload"));
+      // The training lobby follows regular-lobby haptic behavior on selection/save.
+      this.renderFrame(route, renderTraining(payload.resource, this.api, this.i18n, this.request.signal, route.query.get("view") === "upload", this.platform));
+      return;
+    }
+    if (
+      "kind" in payload.resource && payload.resource.kind === "training_history"
+      && this.request
+    ) {
+      this.renderFrame(route, renderTrainingHistory(
+        payload.resource, this.api, this.i18n, this.request.signal,
+        (path) => this.router.navigate(path),
+      ));
+      return;
+    }
+    if (
+      "kind" in payload.resource && payload.resource.kind === "training_history_detail"
+      && this.request
+    ) {
+      this.renderFrame(route, renderTrainingHistoryDetail(
+        payload.resource, this.api, this.i18n, this.request.signal,
+        (path) => this.router.navigate(path),
+      ));
       return;
     }
     if (route.id === "players" && "kind" in payload.resource && payload.resource.kind === "players") {

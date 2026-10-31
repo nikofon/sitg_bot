@@ -11,7 +11,7 @@ under compute leases; stale completions are fenced by lease tokens.
 import asyncio
 from collections.abc import Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.domain.game_settings import announcement_tokens
+from sitg_bot.services.analysis_cache import public_base, run_cached_dissection
 from sitg_bot.services.entitlements import (
     FEATURE_BEST_BUZZ,
     FEATURE_COMMON_KNOWLEDGE,
@@ -41,6 +42,7 @@ from sitg_bot.services.training_ai import (
     ANALYSIS_COMMON_KNOWLEDGE,
     ANALYSIS_DISSECTION,
     PROVIDER_CALL_METADATA,
+    AnalysisValidationError,
     BuzzBoundary,
     BuzzRequest,
     CommonKnowledgeRequest,
@@ -50,6 +52,7 @@ from sitg_bot.services.training_ai import (
     ProviderSettings,
     ProviderTimeout,
     QuestionText,
+    fact_candidate_id,
     instruction_digest,
     packet_chunks,
     source_descriptor,
@@ -250,6 +253,14 @@ class AnalysisService:
             return self._view(existing, artifact=None)
         fingerprint = text_fingerprint(source_fingerprint_of(source), content_fingerprint or "")
         digest = instruction_digest(normalized)
+        if kind == ANALYSIS_DISSECTION:
+            fingerprint = text_fingerprint(
+                "dissection-cache-v2", self.settings.provider, fingerprint
+            )
+            digest = text_fingerprint(digest, *sorted(descriptor.get("tag_names", [])))
+        if private:
+            # Same-request checkpoints are not a reusable owner cache.
+            digest = text_fingerprint(digest, idempotency_key)
         shared = not normalized and not private
         artifact_owner = None if shared else owner_player_id
         key = analysis_artifact_key(
@@ -263,9 +274,19 @@ class AnalysisService:
             tokenizer_version=self.settings.tokenizer_version,
             owner_player_id=artifact_owner,
         )
-        if self.entitlements is not None:
-            await session.get(PlayerRecord, owner_player_id, with_for_update=True)
-        artifact = await self._artifact_for_key(
+        reusable = None
+        if kind == ANALYSIS_DISSECTION and shared:
+            reusable = await public_base(
+                self, session, fingerprint, descriptor.get("tag_names", []), require_coverage=True
+            )
+        if reusable is not None:
+            reusable = await session.get(
+                TrainingAnalysisArtifactRecord, reusable.id,
+                with_for_update={"key_share": True}, populate_existing=True,
+            )
+            if reusable is not None and reusable.status != "succeeded":
+                reusable = None
+        artifact = reusable or await self._artifact_for_key(
             session,
             key,
             kind=kind,
@@ -607,18 +628,29 @@ class AnalysisService:
                 await self._run_packet_scan(
                     artifact_id, lease_token, kind, instructions, descriptor, initiating_owner
                 )
-        except ProviderOutcomeUncertain as error:
-            await self._record_uncertain(artifact_id, error)
-            raise
-        except Exception:
+        except Exception as error:
             async with self.database.transaction() as session:
                 artifact = await session.get(
                     TrainingAnalysisArtifactRecord, artifact_id,
                     with_for_update={"key_share": True}, populate_existing=True,
                 )
-                if artifact is not None and artifact.lease_token == lease_token:
+                if (
+                    artifact is not None and artifact.status == "running"
+                    and artifact.lease_token == lease_token
+                ):
                     artifact.provider_request_ids = self._provider_request_ids()
                     artifact.provider_usage = self._usage_payload()
+                    if isinstance(error, ProviderOutcomeUncertain):
+                        artifact.provider_request_ids = list(dict.fromkeys([
+                            *artifact.provider_request_ids, error.provider_request_id,
+                        ]))
+                    if isinstance(error, (
+                        AnalysisValidationError, ProviderOutcomeUncertain, ProviderTimeout,
+                        ValueError, PermissionError, LookupError,
+                    )):
+                        await self._fail_artifact(session, artifact, str(error), datetime.now(UTC))
+                    else:
+                        artifact.lease_expires_at = datetime.now(UTC)
             raise
         finally:
             self._provider_metadata.reset(usage_token)
@@ -664,6 +696,10 @@ class AnalysisService:
     ) -> None:
         if self.source_loader is None:
             raise RuntimeError("An analysis source loader is required for packet scans")
+        if kind == ANALYSIS_DISSECTION and await run_cached_dissection(
+            self, artifact_id, lease_token, instructions, descriptor
+        ):
+            return
         questions = await self.source_loader.load_question_texts(
             owner_player_id=initiating_owner, source=descriptor
         )
@@ -697,12 +733,14 @@ class AnalysisService:
             if kind == ANALYSIS_DISSECTION:
                 result = await self._provider_call(
                     self.provider.extract_facts,
-                    ExtractionRequest((chunk,), instructions, language),
+                    ExtractionRequest((chunk,), instructions, language,
+                                      tuple(descriptor.get("tag_names", []))),
                 )
                 result = validate_fact_candidates(
                     result,
                     allowed_question_revision_ids=chunk.question_revision_ids,
                     max_output_facts=self.settings.max_output_facts - len(partial),
+                    allowed_tag_names=descriptor.get("tag_names", []),
                 )
                 partial.extend(
                     {
@@ -711,6 +749,7 @@ class AnalysisService:
                         "description": candidate.description,
                         "links": list(candidate.links),
                         "question_revision_id": str(candidate.question_revision_id),
+                        "tags": list(candidate.tags),
                     }
                     for candidate in result
                 )
@@ -753,6 +792,7 @@ class AnalysisService:
                     "chunks_done": index + 1,
                     "chunks_total": total,
                     "partial": partial,
+                    "cache_route": "full",
                 },
             )
         await self._finalize_packet_scan(
@@ -777,6 +817,7 @@ class AnalysisService:
                     item["description"],
                     tuple(item["links"]),
                     UUID(item["question_revision_id"]),
+                    tuple(item.get("tags", [])),
                 )
                 for item in partial
             )
@@ -784,7 +825,20 @@ class AnalysisService:
                 candidates,
                 allowed_question_revision_ids=allowed,
                 max_output_facts=self.settings.max_output_facts,
+                allowed_tag_names=descriptor.get("tag_names", []),
             )
+            references = {
+                question.question_revision_id: set(question.reference_urls)
+                for question in questions
+            }
+            safe = []
+            for candidate in validated:
+                links = tuple(url for url in candidate.links
+                              if url in references[candidate.question_revision_id])
+                safe.append(replace(candidate, links=links, candidate_id=fact_candidate_id(
+                    candidate.question_revision_id, candidate.title, candidate.description, links
+                )))
+            safe = list({value.candidate_id: value for value in safe}.values())
             payload: dict[str, Any] = {
                 "candidates": [
                     {
@@ -793,9 +847,13 @@ class AnalysisService:
                         "description": candidate.description,
                         "links": list(candidate.links),
                         "question_revision_id": str(candidate.question_revision_id),
+                        "tags": list(candidate.tags),
                     }
-                    for candidate in validated
-                ]
+                    for candidate in safe
+                ],
+                "cache_version": 2,
+                "tag_coverage": sorted(descriptor.get("tag_names", [])),
+                "route": "full",
             }
         else:
             boundaries = tuple(
@@ -1037,22 +1095,6 @@ class AnalysisService:
         )
         if updated.rowcount != 1:
             raise RuntimeError("Stale analysis compute lease")
-
-    async def _record_uncertain(
-        self, artifact_id: UUID, error: ProviderOutcomeUncertain
-    ) -> None:
-        """Record possibly-billed upstream request IDs before retrying."""
-        async with self.database.transaction() as session:
-            artifact = await session.get(TrainingAnalysisArtifactRecord, artifact_id)
-            if artifact is None:
-                return
-            ids = list(artifact.provider_request_ids or [])
-            if error.provider_request_id not in ids:
-                ids.append(error.provider_request_id)
-            artifact.provider_request_ids = ids
-            artifact.last_error = (
-                f"Uncertain provider outcome for request {error.provider_request_id}"
-            )
 
     def _view(
         self,

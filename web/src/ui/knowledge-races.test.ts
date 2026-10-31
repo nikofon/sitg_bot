@@ -82,13 +82,87 @@ describe("Knowledge query response ownership", () => {
     const { root } = setup({ loadFacts });
     await flush();
     click("Refresh");
-    const tag = root.querySelector<HTMLSelectElement>("[aria-label='Filter by tag']")!;
-    tag.value = "history"; tag.dispatchEvent(new Event("change"));
-    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tag: "history" });
+    const tagChip = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")]
+      .find((chip) => chip.textContent === "history")!;
+    tagChip.click();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["history"] });
     second.resolve(page("tagged")); await flush();
     first.resolve(page("unfiltered")); await flush();
     expect(root.querySelector(".knowledge-list")!.textContent).toContain("tagged");
     expect(root.querySelector(".knowledge-list")!.textContent).not.toContain("unfiltered");
+  });
+
+  it.each(["search", "author", "tags", "order", "changed", "refresh"])(
+    "invalidates pagination synchronously during a %s reload",
+    async (trigger) => {
+      const pending = deferred<KnowledgeFactsResource>();
+      const loadFacts = vi.fn().mockReturnValueOnce(pending.promise)
+        .mockResolvedValueOnce(page("next"));
+      const { root, data } = setup({ loadFacts });
+      await flush();
+      const more = root.querySelector<HTMLButtonElement>(".knowledge-load-more")!;
+      if (trigger === "search" || trigger === "author") {
+        const input = root.querySelectorAll<HTMLInputElement>("input[type=search]")
+          [trigger === "search" ? 0 : 1]!;
+        input.value = "filtered";
+        input.dispatchEvent(new Event("input"));
+        input.dispatchEvent(new Event("change"));
+      } else if (trigger === "tags") {
+        root.querySelector<HTMLButtonElement>(".knowledge-tag-filter-chip")!.click();
+      } else if (trigger === "order") {
+        const select = root.querySelector<HTMLSelectElement>(".knowledge-controls select")!;
+        select.value = "title_desc";
+        select.dispatchEvent(new Event("change"));
+      } else if (trigger === "changed") {
+        root.dispatchEvent(new Event("knowledge:changed"));
+      } else click("Refresh");
+      expect(data.facts.next_cursor).toBeNull();
+      expect(more.hidden).toBe(true);
+      expect(more.disabled).toBe(true);
+      more.click();
+      expect(loadFacts).toHaveBeenCalledTimes(1);
+      pending.resolve(page("filtered", "filtered-cursor"));
+      await flush();
+      expect(more.hidden).toBe(false);
+      expect(more.disabled).toBe(false);
+      more.click();
+      await flush();
+      expect(loadFacts.mock.calls[1]![0].cursor).toBe("filtered-cursor");
+      expect(data.facts.items.map((item) => item.id)).toEqual(["filtered", "next"]);
+    },
+  );
+
+  it("does not let stale pagination re-enable pagination during a reload", async () => {
+    const old = deferred<KnowledgeFactsResource>();
+    const current = deferred<KnowledgeFactsResource>();
+    const loadFacts = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    const { root } = setup({ loadFacts });
+    click("Load more");
+    click("Refresh");
+    old.resolve(page("stale", "stale-cursor"));
+    await flush();
+    const more = root.querySelector<HTMLButtonElement>(".knowledge-load-more")!;
+    expect(more.disabled).toBe(true);
+    more.click();
+    expect(loadFacts).toHaveBeenCalledTimes(2);
+    current.resolve(page("current", "current-cursor"));
+    await flush();
+    expect(more.disabled).toBe(false);
+    expect(root.querySelector(".knowledge-list")!.textContent).not.toContain("stale");
+  });
+
+  it("keeps pagination invalid after a failed reload and permits a fresh retry", async () => {
+    const { root, data, actions } = setup({ loadFacts: vi.fn()
+      .mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(page("retried", "retry")) });
+    click("Refresh");
+    await flush();
+    expect(data.facts.next_cursor).toBeNull();
+    root.querySelector<HTMLButtonElement>(".knowledge-load-more")!.click();
+    expect(actions.loadFacts).toHaveBeenCalledTimes(1);
+    click("Refresh");
+    await flush();
+    expect(data.facts.next_cursor).toBe("retry");
+    expect(root.querySelector<HTMLButtonElement>(".knowledge-load-more")!.disabled).toBe(false);
   });
 
   it("retains appended facts in the backing collection", async () => {

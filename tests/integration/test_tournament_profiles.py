@@ -1,6 +1,7 @@
-import pytest
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+
+import pytest
 from test_classic import mutate, setup
 from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture

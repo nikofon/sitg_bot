@@ -247,3 +247,6 @@ Targeted tests are [test_telegram_frontend.py](../tests/unit/test_telegram_front
 [test_participant_chat.py](../tests/unit/test_participant_chat.py), and delivery/logging unit
 tests. PostgreSQL recovery and chat tests are in [tests/integration](../tests/integration).
 Live Telegram rendering, media, and cleanup still need manual validation after affected changes.
+Training uses the same ordered SI event presenter and deletion helper with a separate
+owner-scoped event/presentation ledger; see [training execution](training.md#execution-and-presentation).
+It never creates competitive games or rating/reputation controls.

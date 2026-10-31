@@ -5,14 +5,20 @@ import json
 import os
 import re
 import secrets
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select, update
+from sqlalchemy import String, delete, or_, select, tuple_, update
 
 from sitg_bot.domain.game_settings import announcement_tokens
-from sitg_bot.domain.knowledge import BingoScore, CommonKnowledgeEstimate, SourceLink
+from sitg_bot.domain.knowledge import (
+    FACT_AUTHOR_MAX,
+    BingoScore,
+    CommonKnowledgeEstimate,
+    SourceLink,
+)
 from sitg_bot.domain.training import text_digest
 from sitg_bot.services.analysis_jobs import (
     AnalysisFeatureDisabledError,
@@ -22,7 +28,10 @@ from sitg_bot.services.analysis_jobs import (
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
 from sitg_bot.services.knowledge import DEFAULT_TAG_COLOUR, KnowledgeService
+from sitg_bot.services.knowledge_images import authorized_images, image_view
+from sitg_bot.services.knowledge_review import TAG_LABELS, KnowledgeReview, seed_tags
 from sitg_bot.services.knowledge_store import PostgresKnowledgeStore
+from sitg_bot.services.knowledge_themes import KnowledgeThemes, source_authors
 from sitg_bot.services.reliable_delivery import DurableJobQueue, TransactionalOutbox
 from sitg_bot.services.training_access import require_trainee
 from sitg_bot.services.training_ai import (
@@ -32,6 +41,7 @@ from sitg_bot.services.training_ai import (
     ProviderSettings,
     QuestionText,
     packet_chunks,
+    source_reference_urls,
     text_fingerprint,
 )
 from sitg_bot.services.training_packets import TrainingPacketService
@@ -39,8 +49,10 @@ from sitg_bot.services.training_provider import ResponsesAnalysisProvider
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     KnowledgeFactRecord,
+    KnowledgeImportRecord,
     KnowledgeShareLinkRecord,
     KnowledgeSnapshotRecord,
+    KnowledgeTagRecord,
     LogicalPacketRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
@@ -114,7 +126,8 @@ class TrainingAnalysisAccess:
                         )
                         .where(
                             PacketQuestionRecord.packet_version_id
-                            == UUID(source["packet_revision_id"])
+                            == UUID(source["packet_revision_id"]),
+                            PacketQuestionRecord.question_revision_id.in_(ids),
                         )
                         .order_by(PacketQuestionRecord.position)
                     )
@@ -129,6 +142,7 @@ class TrainingAnalysisAccess:
                     dissection_text(by_id[item])
                     if source["type"] == "dissection"
                     else by_id[item].text,
+                    reference_urls=source_reference_urls(by_id[item]),
                 )
                 for item in ids
             )
@@ -139,6 +153,8 @@ class KnowledgeApplication:
         self.database = database
         self.packets = TrainingPacketService(database)
         self.entitlements = EntitlementService(database)
+        self.reviews = KnowledgeReview(self)
+        self.themes = KnowledgeThemes(self)
         self.settings = settings or provider_settings_from_environment()
         self.analysis = analysis or AnalysisService(
             database,
@@ -173,13 +189,26 @@ class KnowledgeApplication:
         async with self.database.transaction() as session:
             await require_trainee(session, actor)
             page = await self.service(session).list_facts(actor, **params)
-            snapshots = await self._latest_snapshots(session, [item.fact_id for item in page.items])
+            ids = [item.fact_id for item in page.items]
+            snapshots = await self._latest_snapshots(session, ids)
+            rows = {row.id: row for row in await session.scalars(
+                select(KnowledgeFactRecord).where(KnowledgeFactRecord.id.in_(ids))
+            )} if ids else {}
+            image_ids = {UUID(value) for row in rows.values() for value in row.image_ids}
+            images = {row.id: image_view(row) for row in
+                      await authorized_images(session, actor, image_ids)}
             items = [
                 {
                     "id": item.fact_id,
                     "fact_id": item.fact_id,
                     "owner_id": item.owner_id,
                     "title": item.title,
+                    "description": rows[item.fact_id].description,
+                    "links": rows[item.fact_id].links,
+                    "images": [images[UUID(value)] for value in rows[item.fact_id].image_ids],
+                    "packet_name": None,
+                    "author": rows[item.fact_id].author,
+                    "content_version": rows[item.fact_id].content_version,
                     "tag_names": item.tag_names,
                     "origin": item.origin,
                     "statistic_status": item.statistic_status,
@@ -244,7 +273,31 @@ class KnowledgeApplication:
             await require_trainee(session, actor)
             detail = await self.service(session).fact_detail(actor, fact_id)
             snapshots = await self._latest_snapshots(session, [fact_id])
-            return self._detail(detail, snapshots.get(fact_id))
+            result = self._detail(detail, snapshots.get(fact_id))
+            result["images"] = [image_view(row) for row in await authorized_images(
+                session, actor, detail.content.image_ids
+            )]
+            result["packet_name"] = None
+            return result
+
+    @staticmethod
+    async def _packet_names(session, actor, ids):
+        if not ids:
+            return {}
+        # Only original, currently authorized imports receive source metadata.
+        # Permanent collection copies are manual facts and cannot inherit rights.
+        return dict((await session.execute(
+            select(KnowledgeFactRecord.id, PacketVersionRecord.name)
+            .join(KnowledgeDissectionRecord,
+                  KnowledgeDissectionRecord.id.cast(String) ==
+                  KnowledgeFactRecord.provenance["request_id"].as_string())
+            .join(PacketVersionRecord,
+                  PacketVersionRecord.id.cast(String) == KnowledgeDissectionRecord.packet_revision)
+            .join(LogicalPacketRecord, LogicalPacketRecord.id == PacketVersionRecord.packet_id)
+            .where(KnowledgeFactRecord.id.in_(ids), KnowledgeFactRecord.owner_id == actor,
+                   KnowledgeDissectionRecord.owner_id == actor,
+                   TrainingPacketService._readable(actor))
+        )).all())
 
     def _detail(self, detail, snapshot=None):
         # Packet metadata is never a consequence of sharing the collection.
@@ -254,7 +307,10 @@ class KnowledgeApplication:
             "owner_id": detail.owner_id,
             "title": detail.content.title,
             "description": detail.content.description,
+            "author": detail.content.author,
             "links": [asdict(link) for link in detail.content.links],
+            "images": [],
+            "packet_name": None,
             "tags": [
                 {"id": tag.tag_id, "name": tag.name, "colour": tag.colour} for tag in detail.tags
             ],
@@ -319,7 +375,7 @@ class KnowledgeApplication:
             "active": row.deactivated_at is None,
         }
 
-    async def _import_link(self, session, actor, token):
+    async def _import_link(self, session, actor, token, creation_key=None):
         if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is None:
             raise ValueError("Invalid sharing token")
         row = await session.scalar(select(KnowledgeShareLinkRecord).where(
@@ -336,18 +392,15 @@ class KnowledgeApplication:
         await session.refresh(row, with_for_update=True)
         if row.deactivated_at is not None:
             raise LookupError("Sharing link is unavailable")
-        total = await session.scalar(select(func.count()).select_from(KnowledgeFactRecord).where(
-            KnowledgeFactRecord.owner_id == row.owner_id, KnowledgeFactRecord.deleted_at.is_(None)
-        ))
-        copied = await self.service(session).grant_collection_access(row.owner_id, actor)
-        return {"owner_id": row.owner_id, "recipient_id": actor,
-                "imported_count": copied.copied_count, "skipped_count": total - copied.copied_count}
+        return await self.reviews.stage_collection(session, row.owner_id, actor, creation_key)
 
     async def mutate(self, actor, command, values):
         async with self.database.transaction() as session:
             if command == "import":
                 await require_trainee(session, actor)
-                return await self._import_link(session, actor, values.get("token"))
+                return await self._import_link(
+                    session, actor, values.get("token"), values.get("creation_key")
+                )
             if command == "grant":
                 await require_trainee(session, actor)
                 recipient = values["recipient"]
@@ -361,8 +414,12 @@ class KnowledgeApplication:
                     raise LookupError("Recipient not found")
                 for owner_id in sorted({actor, target.id}):
                     await require_trainee(session, owner_id, lock=True)
-                return await self.service(session).grant_collection_access(actor, target.id)
-            await require_trainee(session, actor, lock=True)
+                return await self.reviews.stage_collection(
+                    session, actor, target.id, values.get("creation_key")
+                )
+            player = await require_trainee(session, actor, lock=True)
+            if command.startswith("tag_"):
+                await seed_tags(session, actor)
             service = self.service(session)
             if command == "link_create":
                 key = values.get("creation_key")
@@ -394,13 +451,48 @@ class KnowledgeApplication:
             if command in ("create", "update"):
                 fields = {
                     key: values[key]
-                    for key in ("title", "description", "tag_names", "expected_version")
+                    for key in (
+                        "title", "description", "tag_names", "expected_version",
+                        "image_ids", "author"
+                    )
                     if values.get(key) is not None
                 }
+                if values.get("image_ids") is not None:
+                    await authorized_images(session, actor, values["image_ids"])
                 if values.get("links") is not None:
-                    fields["links"] = tuple(SourceLink(**link) for link in values["links"])
+                    links = tuple(values["links"])
+                    if command == "update":
+                        # Editor round-trips carry no origins; preserve the trusted
+                        # dissection attribution of unchanged URLs so an unchanged
+                        # save keeps fingerprints, versions and statistics stable.
+                        current = (
+                            await service.store.get_fact(UUID(str(values["fact_id"])))
+                            if values.get("fact_id") is not None
+                            else None
+                        )
+                        origins = {
+                            link.url: link.origin
+                            for link in (
+                                current.content.links
+                                if current is not None and current.deleted_at is None
+                                else ()
+                            )
+                        }
+                        links = tuple(
+                            SourceLink(
+                                link["url"],
+                                link.get("title", ""),
+                                link.get("position", 0),
+                                origin=origins.get(link["url"], "manual"),
+                            )
+                            for link in links
+                        )
+                    else:
+                        links = tuple(SourceLink(**link) for link in links)
+                    fields["links"] = links
                 if command == "create":
                     fields.pop("expected_version", None)
+                    fields.setdefault("author", player.public_nickname or "")
                     detail = await service.create_fact(actor, **fields)
                 else:
                     if values.get("fact_id") is None or "expected_version" not in fields:
@@ -414,25 +506,18 @@ class KnowledgeApplication:
                 await self._schedule_statistics(
                     session, actor, detail.fact_id, detail.content_version
                 )
-                return self._detail(detail)
+                result = self._detail(detail)
+                result["images"] = [image_view(row) for row in await authorized_images(
+                    session, actor, detail.content.image_ids
+                )]
+                result["packet_name"] = None
+                return result
             if command == "delete":
                 await service.delete_fact(
                     actor,
                     values["fact_id"],
                     confirm_dissection_origin=values["confirm_dissection_origin"],
                 )
-            elif command == "merge":
-                detail = await service.merge_facts(
-                    actor,
-                    values["source_fact_id"],
-                    values["target_fact_id"],
-                    expected_target_version=values["expected_target_version"],
-                    confirm_source_delete=values["confirm_source_delete"],
-                )
-                await self._schedule_statistics(
-                    session, actor, detail.fact_id, detail.content_version
-                )
-                return self._detail(detail)
             elif command == "revoke":
                 return await service.revoke_collection_access(actor, values["grant_id"])
             elif command == "tag_create":
@@ -448,6 +533,14 @@ class KnowledgeApplication:
             else:
                 raise ValueError("Unknown knowledge command")
             return {"updated": True}
+
+    async def tags(self, actor):
+        async with self.database.transaction() as session:
+            await require_trainee(session, actor, lock=True)
+            await seed_tags(session, actor)
+            tags = await self.service(session).list_tags(actor)
+            return {"items": [{**asdict(tag), "label": TAG_LABELS.get(tag.name, tag.name)}
+                              for tag in tags]}
 
     async def _schedule_statistics(self, session, owner, fact_id, version):
         await DurableJobQueue.schedule_in_session(
@@ -479,16 +572,28 @@ class KnowledgeApplication:
         comment="",
         confirm_exposure=False,
         token_target_chars=18,
+        theme_revision_ids=None,
+        tag_ids=None,
         idempotency_key,
     ):
         async with self.database.transaction() as session:
             source = await self.packets.disclose(
-                session, actor, version_id, confirm=confirm_exposure
+                session, actor, version_id, confirm=confirm_exposure,
+                theme_revision_ids=theme_revision_ids if kind == "dissection" else None,
             )
+            selected_tag_ids = set(tag_ids or [])
+            tags = list(await session.scalars(select(KnowledgeTagRecord).where(
+                KnowledgeTagRecord.id.in_(selected_tag_ids), KnowledgeTagRecord.owner_id == actor
+            )))
+            if {tag.id for tag in tags} != selected_tag_ids:
+                raise ValueError("Select only your own available tags")
+            tag_names = sorted(tag.name for tag in tags)
+            selected_themes = sorted({str(q.theme_revision_id) for q in source.questions})
             questions = tuple(
                 QuestionText(
                     question.revision_id,
                     dissection_text(question) if kind == "dissection" else question.text,
+                    reference_urls=source_reference_urls(question),
                 )
                 for question in source.questions
             )
@@ -510,22 +615,29 @@ class KnowledgeApplication:
                 version.language if version.language in ("en", "ru") else player.preferred_locale
             )
             if kind == "dissection":
-                view = await self.service(session).request_dissection(
-                    actor,
-                    packet_id=source.packet_id,
-                    packet_revision=str(version_id),
-                    instructions=instructions,
-                    comment=comment,
-                )
-                row = await session.get(KnowledgeDissectionRecord, view.request_id)
-                if row.analysis_request_id:
-                    await self._apply_ready(session, row)
-                    if row.status != "failed" or row.application is not None:
-                        return {
-                            "request_id": row.analysis_request_id,
-                            "dissection_id": row.id,
-                            "status": row.status,
-                        }
+                identity = hashlib.sha256(json.dumps(
+                    [instructions, comment, selected_themes, tag_names, idempotency_key],
+                    ensure_ascii=False,
+                ).encode()).hexdigest()[:16]
+                row = await session.scalar(select(KnowledgeDissectionRecord).where(
+                    KnowledgeDissectionRecord.owner_id == actor,
+                    KnowledgeDissectionRecord.packet_revision == str(version_id),
+                    KnowledgeDissectionRecord.instruction_digest == identity,
+                ))
+                if row is None:
+                    row = KnowledgeDissectionRecord(
+                        id=uuid4(), owner_id=actor, packet_id=source.packet_id,
+                        packet_revision=str(version_id), instructions=instructions, comment=comment,
+                        instruction_digest=identity, base=not instructions and not comment,
+                        status="pending", theme_revision_ids=selected_themes,
+                    )
+                    session.add(row)
+                    await session.flush()
+                    session.add(KnowledgeImportRecord(
+                        id=uuid4(), owner_id=actor, creator_id=actor, type="dissection",
+                        status="working", dissection_id=row.id, candidates=[],
+                    ))
+                    await session.flush()
                 typed = DissectionSource(
                     version_id, tuple(q.revision_id for q in source.questions), language=language
                 )
@@ -554,14 +666,18 @@ class KnowledgeApplication:
                 idempotency_key=request_id,
                 private=source.scope == "training",
                 content_fingerprint=source.fingerprint,
-                units=len({question.theme_revision_id for question in source.questions}),
+                units=len(selected_themes),
+                source_context={"tag_names": tag_names, "theme_revision_ids": selected_themes}
+                if kind == "dissection" else None,
             )
             if row is not None:
-                row.status = "pending"
                 row.analysis_request_id = result.request_id
-                row.status = "pending"
                 await self._apply_ready(session, row)
-            return {**asdict(result), "dissection_id": row.id if row else None}
+            review_id = await session.scalar(select(KnowledgeImportRecord.id).where(
+                KnowledgeImportRecord.dissection_id == row.id
+            )) if row else None
+            return {**asdict(result), "dissection_id": row.id if row else None,
+                    "import_id": review_id}
 
     async def dissections(self, actor):
         async with self.database.transaction() as session:
@@ -574,23 +690,26 @@ class KnowledgeApplication:
                     .limit(100)
                 )
             )
+            pending_ids = {
+                row.analysis_request_id for row in rows
+                if row.status == "pending" and row.analysis_request_id
+            }
+            statuses = dict((await session.execute(
+                select(
+                    TrainingAnalysisRequestRecord.request_id, TrainingAnalysisRequestRecord.status,
+                ).where(TrainingAnalysisRequestRecord.request_id.in_(pending_ids))
+            )).all()) if pending_ids else {}
             items = []
             for row in rows:
                 # A job list reveals no private packet name or question content.
                 view = await self.service(session).dissection_request(actor, row.id)
-                analysis = (
-                    await self.analysis._request_row(session, row.analysis_request_id)
-                    if row.analysis_request_id
-                    else None
-                )
                 items.append(
                     {
                         "id": row.id,
                         "packet_id": row.packet_revision,
                         "base": row.base,
-                        "status": analysis.status
-                        if analysis and row.status == "pending"
-                        else row.status,
+                        "status": statuses.get(row.analysis_request_id, row.status)
+                        if row.status == "pending" else row.status,
                         "request_id": row.analysis_request_id,
                         "applied_count": len(view.applied_fact_ids),
                         "applied_fact_ids": view.applied_fact_ids,
@@ -613,6 +732,10 @@ class KnowledgeApplication:
                 await session.refresh(request)
         if request.status in ("failed", "cancelled"):
             row.status = "failed"
+            await session.execute(update(KnowledgeImportRecord).where(
+                KnowledgeImportRecord.dissection_id == row.id,
+                KnowledgeImportRecord.status == "working",
+            ).values(status="failed"))
             return
         if request.status not in ("succeeded", "partially_succeeded"):
             return
@@ -629,20 +752,26 @@ class KnowledgeApplication:
                 select(QuestionRevisionRecord).where(QuestionRevisionRecord.id.in_(ids))
             )
         }
+        _, authors = await source_authors(
+            session, UUID(row.packet_revision), row.theme_revision_ids or [], ids
+        )
         candidates = []
         for value in artifact.payload["candidates"]:
             revision_id = UUID(value["question_revision_id"])
             if revision_id not in revisions:
                 raise ValueError("Unpinned question candidate")
-            references = set(
-                re.findall(
-                    r"https?://[^\s<>\[\]\"']+",
-                    revisions[revision_id].text + " " + revisions[revision_id].source,
-                )
-            )
+            references = set(source_reference_urls(revisions[revision_id]))
             candidates.append(
                 {
+                    "id": value["candidate_id"],
+                    "tag_names": [tag for tag in value.get("tags", [])
+                                  if tag in request.source.get("tag_names", [])],
                     "content": {
+                        # Joined source attribution must satisfy FactContent author
+                        # bounds before the charged result is admitted as pending.
+                        "author": " ".join(
+                            authors.get(revision_id, "").split()
+                        )[:FACT_AUTHOR_MAX],
                         "title": value["title"],
                         "description": value["description"],
                         "links": [
@@ -656,8 +785,21 @@ class KnowledgeApplication:
                     "question_revision": str(revision_id),
                 }
             )
-        view = await self.service(session).apply_dissection_result(row.owner_id, row.id, candidates)
-        if request.status == "succeeded" and view.status == "succeeded":
+        review = await session.scalar(select(KnowledgeImportRecord).where(
+            KnowledgeImportRecord.dissection_id == row.id
+        ).with_for_update())
+        if review is None:
+            review = KnowledgeImportRecord(id=uuid4(), owner_id=row.owner_id,
+                                           creator_id=row.owner_id, type="dissection",
+                                           dissection_id=row.id, candidates=[])
+            session.add(review)
+        if review.status in (None, "working"):
+            review.candidates = candidates
+            review.status = "pending"
+        row.status = request.status
+        if request.status != "succeeded":
+            row.theme_revision_ids = None  # incomplete analysis cannot claim full selected coverage
+        if request.status == "succeeded":
             # Keep non-content coverage after the expiring request/cache is pruned.
             row.theme_revision_ids = sorted({str(value) for value in await session.scalars(
                 select(PacketQuestionRecord.theme_revision_id).where(
@@ -665,8 +807,6 @@ class KnowledgeApplication:
                     PacketQuestionRecord.question_revision_id.in_(ids),
                 )
             )})
-        for fact_id in view.applied_fact_ids:
-            await self._schedule_statistics(session, row.owner_id, fact_id, 1)
 
     async def reconcile(self):
         async with self.database.sessions() as session:
@@ -702,6 +842,10 @@ class KnowledgeApplication:
                                KnowledgeDissectionRecord.status == "pending")
                         .values(status="failed")
                     )
+                    await session.execute(update(KnowledgeImportRecord).where(
+                        KnowledgeImportRecord.dissection_id == candidate.id,
+                        KnowledgeImportRecord.status == "working",
+                    ).values(status="failed"))
 
     async def analysis_job(self, payload):
         from sitg_bot.services.training_ai import (
@@ -710,43 +854,11 @@ class KnowledgeApplication:
             ProviderTimeout,
         )
 
-        try:
+        with suppress(
+            AnalysisValidationError, ProviderOutcomeUncertain, ProviderTimeout,
+            ValueError, PermissionError, LookupError,
+        ):
             await AnalysisJobHandler(self.analysis)(payload)
-        except (
-            AnalysisValidationError,
-            ProviderOutcomeUncertain,
-            ProviderTimeout,
-            ValueError,
-            PermissionError,
-            LookupError,
-        ) as error:
-            async with self.database.transaction() as session:
-                artifact = await session.get(
-                    TrainingAnalysisArtifactRecord,
-                    UUID(payload["artifact_id"]),
-                    with_for_update={"key_share": True}, populate_existing=True,
-                )
-                if (
-                    artifact is not None and artifact.status == "running"
-                    and artifact.generation == int(payload.get("generation", 1))
-                ):
-                    await self.analysis._fail_artifact(
-                        session, artifact, str(error), datetime.now(UTC)
-                    )
-        except Exception:
-            # A retry resumes its checkpoint immediately after an ordinary worker failure.
-            async with self.database.transaction() as session:
-                artifact = await session.get(
-                    TrainingAnalysisArtifactRecord,
-                    UUID(payload["artifact_id"]),
-                    with_for_update={"key_share": True}, populate_existing=True,
-                )
-                if (
-                    artifact is not None and artifact.status == "running"
-                    and artifact.generation == int(payload.get("generation", 1))
-                ):
-                    artifact.lease_expires_at = datetime.now(UTC)
-            raise
         await self.reconcile()
 
     async def cleanup_retired(self):
@@ -811,6 +923,10 @@ class KnowledgeApplication:
                     )
                     for row in rows:
                         row.status = "failed"
+                        await session.execute(update(KnowledgeImportRecord).where(
+                            KnowledgeImportRecord.dissection_id == row.id,
+                            KnowledgeImportRecord.status == "working",
+                        ).values(status="failed"))
                 await outbox.acknowledge(event.event_id, event.lease_token)
             except Exception:
                 await outbox.reject(
@@ -892,8 +1008,13 @@ class KnowledgeApplication:
 
     async def reconcile_statistics(self):
         async with self.database.transaction() as session:
-            rows = list(
-                await session.execute(
+            cursor = None
+            order = (
+                KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
+                TrainingAnalysisRequestRecord.id,
+            )
+            while True:
+                statement = (
                     select(TrainingAnalysisRequestRecord, KnowledgeFactRecord)
                     .join(
                         KnowledgeFactRecord,
@@ -905,43 +1026,51 @@ class KnowledgeApplication:
                         TrainingAnalysisRequestRecord.status.in_(
                             ("succeeded", "failed", "cancelled")
                         ),
+                        TrainingAnalysisRequestRecord.owner_player_id
+                        == KnowledgeFactRecord.owner_id,
+                        TrainingAnalysisRequestRecord.source["content_version"].astext
+                        == KnowledgeFactRecord.content_version.cast(String),
                         KnowledgeFactRecord.statistic_status == "pending",
                         KnowledgeFactRecord.deleted_at.is_(None),
                     )
-                    .order_by(KnowledgeFactRecord.owner_id, KnowledgeFactRecord.id,
-                              TrainingAnalysisRequestRecord.id)
-                    .limit(100)
                 )
-            )
-            for request, fact in rows:
-                try:
-                    await require_trainee(session, fact.owner_id, lock=True)
-                except PermissionError:
-                    continue
-                await session.refresh(fact)
-                if (
-                    request.source.get("content_version") != fact.content_version
-                    or fact.statistic_status != "pending"
-                    or fact.deleted_at is not None
-                ):
-                    continue
-                artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
-                available = request.status == "succeeded" and artifact and artifact.payload
-                common = CommonKnowledgeEstimate(
-                    status="available" if available else "failed",
-                    value=artifact.payload["value"] if available else None,
-                    model=artifact.model if artifact else None,
-                    prompt_version=artifact.prompt_version if artifact else None,
-                    schema_version=artifact.schema_version if artifact else None,
-                    population=POPULATION,
-                    estimated_at=datetime.now(UTC) if available else None,
-                )
-                await self.service(session).record_statistics(
-                    fact.owner_id,
-                    fact.id,
-                    common=common,
-                    bingo=BingoScore(status="pending_calibration"),
-                )
+                if cursor is not None:
+                    statement = statement.where(tuple_(*order) > cursor)
+                rows = list(await session.execute(statement.order_by(*order).limit(100)))
+                for request, fact in rows:
+                    cursor = (fact.owner_id, fact.id, request.id)
+                    try:
+                        await require_trainee(session, fact.owner_id, lock=True)
+                    except PermissionError:
+                        continue
+                    await session.refresh(fact)
+                    if (
+                        request.source.get("content_version") != fact.content_version
+                        or fact.statistic_status != "pending"
+                        or fact.deleted_at is not None
+                    ):
+                        continue
+                    artifact = await session.get(
+                        TrainingAnalysisArtifactRecord, request.artifact_id,
+                    )
+                    available = request.status == "succeeded" and artifact and artifact.payload
+                    common = CommonKnowledgeEstimate(
+                        status="available" if available else "failed",
+                        value=artifact.payload["value"] if available else None,
+                        model=artifact.model if artifact else None,
+                        prompt_version=artifact.prompt_version if artifact else None,
+                        schema_version=artifact.schema_version if artifact else None,
+                        population=POPULATION,
+                        estimated_at=datetime.now(UTC) if available else None,
+                    )
+                    await self.service(session).record_statistics(
+                        fact.owner_id,
+                        fact.id,
+                        common=common,
+                        bingo=BingoScore(status="pending_calibration"),
+                    )
+                if len(rows) < 100:
+                    break
 
     async def prepared(self, session, player_id, source):
         rows = await session.execute(
@@ -966,7 +1095,8 @@ class KnowledgeApplication:
         if pair is None:
             return None
         artifact, request = pair
-        if artifact.schema_version != "1" or artifact.tokenizer_version != "announcement-v1":
+        if (artifact.schema_version not in ("1", "2")
+                or artifact.tokenizer_version != "announcement-v1"):
             return None
         by_id = {question.revision_id: question for question in source.questions}
         target = request.source["question_token_target_chars"]

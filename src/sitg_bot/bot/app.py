@@ -210,6 +210,8 @@ async def run_polling(settings: Settings) -> None:
             dependencies.backend.lobby_delivery = lobby_delivery
             handlers = {
                 "training.changed": training_delivery,
+                "telegram.training.cleanup": training_delivery.cleanup,
+                "training.lobby.changed": training_delivery.lobby,
                 "telegram.training.document": training_delivery.document,
                 "telegram.lobby.refresh": lobby_delivery,
                 "telegram.library.document": library_document_delivery_handler(bot),

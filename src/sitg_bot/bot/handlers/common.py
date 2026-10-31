@@ -51,6 +51,14 @@ async def send_menu_with_notification_alert(
                 MessageModel(localization.text("notifications.unseen_alert", locale)),
             )
     await send_message_model(message, menu_message(navigation, localization, locale))
+    delivery = getattr(backend, "training_delivery", None)
+    if delivery is not None and navigation.context == "training_lobby":
+        await delivery.lobby({"owner_id": str(navigation.account.player_id)})
+    elif delivery is not None and navigation.context == "training":
+        await delivery({
+            "owner_id": str(navigation.account.player_id),
+            "session_id": str(navigation.active_training_id), "force": True,
+        })
 
 
 async def resume_registration(

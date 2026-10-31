@@ -595,6 +595,11 @@ describe("MiniAppShell", () => {
     const demos = root.querySelectorAll(".setting-demo");
     expect(demos).toHaveLength(1);
     expect(demos[0]!.textContent).toContain("Message flow preview");
+    // The replay control is labelled with a repeat-arrow icon, not a broken glyph.
+    const replay = demos[0]!.querySelector<HTMLButtonElement>(".setting-demo-replay")!;
+    expect(replay.textContent).not.toContain("⏵");
+    expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+    expect(replay.getAttribute("aria-label")).toBe("Replay");
     const input = root.querySelector<HTMLInputElement>('input[name="setting:ready_delay"]')!;
     input.value = "25";
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2057,5 +2062,61 @@ describe("MiniAppShell", () => {
     expect(root.textContent).not.toContain("Join as player");
     expect(root.textContent).not.toContain("Join as observer");
     expect(root.textContent).toContain("Watch as observer");
+  });
+
+  it("routes training history cards to paginated run details through the shell", async () => {
+    const card = {
+      id: "11111111-1111-1111-1111-111111111111",
+      created_at: "2026-10-01T12:00:00Z",
+      ended_at: "2026-10-01T12:05:00Z",
+      status: "completed",
+      packets: [{ id: "version", packet_id: "packet", name: "Training packet" }],
+      score: 30,
+      question_total: 5,
+      settings: { token_delay: 0.6 },
+      modifiers: ["reversed"],
+    };
+    const firstRow = {
+      position: 0, value: 10, theme: "Theme", text: "Question text", answer: "Paris",
+      accepted_answers: [], rejected_answers: [], commentary: "", source: "",
+      protected: null, buzz: null,
+      stats: { presentations: 1, buzzes: 0, attempts: 1, answered: 1, correct: 1, incorrect: 0, buzz_timings: null },
+      own: { answer: "Paris", correct: true, outcome: "answered", token_cursor: 2, created_at: "2026-10-01T12:01:00Z" },
+    };
+    const secondRow = { ...firstRow, position: 1, own: null };
+    const resolve = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).endsWith("/session")) {
+        return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      }
+      if (String(url).includes("/routes/resolve?path=%2Ftraining%2Fhistory%2F11111111-1111-1111-1111-111111111111")) {
+        return response({ locale: "en", authorization: { allowed: true },
+          resource: { ...card, kind: "training_history_detail", state: "ready",
+            protected_source: false, rows: [firstRow], next_cursor: "page2" } });
+      }
+      if (String(url).includes("/routes/resolve")) {
+        return response({ locale: "en", authorization: { allowed: true },
+          resource: { kind: "training_history", state: "ready", items: [card], next_cursor: null } });
+      }
+      if (String(url).includes("cursor=page2")) {
+        return response({ ...card, kind: "training_history_detail", state: "ready",
+          protected_source: false, rows: [secondRow], next_cursor: null });
+      }
+      return response({});
+    });
+    window.history.replaceState({}, "", "/training/history");
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", resolve), new Router(), new FakePlatform(), false);
+    shell.start();
+    await vi.waitFor(() => expect(root.textContent).toContain("Training packet"));
+    expect(root.textContent).toContain("More info");
+    root.querySelector<HTMLButtonElement>("button.training-history-more")!.click();
+    await vi.waitFor(() => expect(root.textContent).toContain("Question text"));
+    expect(root.textContent).toContain("Timings were not recorded for this run.");
+    root.querySelector<HTMLButtonElement>(".training-history-pagination button")!.click();
+    await vi.waitFor(() => {
+      expect(root.querySelectorAll("article.training-history-question")).toHaveLength(2);
+    });
+    expect(resolve.mock.calls.filter(([url]) => String(url).includes("cursor=page2"))).toHaveLength(1);
   });
 });

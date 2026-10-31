@@ -319,11 +319,14 @@ class TelegramNavigationService:
         player = await session.get(PlayerRecord, account.player_id)
         if active_training_id is not None:
             active_mode, context = "training", "training"
-        elif active_mode == "training" and player.training_lobby is not None:
-            context = "training_lobby"
-        elif active_game is not None and active_game.active:
+        elif (
+            active_game is not None and active_game.active
+            and (active_mode != "training" or active_game.status in {"active", "lobby"})
+        ):
             active_mode = "player"
             context = "game"
+        elif active_mode == "training" and player.training_lobby is not None:
+            context = "training_lobby"
         elif (
             active_mode == "player"
             and active_chat is not None
@@ -661,7 +664,9 @@ class TelegramNavigationService:
                 if selected_player is not None:
                     actions.extend(item.key for item in selected_player.capability_actions)
         elif active_mode == "training":
-            actions.extend(("training.train", "training.knowledge", "training.upload"))
+            actions.extend(
+                ("training.train", "training.history", "training.knowledge", "training.upload")
+            )
         elif active_mode == "manager":
             if context == "menu":
                 actions.append("notifications")

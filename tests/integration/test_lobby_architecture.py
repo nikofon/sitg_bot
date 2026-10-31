@@ -1,4 +1,3 @@
-import os
 import secrets
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -8,8 +7,6 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import func, select
 
 from sitg_bot.domain.game_settings import GameSettings
@@ -56,23 +53,9 @@ from sitg_bot.storage.models import (
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture(scope="module")
-def database_url() -> str:
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is not configured")
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    previous_url = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = url
-    try:
-        command.upgrade(config, "head")
-    finally:
-        if previous_url is None:
-            os.environ.pop("DATABASE_URL")
-        else:
-            os.environ["DATABASE_URL"] = previous_url
-    return url
+@pytest.fixture
+def database_url(training_database) -> str:
+    return training_database
 
 
 @dataclass(frozen=True)
@@ -525,7 +508,9 @@ async def test_packet_upload_defaults_namesake_authors_to_existing_identity(
         session.add(existing)
         await session.flush()
     override = packet()
-    override = replace(override, themes=(replace(override.themes[0], author=f"leo tolstoy {suffix}"),))
+    override = replace(
+        override, themes=(replace(override.themes[0], author=f"leo tolstoy {suffix}"),),
+    )
     override_id = await packets.create_draft(
         override,
         source_filename="namesake-override.json",
@@ -2324,7 +2309,9 @@ async def test_owner_can_kick_lobby_members(database_url: str, role: str, contex
         if context == "manager":
             await navigation.set_mode(guest, "manager", expected_version=nav.navigation_version)
         elif context == "tournament":
-            await navigation.set_context(guest, "tournament", expected_version=nav.navigation_version)
+            await navigation.set_context(
+                guest, "tournament", expected_version=nav.navigation_version,
+            )
         for actor in (guest, outsider):
             with pytest.raises(PermissionError):
                 await service.kick(lobby.id, actor, target, expected_version=lobby.version)

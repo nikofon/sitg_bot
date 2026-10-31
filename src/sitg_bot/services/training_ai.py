@@ -3,12 +3,13 @@
 Agent C module (see `docs/training-mode-plan.md`). It defines the structured
 operations shared by dissection, Best buzz and Common knowledge analyses, their
 validation rules, and a scripted provider used by tests and recorded fixtures.
-The concrete provider/model choice is a pending Stage 0 decision; nothing in
-this module contacts a network by itself, and packet content or instructions
-are always data, never tools or authorization.
+Production provider configuration belongs to training_provider.py and
+training_knowledge.py; nothing in this module contacts a network by itself.
+Packet content or instructions are always data, never tools or authorization.
 """
 
 import asyncio
+import re
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextvars import ContextVar
@@ -18,6 +19,8 @@ from hashlib import sha256
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
+
+from sitg_bot.domain.knowledge import SOURCE_URL_MAX
 
 ANALYSIS_DISSECTION = "dissection"
 ANALYSIS_BEST_BUZZ = "best_buzz"
@@ -69,8 +72,8 @@ class ProviderSettings:
     max_output_facts: int = 200
     max_chunk_characters: int = 12_000
     max_concurrent_requests: int = 2
-    prompt_version: str = "1"
-    schema_version: str = "1"
+    prompt_version: str = "2"
+    schema_version: str = "2"
     tokenizer_version: str = "announcement-v1"
     api_key: str | None = field(default=None, repr=False)
 
@@ -111,7 +114,7 @@ def text_fingerprint(*parts: str) -> str:
 
 
 def instruction_digest(instructions: str) -> str:
-    """Digest normalized instruction text; empty instructions are shared."""
+    """Digest verbatim instruction text; empty instructions are shared."""
     return text_fingerprint(instructions)
 
 
@@ -124,6 +127,16 @@ class QuestionText:
 
     question_revision_id: UUID
     text: str
+    reference_urls: tuple[str, ...] = ()
+
+
+def source_reference_urls(question) -> tuple[str, ...]:
+    return tuple(sorted({
+        url
+        for value in (question.text, question.answer, question.commentary, question.source)
+        for url in re.findall(r"https?://[^\s<>\[\]\"']+", value)
+        if len(url) <= SOURCE_URL_MAX
+    }))
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +198,7 @@ class FactCandidate:
     description: str
     links: tuple[str, ...]
     question_revision_id: UUID
+    tags: tuple[str, ...] = ()
 
 
 def fact_candidate_id(
@@ -217,6 +231,21 @@ class ExtractionRequest:
     chunks: tuple[SourceChunk, ...]
     instructions: str
     language: str
+    tag_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CachedFactsRequest:
+    candidates: tuple[FactCandidate, ...]
+    instructions: str
+    language: str
+    tag_names: tuple[str, ...] = ()
+    new_tag_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CachedFactsDecision:
+    requires_source: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +394,12 @@ class AnalysisProvider(Protocol):
 
     async def extract_facts(self, request: ExtractionRequest) -> tuple[FactCandidate, ...]: ...
 
+    async def decide_cached_facts(self, request: CachedFactsRequest) -> CachedFactsDecision: ...
+
+    async def transform_cached_facts(
+        self, request: CachedFactsRequest
+    ) -> tuple[FactCandidate, ...]: ...
+
     async def best_buzz_boundaries(self, request: BuzzRequest) -> tuple[BuzzBoundary, ...]: ...
 
     async def estimate_common_knowledge(
@@ -373,12 +408,17 @@ class AnalysisProvider(Protocol):
 
 
 def validate_http_url(url: str) -> str:
-    """Accept only absolute http(s) URLs as authoritative references."""
-    parsed = urlsplit(url.strip())
+    """Accept only absolute, bounded http(s) URLs as references."""
+    value = url.strip()
+    parsed = urlsplit(value)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise AnalysisValidationError(
             f"Reference link is not an absolute http(s) URL: {url!r}"
         )
+    if len(value) > SOURCE_URL_MAX or any(
+        character.isspace() for character in value
+    ):
+        raise AnalysisValidationError("Reference link exceeds the bounded URL length")
     return parsed.geturl()
 
 
@@ -387,6 +427,7 @@ def validate_fact_candidates(
     *,
     allowed_question_revision_ids: Collection[UUID],
     max_output_facts: int,
+    allowed_tag_names: Collection[str] | None = None,
 ) -> tuple[FactCandidate, ...]:
     """Validate provider fact candidates against provenance and bounds."""
     if len(candidates) > max_output_facts:
@@ -413,6 +454,11 @@ def validate_fact_candidates(
         links = tuple(validate_http_url(link) for link in candidate.links)
         if len(set(links)) != len(links):
             raise AnalysisValidationError("Fact candidate repeats a reference link")
+        tags = tuple(candidate.tags)
+        if (len(tags) > 32 or len(set(tags)) != len(tags)
+                or any(not isinstance(tag, str) or not 1 <= len(tag) <= 64 for tag in tags)
+                or (allowed_tag_names is not None and not set(tags) <= set(allowed_tag_names))):
+            raise AnalysisValidationError("Fact candidate contains unknown or invalid tags")
         expected = fact_candidate_id(candidate.question_revision_id, title, description, links)
         if candidate.candidate_id != expected:
             raise AnalysisValidationError(
@@ -422,7 +468,7 @@ def validate_fact_candidates(
             raise AnalysisValidationError("Duplicate fact candidate content")
         seen.add(expected)
         validated.append(
-            FactCandidate(expected, title, description, links, candidate.question_revision_id)
+            FactCandidate(expected, title, description, links, candidate.question_revision_id, tags)
         )
     return tuple(validated)
 
@@ -507,6 +553,10 @@ class FakeAnalysisProvider:
     def __init__(self, *, delay: float = 0.0) -> None:
         self.delay = delay
         self.extract_calls: list[ExtractionRequest] = []
+        self.decision_calls: list[CachedFactsRequest] = []
+        self.transform_calls: list[CachedFactsRequest] = []
+        self.cached_decision = CachedFactsDecision(False)
+        self.cached_response = None
         self.buzz_calls: list[BuzzRequest] = []
         self.knowledge_calls: list[CommonKnowledgeRequest] = []
         self.extract_failures: list[BaseException] = []
@@ -574,9 +624,33 @@ class FakeAnalysisProvider:
                             description,
                             links,
                             revision_id,
+                            request.tag_names,
                         )
                     )
             return tuple(candidates)
+        finally:
+            self._exit()
+
+    async def decide_cached_facts(self, request: CachedFactsRequest) -> CachedFactsDecision:
+        self.decision_calls.append(request)
+        self._enter()
+        try:
+            await self._settle()
+            return self.cached_decision
+        finally:
+            self._exit()
+
+    async def transform_cached_facts(
+        self, request: CachedFactsRequest
+    ) -> tuple[FactCandidate, ...]:
+        self.transform_calls.append(request)
+        self._enter()
+        try:
+            await self._settle()
+            if self.cached_response is not None:
+                return self.cached_response(request)
+            from dataclasses import replace
+            return tuple(replace(value, tags=request.tag_names) for value in request.candidates)
         finally:
             self._exit()
 

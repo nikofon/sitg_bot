@@ -466,7 +466,8 @@ async def test_custom_instructions_and_owners_isolate_artifacts(database):
     assert job_count == 3
 
     assert await stack.worker.run_once() == 3
-    assert len(stack.provider.extract_calls) == 3
+    assert len(stack.provider.extract_calls) == 1
+    assert len(stack.provider.decision_calls) == len(stack.provider.transform_calls) == 2
     for owner, key in ((owner_a, "c-a"), (owner_b, "c-b"), (owner_c, "c-c")):
         view = await stack.service.status(owner_player_id=owner, request_id=key)
         assert view.status == "succeeded"
@@ -709,7 +710,7 @@ async def test_analysis_jobs_are_isolated_from_gameplay_workers(database):
     assert await stack.jobs.claim(limit=10) == ()
 
 
-async def test_uncertain_outcomes_are_recorded_and_retried(database):
+async def test_uncertain_outcomes_are_recorded_refunded_and_explicitly_retried(database):
     owner = await create_player(database, 219, "uncertain")
     stack = await make_stack(database, [owner], lease_duration=timedelta(milliseconds=80))
     source = CommonKnowledgeSource("An uncertain fact about electricity.")
@@ -726,14 +727,81 @@ async def test_uncertain_outcomes_are_recorded_and_retried(database):
 
     artifact = await artifact_of(database, artifact_id)
     assert "upstream-1" in artifact.provider_request_ids
-    assert "upstream-1" in (artifact.last_error or "")
-
-    await asyncio.sleep(0.1)
-    await stack.service.execute_job(payload)
+    assert artifact.status == "failed" and artifact.lease_token is None
+    assert artifact.last_error == "gateway died mid-call"
     view = await stack.service.status(owner_player_id=owner, request_id="unc-1")
+    assert view.status == "failed"
+    assert (await stack.entitlements.capabilities(owner))["common_knowledge"].remaining == 10
+
+    await submit(stack.service, owner, source, "unc-2")
+    await stack.service.execute_job({**payload, "generation": 2})
+    view = await stack.service.status(owner_player_id=owner, request_id="unc-2")
     assert view.status == "succeeded"
-    result = await stack.service.result(owner_player_id=owner, request_id="unc-1")
+    result = await stack.service.result(owner_player_id=owner, request_id="unc-2")
     assert result["value"] == 50
+
+
+@pytest.mark.parametrize("replacement_status", ["cancelled", "pending", "running", "succeeded"])
+async def test_old_uncertain_error_cannot_write_cancelled_or_replacement_artifact(
+    database, monkeypatch, replacement_status,
+):
+    owner = await create_player(database, 229, "uncertain-generation")
+    stack = await make_stack(database, [owner])
+    source = CommonKnowledgeSource("Generation-fenced uncertainty")
+    await submit(stack.service, owner, source, "old-uncertain")
+    artifact_id = await artifact_id_of(database, "old-uncertain")
+    old_started, old_release = asyncio.Event(), asyncio.Event()
+    new_started, new_release = asyncio.Event(), asyncio.Event()
+    original = stack.provider.estimate_common_knowledge
+    calls = 0
+
+    async def estimate(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            old_started.set()
+            await old_release.wait()
+            raise ProviderOutcomeUncertain("Old connection lost", provider_request_id="stale-id")
+        if replacement_status == "running":
+            new_started.set()
+            await new_release.wait()
+        return await original(request)
+
+    monkeypatch.setattr(stack.provider, "estimate_common_knowledge", estimate)
+    old_task = asyncio.create_task(stack.service.execute_job({
+        "artifact_id": str(artifact_id), "generation": 1,
+    }))
+    new_task = None
+    try:
+        await asyncio.wait_for(old_started.wait(), timeout=5)
+        assert await stack.service.cancel(owner_player_id=owner, request_id="old-uncertain")
+        if replacement_status != "cancelled":
+            await submit(stack.service, owner, source, "new-uncertain")
+        if replacement_status in {"running", "succeeded"}:
+            new_task = asyncio.create_task(stack.service.execute_job({
+                "artifact_id": str(artifact_id), "generation": 2,
+            }))
+            if replacement_status == "running":
+                await asyncio.wait_for(new_started.wait(), timeout=5)
+            else:
+                await asyncio.wait_for(new_task, timeout=5)
+        before = await artifact_of(database, artifact_id)
+        assert before.status == replacement_status
+        old_release.set()
+        with pytest.raises(ProviderOutcomeUncertain):
+            await asyncio.wait_for(old_task, timeout=5)
+        after = await artifact_of(database, artifact_id)
+        assert (
+            after.status, after.generation, after.lease_token, after.provider_request_ids,
+            after.last_error, after.provider_usage,
+        ) == (
+            before.status, before.generation, before.lease_token, before.provider_request_ids,
+            before.last_error, before.provider_usage,
+        )
+    finally:
+        old_release.set()
+        new_release.set()
+        await asyncio.gather(old_task, *([new_task] if new_task else []), return_exceptions=True)
 
 
 async def test_common_knowledge_estimates_are_cached_by_content(database):

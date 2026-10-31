@@ -1,20 +1,14 @@
-"""Shared fixtures for agent C's training AI integration tests.
-
-Creates a disposable PostgreSQL database with the shared schema (via Alembic)
-including the integrated knowledge and analysis migrations.
-"""
+"""Reset only the leased workstream test DB; fixtures never create/drop DBs."""
 
 import asyncio
 import os
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
+from database_support import reset_database
 
 from sitg_bot.services.entitlements import EntitlementService
 from sitg_bot.storage.database import Database, normalize_database_url
@@ -22,31 +16,20 @@ from sitg_bot.storage.models import PlayerRecord
 
 
 @pytest.fixture
-def training_database(monkeypatch):
+def empty_database(monkeypatch):
     source_url = os.environ.get("TEST_DATABASE_URL")
     if not source_url:
         pytest.skip("TEST_DATABASE_URL is not configured")
     source_url = normalize_database_url(source_url)
-    name = f"sitg_training_{uuid4().hex}"
+    asyncio.run(reset_database())
+    monkeypatch.setenv("DATABASE_URL", source_url)
+    return source_url
 
-    async def manage(statement):
-        engine = create_async_engine(source_url, isolation_level="AUTOCOMMIT")
-        try:
-            async with engine.connect() as connection:
-                await connection.execute(text(statement))
-        finally:
-            await engine.dispose()
 
-    asyncio.run(manage(f'CREATE DATABASE "{name}"'))
-    url = make_url(source_url).set(database=name).render_as_string(hide_password=False)
-    monkeypatch.setenv("DATABASE_URL", url)
-    config = Config("alembic.ini")
-    try:
-        command.upgrade(config, "head")
-
-        yield url
-    finally:
-        asyncio.run(manage(f'DROP DATABASE "{name}"'))
+@pytest.fixture
+def training_database(empty_database):
+    command.upgrade(Config("alembic.ini"), "head")
+    return empty_database
 
 
 @pytest.fixture

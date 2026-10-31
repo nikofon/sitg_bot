@@ -30,11 +30,16 @@ const messages: Record<string, string> = {
   "knowledge.refresh": "Refresh",
   "knowledge.fact.tags": "Tags: {tags}",
   "knowledge.fact.links": "No source links.",
-  "knowledge.fact.origin.manual": "Manual",
-  "knowledge.fact.origin.dissection": "Dissection",
+  "knowledge.fact.origin.packet": "From packet: {name}",
   "knowledge.fact.read_only": "Read-only shared fact",
-  "knowledge.fact.version": "version {version}",
   "knowledge.fact.edit": "Edit",
+  "knowledge.fact.edit_label": "Edit fact: {title}",
+  "knowledge.fact.delete_label": "Delete fact: {title}",
+  "knowledge.images_field": "Images",
+  "knowledge.images.remove": "Remove image",
+  "knowledge.images.too_large": "Image is larger than 2 MiB.",
+  "knowledge.images.unsupported": "Only PNG, JPEG or WebP images are supported.",
+  "knowledge.images.too_many": "A fact can have at most 8 images.",
   "knowledge.statistic.none": "No statistics",
   "knowledge.statistic.pending": "Pending",
   "knowledge.statistic.fresh": "Current",
@@ -55,9 +60,8 @@ const messages: Record<string, string> = {
   "knowledge.links_field": "Sources (URL | title, one per line)",
   "knowledge.confirm_delete": "Delete this fact?",
   "knowledge.tag_filter": "Filter by tag",
-  "knowledge.tag_filter_all": "All tags",
-  "knowledge.merge": "Merge into another fact",
-  "knowledge.merge_target": "Target fact ID",
+  "knowledge.author_search": "Search by author",
+  "knowledge.fact.author": "Author: {author}",
   "knowledge.tag_rename": "Rename tag",
   "knowledge.tag_delete": "Delete tag",
   "knowledge.share": "Share library",
@@ -107,12 +111,16 @@ const messages: Record<string, string> = {
   "knowledge.packets.dissected_complete": "Dissected",
   "knowledge.packets.scope.training": "Training",
   "knowledge.packets.scope.tournament": "Tournament",
+  "knowledge.packets.owner_only": "Only my uploads",
   "knowledge.packets.jobs": "Dissection jobs",
   "knowledge.dissection.title": "Packet dissection",
   "knowledge.dissection.packet": "Packet",
   "knowledge.dissection.instructions": "Instructions (optional)",
   "knowledge.dissection.submit": "Start dissection",
   "knowledge.dissection.submit_short": "Dissect",
+  "knowledge.dissection.tab.general": "General",
+  "knowledge.dissection.tab.themes": "Themes",
+  "knowledge.dissection.selected_count": "Selected themes: {count}",
   "knowledge.dissection.confirm": "Confirm and start",
   "knowledge.dissection.empty": "No dissections yet.",
   "knowledge.dissection.comment": "Follow-up comment (optional)",
@@ -270,6 +278,11 @@ describe("knowledge tabs", () => {
     const packets = root.querySelector<HTMLElement>('[data-panel="packets"]')!;
     expect(library.hidden).toBe(false);
     expect(packets.hidden).toBe(true);
+    // The active tab is highlighted on the very first render, not only after a click.
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tab")];
+    const active = tabs.find((tab) => tab.getAttribute("aria-current") === "page");
+    expect(active?.textContent).toBe("Library");
+    expect(active?.className).toContain("primary-button");
     expect(getComputedStyle(library).display).toBe("grid");
     expect(getComputedStyle(packets).display).toBe("none");
     expect(root.querySelector(".knowledge-tabs")?.textContent).toContain("Library");
@@ -336,6 +349,72 @@ describe("knowledge tabs", () => {
 });
 
 describe("collapsed fact cards", () => {
+  it("cascades normal description color in saved facts and import reviews without restyling metadata", async () => {
+    const style = document.createElement("style");
+    style.textContent = stylesheet;
+    document.body.append(style);
+    const cascadedColor = (target: Element): string | undefined => {
+      const declarations = Array.from(style.sheet!.cssRules).flatMap((rule, order) => {
+        if (!(rule instanceof CSSStyleRule) || !rule.style.color) return [];
+        return rule.selectorText.split(",").filter((selector) => target.matches(selector))
+          .map((selector) => {
+            const tokens = selector.trim().split(/\s+|(?=[.#])/);
+            expect(tokens.every((token) => /^(?:[.#]?[\w-]+|\*)$/.test(token))).toBe(true);
+            return {
+              color: rule.style.color,
+              important: Number(rule.style.getPropertyPriority("color") === "important"),
+              ids: tokens.filter((token) => token.startsWith("#")).length,
+              classes: tokens.filter((token) => token.startsWith(".")).length,
+              types: tokens.filter((token) => /^[a-z]/i.test(token)).length,
+              order,
+            };
+          });
+      });
+      declarations.sort((a, b) => a.important - b.important || a.ids - b.ids
+        || a.classes - b.classes || a.types - b.types || a.order - b.order);
+      return declarations.at(-1)?.color;
+    };
+    const candidate = {
+      id: "candidate-1", title: "Incoming fact", description: "Incoming description",
+      author: "Ada", links: [], images: [], tag_names: [], selected: true,
+    };
+    const review = {
+      id: "import-1", type: "collection", author: "Ada", status: "pending",
+      fact_count: 1, packet_name: null, created_at: "2026-10-02T12:00:00Z", request_id: null,
+    };
+    const controller = new AbortController();
+    try {
+      const { root, button } = render(structuredClone(data), actions({
+        signal: controller.signal,
+        loadImports: vi.fn().mockResolvedValue({ items: [review], next_cursor: null }),
+        loadImportDetail: vi.fn().mockResolvedValue({ ...review, approved_count: 0,
+          sections: { new: [candidate], potential_duplicates: [], duplicates: [] } }),
+      }));
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+      await flush();
+      const saved = root.querySelector<HTMLElement>(".knowledge-fact-body p")!;
+      expect(saved.textContent).toBe("detail");
+      expect(cascadedColor(saved)).toBe("var(--tg-theme-text-color)");
+      expect(getComputedStyle(saved).whiteSpace).toBe("pre-line");
+      const metadata = document.createElement("p");
+      metadata.textContent = "Ordinary card metadata";
+      saved.closest(".resource-card")!.append(metadata);
+      expect(cascadedColor(metadata)).toBe("var(--tg-theme-hint-color)");
+
+      button("knowledge.tab.imports")!.click();
+      await flush();
+      button("knowledge.imports.review")!.click();
+      await flush();
+      document.querySelector<HTMLButtonElement>('[data-candidate-id="candidate-1"] .knowledge-theme-toggle')!.click();
+      const incoming = document.querySelector<HTMLElement>(".knowledge-candidate-body p")!;
+      expect(incoming.textContent).toBe(candidate.description);
+      expect(cascadedColor(incoming)).toBe("var(--tg-theme-text-color)");
+      expect(getComputedStyle(incoming).whiteSpace).toBe("pre-line");
+    } finally {
+      controller.abort();
+    }
+  });
+
   it("shows only fact names until a card is expanded", async () => {
     const detail: KnowledgeFactDetail = {
       id: "fact-1", title: "Battle of Austerlitz", description: "1805 battle",
@@ -381,6 +460,360 @@ describe("collapsed fact cards", () => {
     const fresh = root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!;
     expect(fresh.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("hides packet provenance but shows the fact author and attached images", async () => {
+    const detail: KnowledgeFactDetail = {
+      id: "fact-1", title: "Rosetta Stone", description: "d",
+      links: [], tags: [], origin: "dissection", packet_name: "Cup 2026",
+      author: "Ada",
+      content_version: 7, editable: false, statistics: { status: "none" },
+      images: [{ id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" }],
+    };
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(detail) });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    // The author is displayed; the source packet is kept internally but never shown.
+    expect(card.textContent).toContain("Author: Ada");
+    expect(card.textContent).not.toContain("From packet");
+    expect(card.textContent).not.toContain("Cup 2026");
+    expect(card.querySelector(".knowledge-fact-images img")?.getAttribute("src"))
+      .toBe("/api/miniapp/knowledge/images/image-1");
+    // No fact version, no manual/dissection origin words, no card-level tag tools.
+    expect(card.textContent).not.toContain("version");
+    expect(card.textContent).not.toContain("Manual");
+    expect(card.textContent).not.toContain("Dissection");
+    expect(card.querySelector(".knowledge-tag-tool")).toBeNull();
+    // Read-only facts never offer the pencil editor control.
+    expect(card.querySelector<HTMLElement>(".knowledge-fact-edit")!.hidden).toBe(true);
+  });
+});
+
+describe("fact card controls", () => {
+  const editableDetail: KnowledgeFactDetail = {
+    id: "fact-1", title: "Battle of Austerlitz", description: "d",
+    links: [], tags: [], origin: "manual", content_version: 1, editable: true,
+    statistics: { status: "none" },
+  };
+
+  it("aligns the edit and delete controls at the card's bottom right", async () => {
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+      remove: vi.fn().mockResolvedValue(undefined),
+    });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    const controls = card.querySelector<HTMLElement>(".knowledge-fact-actions")!;
+    expect(controls.hidden).toBe(false);
+    // The aligned control row sits at the very bottom of the card, after the body.
+    expect(card.lastElementChild).toBe(controls);
+    const body = card.querySelector<HTMLElement>(".knowledge-fact-body")!;
+    expect(body.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const edit = controls.querySelector<HTMLButtonElement>(".knowledge-fact-edit")!;
+    const del = controls.querySelector<HTMLButtonElement>(".knowledge-fact-delete")!;
+    // Keyboard-accessible real buttons with meaningful localized names and equal sizing.
+    expect(edit).toBeInstanceOf(HTMLButtonElement);
+    expect(del).toBeInstanceOf(HTMLButtonElement);
+    expect(edit.className).toContain("icon-button");
+    expect(del.className).toContain("icon-button");
+    expect(edit.getAttribute("aria-label")).toBe("Edit fact: Battle of Austerlitz");
+    expect(del.getAttribute("aria-label")).toBe("Delete fact: Battle of Austerlitz");
+    // The delete control is labelled with a drawn trash-bin icon, not text.
+    expect(del.querySelector("svg.icon-trash")).not.toBeNull();
+    expect(del.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("keeps the delete control hidden for read-only or unauthorized facts", async () => {
+    const detail: KnowledgeFactDetail = { ...editableDetail, editable: false };
+    const withRemove = actions({ loadFact: vi.fn().mockResolvedValue(detail), remove: vi.fn() });
+    const { root } = render(structuredClone(data), withRemove);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    expect(root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-actions')!.hidden).toBe(true);
+    // Editable facts without a remove action never offer the card delete control either.
+    const withoutRemove = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), save: vi.fn() });
+    const second = render(structuredClone(data), withoutRemove);
+    second.root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    expect(second.root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.hidden).toBe(true);
+    expect(second.root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.hidden).toBe(false);
+  });
+
+  it("cancelling the delete confirmation keeps the fact and the controls", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.click();
+    expect(confirm).toHaveBeenCalledWith("Delete this fact?");
+    expect(remove).not.toHaveBeenCalled();
+    expect(root.querySelector('[data-fact-id="fact-1"]')).not.toBeNull();
+    expect(root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.disabled).toBe(false);
+  });
+
+  it("deletes through the authorized remove contract and refreshes the list", async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const loadFacts = vi.fn().mockResolvedValue(facts);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove, loadFacts });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!.click();
+    await flush();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(editableDetail);
+    // One confirmation is asked; the removal refreshes the fact list.
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(loadFacts).toHaveBeenCalledTimes(1));
+  });
+
+  it("reports a failed deletion honestly and re-enables the controls", async () => {
+    const remove = vi.fn().mockRejectedValue(new Error("denied"));
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(editableDetail), remove });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const del = root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-delete')!;
+    del.click();
+    await flush();
+    expect(root.querySelector('[data-fact-id="fact-1"]')).not.toBeNull();
+    const failure = root.querySelector<HTMLElement>('[data-fact-id="fact-1"] .knowledge-fact-delete-error')!;
+    expect(failure.hidden).toBe(false);
+    expect(failure.textContent).toBe("Something went wrong.");
+    expect(del.disabled).toBe(false);
+    expect(root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.disabled).toBe(false);
+  });
+});
+
+describe("fact editor", () => {
+  const editableDetail: KnowledgeFactDetail = {
+    id: "fact-1", title: "Battle of Austerlitz", description: "d",
+    links: [], tags: [], origin: "manual", content_version: 1, editable: true,
+    statistics: { status: "none" },
+  };
+
+  it("exposes no merge controls or merge action", async () => {
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+    });
+    const { root } = render(structuredClone(data), actionList);
+    expect("merge" in actionList).toBe(false);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => /merge/i.test(item.textContent ?? ""))).toBe(false);
+    expect(dialog.querySelector("input[aria-label='Target fact ID']")).toBeNull();
+  });
+
+  it("moves tag rename and delete controls off the card into the editor", async () => {
+    const tag = vi.fn().mockResolvedValue(undefined);
+    const detail: KnowledgeFactDetail = {
+      ...editableDetail, tags: [{ id: "tag-1", name: "napoleonic wars", colour: "#1565c0" }],
+    };
+    let resolveTags!: (pool: KnowledgeTagPool) => void;
+    const save = vi.fn().mockResolvedValue(detail);
+    const actionList = actions({
+      loadFact: vi.fn().mockResolvedValue(detail), save, tag,
+      loadTags: vi.fn().mockResolvedValueOnce(tagPool)
+        .mockImplementationOnce(() => new Promise<KnowledgeTagPool>((resolve) => { resolveTags = resolve; })),
+    });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    const card = root.querySelector('[data-fact-id="fact-1"]')!;
+    // Tag chips render read-only on the card: no rename/delete buttons there.
+    expect(card.querySelectorAll(".knowledge-fact-tags button")).toHaveLength(0);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => item.getAttribute("aria-label") === "Rename tag: napoleonic wars")).toBe(true);
+    expect([...dialog.querySelectorAll("button")]
+      .some((item) => item.getAttribute("aria-label") === "Delete tag: napoleonic wars")).toBe(true);
+    vi.spyOn(window, "prompt").mockReturnValue(" Naval History ");
+    dialog.querySelector<HTMLButtonElement>("[aria-label='Rename tag: napoleonic wars']")!.click();
+    await flush();
+    expect(tag).toHaveBeenCalledWith("tag_rename", "tag-1", " Naval History ");
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    resolveTags({ items: [{ tag_id: "tag-1", name: "naval history", colour: "#1565c0" }] });
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_names: ["naval history"] }), detail,
+    ));
+  });
+
+  it("refreshes an open editor when the initial tag pool arrives", async () => {
+    let resolveTags!: (pool: KnowledgeTagPool) => void;
+    const { root } = render(structuredClone(data), actions({
+      loadTags: vi.fn(() => new Promise<KnowledgeTagPool>((resolve) => { resolveTags = resolve; })),
+      loadFact: vi.fn().mockResolvedValue(editableDetail),
+      save: vi.fn().mockResolvedValue(editableDetail),
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.querySelectorAll('.knowledge-tag-options input[type="checkbox"]')).toHaveLength(0);
+    resolveTags(tagPool);
+    await vi.waitFor(() => expect(dialog.querySelectorAll('.knowledge-tag-options input[type="checkbox"]'))
+      .toHaveLength(tagPool.items.length));
+  });
+
+  it.each(["tag_rename", "tag_delete"] as const)("refreshes canonical options after %s", async (command) => {
+    const detail: KnowledgeFactDetail = {
+      ...editableDetail, tags: [{ id: "tag-1", name: "napoleonic wars", colour: "#1565c0" }],
+    };
+    const save = vi.fn().mockResolvedValue(detail);
+    const pool: KnowledgeTagPool = { items: command === "tag_delete" ? [] : [
+      { tag_id: "tag-1", name: "naval history", colour: "#1565c0" },
+    ] };
+    const { root } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(detail), save,
+      tag: vi.fn().mockResolvedValue(undefined),
+      loadTags: vi.fn().mockResolvedValueOnce(tagPool).mockResolvedValue(pool),
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    vi.spyOn(window, "prompt").mockReturnValue(" Naval History ");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const label = command === "tag_rename" ? "Rename tag" : "Delete tag";
+    dialog.querySelector<HTMLButtonElement>(`[aria-label='${label}: napoleonic wars']`)!.click();
+    await vi.waitFor(() => expect(dialog.querySelector('input[value="napoleonic wars"]')).toBeNull());
+    if (command === "tag_rename") {
+      expect(dialog.querySelector<HTMLInputElement>('input[value="naval history"]')!.checked).toBe(true);
+    }
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_names: command === "tag_delete" ? [] : ["naval history"] }), detail,
+    ));
+  });
+
+  it("uploads, shows, removes and persists fact images through the editor", async () => {
+    const existing = { id: "image-1", url: "/api/miniapp/knowledge/images/image-1", content_type: "image/png" };
+    const uploaded = { id: "image-2", url: "/api/miniapp/knowledge/images/image-2", content_type: "image/jpeg" };
+    const detail: KnowledgeFactDetail = { ...editableDetail, images: [existing] };
+    const uploadImage = vi.fn().mockResolvedValue(uploaded);
+    const save = vi.fn().mockResolvedValue(detail);
+    const actionList = actions({ loadFact: vi.fn().mockResolvedValue(detail), uploadImage, save });
+    const { root } = render(structuredClone(data), actionList);
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    // The existing attachment is shown with its server URL and can be removed.
+    expect(dialog.querySelector(".knowledge-image img")?.getAttribute("src")).toBe(existing.url);
+
+    const picker = dialog.querySelector<HTMLInputElement>(".knowledge-images-field input[type='file']")!;
+    const pick = (file: File): void => {
+      Object.defineProperty(picker, "files", { value: [file], configurable: true });
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    pick(new File([new Uint8Array([1, 2, 3])], "pic.jpg", { type: "image/jpeg" }));
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledWith("AQID"));
+    await vi.waitFor(() => expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(2));
+
+    // Unsupported types are rejected locally without an upload request.
+    pick(new File([new Uint8Array([1])], "note.txt", { type: "text/plain" }));
+    await vi.waitFor(() => expect(dialog.querySelector("[role='alert']")?.textContent)
+      .toBe("Only PNG, JPEG or WebP images are supported."));
+    expect(uploadImage).toHaveBeenCalledTimes(1);
+
+    // Oversized files are rejected locally too.
+    pick(new File([new Uint8Array(2 * 1024 * 1024 + 1)], "big.png", { type: "image/png" }));
+    await vi.waitFor(() => expect(dialog.querySelector("[role='alert']")?.textContent)
+      .toBe("Image is larger than 2 MiB."));
+    expect(uploadImage).toHaveBeenCalledTimes(1);
+
+    // Removing a thumbnail drops its id from the saved set.
+    dialog.querySelector<HTMLButtonElement>("[aria-label='Remove image 1']")!.click();
+    expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(1);
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ image_ids: ["image-2"] }), detail);
+  });
+
+  it.each([true, false])("keeps the editor open after upload failure (editing=%s)", async (editing) => {
+    let rejectUpload!: (error: Error) => void;
+    const image = { id: "retry-image", url: "/images/retry", content_type: "image/png" };
+    const uploadImage = vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectUpload = reject; }))
+      .mockResolvedValue(image);
+    const save = vi.fn().mockResolvedValue(editableDetail);
+    const { root, button } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail), uploadImage, save,
+    }));
+    if (editing) {
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+      await flush();
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    } else button("Add fact")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    const picker = dialog.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const pick = (): void => {
+      Object.defineProperty(picker, "files", { configurable: true,
+        value: [new File(["png"], "image.png", { type: "image/png" })] });
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const submit = (): void => {
+      dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    };
+    pick();
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledOnce());
+    submit();
+    rejectUpload(new Error("Upload failed"));
+    await vi.waitFor(() => expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(save).not.toHaveBeenCalled();
+    expect(dialog.isConnected).toBe(true);
+    expect(dialog.querySelector('[role="alert"]')!.textContent).toBe("Something went wrong.");
+    submit();
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    pick();
+    await vi.waitFor(() => expect(dialog.querySelectorAll(".knowledge-image")).toHaveLength(1));
+    submit();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ image_ids: ["retry-image"] }), editing ? editableDetail : undefined,
+    ));
+  });
+
+  it("waits for an in-flight image upload before saving the complete attachment set", async () => {
+    const uploaded = { id: "image-new", url: "/api/miniapp/knowledge/images/image-new", content_type: "image/png" };
+    let resolveUpload!: (image: typeof uploaded) => void;
+    const uploadImage = vi.fn(() => new Promise<typeof uploaded>((resolve) => { resolveUpload = resolve; }));
+    const save = vi.fn().mockResolvedValue(editableDetail);
+    const { root } = render(structuredClone(data), actions({
+      loadFact: vi.fn().mockResolvedValue(editableDetail), uploadImage, save,
+    }));
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    await flush();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    const picker = dialog.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(picker, "files", { value: [new File(["png"], "image.png", { type: "image/png" })] });
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(uploadImage).toHaveBeenCalledOnce());
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(save).not.toHaveBeenCalled();
+    resolveUpload(uploaded);
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({ image_ids: ["image-new"] }), editableDetail,
+    ));
+  });
 });
 
 describe("tags with colours", () => {
@@ -422,11 +855,16 @@ describe("tags with colours", () => {
       loadFact: vi.fn().mockResolvedValue(detail),
       save: vi.fn().mockResolvedValue(detail),
     });
-    const { button } = render(structuredClone(data), actionList);
+    const { root } = render(structuredClone(data), actionList);
     await flush();
-    document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+    root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
     await flush();
-    button("Edit")!.click();
+    const pencil = document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!;
+    // Keyboard-accessible control: a real button with a meaningful localized label.
+    expect(pencil).toBeInstanceOf(HTMLButtonElement);
+    expect(pencil.getAttribute("aria-label")).toBe("Edit fact: Battle of Austerlitz");
+    expect(pencil.tabIndex).toBe(0);
+    pencil.click();
     const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
     const checkboxes = [...dialog.querySelectorAll<HTMLInputElement>(".knowledge-tag-option input")];
     expect(checkboxes.map((box) => box.value)).toEqual(["history", "napoleonic wars"]);
@@ -457,7 +895,7 @@ describe("tags with colours", () => {
     expect(root.querySelector(".knowledge-tag-select")).toBeNull(); // New tag button lives beside the selector in fact editing.
     root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
     await flush();
-    button("Edit")!.click();
+    document.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-edit')!.click();
     const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
     button("New tag", dialog)!.click();
     const tagDialog = [...document.querySelectorAll<HTMLDialogElement>(".knowledge-dialog")]
@@ -475,21 +913,43 @@ describe("tags with colours", () => {
     expect(art!.checked).toBe(true);
   });
 
-  it("filters the fact list by a tag chosen from the pool", async () => {
+  it("filters the fact list additively by several tags at once", async () => {
     const reloaded: KnowledgeFactsResource = { ...facts, items: [facts.items[0]!], total: 1, next_cursor: null };
-    const actionList = actions({ loadFacts: vi.fn().mockResolvedValue(reloaded) });
-    const { field } = render(structuredClone(data), actionList);
+    const loadFacts = vi.fn().mockResolvedValue(reloaded);
+    const actionList = actions({ loadFacts });
+    const { root } = render(structuredClone(data), actionList);
     await flush();
-    const select = field<HTMLSelectElement>("Filter by tag");
-    expect([...select.options].map((option) => option.value)).toEqual(
-      ["", "history", "napoleonic wars"],
-    );
-    select.value = "napoleonic wars";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const chips = [...root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["history", "napoleonic wars"]);
+
+    chips.find((chip) => chip.textContent === "napoleonic wars")!.click();
     await flush();
-    expect(actionList.loadFacts).toHaveBeenCalledWith({
-      search: "", order: "title_asc", tag: "napoleonic wars",
-    });
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["napoleonic wars"] });
+    expect(chips.find((chip) => chip.textContent === "napoleonic wars")!.getAttribute("aria-pressed"))
+      .toBe("true");
+
+    // A second tag joins the filter instead of replacing the first one.
+    chips.find((chip) => chip.textContent === "history")!.click();
+    await flush();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["napoleonic wars", "history"] });
+
+    // Deselecting one chip leaves the other selected.
+    chips.find((chip) => chip.textContent === "napoleonic wars")!.click();
+    await flush();
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", order: "title_asc", tags: ["history"] });
+  });
+
+  it("filters the fact list by author", async () => {
+    const loadFacts = vi.fn().mockResolvedValue(facts);
+    const { field } = render(structuredClone(data), actions({ loadFacts }));
+    await flush();
+    const author = field<HTMLInputElement>("Search by author");
+    author.value = "ada";
+    author.dispatchEvent(new Event("input"));
+    author.dispatchEvent(new Event("change"));
+    await flush();
+    // The author filter is submitted as its own literal substring filter.
+    expect(loadFacts).toHaveBeenLastCalledWith({ search: "", author: "ada", order: "title_asc" });
   });
 });
 
@@ -574,6 +1034,37 @@ describe("sharing links", () => {
     expect([...dialog.querySelectorAll("button")].some((item) => item.textContent === "Copy")).toBe(false);
   });
 
+  it.each([
+    { url: null, launch_available: false },
+    { url: null, launch_available: true },
+    { url: "https://t.me/sitg_bot?start=kl_token-link-1", launch_available: false },
+  ])("keeps active links deactivatable without a usable launch URL: %j", async (unavailable) => {
+    const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1", true, unavailable)] };
+    const afterDeactivate: KnowledgeSharing = { ...sharing, links: [link("link-1", false, unavailable)] };
+    const actionList = actions({
+      loadSharing: vi.fn().mockResolvedValueOnce(withLinks).mockResolvedValue(afterDeactivate),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { button } = render(structuredClone(data), actionList);
+    button("Share library")!.click();
+    await flush();
+    const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+    expect(dialog.textContent).toContain("Sharing links are unavailable right now");
+    expect(dialog.querySelector("[aria-label='Import link']")).toBeNull();
+    expect(button("Copy", dialog)).toBeUndefined();
+    button("Deactivate", dialog)!.click();
+    expect(confirm).toHaveBeenCalledWith("Deactivate this link?");
+    expect(actionList.deactivateLink).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    button("Deactivate", dialog)!.click();
+    await flush();
+    expect(actionList.deactivateLink).toHaveBeenCalledWith("link-1");
+    expect(actionList.loadSharing).toHaveBeenCalledTimes(2);
+    expect(dialog.textContent).toContain("Deactivated links");
+    expect(button("Deactivate", dialog)).toBeUndefined();
+    expect(button("Copy", dialog)).toBeUndefined();
+  });
+
   it("deactivated links never offer a copyable URL", async () => {
     const withLinks: KnowledgeSharing = { ...sharing, links: [link("link-1", false)] };
     const actionList = actions({ loadSharing: vi.fn().mockResolvedValue(withLinks) });
@@ -627,14 +1118,14 @@ describe("importing a shared library", () => {
       importLibrary: vi.fn().mockResolvedValue({ imported_count: 1, skipped_count: 0 }),
       loadTags: vi.fn().mockResolvedValueOnce({ items: [] }).mockResolvedValue(tagPool),
     });
-    const { root, button, field } = render(view, actionList);
+    const { root, button } = render(view, actionList);
     await flush();
     expect(root.textContent).toContain("0 facts");
     button("Import")!.click();
     await vi.waitFor(() => {
       expect(root.querySelector(".knowledge-total")?.textContent).toBe(`${facts.total} facts`);
       expect(root.querySelector(".knowledge-list")?.textContent).toContain(facts.items[0]!.title);
-      expect(field<HTMLSelectElement>("Filter by tag").options.length).toBe(tagPool.items.length + 1);
+      expect(root.querySelectorAll(".knowledge-tag-filter-chip").length).toBe(tagPool.items.length);
       expect(document.querySelector(".knowledge-dialog")?.textContent).toContain("Imported 1 facts");
     });
     expect(actionList.loadFacts).toHaveBeenCalledOnce();
@@ -729,27 +1220,75 @@ describe("packets tab", () => {
     }
   });
 
-  it("runs the two-step exposure confirmation from the Dissect dialog", async () => {
+  it("labels packet cards with the real tournament names, not a generic word", async () => {
+    const controller = new AbortController();
+    try {
+      const fromTournament = {
+        ...packet("packet-1", "Cup 2026"), scope: "tournament" as const,
+        tournaments: [{ id: "tournament-1", name: "Autumn Cup" }, { id: "tournament-2", name: "Spring Cup" }],
+      };
+      const loadPackets = vi.fn().mockResolvedValue({ items: [fromTournament], next_cursor: null });
+      const { root } = renderPackets(actions({ loadPackets }), controller);
+      await vi.advanceTimersByTimeAsync(0);
+      const badges = [...root.querySelectorAll(".knowledge-scope-badge")]
+        .map((badge) => badge.textContent);
+      expect(badges).toEqual(["Autumn Cup", "Spring Cup"]);
+      // A training-scope upload without tournaments keeps its meaningful scope label.
+      const training = { ...packet("packet-2", "Drills"), tournaments: [] };
+      loadPackets.mockResolvedValue({ items: [training], next_cursor: null });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(root.querySelectorAll(".knowledge-scope-badge")[0]?.textContent).toBe("Training");
+    } finally {
+      controller.abort();
+    }
+  });
+
+  it("runs the two-step exposure confirmation from the Dissect composer", async () => {
     const controller = new AbortController();
     try {
       const dissect = vi.fn()
         .mockResolvedValueOnce({ confirmation_required: true })
         .mockResolvedValueOnce({});
+      const loadThemes = vi.fn().mockResolvedValue({
+        version_id: "packet-1", packet_name: "Cup 2026",
+        themes: [{ theme_revision_id: "theme-1", name: "Naval history" }],
+        quota: { enabled: true, remaining: 5, reset_at: null },
+      });
       const loadPackets = vi.fn()
         .mockResolvedValue({ items: [packet("packet-1", "Cup 2026")], next_cursor: null });
-      const { field, button } = renderPackets(actions({ dissect, loadPackets }), controller);
+      const { field, button } = renderPackets(actions({ dissect, loadPackets, loadThemes }), controller);
       await vi.advanceTimersByTimeAsync(0);
       button("Dissect")!.click();
+      await vi.advanceTimersByTimeAsync(0);
       const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
       expect(dialog.textContent).toContain("Cup 2026");
+      // General/Themes tab navigation.
+      button("Themes", dialog)!.click();
+      const themeRow = dialog.querySelector<HTMLElement>('[data-theme-id="theme-1"]')!;
+      themeRow.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
+      button("General", dialog)!.click();
+      expect(dialog.querySelector("[data-dissect-selected-count]")!.textContent)
+        .toBe("Selected themes: 1");
       field<HTMLTextAreaElement>("Instructions (optional)", dialog).value = "Focus on naval history";
       button("Start dissection", dialog)!.click();
       await flush();
-      expect(dissect).toHaveBeenCalledWith("packet-1", "Focus on naval history", undefined, false);
+      expect(dissect).toHaveBeenCalledWith("packet-1", {
+        instructions: "Focus on naval history",
+        comment: undefined,
+        theme_revision_ids: ["theme-1"],
+        tag_ids: [],
+        confirm_exposure: false,
+      });
       expect(dialog.textContent).toContain("This discloses the packet.");
       button("Confirm and start", dialog)!.click();
       await flush();
-      expect(dissect).toHaveBeenLastCalledWith("packet-1", "Focus on naval history", undefined, true);
+      expect(dissect).toHaveBeenLastCalledWith("packet-1", {
+        instructions: "Focus on naval history",
+        comment: undefined,
+        theme_revision_ids: ["theme-1"],
+        tag_ids: [],
+        confirm_exposure: true,
+      });
       expect(document.contains(dialog)).toBe(false);
     } finally {
       controller.abort();

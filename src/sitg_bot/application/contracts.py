@@ -78,12 +78,15 @@ class ActionCode(StrEnum):
     TRAINING_CURRENT = "training.current.v1"
     TRAINING_VIEW = "training.view.v1"
     TRAINING_ACT = "training.act.v1"
+    TRAINING_HISTORY = "training.history.list.v1"
+    TRAINING_HISTORY_DETAIL = "training.history.detail.v1"
     KNOWLEDGE_FACTS = "knowledge.facts.view.v1"
     KNOWLEDGE_FACT = "knowledge.fact.view.v1"
     KNOWLEDGE_CREATE = "knowledge.fact.create.v1"
     KNOWLEDGE_UPDATE = "knowledge.fact.update.v1"
     KNOWLEDGE_DELETE = "knowledge.fact.delete.v1"
-    KNOWLEDGE_MERGE = "knowledge.facts.merge.v1"
+    KNOWLEDGE_IMAGE_UPLOAD = "knowledge.images.upload.v1"
+    KNOWLEDGE_IMAGE = "knowledge.images.read.v1"
     KNOWLEDGE_TAGS = "knowledge.tags.view.v1"
     KNOWLEDGE_TAG_CREATE = "knowledge.tag.create.v1"
     KNOWLEDGE_TAG_RENAME = "knowledge.tag.rename.v1"
@@ -94,6 +97,11 @@ class ActionCode(StrEnum):
     KNOWLEDGE_IMPORT = "knowledge.collection.import.v1"
     KNOWLEDGE_GRANT = "knowledge.grant.create.v1"
     KNOWLEDGE_REVOKE = "knowledge.grant.revoke.v1"
+    KNOWLEDGE_THEMES = "knowledge.themes.view.v1"
+    KNOWLEDGE_THEME_PREVIEW = "knowledge.theme.preview.v1"
+    KNOWLEDGE_IMPORTS = "knowledge.imports.view.v1"
+    KNOWLEDGE_IMPORT_DETAIL = "knowledge.import.view.v1"
+    KNOWLEDGE_IMPORT_DECIDE = "knowledge.import.decide.v1"
     KNOWLEDGE_DISSECTIONS = "knowledge.dissection.status.v1"
     KNOWLEDGE_DISSECT = "knowledge.dissection.request.v1"
     ANALYSIS_STATUS = "training.analysis.status.v1"
@@ -209,7 +217,9 @@ class KnowledgeFactsOperation(ContractModel):
     owner_id: UUID | None = None
     cursor: str | None = Field(default=None, max_length=1000)
     search: str | None = Field(default=None, max_length=300)
+    author: str | None = Field(default=None, max_length=300)
     tag: str | None = Field(default=None, max_length=64)
+    tags: list[str] = Field(default_factory=list, max_length=32)
     order: Literal["title_asc", "title_desc", "updated_desc", "created_desc"] = "title_asc"
     limit: int = Field(default=25, ge=1, le=25)
 
@@ -233,6 +243,8 @@ class KnowledgeSaveOperation(ContractModel):
     description: str | None = Field(default=None, min_length=1, max_length=4000)
     links: list[KnowledgeLink] | None = Field(default=None, max_length=16)
     tag_names: list[str] | None = Field(default=None, max_length=32)
+    image_ids: list[UUID] | None = Field(default=None, max_length=8)
+    author: str | None = Field(default=None, max_length=300)
 
 
 class KnowledgeDeleteOperation(ContractModel):
@@ -241,12 +253,14 @@ class KnowledgeDeleteOperation(ContractModel):
     confirm_dissection_origin: bool = False
 
 
-class KnowledgeMergeOperation(ContractModel):
-    action: Literal[ActionCode.KNOWLEDGE_MERGE]
-    source_fact_id: UUID
-    target_fact_id: UUID
-    expected_target_version: int = Field(ge=1)
-    confirm_source_delete: bool = False
+class KnowledgeImageUploadOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_IMAGE_UPLOAD]
+    source_base64: str = Field(min_length=1, max_length=2_796_204, repr=False)
+
+
+class KnowledgeImageOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_IMAGE]
+    image_id: UUID
 
 
 class KnowledgeTagOperation(ContractModel):
@@ -273,6 +287,36 @@ class KnowledgeSharingOperation(ContractModel):
     token: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{43}$", repr=False)
 
 
+class KnowledgeThemesOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_THEMES]
+    version_id: UUID
+
+
+class KnowledgeThemePreviewOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_THEME_PREVIEW]
+    version_id: UUID
+    theme_revision_id: UUID
+    confirm_exposure: bool = False
+
+
+class KnowledgeImportsOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_IMPORTS]
+    cursor: str | None = Field(default=None, max_length=1000)
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class KnowledgeImportDetailOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_IMPORT_DETAIL]
+    import_id: UUID
+
+
+class KnowledgeImportDecideOperation(ContractModel):
+    action: Literal[ActionCode.KNOWLEDGE_IMPORT_DECIDE]
+    import_id: UUID
+    decision: Literal["approve", "reject"]
+    selected_candidate_ids: list[str] | None = Field(default=None, max_length=10000)
+
+
 class KnowledgeDissectionsOperation(ContractModel):
     action: Literal[ActionCode.KNOWLEDGE_DISSECTIONS]
 
@@ -284,6 +328,8 @@ class PacketAnalysisOperation(ContractModel):
     comment: str = Field(default="", max_length=4000)
     confirm_exposure: bool = False
     token_target_chars: int = Field(default=18, ge=1, le=200)
+    theme_revision_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=1000)
+    tag_ids: list[UUID] = Field(default_factory=list, max_length=32)
 
 
 class AnalysisStatusOperation(ContractModel):
@@ -736,6 +782,7 @@ class TrainingPacketListOperation(ContractModel):
     publication_from: int | None = Field(default=None, ge=1000, le=9999)
     publication_to: int | None = Field(default=None, ge=1000, le=9999)
     order: Literal["id_asc", "name_asc", "name_desc", "year_asc", "year_desc"] = "id_asc"
+    owner_uploads_only: bool = False
 
 
 class TrainingUploadOperation(ContractModel):
@@ -771,7 +818,7 @@ class TrainingAccessOperation(ContractModel):
 
 class TrainingLobbyOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_LOBBY]
-    command: Literal["create", "save", "quit"]
+    command: Literal["create", "save", "select_packet", "save_settings", "quit"]
     expected_version: int | None = Field(default=None, ge=1)
     version_id: UUID | None = None
     settings: dict[str, JsonValue] = Field(default_factory=dict)
@@ -787,6 +834,7 @@ class TrainingStartOperation(ContractModel):
 
 class TrainingCurrentOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_CURRENT]
+    score_only: bool = Field(default=False, strict=True)
 
 
 class TrainingViewOperation(ContractModel):
@@ -800,9 +848,24 @@ class TrainingActOperation(ContractModel):
     expected_version: int = Field(ge=1)
     question_revision_id: UUID
     command: Literal[
-        "buzz", "answer", "reveal", "skip", "pause", "resume", "stop", "next", "continue"
+        "buzz", "answer", "reveal", "skip", "pause", "resume", "stop", "next", "continue",
+        "appeal", "vote",
     ]
     answer: str | None = Field(default=None, max_length=4000)
+    approve: bool | None = Field(default=None, strict=True)
+
+
+class TrainingHistoryListOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_HISTORY]
+    cursor: str | None = Field(default=None, max_length=2000)
+    limit: int = Field(default=25, ge=1, le=25)
+
+
+class TrainingHistoryDetailOperation(ContractModel):
+    action: Literal[ActionCode.TRAINING_HISTORY_DETAIL]
+    session_id: UUID
+    cursor: str | None = Field(default=None, max_length=2000)
+    limit: int = Field(default=25, ge=1, le=25)
 
 
 class LibraryListOperation(ContractModel):
@@ -1288,10 +1351,16 @@ GatewayOperation = Annotated[
     | KnowledgeFactOperation
     | KnowledgeSaveOperation
     | KnowledgeDeleteOperation
-    | KnowledgeMergeOperation
+    | KnowledgeImageUploadOperation
+    | KnowledgeImageOperation
     | KnowledgeTagOperation
     | KnowledgeSharingOperation
     | KnowledgeDissectionsOperation
+    | KnowledgeThemesOperation
+    | KnowledgeThemePreviewOperation
+    | KnowledgeImportsOperation
+    | KnowledgeImportDetailOperation
+    | KnowledgeImportDecideOperation
     | PacketAnalysisOperation
     | AnalysisStatusOperation
     | TrainingEntitlementsOperation
@@ -1356,6 +1425,8 @@ GatewayOperation = Annotated[
     | TrainingCurrentOperation
     | TrainingViewOperation
     | TrainingActOperation
+    | TrainingHistoryListOperation
+    | TrainingHistoryDetailOperation
     | LibraryAccessOperation
     | PlayerListOperation
     | PlayerProfileOperation

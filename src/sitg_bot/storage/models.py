@@ -79,6 +79,9 @@ class PlayerRecord(Base, TimestampMixin):
     suspicion: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     game_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     training_lobby: Mapped[dict | None] = mapped_column(JSONB)
+    training_lobby_presentation: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     training_lobby_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
@@ -1240,18 +1243,40 @@ class TrainingSessionRecord(Base, TimestampMixin):
     best_buzz_consumed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     paused_phase: Mapped[str | None] = mapped_column(String(24))
     paused_remaining: Mapped[float | None] = mapped_column(Numeric)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused_hidden_remaining: Mapped[float | None] = mapped_column(Numeric)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    progression_stage: Mapped[str | None] = mapped_column(String(32))
+    event_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('active', 'paused', 'completed', 'stopped')"),
-        CheckConstraint("phase IN ('reading', 'waiting', 'answering', 'revealed', 'best_buzz')"),
+        CheckConstraint(
+            "phase IN ('reading', 'waiting', 'answering', 'revealed', 'best_buzz', 'intermission')",
+            name="ck_training_session_phase",
+        ),
         CheckConstraint("version >= 1 AND question_index >= 0 AND token_cursor >= 0"),
         Index(
             "uq_training_active_owner", "owner_id", unique=True,
             postgresql_where=text("status IN ('active', 'paused')"),
         ),
-        Index("ix_training_deadline", "deadline", postgresql_where=text("status = 'active'")),
+        Index(
+            "ix_training_deadline", "deadline",
+            postgresql_where=text("status IN ('active', 'paused')"),
+        ),
+        Index("ix_training_sessions_owner_created", "owner_id", "created_at", "id"),
     )
+
+
+class TrainingEventRecord(Base):
+    __tablename__ = "training_events"
+
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("training_sessions.id"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
 class TrainingMemberRecord(Base):
@@ -1278,8 +1303,18 @@ class TrainingQuestionRecord(Base):
     )
     value: Mapped[int] = mapped_column(Integer, nullable=False)
     best_buzz: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    buzzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    buzz_delay_seconds: Mapped[float | None] = mapped_column(Numeric)
+    buzz_token_cursor: Mapped[int | None] = mapped_column(Integer)
+    paused_seconds: Mapped[float] = mapped_column(
+        Numeric, nullable=False, default=0, server_default=text("0")
+    )
 
-    __table_args__ = (CheckConstraint("position >= 0"),)
+    __table_args__ = (
+        CheckConstraint("position >= 0"),
+        Index("ix_training_questions_revision", "question_revision_id"),
+    )
 
 
 class TrainingAttemptRecord(Base, TimestampMixin):
@@ -1294,12 +1329,24 @@ class TrainingAttemptRecord(Base, TimestampMixin):
     question_index: Mapped[int] = mapped_column(Integer, nullable=False)
     answer: Mapped[str | None] = mapped_column(Text)
     correct: Mapped[bool | None] = mapped_column(Boolean)
+    original_correct: Mapped[bool | None] = mapped_column(Boolean)
+    appeal_status: Mapped[str | None] = mapped_column(String(16))
+    appealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    appeal_resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    appeal_was_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     token_cursor: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("session_id", "question_index"),
         CheckConstraint("outcome IN ('answered', 'revealed', 'skipped', 'timeout')"),
+        CheckConstraint(
+            "appeal_status IS NULL OR appeal_status IN ('voting', 'accepted', 'rejected')",
+            name="ck_training_attempt_appeal_status",
+        ),
+        Index("ix_training_attempts_revision", "question_revision_id"),
     )
 
 
@@ -2559,6 +2606,11 @@ class TrainingAnalysisArtifactRecord(Base):
             "AND completed_at IS NULL AND failed_at IS NULL)"
         ),
         Index("ix_training_analysis_artifacts_owner", "owner_player_id", "kind", "created_at"),
+        Index(
+            "ix_training_analysis_public_source", "source_fingerprint", "model",
+            "prompt_version", "schema_version", "tokenizer_version",
+            postgresql_where=text("shared AND kind = 'dissection' AND status = 'succeeded'"),
+        ),
     )
 
 
@@ -2612,14 +2664,59 @@ class TrainingAnalysisRequestRecord(Base):
     )
 
 
+class KnowledgeImageRecord(Base, TimestampMixin):
+    __tablename__ = "knowledge_images"
+    id: Mapped[UUID] = uuid_column()
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    content_type: Mapped[str] = mapped_column(String(32))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    __table_args__ = (
+        CheckConstraint("content_type IN ('image/png', 'image/jpeg', 'image/webp')"),
+        CheckConstraint("octet_length(data) BETWEEN 1 AND 2097152"),
+    )
+
+
+class KnowledgeTagSeedRecord(Base):
+    __tablename__ = "knowledge_tag_seeds"
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+
+
+class KnowledgeImportRecord(Base):
+    """Owner-private durable review snapshot; never a source-access grant."""
+
+    __tablename__ = "knowledge_imports"
+    id: Mapped[UUID] = uuid_column()
+    creation_key_hash: Mapped[str | None] = mapped_column(String(64))
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
+    creator_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"))
+    type: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    dissection_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_dissection_requests.id"), unique=True
+    )
+    candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("owner_id", "creator_id", "creation_key_hash",
+                         name="uq_knowledge_imports_owner_id_creator_id_creation_key_hash"),
+        CheckConstraint("type IN ('dissection', 'collection')"),
+        CheckConstraint("status IN ('working', 'pending', 'approved', 'rejected', 'failed')"),
+    )
+
+
 class KnowledgeFactRecord(Base, TimestampMixin):
     __tablename__ = "knowledge_facts"
     id: Mapped[UUID] = uuid_column()
+    author: Mapped[str] = mapped_column(String(300), default="", server_default="")
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
     title_key: Mapped[str] = mapped_column(String(400))
     description: Mapped[str] = mapped_column(Text)
     links: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    image_ids: Mapped[list[str]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     content_fingerprint: Mapped[str] = mapped_column(String(64))
     content_version: Mapped[int] = mapped_column(Integer, default=1)

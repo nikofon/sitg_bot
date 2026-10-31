@@ -36,7 +36,6 @@ from sitg_bot.storage.models import (
     TournamentRecord,
 )
 
-
 TERMINAL_GAME_STATUSES = (
     "completed",
     "finalized",

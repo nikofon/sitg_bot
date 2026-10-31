@@ -9,7 +9,13 @@ owner/library read rights without disclosing content. `disclose` uses the same
 transaction, checks reservation conflicts, confirms exposure and returns immutable
 question revisions and a disclosure receipt. Analysis must call this boundary
 before cache lookup and recheck `authorize` before processing/delivery/application.
-Private packet scope is `training`; owner identity must be part of cache keys.
+Private packet scope is `training`; private analysis compute identities include owner
+and request identity and never provide cross-request reusable cache hits. Public bare
+cache scope includes exact selected immutable source coverage, provider/profile and tag coverage.
+Dissection and preview accept immutable theme revision IDs; metadata listing never discloses
+questions. Disclosure burns only the selected theme/question claims. Approval operates on
+persisted private review candidates, not automatic application; source access is rechecked
+for dissection review and approval. Shared collection review snapshots grant no packet rights.
 Retirement denies subsequent reads, including pinned sessions and analysis.
 Call `disclose` before taking account locks: it locks public tournaments,
 assignments and grants before the account, matching normal-game entry. Permission,

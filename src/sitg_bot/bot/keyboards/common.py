@@ -72,10 +72,24 @@ ADMIN_MENU_ACTIONS = (
 
 TRAINING_MENU_ACTIONS = (
     ("training.train",),
+    ("training.history",),
     ("training.knowledge",),
     ("training.upload",),
     ("mode.switch",),
 )
+
+
+def training_game_keyboard(localization, locale, *, voting=False) -> ReplyKeyboardModel:
+    rows = (("+",), ("||", "!"))
+    if voting:
+        rows += ((localization.text("button.yes", locale),
+                  localization.text("button.no", locale)),)
+    rows += (
+        (localization.text("training.next", locale), localization.text("training.score", locale)),
+        (localization.text("training.reveal", locale), localization.text("training.skip", locale)),
+        (localization.text("button.training.quit", locale),),
+    )
+    return ReplyKeyboardModel(rows=rows, persistent=True)
 
 
 def registration_consent_keyboard(
@@ -111,7 +125,7 @@ def navigation_keyboard(
     navigation: NavigationState,
     localization: LocalizationService,
     locale: str,
-) -> ReplyKeyboardModel:
+) -> ReplyKeyboardModel | None:
     layouts = {
         "player": PLAYER_MENU_ACTIONS,
         "manager": MANAGER_MENU_ACTIONS,
@@ -132,7 +146,7 @@ def navigation_keyboard(
     if navigation.active_mode == "training" and navigation.context == "training_lobby":
         layout = (("training.settings",), ("training.start",), ("training.quit",))
     elif navigation.active_mode == "training" and navigation.context == "training":
-        layout = (("training.quit",),)
+        return None
     if navigation.context == "game":
         return ReplyKeyboardModel(rows=(("+",), ("||", "!")), persistent=True)
     allowed = set(navigation.allowed_actions)

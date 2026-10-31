@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client";
 import { ApiError } from "../api/client";
 import { I18n } from "../i18n";
-import { renderTraining } from "./training";
+import { renderTraining, type TrainingFeedback } from "./training";
 
 const controllers: AbortController[] = [];
 afterEach(() => controllers.splice(0).forEach((controller) => controller.abort()));
@@ -22,14 +22,50 @@ const packets = [
     dissected: false, best_buzz_calculated: true },
 ];
 
-function create(upload = false, locale: "en" | "ru" = "en") {
+type LobbyHandler = (body: Record<string, unknown>) => Promise<unknown> | unknown;
+
+interface LobbyFixture {
+  version: number;
+  version_id: string | null;
+  packet_name: string | null;
+  settings: Record<string, unknown>;
+}
+
+interface CreateOptions {
+  upload?: boolean;
+  locale?: "en" | "ru";
+  initial?: LobbyFixture;
+  current?: unknown;
+  /** Handlers for POST /api/miniapp/training/lobby, consumed in order. */
+  lobbyCalls?: LobbyHandler[];
+}
+
+function create(options: CreateOptions = {}) {
   const controller = new AbortController(); controllers.push(controller);
-  const request = vi.fn(async (path: string) => path.includes("/packets?")
-    ? { items: packets.map((packet) => ({ ...packet })), next_cursor: null }
-    : { lobby: { ...lobby, version: 4 } });
-  const root = renderTraining({ session: null, lobby }, { request } as unknown as ApiClient,
-    new I18n(locale), controller.signal, upload);
-  return { root, request, controller };
+  const feedback: TrainingFeedback = { notifySuccess: vi.fn(), notifyError: vi.fn() };
+  const initial: LobbyFixture = options.initial ?? lobby;
+  const calls: LobbyHandler[] = [...(options.lobbyCalls ?? [])];
+  // Stateful default: select_packet keeps settings, save_settings keeps the packet.
+  let server: LobbyFixture = { ...initial };
+  const defaultLobby = (body: Record<string, unknown>): unknown => {
+    server = body.version_id
+      ? { ...server, version: server.version + 1, version_id: body.version_id as string, packet_name: "Beta packet" }
+      : { ...server, version: server.version + 1 };
+    if (body.settings) server = { ...server, settings: body.settings as Record<string, unknown> };
+    return { lobby: { ...server } };
+  };
+  const request = vi.fn(async (path: string, init: { body?: unknown } = {}) => {
+    if (path.includes("/packets?")) return { items: packets.map((packet) => ({ ...packet })), next_cursor: null };
+    if (path === "/api/miniapp/training/lobby") {
+      const handler = calls.shift() ?? defaultLobby;
+      return handler(init.body as Record<string, unknown>);
+    }
+    if (path === "/api/miniapp/training/current") return options.current ?? {};
+    return {};
+  });
+  const root = renderTraining({ session: null, lobby: initial }, { request } as unknown as ApiClient,
+    new I18n(options.locale ?? "en"), controller.signal, options.upload ?? false, feedback);
+  return { root, request, controller, feedback, calls };
 }
 
 const tab = (root: HTMLElement, index: number): void => {
@@ -39,11 +75,20 @@ const tab = (root: HTMLElement, index: number): void => {
 const packetCards = (root: HTMLElement): HTMLElement[] =>
   [...root.querySelectorAll<HTMLElement>(".training-packet-card")];
 
-const detailValue = (card: HTMLElement, label: string): string => {
-  for (const row of card.querySelectorAll(".lobby-packet-detail")) {
-    if (row.querySelector("dt")!.textContent === label) return row.querySelector("dd")!.textContent ?? "";
+const lobbyBodies = (request: ReturnType<typeof create>["request"]): Array<Record<string, unknown>> =>
+  request.mock.calls
+    .filter(([path]) => path === "/api/miniapp/training/lobby")
+    .map((call) => (call[1] as { body: Record<string, unknown> }).body);
+
+const status = (root: HTMLElement): string => root.querySelector('[role="status"]')!.textContent ?? "";
+
+const settingInput = (root: HTMLElement, label: string): HTMLInputElement => {
+  for (const node of root.querySelectorAll<HTMLLabelElement>(".settings-form label")) {
+    if (node.textContent?.startsWith(label)) {
+      return node.querySelector("input")!;
+    }
   }
-  throw new Error(`missing detail row: ${label}`);
+  throw new Error(`missing setting input: ${label}`);
 };
 
 describe("training lobby", () => {
@@ -65,19 +110,20 @@ describe("training lobby", () => {
     tab(root, 2);
     const options = root.querySelector<HTMLElement>(".training-options")!;
     expect(options.querySelector('button[type="submit"]')!.textContent).toBe("Save lobby settings");
-    // Selected packet and modifiers are shown beside the settings too.
     expect(options.querySelector(".training-selection-packet")!.textContent).toBe("Alpha packet");
-    expect([...options.querySelectorAll(".training-modifier-badge")].map((badge) => badge.textContent))
-      .toEqual(["Reverse word order", "Hide question text"]);
+    // Best buzz is its own section, separate from the other modifiers.
     const groups = [...options.querySelectorAll(".descriptor-category")].map((node) => node.textContent);
-    expect(groups).toEqual(["Modifiers", "Timing", "Reading"]);
-    // Only the picked modifier's enable control is shown; the viewed one is enabled.
+    expect(groups).toEqual(["Modifiers", "Best buzz", "Timing", "Reading"]);
+    const bestBuzzGroup = options.querySelector<HTMLElement>(".training-best-buzz-group")!;
+    expect(bestBuzzGroup.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    // The picker configures only the non-best-buzz modifiers.
+    const picker = options.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    expect([...picker.options].map((option) => option.value)).toEqual(["", "reversed", "hidden"]);
     const reversedBox = options.querySelector<HTMLInputElement>('.training-modifier-config input[type="checkbox"]')!;
     expect(reversedBox.checked).toBe(true);
     const numbers = [...options.querySelectorAll<HTMLInputElement>('input[type="number"]')]
       .map((input) => input.value);
     expect(numbers).toEqual(["8", "15", "0.6", "18"]);
-    const picker = options.querySelector<HTMLSelectElement>('.training-modifier-picker select')!;
     picker.value = "hidden";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
     const hiddenBox = options.querySelector<HTMLInputElement>('.training-modifier-config input[type="checkbox"]')!;
@@ -85,48 +131,370 @@ describe("training lobby", () => {
     expect(options.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!.value).toBe("2");
   });
 
-  it("configures modifiers from the dropdown without losing enabled state or values", () => {
+  it("previews message flow for the timing and reading settings", () => {
+    const { root, request } = create();
+    tab(root, 2);
+    const timing = root.querySelector<HTMLElement>(".training-timing-group")!;
+    const reading = root.querySelector<HTMLElement>(".training-reading-group")!;
+    // One preview per message-flow setting, each with a repeat-arrow replay button.
+    expect(timing.querySelectorAll(".setting-demo")).toHaveLength(2);
+    expect(reading.querySelectorAll(".setting-demo")).toHaveLength(2);
+    for (const replay of root.querySelectorAll<HTMLButtonElement>(".setting-demo-replay")) {
+      expect(replay.textContent).not.toContain("⏵");
+      expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+      expect(replay.getAttribute("aria-label")).toBe("Replay");
+    }
+    // Previews start once their section is shown and render the live draft values.
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!.textContent)
+      .toContain("Time to buzz");
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[1]!.textContent)
+      .toContain("Time to answer");
+    expect(reading.querySelector<HTMLElement>(".setting-demo-status")!.textContent)
+      .toContain("Next message in");
+    // A draft edit reruns the preview; the preview never posts a mutation.
+    const buzz = settingInput(root, "Buzz timer (seconds)");
+    buzz.value = "21";
+    buzz.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(timing.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!.textContent)
+      .toContain("21.0 s");
+    expect(request.mock.calls.filter(([path]) => path === "/api/miniapp/training/lobby")).toHaveLength(0);
+  });
+
+  it("reruns the reading preview when the Hidden modifier overrides the interval", () => {
+    const { root } = create({
+      initial: { version: 3, version_id: "one", packet_name: "Alpha packet",
+        settings: { reversed: false, hidden_after: null, buzz_timeout: 8, best_buzz: false } },
+    });
+    tab(root, 2);
+    const reading = root.querySelector<HTMLElement>(".training-reading-group")!;
+    const delayStatus = reading.querySelectorAll<HTMLElement>(".setting-demo-status")[0]!;
+    const tokenDelay = settingInput(root, "Reading interval (seconds)");
+    tokenDelay.value = "5";
+    tokenDelay.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(delayStatus.textContent).toContain("5.0 s");
+    // Enable Hidden through the modifier picker: the effective interval becomes 0.
+    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    const hiddenBox = root.querySelector<HTMLInputElement>(".training-modifier-config input[type='checkbox']")!;
+    hiddenBox.checked = true;
+    hiddenBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(delayStatus.textContent).toContain("0.0 s");
+    // The stored draft value survives untouched and the field stays greyed out.
+    expect(tokenDelay.value).toBe("5");
+    expect(tokenDelay.disabled).toBe(true);
+    // The hidden seconds field carries its own message-flow preview.
+    expect(root.querySelector(".training-modifier-config .setting-demo")).not.toBeNull();
+  });
+
+  it("keeps preview replaying separate from the saved settings draft", () => {
+    const { root, request } = create();
+    tab(root, 2);
+    for (const replay of root.querySelectorAll<HTMLButtonElement>(".setting-demo-replay")) replay.click();
+    const numbers = [...root.querySelectorAll<HTMLInputElement>(
+      ".training-timing-group input[type='number'], .training-reading-group input[type='number']",
+    )].map((input) => input.value);
+    expect(numbers).toEqual(["8", "15", "0.6", "18"]);
+    expect(request.mock.calls.filter(([path]) => path === "/api/miniapp/training/lobby")).toHaveLength(0);
+  });
+
+  it("localizes the previews and their replay labels in Russian", () => {
+    const { root } = create({ locale: "ru" });
+    tab(root, 2);
+    const demo = root.querySelector<HTMLElement>(".training-setting .setting-demo")!;
+    expect(demo.querySelector(".setting-demo-caption")?.textContent).toBe("Предпросмотр потока сообщений");
+    const replay = demo.querySelector<HTMLButtonElement>(".setting-demo-replay")!;
+    expect(replay.getAttribute("aria-label")).toBe("Проиграть заново");
+    expect(replay.querySelector("svg.icon-repeat")).not.toBeNull();
+  });
+
+  it("describes every modifier and groups Best buzz separately", () => {
+    const { root } = create();
+    tab(root, 2);
+    const options = root.querySelector<HTMLElement>(".training-options")!;
+    // Reversed (the currently viewed modifier) carries its description.
+    expect(options.querySelector(".training-modifier-description")!.textContent)
+      .toBe("The question is shown with its words in reverse order.");
+    const picker = options.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(options.querySelector(".training-modifier-description")!.textContent)
+      .toBe("The question appears all at once and its text disappears after the visible time; buzz before it vanishes.");
+    const bestBuzzGroup = options.querySelector<HTMLElement>(".training-best-buzz-group")!;
+    expect(bestBuzzGroup.querySelector(".training-modifier-description")!.textContent)
+      .toBe("Reading pauses at the estimated best buzz point of the question; press Continue reading to reveal the rest.");
+    expect(bestBuzzGroup.querySelector(".training-modifier-note")!.textContent)
+      .toContain("Not combined with Reverse word order or Hide question text");
+  });
+
+  it("greys out the reading interval while Hidden overrides it, without wiping the stored value", () => {
+    const { root } = create();
+    tab(root, 2);
+    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
+    picker.value = "hidden";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    const tokenDelay = settingInput(root, "Reading interval");
+    const note = root.querySelector<HTMLElement>(".training-setting-override")!;
+    // Saved lobby has hidden_after: 2, so the override is active on load.
+    expect(tokenDelay.disabled).toBe(true);
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe("Set to 0 seconds by the Hide question text modifier.");
+    expect(tokenDelay.value).toBe("0.6"); // stored preference retained, never zeroed
+    expect(settingInput(root, "Characters per reading chunk").disabled).toBe(false);
+
+    const hiddenBox = root.querySelector<HTMLInputElement>('.training-modifier-config input[type="checkbox"]')!;
+    hiddenBox.checked = false;
+    hiddenBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(tokenDelay.disabled).toBe(false);
+    expect(note.hidden).toBe(true);
+    expect(tokenDelay.value).toBe("0.6"); // toggling the modifier off restores the stored value
+
+    hiddenBox.checked = true;
+    hiddenBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(tokenDelay.disabled).toBe(true);
+    expect(note.textContent).toBe("Set to 0 seconds by the Hide question text modifier.");
+    expect(tokenDelay.value).toBe("0.6");
+  });
+
+  it("requires explicit selection to re-enable displaced modifiers", () => {
     const { root } = create();
     tab(root, 2);
     const options = root.querySelector<HTMLElement>(".training-options")!;
     const picker = options.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
-    expect(picker.value).toBe("reversed");
-    const config = options.querySelector<HTMLElement>(".training-modifier-config")!;
-    expect(config.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
-
-    picker.value = "hidden";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    const hiddenBox = config.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    expect(hiddenBox.checked).toBe(true);
-    const seconds = config.querySelector<HTMLInputElement>('input[type="number"]')!;
-    expect(seconds.value).toBe("2");
-    seconds.value = "5";
-    seconds.dispatchEvent(new Event("change", { bubbles: true }));
-
-    picker.value = "best_buzz";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    const bestBuzz = config.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    expect(bestBuzz.disabled).toBe(true); // incompatible with reversed/hidden
-
-    hiddenBox.checked = false;
-    hiddenBox.dispatchEvent(new Event("change", { bubbles: true }));
     picker.value = "reversed";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
-    config.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked = false;
-    config.querySelector<HTMLInputElement>('input[type="checkbox"]')!.dispatchEvent(new Event("change", { bubbles: true }));
-    picker.value = "best_buzz";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    const bestBuzz2 = config.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    expect(bestBuzz2.disabled).toBe(false);
-    bestBuzz2.checked = true;
-    bestBuzz2.dispatchEvent(new Event("change", { bubbles: true }));
+    // Saved lobby starts with reversed enabled and best buzz off.
+    const bestBuzzBox = options.querySelector<HTMLInputElement>(".training-best-buzz-group input[type=\"checkbox\"]")!;
+    bestBuzzBox.checked = true;
+    bestBuzzBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.querySelector<HTMLInputElement>(".training-modifier-config input[type=\"checkbox\"]")!.checked)
+      .toBe(false); // reversed displaced by best buzz
+    // Both incompatible modifiers were displaced, each with an explanation.
+    expect(status(root)).toBe("Hide question text was turned off: it is incompatible with Best buzz.");
     expect([...root.querySelectorAll(".training-overview .training-modifier-badge")].map((b) => b.textContent))
       .toEqual(["Best buzz"]);
 
+    bestBuzzBox.checked = false;
+    bestBuzzBox.dispatchEvent(new Event("change", { bubbles: true }));
+    const reversedBox = root.querySelector<HTMLInputElement>(".training-modifier-config input[type=\"checkbox\"]")!;
+    expect(reversedBox.checked).toBe(false);
+    expect(root.querySelectorAll(".training-overview .training-modifier-badge")).toHaveLength(0);
+    reversedBox.checked = true;
+    reversedBox.dispatchEvent(new Event("change", { bubbles: true }));
+    expect([...root.querySelectorAll(".training-overview .training-modifier-badge")].map((b) => b.textContent))
+      .toEqual(["Reverse word order"]);
+    expect(settingInput(root, "Reading interval").value).toBe("0.6");
+  });
+
+  it("autosaves packet selection immediately without carrying settings", async () => {
+    const { root, request, feedback } = create();
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "select_packet", expected_version: 3, version_id: "two" });
+    expect(lobbyBodies(request)[0]).not.toHaveProperty("settings");
+    await vi.waitFor(() => expect(status(root)).toBe("Packet selection saved."));
+    expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+    expect(feedback.notifyError).not.toHaveBeenCalled();
+    // Selection summary follows the newly chosen packet everywhere.
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Beta packet");
+    expect(root.querySelector(".training-overview .lobby-packet-selected")).toBeNull();
+    expect(packetCards(root)[1]!.querySelector(".lobby-packet-selected")!.textContent).toBe("Selected");
+    expect(packetCards(root)[0]!.querySelector(".lobby-packet-selected")).toBeNull();
+  });
+
+  it("preserves unsaved settings drafts across the packet autosave", async () => {
+    const { root, request, feedback } = create();
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    tab(root, 2);
+    const buzz = settingInput(root, "Buzz timer");
+    buzz.value = "9";
+    buzz.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram.");
+    tab(root, 1);
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).not.toHaveProperty("settings");
+    await vi.waitFor(() => expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram."));
+    // The draft survives the authoritative lobby replacement.
+    expect(settingInput(root, "Buzz timer").value).toBe("9");
+    expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+    // Explicit save persists the draft against the post-selection version.
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ command: "save_settings", expected_version: 4 });
+    expect(lobbyBodies(request)[1]).not.toHaveProperty("version_id");
+    expect(lobbyBodies(request)[1]).toMatchObject({ settings: { buzz_timeout: 9, reversed: true, hidden_after: 2 } });
+    await vi.waitFor(() => expect(status(root)).toContain("Saved. Return to Telegram"));
+    expect(settingInput(root, "Buzz timer").value).toBe("9");
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Beta packet");
+  });
+
+  it("keeps edits made during a settings save unsaved until explicitly saved", async () => {
+    let resolveSave!: (value: unknown) => void;
+    const { root, request } = create({ lobbyCalls: [
+      () => new Promise((resolve) => { resolveSave = resolve; }),
+    ] });
+    tab(root, 2);
+    const buzz = settingInput(root, "Buzz timer");
+    buzz.value = "10";
+    buzz.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ settings: { buzz_timeout: 10 } });
+    buzz.value = "20";
+    buzz.dispatchEvent(new Event("input", { bubbles: true }));
+    resolveSave({ lobby: { ...lobby, version: 4, settings: { ...lobby.settings, buzz_timeout: 10 } } });
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram.");
+    expect(buzz.value).toBe("20");
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ expected_version: 4, settings: { buzz_timeout: 20 } });
+    await vi.waitFor(() => expect(status(root)).toContain("Saved. Return to Telegram"));
+  });
+
+  it("snapshots settings at submit while waiting for packet autosave", async () => {
+    let resolveSelect!: (value: unknown) => void;
+    const { root, request } = create({ lobbyCalls: [
+      () => new Promise((resolve) => { resolveSelect = resolve; }),
+    ] });
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    const buzz = settingInput(root, "Buzz timer");
+    buzz.value = "10";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    buzz.value = "20";
+    buzz.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(1));
+    resolveSelect({ lobby: { ...lobby, version: 4, version_id: "two", packet_name: "Beta packet" } });
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ expected_version: 4, settings: { buzz_timeout: 10 } });
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false));
+    expect(status(root)).toBe("You have unsaved changes. Save before returning to Telegram.");
+    expect(buzz.value).toBe("20");
+  });
+
+  it("saves settings without a packet selected", async () => {
+    const { root, request } = create({ initial: { version: 2, version_id: null, packet_name: null, settings: {} } });
+    const save = root.querySelector<HTMLButtonElement>('.training-options button[type="submit"]')!;
+    expect(save.disabled).toBe(false);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "save_settings", expected_version: 2 });
+    expect(lobbyBodies(request)[0]).not.toHaveProperty("version_id");
+  });
+
+  it("serializes an in-flight selection before a settings save and uses the newest version", async () => {
+    let resolveSelect: ((value: unknown) => void) | undefined;
+    const { root, request } = create({ lobbyCalls: [
+      () => new Promise((resolve) => { resolveSelect = resolve; }),
+      (body) => ({ lobby: { ...lobby, version: 5, version_id: body.version_id as string, settings: body.settings } }),
+    ] });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    expect(status(root)).toBe("Saving packet selection…");
+    // While the selection is in flight the Save submit is queued, not sent.
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "select_packet" });
+    resolveSelect!({ lobby: { ...lobby, version: 4, version_id: "two", packet_name: "Beta packet", settings: lobby.settings } });
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(2));
+    expect(lobbyBodies(request)[1]).toMatchObject({ command: "save_settings", expected_version: 4 });
+  });
+
+  it("reverts a rejected selection and reports the failure honestly", async () => {
+    const { root, request, feedback } = create({ lobbyCalls: [
+      () => { throw new ApiError("forbidden", 403, false); },
+    ] });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    await vi.waitFor(() => expect(status(root)).not.toBe("Saving packet selection…"));
+    expect(status(root)).not.toBe("Packet selection saved.");
+    expect(feedback.notifyError).toHaveBeenCalledTimes(1);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    // The authoritative selection is untouched.
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Alpha packet");
+    expect(packetCards(root)[0]!.querySelector(".lobby-packet-selected")).not.toBeNull();
+    expect(packetCards(root)[1]!.querySelector(".lobby-packet-selected")).toBeNull();
+    expect(lobbyBodies(request).length).toBe(1);
+  });
+
+  it("reloads the authoritative lobby on a stale selection without retrying silently", async () => {
+    const server = { ...lobby, version: 9, version_id: "one", packet_name: "Alpha packet" };
+    const { root, request, feedback } = create({
+      lobbyCalls: [() => { throw new ApiError("stale_write", 409, false); }],
+      current: { lobby: server },
+    });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    await vi.waitFor(() => expect(status(root)).toBe("This item changed. The latest version has been loaded."));
+    expect(feedback.notifyError).toHaveBeenCalledTimes(1);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    // The server state was adopted, the selection reverted, no silent retry.
+    expect(request.mock.calls.some(([path]) => path === "/api/miniapp/training/current")).toBe(true);
+    expect(lobbyBodies(request).length).toBe(1);
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Alpha packet");
+  });
+
+  it("saves valid settings independently of invalid catalogue year bounds", async () => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    tab(root, 1);
+    const bounds = root.querySelectorAll<HTMLInputElement>('.training-packet-filters input[type="number"]');
+    expect(bounds).toHaveLength(4);
+    bounds.forEach((input) => { input.value = "999"; expect(input.checkValidity()).toBe(false); });
+    tab(root, 2);
+    const form = root.querySelector<HTMLFormElement>(".training-options form")!;
+    expect(form.checkValidity()).toBe(true);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "save_settings" });
+  });
+
+  it.each(["", "0", "3600"])("validates detached hidden time %j before saving", async (value) => {
+    const { root, request } = create();
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    tab(root, 2);
+    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
     picker.value = "hidden";
     picker.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(config.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled).toBe(true);
-    expect(config.querySelector<HTMLInputElement>('input[type="number"]')!.value).toBe("5");
+    const seconds = root.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
+    seconds.value = value;
+    picker.value = "reversed";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.contains(seconds)).toBe(false);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(picker.value).toBe("hidden");
+    expect(root.contains(seconds)).toBe(true);
+    expect(seconds.validity.valid).toBe(false);
+    expect(lobbyBodies(request).length).toBe(0);
+    seconds.value = "5";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ settings: expect.objectContaining({ hidden_after: 5 }) });
+  });
+
+  it("does not report success for stale saves", async () => {
+    const { root, feedback } = create({ lobbyCalls: [
+      () => { throw new ApiError("stale_write", 409, false); },
+    ] });
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(status(root)).not.toBe(""));
+    expect(status(root)).not.toContain("Saved. Return");
+    expect(feedback.notifyError).toHaveBeenCalledTimes(1);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+  });
+
+  it("signals a haptic error for a rejected settings save", async () => {
+    const { root, feedback } = create({ lobbyCalls: [
+      () => { throw new ApiError("validation_failed", 422, false); },
+    ] });
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(status(root)).not.toBe(""));
+    expect(feedback.notifyError).toHaveBeenCalledTimes(1);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    expect(status(root)).not.toContain("Saved. Return");
   });
 
   it("renders packet cards with metadata and only contextual actions", async () => {
@@ -142,6 +510,7 @@ describe("training lobby", () => {
     expect(detailValue(alpha, "In knowledge library")).toBe("Yes");
     expect(detailValue(alpha, "Dissected themes")).toBe("10 / 12");
     expect(detailValue(alpha, "Best buzz calculated")).toBe("No");
+    expect(beta.querySelector("h3")!.textContent).toBe("Beta packet");
     expect(detailValue(beta, "Tournaments")).toBe("Autumn League");
     expect(detailValue(beta, "In knowledge library")).toBe("No");
     expect(detailValue(beta, "Dissected themes")).toBe("—");
@@ -199,22 +568,34 @@ describe("training lobby", () => {
     expect(order.value).toBe("id_asc");
   });
 
-  it("selects without starting, then explicitly saves the packet and modifiers", async () => {
+  it("filters the catalogue to packets uploaded by the player themself", async () => {
     const { root, request } = create();
     await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
-    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-select]")!.click();
-    expect(request).toHaveBeenCalledTimes(1);
-    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-    expect(request.mock.calls[1]![0]).toBe("/api/miniapp/training/lobby");
-    const options = (request.mock.calls[1] as unknown as [string, { body: unknown }])[1];
-    expect(options.body).toMatchObject({ command: "save", expected_version: 3, version_id: "two",
-      settings: { reversed: true, hidden_after: 2, buzz_timeout: 8, best_buzz: false } });
-    await vi.waitFor(() => expect(root.textContent).toContain("Return to Telegram"));
-    expect(request.mock.calls.some(([path]) => path.endsWith("/start"))).toBe(false);
-    // Selection summary follows the newly chosen packet everywhere.
-    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent).toBe("Beta packet");
-    expect(root.querySelector(".training-overview .lobby-packet-selected")).toBeNull();
+    const filters = root.querySelector<HTMLElement>(".training-packet-filters")!;
+    const mine = filters.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(mine.closest("label")!.textContent).toBe("My uploads only");
+
+    mine.checked = true;
+    mine.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/packets?owner_uploads_only=true&limit=25", expect.anything()));
+
+    mine.checked = false;
+    mine.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/packets?limit=25", expect.anything()));
+
+    mine.checked = true;
+    mine.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/packets?owner_uploads_only=true&limit=25", expect.anything()));
+    // Reset clears the own-uploads filter too.
+    filters.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/miniapp/training/packets?limit=25", expect.anything()));
+    expect(mine.checked).toBe(false);
+    // Browsing the filter bubble never marks the settings form dirty.
+    expect(status(root)).toBe("");
   });
 
   it("prevents Enter in every packet-filter input from saving the lobby", async () => {
@@ -222,7 +603,7 @@ describe("training lobby", () => {
     await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
     tab(root, 1);
     const inputs = root.querySelectorAll<HTMLInputElement>(".training-packet-filters input");
-    expect(inputs).toHaveLength(6);
+    expect(inputs).toHaveLength(7);
     for (const input of inputs) {
       const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
       input.dispatchEvent(enter);
@@ -232,99 +613,67 @@ describe("training lobby", () => {
       input.dispatchEvent(letter);
       expect(letter.defaultPrevented).toBe(false);
     }
-    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
+    expect(lobbyBodies(request).length).toBe(0);
   });
 
-  it("saves valid settings independently of invalid catalogue year bounds", async () => {
-    const { root, request } = create();
-    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
-    tab(root, 1);
-    const bounds = root.querySelectorAll<HTMLInputElement>('.training-packet-filters input[type="number"]');
-    expect(bounds).toHaveLength(4);
-    bounds.forEach((input) => { input.value = "999"; expect(input.checkValidity()).toBe(false); });
-    tab(root, 2);
-    const form = root.querySelector<HTMLFormElement>(".training-options form")!;
-    expect(form.checkValidity()).toBe(true);
-    form.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
-      "/api/miniapp/training/lobby", expect.objectContaining({ method: "POST" }),
-    ));
-  });
-
-  it.each(["", "0", "3600"])("validates detached hidden time %j before saving", async (value) => {
-    const { root, request } = create();
-    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
-    tab(root, 2);
-    const picker = root.querySelector<HTMLSelectElement>(".training-modifier-picker select")!;
-    picker.value = "hidden";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    const seconds = root.querySelector<HTMLInputElement>('.training-modifier-config input[type="number"]')!;
-    seconds.value = value;
-    picker.value = "reversed";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    expect(root.contains(seconds)).toBe(false);
-    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    expect(picker.value).toBe("hidden");
-    expect(root.contains(seconds)).toBe(true);
-    expect(seconds.validity.valid).toBe(false);
-    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
-    seconds.value = "5";
-    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
-      "/api/miniapp/training/lobby", expect.objectContaining({ body: expect.objectContaining({
-        settings: expect.objectContaining({ hidden_after: 5 }),
-      }) })));
-  });
-
-  it("disables Save after retiring the selected packet and re-enables it on selection", async () => {
-    const { root, request } = create();
+  it("retains authoritative retired selection and unsaved settings without inventing deselection", async () => {
+    const { root, request } = create({ current: { session: null, lobby: { ...lobby, version: 4 } } });
     await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
     const save = root.querySelector<HTMLButtonElement>('.training-options button[type="submit"]')!;
     expect(save.disabled).toBe(false);
+    const buzzTimer = settingInput(root, "Buzz timer (seconds)");
+    buzzTimer.value = "12";
+    buzzTimer.dispatchEvent(new Event("input", { bubbles: true }));
     vi.spyOn(window, "confirm").mockReturnValue(true);
     packetCards(root)[0]!.querySelector<HTMLButtonElement>(".danger-button")!.click();
-    await vi.waitFor(() => expect(save.disabled).toBe(true));
+    await vi.waitFor(() => expect(status(root)).toContain("saved packet was deleted"));
     expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
-      .toBe("No packet selected");
-    save.click();
-    expect(request.mock.calls.some(([path]) => path.endsWith("/lobby"))).toBe(false);
-    root.querySelector<HTMLButtonElement>('button[data-select="two"]')!.click();
+      .toBe("Alpha packet");
+    expect(request).toHaveBeenCalledWith("/api/miniapp/training/current", expect.anything());
+    // Settings remain independently savable using the authoritative version.
     expect(save.disabled).toBe(false);
     root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(
-      "/api/miniapp/training/lobby", expect.objectContaining({ body: expect.objectContaining({ version_id: "two" }) })));
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "save_settings", expected_version: 4,
+      settings: { buzz_timeout: 12 } });
   });
 
   it("shows upload controls separately without loading the packet picker", () => {
-    const { root, request } = create(true);
+    const { root, request } = create({ upload: true });
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
     expect(root.querySelector("nav")).toBeNull();
     expect(root.querySelector("fieldset")).toBeNull();
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("does not report success for stale saves", async () => {
-    const { root, request } = create();
-    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
-    request.mockRejectedValueOnce(new ApiError("stale_write", 409, false));
-    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(root.querySelector('[role="status"]')!.textContent).not.toBe(""));
-    expect(root.textContent).not.toContain("Saved. Return");
-  });
-
   it("localizes the redesigned training lobby in Russian", async () => {
-    const { root } = create(false, "ru");
+    const { root } = create({ locale: "ru" });
     expect(root.querySelector(".training-overview h2")!.textContent).toBe("Лобби тренировки");
     expect([...root.querySelectorAll(".training-overview .training-modifier-badge")].map((b) => b.textContent))
       .toEqual(["Обратный порядок слов", "Скрывать текст вопроса"]);
     tab(root, 2);
     const options = root.querySelector<HTMLElement>(".training-options")!;
     expect([...options.querySelectorAll(".descriptor-category")].map((n) => n.textContent))
-      .toEqual(["Модификаторы", "Тайминг", "Чтение"]);
+      .toEqual(["Модификаторы", "Лучшее нажатие", "Тайминг", "Чтение"]);
     expect(options.querySelector<HTMLSelectElement>(".training-modifier-picker select option")!.textContent)
       .toBe("Выберите модификатор для настройки");
+    const note = options.querySelector<HTMLElement>(".training-setting-override")!;
+    expect(note.hidden).toBe(false);
+    expect(note.textContent).toBe("Установлено модификатором «Скрывать текст вопроса»: 0 с.");
+    expect(options.querySelector<HTMLElement>(".training-best-buzz-group .training-modifier-description")!.textContent)
+      .toBe("Чтение приостанавливается в расчётной точке лучшего нажатия; нажмите «Продолжить чтение», чтобы показать остаток вопроса.");
     await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
     expect(detailValue(packetCards(root)[0]!, "Темы")).toBe("12");
     expect(detailValue(packetCards(root)[0]!, "В библиотеке знаний")).toBe("Да");
+    const mine = root.querySelector<HTMLElement>(".training-packet-filters")!
+      .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(mine.closest("label")!.textContent).toBe("Только мои загрузки");
   });
 });
+
+const detailValue = (card: HTMLElement, label: string): string => {
+  for (const row of card.querySelectorAll(".lobby-packet-detail")) {
+    if (row.querySelector("dt")!.textContent === label) return row.querySelector("dd")!.textContent ?? "";
+  }
+  throw new Error(`missing detail row: ${label}`);
+};

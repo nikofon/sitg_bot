@@ -1,0 +1,22 @@
+# Schema: https://kunchenguid.github.io/no-mistakes/reference/repo-config/
+# commands.* and test.instructions are trusted-default-branch settings. A feature
+# branch cannot activate these settings for its own validation; see the runbook.
+commands:
+  prepare: bash scripts/check.sh prepare
+  test: bash scripts/check.sh test
+  lint: bash scripts/check.sh lint
+test:
+  instructions: |
+    Read docs/database-operations.md, "Reproducible validation" and "Shared test
+    database lifecycle". Run the configured command; do not infer test commands
+    or install browser drivers. The workstream owner supplies TEST_DATABASE_URL
+    and SITG_TEST_DATABASE_TOKEN from its private record. Reuse that exact DB via
+    the lease wrapper for every DB consumer; never provision one DB per worker.
+    Do not drop it at step exit; the owner cleans it once all consumers finish.
+    Deterministic HTTP tests use aiohttp test utilities and fake LLM providers;
+    they are not live Telegram/browser/real-LLM acceptance. For an authorized
+    local HTTP drive keep the server and driver inside one database lease.
+    Browser/provider acceptance requires separate authorization and existing
+    browser tooling; unavailable tooling is a reported limitation, not an install
+    request or a reason to claim acceptance. See docs/training-ai.md for the
+    separately authorized real-provider smoke prerequisites.
