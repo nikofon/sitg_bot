@@ -28,7 +28,6 @@ def clean_provider_environment(monkeypatch):
     ("", "openai", "https://api.openai.com/v1/responses"),
     ("openai", "openai", "https://api.openai.com/v1/responses"),
     ("charm", "charm", "https://hyper.charm.land/v1/responses"),
-    ("hyper", "charm", "https://hyper.charm.land/v1/responses"),
 ])
 def test_server_selects_only_the_configured_provider(monkeypatch, selector, canonical, endpoint):
     if selector is not None:
@@ -43,7 +42,7 @@ def test_server_selects_only_the_configured_provider(monkeypatch, selector, cano
     assert "fixture-key" not in json.dumps(app.settings.redacted())
 
 
-@pytest.mark.parametrize("selector", ["unknown", "fake", "OPENAI", " charm "])
+@pytest.mark.parametrize("selector", ["unknown", "fake", "hyper", "OPENAI", " charm "])
 def test_unknown_provider_fails_without_guessing(monkeypatch, selector):
     monkeypatch.setenv(PROVIDER_ENV[2], selector)
     with pytest.raises(ValueError, match="SITG_TRAINING_AI_PROVIDER"):
@@ -73,9 +72,10 @@ async def test_absent_configuration_has_no_fake_or_network_fallback():
         )
 
 
-def test_production_factory_rejects_fake_provider():
+@pytest.mark.parametrize("selector", ["fake", "hyper"])
+def test_production_factory_rejects_unsupported_provider(selector):
     with pytest.raises(ValueError, match="PROVIDER"):
-        analysis_provider_from_settings(ProviderSettings("fake", "m"))
+        analysis_provider_from_settings(ProviderSettings(selector, "m"))
 
 
 def test_provider_configuration_is_owned_by_server_not_bot(monkeypatch):

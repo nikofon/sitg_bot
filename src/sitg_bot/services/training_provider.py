@@ -68,7 +68,7 @@ RESPONSES_ENDPOINTS = {
 
 def validate_provider_settings(settings):
     if settings.provider not in RESPONSES_ENDPOINTS:
-        raise ValueError("SITG_TRAINING_AI_PROVIDER must be openai or charm (hyper)")
+        raise ValueError("SITG_TRAINING_AI_PROVIDER must be openai or charm")
     if (not settings.model or any(char.isspace() for char in settings.model)):
         raise ValueError("SITG_TRAINING_AI_MODEL must be a nonempty model ID without whitespace")
     if settings.api_key and (
@@ -97,6 +97,9 @@ class ResponsesAnalysisProvider:
         if not self.settings.api_key or self.settings.model == "unconfigured":
             raise RuntimeError("Training AI provider is not configured")
         request_id = uuid4().hex
+        metadata = PROVIDER_CALL_METADATA.get()
+        if metadata is not None:
+            metadata["request_id"] = request_id
         async with self._semaphore:
             try:
                 async with (
@@ -134,12 +137,11 @@ class ResponsesAnalysisProvider:
                         },
                     ) as response,
                 ):
-                    upstream = response.headers.get("x-request-id", request_id)
-                    self.provider_request_ids.append(upstream)
+                    request_id = response.headers.get("x-request-id", request_id)
+                    self.provider_request_ids.append(request_id)
                     self.provider_request_ids = self.provider_request_ids[-100:]
-                    metadata = PROVIDER_CALL_METADATA.get()
                     if metadata is not None:
-                        metadata["request_id"] = upstream
+                        metadata["request_id"] = request_id
                     if response.status >= 300:
                         raise AnalysisValidationError(
                             "Provider rejected analysis request (HTTP " + str(response.status) + ")"

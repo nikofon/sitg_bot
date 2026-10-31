@@ -144,7 +144,7 @@ smoke acceptance remain explicit deployment prerequisites; implementation tests 
 
 | Variable | Contract |
 | --- | --- |
-| `SITG_TRAINING_AI_PROVIDER` | `openai` (default when absent/empty), `charm` (alias `hyper`) |
+| `SITG_TRAINING_AI_PROVIDER` | `openai` (default when absent/empty), `charm` |
 | `SITG_TRAINING_AI_MODEL` | Exact server-selected model ID; no production default or GLM version pin |
 | `SITG_TRAINING_AI_API_KEY` | Private key belonging to the selected provider; never a coding-agent credential |
 

@@ -86,7 +86,7 @@ def dissection_text(question):
 def provider_settings_from_environment():
     provider = os.getenv("SITG_TRAINING_AI_PROVIDER") or "openai"
     settings = ProviderSettings(
-        provider="charm" if provider == "hyper" else provider,
+        provider=provider,
         model=os.getenv("SITG_TRAINING_AI_MODEL") or "unconfigured",
         api_key=os.getenv("SITG_TRAINING_AI_API_KEY") or None,
     )

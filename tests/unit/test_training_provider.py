@@ -1,5 +1,8 @@
+import asyncio
 import json
 import re
+from dataclasses import replace
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -8,6 +11,7 @@ from aiohttp.test_utils import TestServer
 from pydantic import ValidationError
 
 from sitg_bot.domain.game_settings import announcement_tokens
+from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.training_ai import (
     PROVIDER_CALL_METADATA,
     AnalysisValidationError,
@@ -17,6 +21,7 @@ from sitg_bot.services.training_ai import (
     ExtractionRequest,
     ProviderOutcomeUncertain,
     ProviderSettings,
+    ProviderTimeout,
     QuestionText,
     packet_chunks,
     validate_fact_candidates,
@@ -40,7 +45,8 @@ def provider(monkeypatch, provider_name):
 
 
 def mock_provider(monkeypatch, output, *, provider_name, status="completed", chunk_size=17,
-                  response_size=None, http_status=200, usage=None, failure=None):
+                  response_size=None, http_status=200, usage=None, failure=None,
+                  stall_before_headers=False):
     calls = []
     response = {
         "output": [
@@ -67,6 +73,8 @@ def mock_provider(monkeypatch, output, *, provider_name, status="completed", chu
 
     class Context:
         async def __aenter__(self):
+            if stall_before_headers and calls:
+                await asyncio.Future()
             return self
 
         async def __aexit__(self, *args):
@@ -204,10 +212,45 @@ async def test_provider_errors_never_retry_or_switch_endpoint(provider, http_sta
 
 async def test_provider_timeout_is_uncertain_without_retry(provider):
     instance, calls = provider({}, failure=TimeoutError())
-    with pytest.raises(ProviderOutcomeUncertain) as error:
-        await instance.extract_facts(ExtractionRequest((), "", "en"))
-    assert error.value.provider_request_id == calls[0][1]["headers"]["X-Client-Request-Id"]
+    metadata = {}
+    token = PROVIDER_CALL_METADATA.set(metadata)
+    try:
+        with pytest.raises(ProviderOutcomeUncertain) as error:
+            await instance.extract_facts(ExtractionRequest((), "", "en"))
+    finally:
+        PROVIDER_CALL_METADATA.reset(token)
+    assert error.value.provider_request_id == "upstream-test"
+    assert metadata == {"request_id": "upstream-test"}
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("operation,operation_request", [
+    ("extract_facts", ExtractionRequest((), "", "en")),
+    ("decide_cached_facts", CachedFactsRequest((), "", "en")),
+    ("transform_cached_facts", CachedFactsRequest((), "", "en")),
+    ("best_buzz_boundaries", BuzzRequest((), "en")),
+    ("estimate_common_knowledge", CommonKnowledgeRequest("Fact", "en", "all")),
+])
+async def test_service_deadline_before_headers_retains_current_request_id(
+    provider, operation, operation_request,
+):
+    instance, calls = provider({}, stall_before_headers=True)
+    instance.provider_request_ids.append("unrelated-earlier-call")
+    service = AnalysisService(
+        object(), object(), instance,
+        replace(instance.settings, timeout=timedelta(milliseconds=20)),
+    )
+    metadata_token = service._provider_metadata.set([])
+    try:
+        with pytest.raises(ProviderTimeout):
+            await service._provider_call(getattr(instance, operation), operation_request)
+        assert len(calls) == 1
+        client_id = calls[0][1]["headers"]["X-Client-Request-Id"]
+        assert client_id
+        assert service._provider_request_ids() == [client_id]
+        assert service._usage_payload()["calls"] == [{"request_id": client_id}]
+    finally:
+        service._provider_metadata.reset(metadata_token)
 
 
 async def test_documented_hyper_response_without_status_and_usage_aliases(monkeypatch):
