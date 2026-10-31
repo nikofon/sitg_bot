@@ -1,6 +1,9 @@
 # Schema: https://kunchenguid.github.io/no-mistakes/reference/repo-config/
 # commands.* and test.instructions are trusted-default-branch settings. A feature
 # branch cannot activate these settings for its own validation; see the runbook.
+# Positive no-CI declaration; also trusted-default-branch only. Reconfirm absence
+# before bypassing CI; this branch cannot activate it for its own run.
+no_ci: true
 commands:
   prepare: bash scripts/check.sh prepare
   test: bash scripts/check.sh test
@@ -9,7 +12,21 @@ test:
   instructions: |
     Read docs/database-operations.md, "Reproducible validation" and "Shared test
     database lifecycle". Run the configured command; do not infer test commands
-    or install browser drivers. The workstream owner supplies TEST_DATABASE_URL
+    or install browser drivers. Use only existing documented commands/tools.
+    Before creating or executing any new test driver, script, harness or execution
+    helper (including temporary, untracked or inline ad-hoc drivers), ask Firstmate
+    through the existing ask-user channel. State the accepted behavior needing
+    evidence, why existing commands cannot provide it, and the smallest tool and
+    cleanup scope. Only explicit Firstmate permission for absolutely necessary
+    tooling permits it; otherwise omit that extra check and report its coverage
+    as unverified, not passed. Existing required checks remain mandatory.
+    Before waiting for CI, verify actual project/forge workflow configuration and
+    required checks. Confirmed absence permits supported no-CI handling or a
+    CI-only skip; report CI not run, not green. Empty checks, registration delay,
+    disabled workflows or unreadable APIs alone do not prove absence. Configured
+    required/pending/failing checks remain mandatory. Do not create CI or change
+    merge authority, forge protections or config trust; see the runbook.
+    The workstream owner supplies TEST_DATABASE_URL
     and SITG_TEST_DATABASE_TOKEN from its private record. Reuse that exact DB via
     the lease wrapper for every DB consumer; never provision one DB per worker.
     Do not drop it at step exit; the owner cleans it once all consumers finish.

@@ -128,6 +128,16 @@ bash scripts/check.sh test          # all three scopes; propagates any failure
 bash scripts/check.sh lint          # Ruff on src, tests and migrations
 ```
 
+Use only existing documented test commands and tools. Before creating or executing
+any new test driver, script, harness or execution helper, including temporary,
+untracked and inline ad-hoc drivers, request explicit Firstmate permission through
+the existing ask-user/Firstmate channel. State the accepted behavior needing evidence,
+why existing commands cannot provide it, and the smallest proposed tool and cleanup
+scope. Firstmate approves only absolutely necessary tooling. Without that permission,
+omit the proposed extra check and report the coverage as unverified, not passed;
+existing required checks remain mandatory. A missing command is not permission to
+invent a replacement driver.
+
 These commands do not suppress baseline failures, select only passing tests, or count
 missing-DB skips as integration acceptance. An integration command without the private
 record fails before pytest. Report failures with their exact test IDs; previously recorded
@@ -148,6 +158,25 @@ the normal approved default-branch process for subsequent automatic use; do not 
 `allow_repo_commands` or bypass trust. Until then, a Test agent must explicitly use this
 checked-in runbook and the same commands. The database record must be supplied to every
 validation process by the owner; it is never committed or embedded in public configuration.
+
+#### CI absence and publication
+
+Before waiting for CI, verify current project/forge workflow configuration and required
+checks (including branch protections and applicable rulesets). An empty check list,
+registration delay, disabled workflow or unreadable API alone does not prove absence.
+If absence is confirmed, bypass CI waiting using supported no-CI handling or an
+explicitly authorized CI-only skip, and report **CI not run**, not green. Configured,
+required, pending or failing checks remain mandatory. Do not create CI just to complete
+validation, change forge protections, or infer worker merge authority from this policy.
+
+The supported native setting is top-level `no_ci: true` in `.no-mistakes.yaml`
+([authoritative configuration reference](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#no_ci)).
+It declares intentional CI absence and is honored only from the trusted forge default
+branch; it does not waive checks that exist. The declaration on `training_mode` cannot
+activate itself for this follow-up. Until normal approved default-branch publication,
+use an explicitly authorized `no-mistakes axi run --skip ci` only after confirming CI
+absence. Do not self-enable trust or publish to `master` as part of this task; the
+separate default-branch activation decision remains outstanding.
 
 Existing `tests/integration/test_website.py`, `test_training_gateway_retries.py` and the Knowledge
 HTTP unit tests exercise supported local HTTP interfaces with aiohttp test utilities; fake
