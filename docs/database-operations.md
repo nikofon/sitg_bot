@@ -128,6 +128,9 @@ bash scripts/check.sh test          # all three scopes; propagates any failure
 bash scripts/check.sh lint          # Ruff on src, tests and migrations
 ```
 
+Follow the test-tool permission policy in
+[`.no-mistakes.yaml` → `test.instructions`](../.no-mistakes.yaml).
+
 These commands do not suppress baseline failures, select only passing tests, or count
 missing-DB skips as integration acceptance. An integration command without the private
 record fails before pytest. Report failures with their exact test IDs; previously recorded
@@ -148,6 +151,21 @@ the normal approved default-branch process for subsequent automatic use; do not 
 `allow_repo_commands` or bypass trust. Until then, a Test agent must explicitly use this
 checked-in runbook and the same commands. The database record must be supplied to every
 validation process by the owner; it is never committed or embedded in public configuration.
+
+#### CI absence and publication
+
+Follow the CI-absence policy in
+[`.no-mistakes.yaml` → `test.instructions`](../.no-mistakes.yaml), checking branch
+protections and applicable rulesets as part of the required-check configuration.
+
+The supported native setting is top-level `no_ci: true` in `.no-mistakes.yaml`
+([authoritative configuration reference](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#no_ci)).
+It declares intentional CI absence and is honored only from the trusted forge default
+branch; it does not waive checks that exist. A feature-branch declaration cannot
+activate itself for its own run. Until normal approved default-branch publication,
+use an explicitly authorized `no-mistakes axi run --skip ci` only after confirming CI
+absence. Do not self-enable trust or publish to `master` as part of this task; the
+separate default-branch activation decision remains outstanding.
 
 Existing `tests/integration/test_website.py`, `test_training_gateway_retries.py` and the Knowledge
 HTTP unit tests exercise supported local HTTP interfaces with aiohttp test utilities; fake
