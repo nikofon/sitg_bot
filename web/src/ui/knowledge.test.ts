@@ -349,6 +349,72 @@ describe("knowledge tabs", () => {
 });
 
 describe("collapsed fact cards", () => {
+  it("cascades normal description color in saved facts and import reviews without restyling metadata", async () => {
+    const style = document.createElement("style");
+    style.textContent = stylesheet;
+    document.body.append(style);
+    const cascadedColor = (target: Element): string | undefined => {
+      const declarations = Array.from(style.sheet!.cssRules).flatMap((rule, order) => {
+        if (!(rule instanceof CSSStyleRule) || !rule.style.color) return [];
+        return rule.selectorText.split(",").filter((selector) => target.matches(selector))
+          .map((selector) => {
+            const tokens = selector.trim().split(/\s+|(?=[.#])/);
+            expect(tokens.every((token) => /^(?:[.#]?[\w-]+|\*)$/.test(token))).toBe(true);
+            return {
+              color: rule.style.color,
+              important: Number(rule.style.getPropertyPriority("color") === "important"),
+              ids: tokens.filter((token) => token.startsWith("#")).length,
+              classes: tokens.filter((token) => token.startsWith(".")).length,
+              types: tokens.filter((token) => /^[a-z]/i.test(token)).length,
+              order,
+            };
+          });
+      });
+      declarations.sort((a, b) => a.important - b.important || a.ids - b.ids
+        || a.classes - b.classes || a.types - b.types || a.order - b.order);
+      return declarations.at(-1)?.color;
+    };
+    const candidate = {
+      id: "candidate-1", title: "Incoming fact", description: "Incoming description",
+      author: "Ada", links: [], images: [], tag_names: [], selected: true,
+    };
+    const review = {
+      id: "import-1", type: "collection", author: "Ada", status: "pending",
+      fact_count: 1, packet_name: null, created_at: "2026-10-02T12:00:00Z", request_id: null,
+    };
+    const controller = new AbortController();
+    try {
+      const { root, button } = render(structuredClone(data), actions({
+        signal: controller.signal,
+        loadImports: vi.fn().mockResolvedValue({ items: [review], next_cursor: null }),
+        loadImportDetail: vi.fn().mockResolvedValue({ ...review, approved_count: 0,
+          sections: { new: [candidate], potential_duplicates: [], duplicates: [] } }),
+      }));
+      root.querySelector<HTMLButtonElement>('[data-fact-id="fact-1"] .knowledge-fact-header')!.click();
+      await flush();
+      const saved = root.querySelector<HTMLElement>(".knowledge-fact-body p")!;
+      expect(saved.textContent).toBe("detail");
+      expect(cascadedColor(saved)).toBe("var(--tg-theme-text-color)");
+      expect(getComputedStyle(saved).whiteSpace).toBe("pre-line");
+      const metadata = document.createElement("p");
+      metadata.textContent = "Ordinary card metadata";
+      saved.closest(".resource-card")!.append(metadata);
+      expect(cascadedColor(metadata)).toBe("var(--tg-theme-hint-color)");
+
+      button("knowledge.tab.imports")!.click();
+      await flush();
+      button("knowledge.imports.review")!.click();
+      await flush();
+      document.querySelector<HTMLButtonElement>('[data-candidate-id="candidate-1"] .knowledge-theme-toggle')!.click();
+      const incoming = document.querySelector<HTMLElement>(".knowledge-candidate-body p")!;
+      expect(incoming.textContent).toBe(candidate.description);
+      expect(cascadedColor(incoming)).toBe("var(--tg-theme-text-color)");
+      expect(getComputedStyle(incoming).whiteSpace).toBe("pre-line");
+    } finally {
+      controller.abort();
+    }
+  });
+
   it("shows only fact names until a card is expanded", async () => {
     const detail: KnowledgeFactDetail = {
       id: "fact-1", title: "Battle of Austerlitz", description: "1805 battle",

@@ -2197,7 +2197,7 @@ p {
 }
 
 /* The description is the fact's core content: plain regular body text. */
-.knowledge-fact-description {
+p.knowledge-fact-description {
   margin: 0;
   white-space: pre-line;
   color: var(--tg-theme-text-color);
