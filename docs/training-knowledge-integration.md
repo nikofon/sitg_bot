@@ -24,10 +24,8 @@ See [database operations](database-operations.md#schema-baseline) for migrations
   recovery records persist. Public bare cache routing is described in [training-ai.md](training-ai.md).
   Instructions/comments remain verbatim,
   including whitespace and ambiguous dates such as “before 1500 A.C.”.
-- The server supports configurable OpenAI or Charm Hyper Responses with strict structured
-  outputs and no cross-provider fallback. Absent/empty provider selection preserves OpenAI;
-  no model or credential is assumed. Without configuration, ordinary training,
-  manual facts, sharing and uploads remain usable; AI is unavailable.
+- Provider selection, configuration defaults and unconfigured behavior belong in
+  [Training AI setup](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
 - The basic free plan allows 24 themes for dissection and a separate 24 themes for
   Best buzz per trainee per day; Common knowledge remains 50 estimates per day.
   Packet requests reserve their distinct theme count, settle that count on success,
@@ -58,10 +56,7 @@ See [database operations](database-operations.md#schema-baseline) for migrations
 
 Provider setup, policy enablement and live acceptance prerequisites belong in
 [Training AI](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
-The shared adapter follows the official
-[structured outputs documentation](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)
-and [Hyper's Responses pass-through contract](https://hyper.charm.land/docs/api/openai-responses.md);
-provider/model examples and model-ID evidence are in the setup guide.
+The same guide owns provider API evidence and exact model-ID examples.
 
 Facts keep content and provenance in separate fields. Ordered links, provenance,
 application outcomes and immutable statistic snapshots use JSONB; tags and
@@ -203,16 +198,12 @@ exposure confirmation, including trusted author, theme commentary, questions and
 Existing instructions/comments, quotas and cancellation remain enforced server-side. Dissection identity lookup is exact even
 when the request is older than the bounded 100-row history listing.
 
-Queued or expired/checkpointed analysis is rejected and its reservations released
-if the recorded provider/model execution profile differs from the worker
-configuration (including versions and execution bounds), or is absent on legacy work.
-New cache lookups and Best-buzz preparation require the same profile; rotating the key alone
-preserves compatibility. A compatible completed artifact remains readable through the existing
-access checks. New statistic snapshots use the producing artifact's model and
-versions, not the current application configuration. This does not migrate old
-metadata, promise compatibility across arbitrary restarts, or alter Best-buzz
-position representation. Statistics batches acquire accounts in UUID order, matching
-collection imports and direct copying.
+Execution-profile compatibility, cache isolation and legacy-work handling belong in
+[Training AI caching](training-ai.md#analysis-requests-jobs-and-caching).
+New statistic snapshots use the producing artifact's model and versions, not the current
+application configuration; historical metadata and Best-buzz position representation remain
+unchanged. Statistics batches acquire accounts in UUID order, matching collection imports
+and direct copying.
 
 ## Adapters
 

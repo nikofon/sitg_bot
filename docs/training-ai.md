@@ -25,8 +25,13 @@ batches (`packet_chunks`, never splitting a question; oversized questions are
 rejected with `SourceTooLarge`). All provider output is validated:
 deterministic candidate IDs, question provenance, absolute http(s) links,
 full boundary coverage with digests and token ranges, 0–100 estimates.
-Uncertain outcomes (`ProviderOutcomeUncertain`) record upstream request IDs
-because local idempotency cannot guarantee one provider charge.
+Call-scoped metadata records the client request ID before transport, replacing it with
+`x-request-id` when response headers arrive. Pre-header deadlines therefore retain the
+current call's identity, not an earlier call's ID; a client ID alone does not prove dispatch.
+Checkpoint, completion and failure accounting use only the current job's calls: zero-call
+cache work records no request IDs or token usage. Uncertain outcomes
+(`ProviderOutcomeUncertain`) still require explicit retry because local idempotency
+cannot guarantee one provider charge.
 
 ## Analysis requests, jobs and caching
 
@@ -219,6 +224,8 @@ bash scripts/check.sh lint
 
 These suites cover both providers' five operations, fixed routing and auth, errors/no fallback,
 configuration defaults, Compose's normalized server-only environment, and profile isolation/fencing.
+`test_service_deadline_before_headers_retains_current_request_id` covers call identity;
+`test_zero_call_cache_work_persists_no_unrelated_provider_ids` covers zero-call accounting.
 
 For persistence/entitlement changes run the targeted suites: `tests/unit/test_training_ai.py`,
 `tests/unit/test_entitlements_policy.py`, then the PostgreSQL integration

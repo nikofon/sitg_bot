@@ -13,8 +13,8 @@ For the complete Docker stack with HTTPS, see [VPS deployment](deployment.md).
 The Telegram process loads `.env` through [Settings](../src/sitg_bot/config.py).
 `sitg-server`, Alembic, and database CLIs read exported environment variables instead.
 [.env.example](../.env.example) lists the available configuration.
-For optional server-only `SITG_TRAINING_AI_PROVIDER` (`openai` by default or `charm`),
-`SITG_TRAINING_AI_MODEL`, `SITG_TRAINING_AI_API_KEY`, server recreation and policy enablement, see
+For optional server-only AI configuration, provider/model selection, server recreation and
+policy enablement, see
 [Training AI setup](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
 
 | Variable | SITG-specific behavior |
