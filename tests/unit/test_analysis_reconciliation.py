@@ -1,4 +1,6 @@
+import json
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -100,6 +102,54 @@ async def test_production_request_admits_entitled_requests_and_replays(monkeypat
         )
         session.flush.assert_awaited_once()
     assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
+
+
+@pytest.mark.parametrize("kind", ["dissection", "best_buzz", "common_knowledge"])
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("change", [
+    {"provider": "charm"}, {"model": "different-model"}, {"max_output_facts": 100},
+    {"max_chunk_characters": 6000}, {"prompt_version": "3"}, {"api_key": "rotated-key"},
+])
+async def test_all_artifact_and_public_cache_identities_pin_execution_profile(
+    monkeypatch, kind, private, change,
+):
+    packet, question = uuid4(), uuid4()
+    source = {
+        "dissection": DissectionSource(packet, (question,)),
+        "best_buzz": BestBuzzSource(packet, (question,)),
+        "common_knowledge": CommonKnowledgeSource("Fact"),
+    }[kind]
+    service = AnalysisService(object(), object(), FakeAnalysisProvider(),
+                              ProviderSettings("openai", "same-model"))
+    service._request_row = AsyncMock(return_value=None)
+    artifact = SimpleNamespace(id=uuid4(), status="pending", generation=1)
+    service._artifact_for_key = AsyncMock(return_value=artifact)
+    public_lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr("sitg_bot.services.analysis_jobs.public_base", public_lookup)
+    monkeypatch.setattr("sitg_bot.services.analysis_jobs.DurableJobQueue.schedule_in_session",
+                        AsyncMock())
+
+    def add(row):
+        row.status = "queued"
+
+    session = SimpleNamespace(add=add, flush=AsyncMock())
+    owner = uuid4()
+    for settings in (service.settings, replace(service.settings, **change)):
+        service.settings = settings
+        await service.request(session, owner_player_id=owner, source=source, private=private,
+                              idempotency_key="same-request")
+    first, second = service._artifact_for_key.await_args_list
+    credential_rotation = "api_key" in change
+    assert (first.args[1] == second.args[1]) is credential_rotation
+    assert (first.kwargs["source_fingerprint"] == second.kwargs["source_fingerprint"]) \
+        is credential_rotation
+    assert second.kwargs["provider_usage"]["execution_profile"] == settings.execution_profile
+    assert "rotated-key" not in json.dumps(second.kwargs["provider_usage"])
+    if kind == "dissection" and not private:
+        a, b = public_lookup.await_args_list
+        assert (a.args[2] == b.args[2]) is credential_rotation
+    else:
+        public_lookup.assert_not_awaited()
 
 
 @pytest.mark.parametrize("current_status", ["pending", "running", "succeeded", "cancelled"])
@@ -242,13 +292,15 @@ async def test_obsolete_worker_error_cannot_fail_or_expire_the_current_generatio
 
 @pytest.mark.parametrize("field", [
     None, "model", "prompt_version", "schema_version", "tokenizer_version",
+    "provider", "max_chunk_characters", "max_output_facts", "legacy",
 ])
 @pytest.mark.parametrize("status", ["pending", "running"])
 @pytest.mark.parametrize("kind", ["dissection", "best_buzz", "common_knowledge"])
 async def test_execution_profile_is_checked_before_provider_computation(field, status, kind):
     settings = ProviderSettings("fake", "model-b")
     artifact = SimpleNamespace(
-        id=uuid4(), generation=1, status=status, kind=kind, provider_usage=None,
+        id=uuid4(), generation=1, status=status, kind=kind,
+        provider_usage={"execution_profile": settings.execution_profile},
         lease_expires_at=datetime.now(UTC) if status == "running" else None,
         lease_token=uuid4() if status == "running" else None,
         checkpoint={"chunks_done": 0, "partial": []},
@@ -256,7 +308,13 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
             "model", "prompt_version", "schema_version", "tokenizer_version",
         )},
     )
-    if field is not None:
+    if field == "legacy":
+        artifact.provider_usage = None
+    elif field in ("provider", "max_chunk_characters", "max_output_facts"):
+        artifact.provider_usage = {"execution_profile": replace(settings, **{
+            field: "other" if field == "provider" else getattr(settings, field) + 1,
+        }).execution_profile}
+    elif field is not None:
         setattr(artifact, field, "prior-profile")
     request = SimpleNamespace(owner_player_id=uuid4(), instructions="", source={}, status="queued")
     session = SimpleNamespace(
@@ -292,6 +350,26 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
     assert provider.extract_calls == provider.buzz_calls == provider.knowledge_calls == []
     service._run_packet_scan.assert_not_awaited()
     service._run_common_knowledge.assert_not_awaited()
+
+
+@pytest.mark.parametrize("profile", ["current", "other-provider", None])
+@pytest.mark.parametrize("schema_version", ["1", "2"])
+async def test_prepared_best_buzz_requires_current_execution_profile(profile, schema_version):
+    app = KnowledgeApplication(object())
+    artifact = SimpleNamespace(
+        provider_usage={"execution_profile": (
+            app.settings.execution_profile if profile == "current" else profile
+        )}, schema_version=schema_version, tokenizer_version="announcement-v1",
+        payload={"boundaries": []},
+    )
+    request = SimpleNamespace(source={"question_token_target_chars": 10})
+    session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+        first=lambda: (artifact, request),
+    )))
+    result = await app.prepared(session, uuid4(), SimpleNamespace(
+        version_id=uuid4(), fingerprint="source", questions=[],
+    ))
+    assert result == ({} if profile == "current" else None)
 
 
 async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):
@@ -366,7 +444,8 @@ async def test_uncertain_provider_error_is_written_with_the_current_compute_toke
     settings = ProviderSettings("fake", "m")
     artifact = SimpleNamespace(
         id=uuid4(), generation=1, status="pending", kind="common_knowledge",
-        lease_token=None, lease_expires_at=None, provider_usage=None,
+        lease_token=None, lease_expires_at=None,
+        provider_usage={"execution_profile": settings.execution_profile},
         **{name: getattr(settings, name) for name in (
             "model", "prompt_version", "schema_version", "tokenizer_version",
         )},

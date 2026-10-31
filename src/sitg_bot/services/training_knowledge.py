@@ -45,7 +45,11 @@ from sitg_bot.services.training_ai import (
     text_fingerprint,
 )
 from sitg_bot.services.training_packets import TrainingPacketService
-from sitg_bot.services.training_provider import ResponsesAnalysisProvider
+from sitg_bot.services.training_provider import (
+    ResponsesAnalysisProvider,
+    analysis_provider_from_settings,
+    validate_provider_settings,
+)
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     KnowledgeFactRecord,
@@ -80,11 +84,14 @@ def dissection_text(question):
 
 
 def provider_settings_from_environment():
-    return ProviderSettings(
-        provider="openai",
+    provider = os.getenv("SITG_TRAINING_AI_PROVIDER") or "openai"
+    settings = ProviderSettings(
+        provider=provider,
         model=os.getenv("SITG_TRAINING_AI_MODEL") or "unconfigured",
         api_key=os.getenv("SITG_TRAINING_AI_API_KEY") or None,
     )
+    validate_provider_settings(settings)
+    return settings
 
 
 class TrainingAnalysisAccess:
@@ -159,7 +166,7 @@ class KnowledgeApplication:
         self.analysis = analysis or AnalysisService(
             database,
             DurableJobQueue(database, lease_duration=timedelta(hours=1)),
-            ResponsesAnalysisProvider(self.settings),
+            analysis_provider_from_settings(self.settings),
             self.settings,
             entitlements=self.entitlements,
             source_loader=TrainingAnalysisAccess(database, self.packets),
@@ -1087,6 +1094,8 @@ class KnowledgeApplication:
                 == str(source.version_id),
                 TrainingAnalysisRequestRecord.source["content_fingerprint"].astext
                 == source.fingerprint,
+                TrainingAnalysisArtifactRecord.provider_usage["execution_profile"].astext
+                == self.settings.execution_profile,
             )
             .order_by(TrainingAnalysisRequestRecord.created_at.desc())
             .limit(1)
@@ -1095,7 +1104,9 @@ class KnowledgeApplication:
         if pair is None:
             return None
         artifact, request = pair
-        if (artifact.schema_version not in ("1", "2")
+        if ((artifact.provider_usage or {}).get("execution_profile")
+                != self.settings.execution_profile
+                or artifact.schema_version not in ("1", "2")
                 or artifact.tokenizer_version != "announcement-v1"):
             return None
         by_id = {question.revision_id: question for question in source.questions}

@@ -1,4 +1,8 @@
-"""Configured Responses API provider; tests inject the existing fake port."""
+"""OpenAI and Charm Hyper Responses APIs; no cross-provider fallback.
+
+Hyper documents a Responses pass-through at /v1/responses:
+https://hyper.charm.land/docs/api/openai-responses.md
+"""
 
 import asyncio
 import json
@@ -56,17 +60,46 @@ class CommonEstimate(StrictOutput):
     value: int = Field(ge=0, le=100)
 
 
+RESPONSES_ENDPOINTS = {
+    "openai": "https://api.openai.com/v1/responses",
+    "charm": "https://hyper.charm.land/v1/responses",
+}
+
+
+def validate_provider_settings(settings):
+    if settings.provider not in RESPONSES_ENDPOINTS:
+        raise ValueError("SITG_TRAINING_AI_PROVIDER must be openai or charm")
+    if (not settings.model or any(char.isspace() for char in settings.model)):
+        raise ValueError("SITG_TRAINING_AI_MODEL must be a nonempty model ID without whitespace")
+    if settings.api_key and (
+        settings.api_key != settings.api_key.strip()
+        or any(char in settings.api_key for char in "\r\n")
+    ):
+        raise ValueError("SITG_TRAINING_AI_API_KEY contains invalid whitespace")
+    if (settings.provider == "openai" and settings.api_key
+            and settings.api_key.startswith("sk-hyper-")):
+        raise ValueError("A Hyper key requires SITG_TRAINING_AI_PROVIDER=charm")
+
+
+def analysis_provider_from_settings(settings):
+    return ResponsesAnalysisProvider(settings)
+
+
 class ResponsesAnalysisProvider:
-    def __init__(self, settings, *, endpoint="https://api.openai.com/v1/responses"):
+    def __init__(self, settings):
+        validate_provider_settings(settings)
         self.settings = settings
-        self.endpoint = endpoint
+        self.endpoint = RESPONSES_ENDPOINTS[settings.provider]
         self.provider_request_ids = []
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
 
     async def _generate(self, schema, task, data):
-        if not self.settings.api_key:
+        if not self.settings.api_key or self.settings.model == "unconfigured":
             raise RuntimeError("Training AI provider is not configured")
         request_id = uuid4().hex
+        metadata = PROVIDER_CALL_METADATA.get()
+        if metadata is not None:
+            metadata["request_id"] = request_id
         async with self._semaphore:
             try:
                 async with (
@@ -77,6 +110,7 @@ class ResponsesAnalysisProvider:
                     ) as session,
                     session.post(
                         self.endpoint,
+                        allow_redirects=False,
                         headers={
                             "Authorization": "Bearer " + self.settings.api_key,
                             "X-Client-Request-Id": request_id,
@@ -103,10 +137,12 @@ class ResponsesAnalysisProvider:
                         },
                     ) as response,
                 ):
-                    upstream = response.headers.get("x-request-id", request_id)
-                    self.provider_request_ids.append(upstream)
+                    request_id = response.headers.get("x-request-id", request_id)
+                    self.provider_request_ids.append(request_id)
                     self.provider_request_ids = self.provider_request_ids[-100:]
-                    if response.status >= 400:
+                    if metadata is not None:
+                        metadata["request_id"] = request_id
+                    if response.status >= 300:
                         raise AnalysisValidationError(
                             "Provider rejected analysis request (HTTP " + str(response.status) + ")"
                         )
@@ -120,25 +156,36 @@ class ResponsesAnalysisProvider:
                         if len(raw) > limit:
                             raise AnalysisValidationError("Provider response exceeds size limit")
                     payload = json.loads(raw)
-                    metadata = PROVIDER_CALL_METADATA.get()
+                    if not isinstance(payload, dict):
+                        raise AnalysisValidationError("Provider response must be an object")
                     if metadata is not None:
-                        metadata.update(
-                            {
-                                "request_id": upstream,
-                                "usage": {
-                                    key: value
-                                    for key, value in payload.get("usage", {}).items()
-                                    if key in ("input_tokens", "output_tokens", "total_tokens")
-                                    and type(value) is int
-                                    and value >= 0
-                                },
+                        usage = payload.get("usage") or {}
+                        if not isinstance(usage, dict):
+                            raise AnalysisValidationError("Provider usage must be an object")
+                        # Hyper's published Responses example uses Chat usage names.
+                        if self.settings.provider == "charm":
+                            usage = {
+                                **usage,
+                                "input_tokens": usage.get(
+                                    "input_tokens", usage.get("prompt_tokens")
+                                ),
+                                "output_tokens": usage.get(
+                                    "output_tokens", usage.get("completion_tokens")
+                                ),
                             }
-                        )
+                        metadata["usage"] = {
+                            key: value for key, value in usage.items()
+                            if key in ("input_tokens", "output_tokens", "total_tokens")
+                            and type(value) is int and value >= 0
+                        }
             except (TimeoutError, aiohttp.ClientError) as error:
                 raise ProviderOutcomeUncertain(
                     "Provider response was not received", provider_request_id=request_id
                 ) from error
-        if payload.get("status") != "completed":
+        # Hyper's documented non-streaming example omits status; explicit
+        # incomplete/failed statuses still fail closed on both APIs.
+        default_status = "completed" if self.settings.provider == "charm" else None
+        if payload.get("status", default_status) != "completed":
             raise AnalysisValidationError("Provider response is incomplete")
         texts = [
             part["text"]

@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
 from sitg_bot.services.analysis_cache import candidate_payload, run_cached_dissection
+from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.training_ai import (
     AnalysisValidationError,
     CachedFactsDecision,
@@ -77,6 +79,39 @@ async def test_compatible_bare_facts_make_zero_calls_and_subset_tags(monkeypatch
     assert not harness.provider.transform_calls
     assert harness.terminal["payload"]["candidates"][0]["tags"] == ["art"]
     assert harness.payload["candidates"][0]["tags"] == ["history", "art"]  # immutable base
+
+
+async def test_zero_call_cache_work_persists_no_unrelated_provider_ids(monkeypatch):
+    harness = RoutingHarness(monkeypatch, tags=("history", "art"))
+    harness.descriptor["tag_names"] = ["art"]
+    harness.provider.provider_request_ids.append("unrelated-earlier-call")
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=harness.artifact),
+        execute=AsyncMock(return_value=SimpleNamespace(rowcount=1)),
+    )
+    database = SimpleNamespace(transaction=MagicMock())
+    database.transaction.return_value.__aenter__.return_value = session
+    service = AnalysisService(database, object(), harness.provider, harness.settings)
+    service._complete_requests = AsyncMock()
+    token = service._provider_metadata.set([])
+    try:
+        assert await run_cached_dissection(
+            service, uuid4(), uuid4(), "", harness.descriptor,
+        )
+    finally:
+        service._provider_metadata.reset(token)
+    writes = [call.args[0].compile().params for call in session.execute.await_args_list]
+    assert len(writes) == 3
+    for values in writes:
+        assert values["provider_request_ids"] == []
+        assert values["provider_usage"]["calls"] == []
+    assert writes[-1]["status"] == "succeeded"
+    assert writes[-1]["payload"]["candidates"][0]["tags"] == ["art"]
+    assert harness.provider.provider_request_ids == ["unrelated-earlier-call"]
+    assert not harness.provider.extract_calls
+    assert not harness.provider.decision_calls
+    assert not harness.provider.transform_calls
+    service._complete_requests.assert_awaited_once()
 
 
 async def test_new_tags_use_cached_payload_not_packet_source(monkeypatch):
