@@ -1,6 +1,6 @@
 """Durable analysis execution and persistent artifact caching for training mode.
 
-Agent C module (see `docs/training-mode-plan.md`). Analysis requests are
+See `docs/training-ai.md` for the maintained subsystem guide. Analysis requests are
 owner-scoped and idempotent; computation is coalesced per immutable artifact
 and executed by durable ``training.analysis`` jobs claimed only by analysis
 workers. Artifacts are never mutated after success, and failures are never

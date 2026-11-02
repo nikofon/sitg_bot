@@ -33,6 +33,23 @@ opaque cursors, freshness and analysis metadata are specified in the
 Content and downloads load only on request. Queued downloads recheck rights before
 constructing the document.
 
+## Source access integration boundary
+
+`TrainingPacketService.authorize(session, player_id, version_id)` checks live
+owner/library rights without disclosure. `disclose` checks reservation conflicts,
+confirms exposure and returns immutable question revisions and a disclosure receipt.
+Analysis calls this boundary before cache lookup and rechecks authorization before
+processing, delivery and dissection review/approval. Theme metadata listing never
+discloses questions; preview/dissection burns only selected theme/question claims.
+Shared collection review snapshots grant no packet rights.
+
+Call `disclose` before taking account locks: it locks public tournaments,
+assignments and grants before the account, matching normal-game entry. Permission,
+exposure and request/quota creation share the caller's transaction. Retirement denies
+subsequent protected reads, including pinned sessions and analysis, while durable
+cleanup preserves history. Results and cancellation remain owner-scoped; shared
+artifacts grant no source rights. Cache identity belongs in [Training AI](training-ai.md#analysis-requests-jobs-and-caching).
+
 ## Execution and presentation
 
 Telegram training is keyboard-driven, without training-specific slash commands. The home
@@ -129,6 +146,21 @@ boundaries map to the pinned announcement-token stream. Playback pauses once and
 offers inline Continue reading while buzzing remains available. Missing preparation
 is reported explicitly. Normal-game modifier hooks default to disabled.
 
+### Best buzz playback port
+
+Playback accepts a validated per-question dictionary: `schema_version: 1`,
+`tokenizer_version: "announcement-v1"`, `question_revision_id` (UUID string),
+`text_digest` (SHA-256 of exact UTF-8 text), and `source_end` (exclusive source-word
+end offset; zero pauses before the first word). `best_buzz_cursor` maps it to the
+pinned `announcement_tokens` stream, pausing after a packed chunk if the boundary
+falls inside it. Unavailable/pending/failed analysis cannot start Best buzz.
+
+The provider currently persists a packed-token index, and `KnowledgeApplication.prepared`
+reconstructs the source offset from that chunk's end. The exact provider-selected
+word boundary can therefore be lost, particularly when preparation and playback use
+different chunk sizes. Exact-boundary persistence/compatibility remains unresolved;
+the port's character-offset validation does not establish lossless provider conversion.
+
 ## Training history
 
 The home keyboard's **Training history** text button supplies an authenticated
@@ -164,7 +196,6 @@ and the real shell navigation regression in `web/src/app.test.ts`.
 
 ## Knowledge and AI integration
 
-[Contracts](training-contracts.md) describe source access and Best buzz ports.
 Knowledge library is enabled in Telegram and at `/knowledge` in the Mini App.
 Facts, tags, staged permanent-copy sharing/dissection review, explicit selected-candidate
 approval and metered analysis use persistent storage. See the [integration guide](training-knowledge-integration.md)
