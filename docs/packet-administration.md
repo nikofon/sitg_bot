@@ -254,7 +254,7 @@ continue with their snapshots.
 Delete retires only the current tournament assignment, preventing discovery, play, and library
 access there without changing results or statistics. Release opens the adopted version's global
 library gate. The read decision requires both this gate and tournament-scoped read eligibility;
-the library reader itself remains unimplemented.
+the [Mini App library](mini-app.md#implemented-screens) provides reading and queued DOCX downloads.
 
 ## Validation rules
 

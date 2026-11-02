@@ -1,8 +1,8 @@
 # Training AI, analysis jobs and entitlements
 
-[Technical index](architecture.md) · [Training mode plan](training-mode-plan.md)
+[Technical index](architecture.md) · [Training](training.md)
 
-Agent C subsystem of the training mode plan. Modules:
+Modules:
 [services/training_ai.py](../src/sitg_bot/services/training_ai.py) (provider
 boundary), [services/analysis_jobs.py](../src/sitg_bot/services/analysis_jobs.py)
 (durable execution and artifact caching),
@@ -84,7 +84,9 @@ artifacts and requests.
 
 Best buzz boundaries are validated against the application
 `announcement_tokens` stream with pinned tokenizer settings
-(`question_token_target_chars`), never against provider token indexes.
+(`question_token_target_chars`), not a provider's tokenization. The
+[playback port](training.md#best-buzz-playback-port) documents the current
+packed-token persistence limitation.
 
 ## Categories, policies and metering
 

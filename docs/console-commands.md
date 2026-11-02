@@ -171,9 +171,9 @@ tournament create <token> <slug> "<name>" [options]
 | `--starts-at`, `--planned-ends-at` | Tournament dates |
 
 Dates must be ISO-8601 with timezone, e.g. `2026-10-01T10:00:00+03:00`.
-Finite tournaments require registration end, start, and planned finish. Creation makes you
-a manager, not a player. Run `tournament finalize` after configuring the tournament and before
-inviting players to play.
+Finite tournaments require a registration end at setup finalization; planned start and
+finish dates are optional. Creation makes you a manager, not a player. Run
+`tournament finalize` after configuring the tournament and before inviting players to play.
 
 ### Membership, metadata, and pricing
 

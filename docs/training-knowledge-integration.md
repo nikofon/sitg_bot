@@ -16,16 +16,10 @@ See [database operations](database-operations.md#schema-baseline) for migrations
   deleting the imported copy. Existing copies are preserved by migration.
   Tags and available current statistics are copied without new AI calls. Copies
   grant no packet rights and expose no private source metadata.
-- The user's confirmed policies apply: library-confirmation exposure, live access
-  checks, and no simultaneous normal play and active/paused training. Reverse
-  means word order; hidden text appears immediately for a configurable duration,
-  then disappears until reveal. Hidden/reverse combine; Best buzz excludes both.
-- Private uploads have no cross-request reusable analysis cache; only per-request
-  recovery records persist. Public bare cache routing is described in [training-ai.md](training-ai.md).
-  Instructions/comments remain verbatim,
-  including whitespace and ambiguous dates such as “before 1500 A.C.”.
-- Provider selection, configuration defaults and unconfigured behavior belong in
-  [Training AI setup](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims).
+- Training disclosure, cross-mode exclusion and modifiers belong in
+  [training](training.md); analysis cache isolation and provider setup belong in
+  [Training AI](training-ai.md). Instructions/comments remain verbatim, including
+  whitespace and ambiguous dates such as “before 1500 A.C.”.
 - The basic free plan allows 24 themes for dissection and a separate 24 themes for
   Best buzz per trainee per day; Common knowledge remains 50 estimates per day.
   Packet requests reserve their distinct theme count, settle that count on success,
@@ -243,16 +237,23 @@ Deleting a dissection import requires confirmation.
 Exposure prompts use explicit confirmation controls. See [training.md](training.md)
 for the keyboard-driven training lobby and settings flow.
 
-## Placeholders awaiting input
+## Outstanding requirements and limitations
 
-| Item | Placeholder |
-| --- | --- |
-| Provider | [Operator configuration](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims) |
-| Bingo examples | `<high-bingo fact, Mentions, Common knowledge estimate, desired score>` |
-| Bingo formula | `<calibrated versioned formula>` |
-| Ambiguous dates | `<meaning of A.C.>`; passed through verbatim |
-| GotQuestions | `<supported programmatic access and count semantics>` |
-| Commercial categories | Introductory defaults above; billing deferred |
+- Establish supported GotQuestions programmatic access and response/count semantics
+  before enabling Mentions. Do not assume an undocumented API or bypass throttling.
+  Mentions counts distinct matching question IDs across aliases/pages, retaining
+  query-policy version, retrieval time, sample matches and corpus size/date when
+  available. Partial/capped counts must not be presented as complete.
+- Calibrate a versioned Bingo formula against supplied examples (fact, Mentions,
+  Common knowledge estimate and desired score), including ordering, zero knowledge,
+  missing corpus counts and small samples. Until then, keep `pending_calibration`;
+  unavailable, denied and failed values are not zero.
+- Clarify ambiguous dates such as “before 1500 A.C.” without rewriting user input.
+  Commercial tiers/billing remain deferred; introductory defaults are above.
+- The legacy `KnowledgeService` dissection digest still joins instructions/comment
+  with a newline, so distinct arrangements can collide. The current persisted
+  `KnowledgeApplication` request path uses JSON-framed fields; no historical identity
+  conversion is implied. Legacy identity compatibility remains a follow-up.
 
 The upgrade converts existing active shares into recipient-owned copies and disables
 legacy source access. Downgrading retains the copied facts. The deprecated revoke

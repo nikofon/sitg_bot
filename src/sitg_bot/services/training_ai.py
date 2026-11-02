@@ -1,6 +1,6 @@
 """Provider-neutral AI analysis boundary for training mode.
 
-Agent C module (see `docs/training-mode-plan.md`). It defines the structured
+See `docs/training-ai.md` for the maintained subsystem guide. This module defines the structured
 operations shared by dissection, Best buzz and Common knowledge analyses, their
 validation rules, and a scripted provider used by tests and recorded fixtures.
 Production provider configuration belongs to training_provider.py and

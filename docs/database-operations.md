@@ -8,7 +8,8 @@
 The default database is `postgresql+asyncpg://sitg:sitg@localhost:5432/sitg`.
 [compose.yaml](../compose.yaml) provides PostgreSQL 17 with the `sitg-postgres` named volume.
 The application TCP listener defaults to `127.0.0.1:8765`.
-For the complete Docker stack with HTTPS, see [VPS deployment](deployment.md).
+The complete VPS stack is defined in [compose.vps.yaml](../compose.vps.yaml), with
+HTTPS routing in [deploy/Caddyfile](../deploy/Caddyfile).
 
 The Telegram process loads `.env` through [Settings](../src/sitg_bot/config.py).
 `sitg-server`, Alembic, and database CLIs read exported environment variables instead.
@@ -139,11 +140,7 @@ baseline evidence is not a waiver or proof for newly changed behavior. Preparati
 only declared Python/npm dependencies, not database servers or browser drivers.
 
 [`.no-mistakes.yaml`](../.no-mistakes.yaml) is the authoritative gate command/runbook owner;
-[`scripts/check.sh`](../scripts/check.sh) is the executable local equivalent. The missing
-SITGBot configuration caused the earlier Test agent to improvise commands/setup. This is
-separate from an LLM account's HTTP 402/out-of-credits failure, which affects that account
-across projects and is not repaired by changing this repository. Do not retry exhausted
-providers, alter shared daemon/account settings, or claim another project's setup was checked.
+[`scripts/check.sh`](../scripts/check.sh) is the executable local equivalent.
 
 No-mistakes reads `commands.*` and `test.instructions` from its **trusted forge default
 branch**, not necessarily the PR's `training_mode` base. Adding this file on a feature branch

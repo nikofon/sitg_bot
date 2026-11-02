@@ -1,6 +1,6 @@
 """Trainee feature categories, entitlement policies and metered usage.
 
-Agent C module (see `docs/training-mode-plan.md`). Categories are separate
+See `docs/training-ai.md` for the maintained subsystem guide. Categories are separate
 from tournament roles and subscriptions. Limits and reset rules are
 configurable through versioned feature policies; billing and plan purchase
 flows are deferred. Reservation, settlement and release are server-side,
