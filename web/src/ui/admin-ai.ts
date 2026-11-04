@@ -83,7 +83,7 @@ export function renderAdminAi(
   // Settings form: rendered from the server, saved only on explicit submit.
   const quotaField = (labelKey: AiQuotaKey): QuotaField => {
     const number = element("input", {
-      type: "number", min: "0", max: "2147483647", step: "1", value: "0",
+      type: "number", min: "0", max: "2147483647", step: "1", value: "0", required: true,
       "aria-label": i18n.t(`admin_ai.${labelKey}`),
     });
     const unlimited = element("input", { type: "checkbox" });

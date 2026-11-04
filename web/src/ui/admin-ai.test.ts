@@ -135,6 +135,58 @@ describe("admin AI functionality tab", () => {
     expect(view.actions.message).toHaveBeenCalledWith("Management", ["AI settings saved."]);
   });
 
+  it.each([
+    ["Dissection · Free", "free", "dissection"],
+    ["Best buzz · Free", "free", "best_buzz"],
+    ["Dissection · Premium", "premium", "dissection"],
+    ["Best buzz · Premium", "premium", "best_buzz"],
+  ] as const)("requires a bounded value for %s while allowing zero and Unlimited", async (label, tier, feature) => {
+    const view = setup({
+      [`GET ${SETTINGS_PATH}`]: () => reply(settings),
+      [`GET ${PROVIDER_PATH}`]: () => reply(provider),
+      [`POST ${SETTINGS_PATH}`]: (call) => reply({ ...settings, ...call.body as object, version: 6 }),
+    });
+    await vi.waitFor(() => expect(view.root.textContent).toContain("Quota generation: 3"));
+    const field = view.quota(label);
+    const form = view.root.querySelector<HTMLFormElement>("form")!;
+    const submit = vi.fn();
+    form.addEventListener("submit", submit);
+    field.unlimited.checked = false;
+    field.unlimited.dispatchEvent(new Event("change"));
+    field.number.value = "";
+    expect(field.number.validity.valueMissing).toBe(true);
+    expect(form.checkValidity()).toBe(false);
+    view.save();
+    expect(submit).not.toHaveBeenCalled();
+    expect(view.calls.filter((call) => call.path === SETTINGS_PATH && call.method === "POST")).toHaveLength(0);
+
+    field.number.value = "0";
+    expect(form.checkValidity()).toBe(true);
+    view.save();
+    await vi.waitFor(() => expect(view.button("Save").disabled).toBe(false));
+    const zeroPost = view.calls.find((call) => call.path === SETTINGS_PATH && call.method === "POST")!;
+    expect(zeroPost.body?.[tier]).toMatchObject({ [feature]: 0 });
+
+    field.number.value = "";
+    field.unlimited.checked = true;
+    field.unlimited.dispatchEvent(new Event("change"));
+    expect(field.number.disabled).toBe(true);
+    expect(form.checkValidity()).toBe(true);
+    view.save();
+    await vi.waitFor(() => expect(view.button("Save").disabled).toBe(false));
+    const posts = view.calls.filter((call) => call.path === SETTINGS_PATH && call.method === "POST");
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body?.[tier]).toMatchObject({ [feature]: null });
+
+    field.unlimited.checked = false;
+    field.unlimited.dispatchEvent(new Event("change"));
+    expect(field.number.disabled).toBe(false);
+    expect(form.checkValidity()).toBe(false);
+    view.save();
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(view.calls.filter((call) => call.path === SETTINGS_PATH && call.method === "POST")).toHaveLength(2);
+  });
+
   it("shows a reload prompt on a stale save instead of overwriting the form", async () => {
     const view = setup({
       [`GET ${SETTINGS_PATH}`]: () => reply(settings),
