@@ -187,8 +187,8 @@ function questionRow(row: TrainingHistoryQuestionRow, i18n: I18n): HTMLElement {
     detail("training_history.answered", String(row.stats.answered)),
     detail("training_history.correct", String(row.stats.correct)),
     detail("training_history.incorrect", String(row.stats.incorrect)),
-    detail("training_history.right_rate", row.stats.answered
-      ? `${Math.round((row.stats.correct / row.stats.answered) * 100)}%`
+    detail("training_history.right_rate", row.stats.attempts
+      ? `${Math.round((row.stats.correct / row.stats.attempts) * 100)}%`
       : "—"),
     detail("training_history.buzz_time_average",
       row.stats.buzz_time_average === null

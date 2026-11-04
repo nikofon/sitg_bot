@@ -165,6 +165,30 @@ describe("training history detail", () => {
     expect(root.querySelector("button.training-history-pagination button")).toBeNull();
   });
 
+  it.each(["en", "ru"] as const)("includes timeouts in right-answer percentages in %s", (locale) => {
+    const { api } = historyApi({});
+    const i18n = new I18n(locale);
+    const cases = [
+      { attempts: 2, answered: 1, correct: 1, incorrect: 1, expected: "50%" },
+      { attempts: 0, answered: 0, correct: 0, incorrect: 0, expected: "—" },
+      { attempts: 1, answered: 0, correct: 0, incorrect: 1, expected: "0%" },
+    ];
+    const root = renderTrainingHistoryDetail(
+      detail(cases.map(({ attempts, answered, correct, incorrect }, position) => row({
+        position, stats: { ...row().stats, attempts, answered, correct, incorrect },
+      }))),
+      api, i18n, new AbortController().signal, vi.fn(),
+    );
+    const cards = [...root.querySelectorAll(".training-history-stats")];
+    for (const [index, sample] of cases.entries()) {
+      const fields = new Map([...cards[index]!.querySelectorAll(".lobby-packet-detail")]
+        .map((field) => [field.querySelector("dt")!.textContent, field.querySelector("dd")!.textContent]));
+      expect(fields.get(i18n.t("training_history.right_rate"))).toBe(sample.expected);
+      expect(fields.get(i18n.t("training_history.attempts"))).toBe(String(sample.attempts));
+      expect(fields.get(i18n.t("training_history.answered"))).toBe(String(sample.answered));
+    }
+  });
+
   it("shows the empty play-mode presentation without training totals", () => {
     const { api } = historyApi({});
     const root = renderTrainingHistoryDetail(
@@ -198,7 +222,8 @@ describe("training history detail", () => {
     const { api, request } = historyApi({
       "/api/miniapp/training/history/11111111-1111-1111-1111-111111111111?cursor=page2": {
         ...baseCard, kind: "training_history_detail", state: "ready",
-        protected_source: false, rows: [row({ position: 2 })], next_cursor: null,
+        protected_source: false,
+        rows: [row({ position: 2, stats: { ...row().stats, answered: 1 } })], next_cursor: null,
       },
     });
     const root = renderTrainingHistoryDetail(
@@ -217,6 +242,10 @@ describe("training history detail", () => {
     const positions = [...root.querySelectorAll("article.training-history-question")]
       .map((node) => node.getAttribute("data-position"));
     expect(positions).toEqual(["0", "2"]);
+    const addedStats = root.querySelector('[data-position="2"] .training-history-stats')!;
+    const rightRate = [...addedStats.querySelectorAll(".lobby-packet-detail")]
+      .find((field) => field.querySelector("dt")!.textContent === "Right answers");
+    expect(rightRate?.querySelector("dd")!.textContent).toBe("50%");
   });
 
   it("navigates back to all runs and surfaces recorded buzz data", () => {
