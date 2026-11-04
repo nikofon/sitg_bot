@@ -298,7 +298,8 @@ unconfigured/unknown/responding/stale state and recorded response timestamp, sep
 the feature switches. It makes no live health guarantee and offers no paid probe. The
 settings form renders dissection and Best buzz switches, free/premium quotas for both with an
 explicit Unlimited switch (zero blocks charged work, null means unlimited), the shared Hour/Day/Week reset
-period, and the next UTC reset with the quota generation; Save sends the full replacement with
+period, and the quota generation with the next UTC reset only after settings have been
+saved at least once; Save sends the full replacement with
 `expected_version`, and a stale write opens a reload prompt instead of overwriting unsaved
 edits. Save/reset responses update metadata without discarding current drafts.
 **Reset all AI quotas** requires explicit confirmation, sends `expected_version`, and

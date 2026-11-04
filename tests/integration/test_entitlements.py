@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -24,6 +25,7 @@ from sitg_bot.storage.models import (
     PlayerRecord,
     TrainingAnalysisArtifactRecord,
     TrainingCategoryAssignmentRecord,
+    TrainingCategoryRecord,
     TrainingFeaturePolicyRecord,
     TrainingPolicyStateRecord,
     TrainingUsageLedgerRecord,
@@ -94,6 +96,7 @@ async def test_ai_admin_defaults_explicit_settings_and_version_fencing(database)
     service, actor, player = await ai_admin_setup(database)
     initial = await service.read(actor)
     assert initial["version"] == 1 and initial["quota_generation"] == 0
+    assert initial["reset_at"] is None
     assert initial["free"] == initial["premium"] == {"dissection": 24, "best_buzz": 24}
     assert not initial["dissection_enabled"] and not initial["best_buzz_enabled"]
     before = await service.entitlements.capabilities(player)
@@ -116,6 +119,53 @@ async def test_ai_admin_defaults_explicit_settings_and_version_fencing(database)
             TrainingFeaturePolicyRecord.version == 1
         ))
         assert first.features["dissection"]["enabled"] is False
+
+
+@pytest.mark.parametrize("legacy_period", ["monthly", "none"])
+@pytest.mark.parametrize("managed_period,expected_reset", [
+    ("hour", datetime(2030, 6, 17, 1, tzinfo=UTC)),
+    ("day", datetime(2030, 6, 18, tzinfo=UTC)),
+    ("week", datetime(2030, 6, 24, tzinfo=UTC)),
+])
+async def test_ai_reset_metadata_requires_saved_settings_not_quota_reset(
+    database, monkeypatch, legacy_period, managed_period, expected_reset,
+):
+    moment = datetime(2030, 6, 17, 0, 30, tzinfo=UTC)
+    monkeypatch.setattr("sitg_bot.services.ai_administration.datetime",
+                        SimpleNamespace(now=lambda tz: moment))
+    service, actor, player = await ai_admin_setup(database)
+    async with database.transaction() as session:
+        legacy_version = await service.entitlements.create_policy(session, payload(
+            dissection={"limit": 7, "reset_period": legacy_period},
+            best_buzz={"limit": 8, "reset_period": legacy_period},
+        ))
+        state = await session.get(TrainingPolicyStateRecord, 1)
+        category = await session.get(TrainingCategoryRecord, state.default_category_id)
+        category.policy_version = legacy_version
+    before = await service.entitlements.capabilities(player, now=moment)
+    initial = await service.read(actor)
+    assert initial["reset_at"] is None and initial["reset_period"] == "day"
+    assert initial["free"] == initial["premium"] == {"dissection": 7, "best_buzz": 8}
+    reset = await service.reset(actor, expected_version=initial["version"], confirm=True)
+    assert reset["version"] == 2 and reset["quota_generation"] == 1
+    assert reset["reset_at"] is None
+    assert (await service.read(actor))["reset_at"] is None
+    assert await service.entitlements.capabilities(player, now=moment) == before
+    saved = await service.update(actor, **ai_settings(version=2, reset_period=managed_period))
+    assert saved["reset_at"] == expected_reset
+    assert saved["reset_at"].utcoffset() == timedelta(0)
+    assert (await service.read(actor))["reset_at"] == expected_reset
+    reset = await service.reset(actor, expected_version=saved["version"], confirm=True)
+    assert reset["reset_at"] == expected_reset
+    async with database.transaction() as session:
+        state = await session.get(TrainingPolicyStateRecord, 1)
+        category = await session.get(TrainingCategoryRecord, state.default_category_id)
+        assert category.policy_version == legacy_version
+        legacy = await session.scalar(select(TrainingFeaturePolicyRecord).where(
+            TrainingFeaturePolicyRecord.version == legacy_version
+        ))
+        for feature in ("dissection", "best_buzz"):
+            assert legacy.features[feature]["reset_period"] == legacy_period
 
 
 async def test_ai_manual_tiers_unlimited_zero_no_ai_and_shared_budget(database):

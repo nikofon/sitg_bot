@@ -1039,7 +1039,7 @@ export interface AiAdminSettings {
   free: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
   premium: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
   reset_period: AiAdminResetPeriod;
-  reset_at: string;
+  reset_at: string | null;
   quota_generation: number;
 }
 

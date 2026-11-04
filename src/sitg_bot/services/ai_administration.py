@@ -53,10 +53,12 @@ class AIAdministrationService:
 
     async def _projection(self, session, state):
         free, premium = await self._policy_pair(session, state)
-        period = (state.admin_features or {}).get("reset_period", "day")
-        # Existing custom monthly/none policies are untouched. Before the first
-        # explicit save, the admin form proposes the supported daily window.
-        reset_at = period_bounds(PERIODS[period], datetime.now(UTC))[1]
+        saved_period = (state.admin_features or {}).get("reset_period")
+        period = saved_period or "day"
+        reset_at = (
+            period_bounds(PERIODS[saved_period], datetime.now(UTC))[1]
+            if saved_period is not None else None
+        )
         return {
             "version": state.admin_version,
             "dissection_enabled": free["dissection"].enabled,

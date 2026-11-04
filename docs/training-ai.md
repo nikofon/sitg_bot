@@ -120,9 +120,11 @@ then loads settings/provider separately; navigation performs no provider check.
 - POST `settings` accepts all editable fields plus `expected_version`, without
   response-only fields. `reset_period` is `hour`, `day`, or `week`. Windows are UTC,
   half-open: hour on HH:00, day on midnight, week on Monday midnight. `reset_at` is
-  the next boundary. Before the first save the form inherits existing default-category
-  budgets/enabled flags (premium initially the same) and proposes the daily window;
-  historical custom default none/monthly policies remain effective until explicitly saved.
+  the next boundary after a managed-settings save, or null before that first save.
+  Before the first save the form inherits existing default-category budgets/enabled
+  flags (premium initially the same) and proposes the daily window without claiming
+  a next reset; quota resets alone do not activate that proposal. Historical custom
+  default none/monthly policies remain effective until explicitly saved.
 - GET `players?search=...&limit=20` accepts a literal case-insensitive nickname prefix
   (2–100 trimmed characters) or exact UUID, with limit 1–25. It uses an indexed bounded
   query and returns `{items:[{id,name,tier}],limit}`, ordered by lowercase nickname/ID.

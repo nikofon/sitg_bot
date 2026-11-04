@@ -272,12 +272,24 @@ describe("admin AI functionality tab", () => {
   it.each([
     ["en", "Next reset (UTC): May 4, 2026, 12:00 AM"],
     ["ru", "Следующий сброс (UTC): 4 мая 2026 г., 00:00"],
-  ] as const)("displays the reset in UTC for %s", async (locale, expected) => {
+  ] as const)("withholds unsaved reset metadata and displays saved UTC metadata for %s", async (locale, expected) => {
+    const i18n = new I18n(locale);
+    const inherited = { ...settings, version: 6, reset_at: null };
     const view = setup({
-      [`GET ${SETTINGS_PATH}`]: () => reply(settings),
+      [`GET ${SETTINGS_PATH}`]: () => reply(inherited),
       [`GET ${PROVIDER_PATH}`]: () => reply(provider),
+      [`POST ${RESET_PATH}`]: () => reply({ ...inherited, version: 7, quota_generation: 4 }),
+      [`POST ${SETTINGS_PATH}`]: () => reply({ ...settings, version: 8, quota_generation: 4 }),
     }, locale);
-    await vi.waitFor(() => expect(view.root.textContent).toContain(expected));
+    const metadata = view.root.querySelector("form [role=status]")!;
+    await vi.waitFor(() => expect(metadata.textContent).toBe(i18n.t("admin_ai.generation", { count: 3 })));
+    view.button(i18n.t("admin_ai.reset_all")).click();
+    await vi.waitFor(() => expect(metadata.textContent).toBe(i18n.t("admin_ai.generation", { count: 4 })));
+    await vi.waitFor(() => expect(view.button(i18n.t("admin_ai.save")).disabled).toBe(false));
+    view.save();
+    await vi.waitFor(() => expect(metadata.textContent).toContain(expected));
+    const post = view.calls.find((call) => call.method === "POST" && call.path === SETTINGS_PATH)!;
+    expect(post.body?.expected_version).toBe(7);
   });
 
   it("resets all AI quotas only after explicit confirmation and reflects the new generation", async () => {

@@ -113,11 +113,14 @@ export function renderAdminAi(
   let version = 0;
   const applyMetadata = (data: AiAdminSettings): void => {
     version = data.version;
-    const time = new Intl.DateTimeFormat(i18n.locale, {
-      dateStyle: "medium", timeStyle: "short", timeZone: "UTC",
-    }).format(new Date(data.reset_at));
-    settingsInfo.textContent = i18n.t("admin_ai.reset_at", { time })
-      + " · " + i18n.t("admin_ai.generation", { count: data.quota_generation });
+    settingsInfo.textContent = i18n.t("admin_ai.generation", { count: data.quota_generation });
+    if (data.reset_at !== null) {
+      const time = new Intl.DateTimeFormat(i18n.locale, {
+        dateStyle: "medium", timeStyle: "short", timeZone: "UTC",
+      }).format(new Date(data.reset_at));
+      settingsInfo.textContent = i18n.t("admin_ai.reset_at", { time })
+        + " · " + settingsInfo.textContent;
+    }
   };
   const applySettings = (data: AiAdminSettings): void => {
     applyMetadata(data);
