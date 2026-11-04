@@ -1,4 +1,4 @@
-import type { AdminCard, AdminManagementResource, AdminValue } from "../api/types";
+import type { AdminCard, AdminManagementResource, AdminSection, AdminValue } from "../api/types";
 import type { I18n } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { element } from "./dom";
@@ -9,6 +9,28 @@ export interface AdminManagementView extends HTMLElement {
   update(items: AdminCard[], loading: boolean): void;
 }
 
+export type AdminManagementTab = AdminSection;
+
+export function adminManagementLabel(i18n: I18n, key: string): string {
+  const translated = `admin_management.${key}` as MessageKey;
+  const value = i18n.t(translated);
+  return value ?? key.replaceAll("_", " ");
+}
+
+/** Shared section switcher of the admin Management window, including the AI tab. */
+export function renderAdminManagementTabs(
+  section: AdminManagementTab, i18n: I18n, navigate: (path: string) => void,
+): HTMLElement {
+  const label = (key: string): string => adminManagementLabel(i18n, key);
+  return element("nav", { className: "settings-actions", "aria-label": label("title") },
+    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games", "ai"] as const)
+      .map((tab) => element("button", {
+        type: "button", className: section === tab ? "primary-button" : "secondary-button",
+        "aria-current": section === tab ? "page" : undefined,
+        onclick: (() => navigate(`/admin/management?section=${tab}`)) as EventListener,
+      }, label(tab === "ai" ? "ai_functionality" : tab))));
+}
+
 export function renderAdminManagement(
   resource: AdminManagementResource, i18n: I18n, filters: Record<string, string>,
   save: (filters: Record<string, string>) => void,
@@ -17,11 +39,7 @@ export function renderAdminManagement(
   saveWeight: (card: AdminCard, weight: number, button: HTMLButtonElement) => void = () => undefined,
   signal?: AbortSignal,
 ): AdminManagementView {
-  const label = (key: string): string => {
-    const translated = `admin_management.${key}` as MessageKey;
-    const value = i18n.t(translated);
-    return value ?? key.replaceAll("_", " ");
-  };
+  const label = (key: string): string => adminManagementLabel(i18n, key);
   const name = (card: Record<string, AdminValue>): string =>
     String(card.name ?? card.display_name ?? card.public_nickname ?? card.telegram_username ?? card.id ?? "—");
   const link = (path: string, text: string): HTMLAnchorElement => element("a", {
@@ -63,12 +81,7 @@ export function renderAdminManagement(
     return [element("div", {}, element("dt", {}, label(key)),
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
-  const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"] as const).map((section) => element("button", {
-      type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
-      "aria-current": resource.section === section ? "page" : undefined,
-      onclick: (() => navigate(`/admin/management?section=${section}`)) as EventListener,
-    }, label(section))));
+  const tabs = renderAdminManagementTabs(resource.section, i18n, navigate);
   const list = element("div", { className: "lobby-packets", "aria-live": "polite" });
   const card = (item: AdminCard): HTMLElement => {
     const buttons = element("div", { className: "settings-actions" });
@@ -138,7 +151,7 @@ export function renderAdminManagement(
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
       link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
       ongoing_games: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "last_activity_at"],
-    }[resource.section];
+    }[resource.section as Exclude<AdminSection, "ai">] ?? [];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)
       && !(resource.section === "authors" && ["version", "split_names"].includes(key))));
@@ -211,7 +224,7 @@ export function renderAdminManagement(
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
     link_requests: ["status", "decided_at"],
     ongoing_games: ["status", "phase", "participant_count", "last_activity_at"],
-  }[resource.section]];
+  }[resource.section as Exclude<AdminSection, "ai">] ?? ["name", "created_at"]];
   const sort = element("select", { "aria-label": label("sort") }, ...sortKeys.flatMap((key) =>
     ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
       `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
