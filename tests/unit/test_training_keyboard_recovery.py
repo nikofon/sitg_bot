@@ -11,6 +11,7 @@ from training_delivery_support import RUN, deliver, delivery_case
 from sitg_bot.bot.handlers.navigation import router as navigation_router
 from sitg_bot.bot.handlers.training import router as training_router
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.keyboards.common import training_game_keyboard
 
 
 @pytest.mark.parametrize("locale", ["en", "ru"])
@@ -57,6 +58,32 @@ async def test_recovery_preserves_phase_owned_training_controls(monkeypatch, loc
     count_before = len(case.sends)
     await deliver(case)
     assert len(case.sends) == count_before
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("voting", [True, False])
+async def test_play_keyboard_is_exactly_three_buttons_and_ballot_is_one_time(locale, voting):
+    """The persistent training keyboard never gains rows in any state.
+
+    The appeal ballot is its own one-time Yes/No message, so the persistent
+    reply keyboard stays exactly +, || and ! even while voting.
+    """
+    case = delivery_case(locale=locale, phase="revealed", status="paused" if voting
+                         else "active", voting=voting)
+    loc = LocalizationService()
+    await deliver(case)
+    controls = [entry for entry in case.sends if entry[2] is not None][-1]
+    markup = controls[2]
+    labels = [button.text for row in markup.keyboard for button in row]
+    if voting:
+        assert controls[1] == loc.text("training.appeal_voting", locale)
+        assert sorted(labels) == sorted(
+            [loc.text("button.yes", locale), loc.text("button.no", locale)]
+        )
+    else:
+        assert controls[1] == loc.text("training.controls", locale)
+        assert labels == ["+", "||", "!"]
+    assert training_game_keyboard(loc, locale).rows == (("+",), ("||", "!"))
 
 
 @pytest.mark.parametrize("voting", [True, False])

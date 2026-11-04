@@ -79,17 +79,15 @@ TRAINING_MENU_ACTIONS = (
 )
 
 
-def training_game_keyboard(localization, locale, *, voting=False) -> ReplyKeyboardModel:
-    """Actual-training play controls: only the +, || and ! reply buttons.
+def training_game_keyboard(localization, locale) -> ReplyKeyboardModel:
+    """Actual-training play controls: exactly the +, || and ! reply buttons.
 
     Quitting and the score are slash commands (/quit, /abbandon, /abandon and
-    /score); progression is automatic, so no other keyboard rows remain.
+    /score); progression is automatic, so no other rows remain in any state.
+    The appeal ballot uses the one-time Yes/No consent keyboard instead of
+    adding rows to this persistent keyboard.
     """
-    rows = (("+",), ("||", "!"))
-    if voting:
-        rows += ((localization.text("button.yes", locale),
-                  localization.text("button.no", locale)),)
-    return ReplyKeyboardModel(rows=rows, persistent=True)
+    return ReplyKeyboardModel(rows=(("+",), ("||", "!")), persistent=True)
 
 
 def registration_consent_keyboard(
