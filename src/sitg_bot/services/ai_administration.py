@@ -102,7 +102,7 @@ class AIAdministrationService:
                         reset_period=PERIODS[operation.reset_period],
                     )
                 version = await self.entitlements.create_policy(session, payload)
-                # Flush between versions: sessions have autoflush disabled.
+                # Persist each appended version before allocating the next one.
                 await session.flush()
                 setattr(state, tier + "_policy_version", version)
             state.admin_features = {
