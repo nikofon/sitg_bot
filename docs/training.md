@@ -57,7 +57,10 @@ keyboard contains Start training, Training history, Knowledge library,
 Upload packet for training, and Change mode. Start training creates a persistent solo
 lobby, replacing the keyboard with Packets and settings, Start, and Quit. Packets and settings launches
 the `/training` Mini App, using the regular lobby's Overview / Packets / Options
-sections. Packet selection autosaves independently, while settings require an
+sections. The Overview (General) tab shows the selected packet with a Remove action,
+and the packet list toggles each card's Select button to Remove for the currently
+selected packet; removal clears only this lobby's selection. Packet selection
+autosaves independently, while settings require an
 explicit save. Selecting a packet never starts questions.
 Return to Telegram and press Start after choosing a packet and saving any settings; exposure confirmation and Best
 buzz preparation checks still apply. Quit discards the lobby or stops a running
@@ -75,10 +78,12 @@ the last question. Deadlines use regular SI's default announcement/intermission 
 training's saved token, buzz and answer timings still apply. Delayed workers reveal
 one frame at a time rather than silently consuming an unseen question's buzz window.
 
-Reply-keyboard controls use `+` to buzz, `||` to pause/resume, and `!` to appeal,
-like regular games. The existing Next, reveal, skip, score and quit actions remain
-available; Next follows the same progression boundaries. `/score` reads the current
-or latest finished training score. Ordinary question messages have no inline controls.
+Reply-keyboard controls use only `+` to buzz, `||` to pause/resume, and `!` to appeal,
+like regular games; no other play buttons remain on the training keyboard.
+`/score` reads the current or latest finished training score. `/quit`, the requested
+`/abbandon` spelling and the existing `/abandon` alias stop a running session or
+dismiss a completed run; progression is automatic, so the former Next/reveal/skip
+buttons and their labels are gone. Ordinary question messages have no inline controls.
 Each Best buzz question retains inline Continue reading at its prepared pause;
 it resumes the configured token cadence rather than instantly revealing the remainder.
 Pauses and solo appeal voting also suspend automatic progression. Replies to old
@@ -89,7 +94,7 @@ coalescing, chunk rendering, question hiding, answer prompts, verdict/answer/the
 presentation, appeal delivery delays and best-effort deletion. Training records ordered
 `training_events` and its own member presentation ledger, not competitive game rows.
 Terminal delivery removes play controls without replacing a newer navigation keyboard.
-Quit (or `/quit`) stops a running session or dismisses a completed run and restores
+Quit (or `/quit`, `/abbandon`, `/abandon`) stops a running session or dismisses a completed run and restores
 the home menu. A retired/stopped session also recovers the home keyboard, but only
 when the player has not moved to a different navigation context.
 As in regular play, completed messages remain available until quit or the shared
@@ -102,9 +107,10 @@ current question and existing chunk IDs without inventing historical playback ev
 Lobby selections and settings persist across restarts and use an owner-locked,
 monotonically increasing version to reject stale saves, quits, and confirmations.
 Only a successful start consumes the lobby. The lobby API's `select_packet` command
-changes only the packet and `save_settings` changes only settings (even without a
-selected packet); both require the current `expected_version` and return the new
-`lobby` projection. The compatibility `save` command still updates both atomically.
+changes only the packet, `remove_packet` clears only this lobby's selection
+(without deleting the packet, its history, entitlements or game data), and
+`save_settings` changes only settings (even without a selected packet); all
+require the current `expected_version` and return the new `lobby` projection. The compatibility `save` command still updates both atomically.
 Clients must retain unsaved settings drafts when updating the version after a
 packet autosave, serialize mutations, and surface stale writes rather than silently
 overwriting newer state. Apply Alembic migration
@@ -174,10 +180,17 @@ question positions. Cursors are bound to the owner and list/detail identity.
 `TrainingHistoryService` is read-only and owner-scoped, including for administrators.
 Scores join only training attempts/questions: correct `+value`, incorrect `-value`,
 otherwise zero; appeals use the effective verdict and preserve the original one.
-Anonymous revision-level question statistics aggregate training records only, never
-competitive games/statistics; answers and performance are always from the owner's
-selected run. Known buzz-delay samples are the latest 25 per question, SQL-bounded.
-Counts do not imply missing timings were known. Unknown legacy timings display as
+Anonymous revision-level question statistics aggregate actual play mode only:
+competitive question rounds (presentations), accepted buzzes (count plus the
+average opening-to-buzz delay over usable observations, excluding missing or
+negative timings), and judged answer attempts (attempts/answered/correct/
+incorrect). Training records are never part of those aggregates, and a
+question without normal-play samples keeps the empty/unavailable presentation
+rather than falling back to training totals. Answers and this run's own buzz
+and performance evidence are always from the owner's selected run and stay a
+visibly separate card section. Aggregation is page-batched: three grouped
+queries per detail page, never one per question. Counts do not imply missing
+timings were known. Unknown legacy timings display as
 unavailable, never inferred from an attempt's generic creation timestamp.
 
 History rechecks `TrainingPacketService.authorize` on each detail request. Source

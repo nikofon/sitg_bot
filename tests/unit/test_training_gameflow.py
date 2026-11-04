@@ -199,8 +199,11 @@ def message(text):
 
 @pytest.mark.parametrize("text,command", [("+", "buzz"), ("||", "pause"), ("!", "appeal"),
                                            ("/pause", "pause"), ("/resume", "resume"),
-                                           ("Next question", "next"), ("Пропустить", "skip")])
-async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command):
+                                           ("/quit", "stop"), ("/abbandon", "stop"),
+                                           ("/abandon", "stop")])
+async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command, monkeypatch):
+    if command == "stop":
+        monkeypatch.setattr(training, "show_menu", AsyncMock())
     state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
              "presented_question_revision_id": str(QUESTION), "status": "active",
              "phase": "answering"}

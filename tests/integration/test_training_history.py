@@ -2,7 +2,8 @@
 
 Runs against the disposable per-test database (conftest training_database);
 never the running training-mode copy. The projection is read-only: no
-competitive tables, no mutations of gameplay state.
+mutations of gameplay state; question-level aggregates read competitive
+tables but never write them.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -10,14 +11,22 @@ from uuid import UUID
 
 import pytest
 from conftest import create_player
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
+from test_lobby_architecture import tournament_fixture
 from test_training import upload
 
 from sitg_bot.services.training import TrainingService
 from sitg_bot.services.training_history import TrainingHistoryService
 from sitg_bot.storage.models import (
+    AnswerAttemptRecord,
+    GameParticipantRecord,
     GameRecord,
+    GameRulesetVersionRecord,
+    PlayerQuestionStateRecord,
+    QuestionRoundRecord,
     RatingLedgerRecord,
+    TournamentPolicyVersionRecord,
+    TournamentTypeVersionRecord,
     TrainingAttemptRecord,
     TrainingQuestionRecord,
     TrainingSessionRecord,
@@ -92,7 +101,7 @@ async def test_owner_isolation_list_and_detail(database):
     # fields; legacy null behavior is also exercised by the pure projection tests.
     if not hasattr(TrainingQuestionRecord, "buzzed_at"):
         assert first["buzz"] is None
-        assert first["stats"]["buzz_timings"] is None
+        assert first["stats"]["buzz_time_average"] is None
     # The run is still active: unvisited questions stay metadata-only.
     assert [row["protected"] for row in detail["rows"]] == [None, "pending", "pending",
                                                             "pending", "pending"]
@@ -191,7 +200,94 @@ async def test_list_pagination_stable_boundaries_and_batched_projection(database
         await history.list_sessions(another_owner, cursor=listing["next_cursor"])
 
 
-async def test_detail_pagination_and_training_only_statistics(database):
+async def seed_play_sample(
+    database, fixture, revision_id: UUID, *, now: datetime,
+    delay_seconds: float = 4.0, correct: bool = True,
+):
+    """One anonymous competitive-game observation of a pinned question revision.
+
+    A played question round with one accepted buzz and one judged answer
+    attempt; it exercises exactly the tables the play-mode history aggregates
+    read, without driving a real game.
+    """
+    async with database.transaction() as session:
+        type_version = await session.scalar(
+            select(TournamentTypeVersionRecord).where(
+                TournamentTypeVersionRecord.key == "ladder",
+                TournamentTypeVersionRecord.version == 1,
+            )
+        )
+        ruleset = await session.scalar(
+            select(GameRulesetVersionRecord).where(
+                GameRulesetVersionRecord.key == "si",
+                GameRulesetVersionRecord.version == 1,
+            )
+        )
+        policy = await session.scalar(
+            select(TournamentPolicyVersionRecord)
+            .where(TournamentPolicyVersionRecord.tournament_id == fixture.tournament_id)
+            .order_by(TournamentPolicyVersionRecord.version.desc())
+        )
+        assert type_version is not None and ruleset is not None and policy is not None
+        game = GameRecord(
+            tournament_id=fixture.tournament_id,
+            tournament_type_version_id=type_version.id,
+            game_ruleset_version_id=ruleset.id,
+            tournament_policy_version_id=policy.id,
+            host_player_id=fixture.players[0].id,
+            status="completed",
+            phase="finished",
+            completed_at=now,
+            finalized_at=now,
+            assignment_plan={},
+        )
+        session.add(game)
+        await session.flush()
+        participant = GameParticipantRecord(
+            tournament_id=fixture.tournament_id,
+            game_id=game.id,
+            player_id=fixture.players[0].id,
+            seat=1,
+            rating_sequence=1,
+            global_game_sequence=1,
+            active=False,
+        )
+        session.add(participant)
+        await session.flush()
+        round_record = QuestionRoundRecord(
+            game_id=game.id,
+            question_revision_id=revision_id,
+            sequence=1,
+            status="completed",
+            started_at=now,
+            completed_at=now,
+        )
+        session.add(round_record)
+        await session.flush()
+        session.add(
+            PlayerQuestionStateRecord(
+                round_id=round_record.id,
+                participant_id=participant.id,
+                eligible=True,
+                attempted=True,
+                accepted_buzz_order=1,
+                buzzed_at=now + timedelta(seconds=delay_seconds),
+            )
+        )
+        session.add(
+            AnswerAttemptRecord(
+                round_id=round_record.id,
+                participant_id=participant.id,
+                attempt_number=1,
+                submitted_answer="game answer",
+                timed_out=False,
+                original_correct=correct,
+                final_correct=correct,
+            )
+        )
+
+
+async def test_detail_pagination_and_play_mode_statistics(database):
     owner = await create_player(database, 9221, "statistic")
     version_id, _ = await upload(database, owner)
     training = TrainingService(database)
@@ -227,9 +323,12 @@ async def test_detail_pagination_and_training_only_statistics(database):
     assert rows[1]["answer"] == "Paris" and rows[1]["own"]["correct"] is False
     # Effective score: +10 for the correct answer, -20 for the wrong one.
     assert detail["score"] == -10
-    # Training-only statistics aggregate this player's training attempts.
-    assert rows[0]["stats"]["attempts"] == 1 and rows[0]["stats"]["correct"] == 1
-    assert rows[1]["stats"]["incorrect"] == 1
+    # No competitive samples exist yet: the question-level aggregates show the
+    # empty play-mode presentation, never this player's training totals.
+    assert rows[0]["stats"] == {
+        "presentations": 0, "buzzes": 0, "attempts": 0, "answered": 0,
+        "correct": 0, "incorrect": 0, "buzz_time_average": None, "buzz_samples": 0,
+    }
     # Ending a run never discloses its unvisited tail, even though the entire
     # packet was pinned/burnt at start (also true after schema 0027 is merged).
     assert rows[4]["protected"] == "pending" and rows[4]["text"] is None
@@ -237,12 +336,13 @@ async def test_detail_pagination_and_training_only_statistics(database):
     with pytest.raises(ValueError):
         await history.session_detail(owner, UUID(first["id"]), cursor="bogus")
 
-    # A replay session on the same packet must not mutate the first run's rows.
+    # A replay session on the same packet must not mutate the first run's rows;
+    # without play samples its aggregates stay empty rather than counting the
+    # now-two training attempts.
     second = (await training.start(owner, version_id, now=now))["session"]
     await play_one_question(database, owner, UUID(second["id"]), answer="Paris", now=now)
     replay = await history.session_detail(owner, UUID(second["id"]))
-    assert replay["rows"][0]["stats"]["attempts"] == 2
-    assert replay["rows"][0]["stats"]["correct"] == 2
+    assert replay["rows"][0]["stats"]["attempts"] == 0
     assert replay["score"] == 10
     first_again = await history.session_detail(owner, UUID(first["id"]))
     assert first_again["score"] == -10
@@ -258,12 +358,30 @@ async def test_detail_pagination_and_training_only_statistics(database):
         await history.session_detail(owner, UUID(second["id"]), cursor=detail["next_cursor"])
     # Nothing leaked into competitive accounting.
     async with database.sessions() as session:
-        from sqlalchemy import func
-
         assert await session.scalar(select(func.count()).select_from(GameRecord)) == 0
         assert await session.scalar(
             select(func.count()).select_from(RatingLedgerRecord)
         ) == 0
+
+    # One normal-game sample on the first question drives the question-level
+    # aggregates: play-mode values, distinct from the two training attempts and
+    # from this run's own answer, which stay unchanged below.
+    fixture = await tournament_fixture(database, player_count=1)
+    revision = UUID(first["question_revision_id"])
+    await seed_play_sample(database, fixture, revision, now=now)
+    seeded = {
+        "presentations": 1, "buzzes": 1, "attempts": 1, "answered": 1,
+        "correct": 1, "incorrect": 0, "buzz_time_average": 4.0, "buzz_samples": 1,
+    }
+    detail_again = await history.session_detail(owner, UUID(first["id"]), limit=1)
+    assert detail_again["rows"][0]["stats"] == seeded
+    # This run's own evidence is separate and untouched by the aggregates.
+    assert detail_again["rows"][0]["own"]["answer"] == "Paris"
+    assert detail_again["rows"][0]["own"]["correct"] is True
+    assert detail_again["rows"][1]["own"]["correct"] is False
+    replay_again = await history.session_detail(owner, UUID(second["id"]), limit=1)
+    assert replay_again["rows"][0]["stats"] == seeded
+    assert replay_again["score"] == 10
 
 
 async def test_retired_source_keeps_metadata_but_denies_protected_text(database):

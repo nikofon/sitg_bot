@@ -818,7 +818,7 @@ class TrainingAccessOperation(ContractModel):
 
 class TrainingLobbyOperation(ContractModel):
     action: Literal[ActionCode.TRAINING_LOBBY]
-    command: Literal["create", "save", "select_packet", "save_settings", "quit"]
+    command: Literal["create", "save", "select_packet", "remove_packet", "save_settings", "quit"]
     expected_version: int | None = Field(default=None, ge=1)
     version_id: UUID | None = None
     settings: dict[str, JsonValue] = Field(default_factory=dict)

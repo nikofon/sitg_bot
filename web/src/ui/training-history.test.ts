@@ -36,7 +36,7 @@ const row = (changes: Partial<TrainingHistoryQuestionRow> = {}): TrainingHistory
   buzz: null,
   stats: {
     presentations: 2, buzzes: 1, attempts: 2, answered: 2, correct: 1, incorrect: 1,
-    buzz_timings: null,
+    buzz_time_average: 4.5, buzz_samples: 3,
   },
   own: {
     answer: "Paris", correct: true, outcome: "answered", token_cursor: 3,
@@ -154,7 +154,29 @@ describe("training history detail", () => {
     expect(first.textContent).toContain("Question <text>");
     expect(first.textContent).toContain("Timings were not recorded for this run.");
     expect(first.textContent).toContain("Your answer");
+    // The question-level section shows play-mode aggregates, kept visibly
+    // distinct from this run's own performance section.
+    const titles = [...first.querySelectorAll("h5")].map((node) => node.textContent);
+    expect(titles).toContain("Game statistics for this question");
+    expect(titles).toContain("Your performance in this run");
+    const stats = first.querySelector(".training-history-stats")!;
+    expect(stats.textContent).toContain("50%");
+    expect(stats.textContent).toContain("4.5s · 3");
     expect(root.querySelector("button.training-history-pagination button")).toBeNull();
+  });
+
+  it("shows the empty play-mode presentation without training totals", () => {
+    const { api } = historyApi({});
+    const root = renderTrainingHistoryDetail(
+      detail([row({ stats: {
+        presentations: 0, buzzes: 0, attempts: 0, answered: 0, correct: 0, incorrect: 0,
+        buzz_time_average: null, buzz_samples: 0,
+      } })]),
+      api, new I18n("en"), new AbortController().signal, vi.fn(),
+    );
+    const stats = root.querySelector(".training-history-stats")!;
+    expect(stats.textContent).toContain("No play-mode samples yet.");
+    expect(stats.textContent).not.toContain("s ·");
   });
 
   it("withholds protected content instead of fabricating it", () => {

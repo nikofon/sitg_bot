@@ -78,6 +78,42 @@ async def test_lobby_persists_settings_and_starts_only_on_request(database_url):
         await database.close()
 
 
+async def test_remove_packet_clears_selection_without_deleting_the_packet(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        owner = fixture.players[0].id
+        packet, _ = await upload(database, owner)
+        service = TrainingService(database)
+        lobby = (await service.lobby(owner, "create"))["lobby"]
+        saved = (
+            await service.lobby(
+                owner, "save", expected_version=lobby["version"], version_id=packet,
+                settings={"reversed": True},
+            )
+        )["lobby"]
+        removed = (
+            await service.lobby(owner, "remove_packet", expected_version=saved["version"])
+        )["lobby"]
+        # Removal clears this lobby's selection only: settings survive and the
+        # packet itself stays selectable (never deleted or retired).
+        assert removed["version_id"] is None and removed["packet_name"] is None
+        assert removed["version"] == saved["version"] + 1
+        assert removed["settings"] == saved["settings"]
+        with pytest.raises(ValueError):
+            await service.lobby(owner, "remove_packet", expected_version=removed["version"])
+        with pytest.raises(StaleWriteError):
+            await service.lobby(owner, "remove_packet", expected_version=saved["version"])
+        reselected = (
+            await service.lobby(
+                owner, "save", expected_version=removed["version"], version_id=packet
+            )
+        )["lobby"]
+        assert reselected["version_id"] == str(packet)
+    finally:
+        await database.close()
+
+
 async def test_start_does_not_hold_account_while_waiting_for_source(database_url, monkeypatch):
     from sitg_bot.storage.models import PlayerRecord
 

@@ -397,12 +397,13 @@ class TrainingControl(Filter):
             return {"training_command": symbols[text]}
         if text.startswith("/"):
             command = text.split(maxsplit=1)[0].split("@")[0][1:]
-            if command in {"score", "pause", "resume", "appeal", "quit"}:
-                return {"training_command": "stop" if command == "quit" else command}
+            if command in {"score", "pause", "resume", "appeal"}:
+                return {"training_command": command}
+            # /quit and the requested /abbandon spelling (with the existing
+            # /abandon alias) stop the run; there are no other play controls.
+            if command in {"quit", "abbandon", "abandon"}:
+                return {"training_command": "stop"}
         for locale in localization.catalogs:
-            for command in ("next", "reveal", "skip", "score"):
-                if text == localization.text(f"training.{command}", locale):
-                    return {"training_command": command}
             for approve, key in ((True, "button.yes"), (False, "button.no")):
                 if text == localization.text(key, locale):
                     return {"training_command": "vote", "training_approve": approve}

@@ -80,15 +80,15 @@ TRAINING_MENU_ACTIONS = (
 
 
 def training_game_keyboard(localization, locale, *, voting=False) -> ReplyKeyboardModel:
+    """Actual-training play controls: only the +, || and ! reply buttons.
+
+    Quitting and the score are slash commands (/quit, /abbandon, /abandon and
+    /score); progression is automatic, so no other keyboard rows remain.
+    """
     rows = (("+",), ("||", "!"))
     if voting:
         rows += ((localization.text("button.yes", locale),
                   localization.text("button.no", locale)),)
-    rows += (
-        (localization.text("training.next", locale), localization.text("training.score", locale)),
-        (localization.text("training.reveal", locale), localization.text("training.skip", locale)),
-        (localization.text("button.training.quit", locale),),
-    )
     return ReplyKeyboardModel(rows=rows, persistent=True)
 
 
