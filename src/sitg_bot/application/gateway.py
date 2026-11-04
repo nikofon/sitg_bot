@@ -14,6 +14,12 @@ from sqlalchemy import and_, func, select
 from sitg_bot.application.contracts import (
     AccountLookupOperation,
     ActionCode,
+    AdminAICheckOperation,
+    AdminAIPlayersOperation,
+    AdminAIReadOperation,
+    AdminAIResetOperation,
+    AdminAITierOperation,
+    AdminAIUpdateOperation,
     AdminAuthenticateOperation,
     AdminAuthorLinkOperation,
     AdminAuthorMergeOperation,
@@ -567,6 +573,17 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True
         ),
         ActionCode.PLAYER_BAN: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_AI_SETTINGS: ActionPolicy(sensitive_response=True),
+        ActionCode.ADMIN_AI_PROVIDER: ActionPolicy(sensitive_response=True),
+        ActionCode.ADMIN_AI_PLAYERS: ActionPolicy(sensitive_response=True),
+        ActionCode.ADMIN_AI_UPDATE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.ADMIN_AI_RESET: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.ADMIN_AI_TIER: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_AI_CHECK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
         ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
@@ -1752,6 +1769,26 @@ class ApplicationGateway:
             return await self.bug_reports.submit(player_id, operation.commentary)
         if isinstance(operation, AdminSuspicionLedgerOperation):
             return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
+        if isinstance(operation, (
+            AdminAIReadOperation, AdminAIUpdateOperation, AdminAIPlayersOperation,
+            AdminAITierOperation, AdminAIResetOperation, AdminAICheckOperation,
+        )):
+            from sitg_bot.services.ai_administration import AIAdministrationService
+
+            service = AIAdministrationService(
+                self.database, provider=self.knowledge.analysis.provider,
+                settings=self.knowledge.settings,
+            )
+            commands = {
+                ActionCode.ADMIN_AI_SETTINGS: service.read,
+                ActionCode.ADMIN_AI_PROVIDER: service.health,
+                ActionCode.ADMIN_AI_UPDATE: service.update,
+                ActionCode.ADMIN_AI_PLAYERS: service.players,
+                ActionCode.ADMIN_AI_TIER: service.tier,
+                ActionCode.ADMIN_AI_RESET: service.reset,
+                ActionCode.ADMIN_AI_CHECK: service.check,
+            }
+            return await commands[action](player_id, **operation.model_dump(exclude={"action"}))
         if isinstance(operation, AdminManagementListOperation):
             return await AdminManagementService(self.database).catalogue(
                 player_id, operation.section, include_items=operation.include_items

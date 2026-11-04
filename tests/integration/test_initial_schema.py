@@ -36,6 +36,7 @@ from sitg_bot.storage.models import (
 )
 
 pytestmark = pytest.mark.integration
+HEAD_REVISION = "0032_play_history_revision_index"
 
 
 @pytest.fixture
@@ -95,7 +96,7 @@ async def assert_schema(database_url, *, empty=False):
                 assert await connection.scalar(text("SELECT count(*) FROM alembic_version")) == 0
                 return
             assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0030_public_analysis_cache"
+                HEAD_REVISION
             )
             types = (
                 await connection.execute(
@@ -126,7 +127,7 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
             async with engine.connect() as connection:
                 assert (await connection.execute(text(
                     "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0030_public_analysis_cache"]
+                ))).scalars().all() == [HEAD_REVISION]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(
@@ -251,12 +252,59 @@ def test_swiss_migration_refuses_to_discard_existing_swiss_stages(baseline_datab
                 assert view["stages"][0]["players_per_game"] == 4
                 assert len(view["stages"][0]["rounds"]) == 3
                 assert await session.scalar(text("SELECT version_num FROM alembic_version")) == (
-                    "0030_public_analysis_cache"
+                    HEAD_REVISION
                 )
         finally:
             await database.close()
 
     asyncio.run(check_retained())
+
+
+def test_play_history_revision_index_reuses_existing_child_paths_and_round_trips(baseline_database):
+    url, config = baseline_database
+    index_name = "ix_question_rounds_question_revision"
+    command.upgrade(config, "0031_ai_administration")
+
+    async def access_paths():
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                def inspect_paths(sync):
+                    inspector = inspect(sync)
+                    return {
+                        table: [tuple(item["column_names"]) for item in (
+                            inspector.get_indexes(table) + inspector.get_unique_constraints(table)
+                        )]
+                        for table in (
+                            "question_rounds", "player_question_states", "answer_attempts",
+                        )
+                    }
+
+                paths = await connection.run_sync(inspect_paths)
+                valid = await connection.scalar(text(
+                    "SELECT i.indisvalid AND i.indisready FROM pg_index i "
+                    "JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = :name"
+                ), {"name": index_name})
+                return paths, valid
+        finally:
+            await engine.dispose()
+
+    before, valid = asyncio.run(access_paths())
+    assert valid is None
+    assert not any(columns[0] == "question_revision_id" for columns in before["question_rounds"])
+    for table in ("player_question_states", "answer_attempts"):
+        assert ("round_id", "participant_id") in before[table]
+    for _ in range(2):
+        command.upgrade(config, "head")
+        after, valid = asyncio.run(access_paths())
+        assert valid is True
+        assert after["question_rounds"].count(("question_revision_id",)) == 1
+        for table in ("player_question_states", "answer_attempts"):
+            assert after[table] == before[table]  # No redundant child indexes.
+        asyncio.run(assert_schema(url))
+        command.downgrade(config, "0031_ai_administration")
+        assert asyncio.run(access_paths()) == (before, None)
+    command.upgrade(config, "head")
 
 
 def test_fresh_baseline_schema_seeds_and_round_trip(baseline_database):

@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +171,13 @@ class ActionCode(StrEnum):
     ADMIN_SUSPICION_LEDGER = "platform.admin.suspicion.ledger.v1"
     ADMIN_SUSPICION_INSPECT = "platform.admin.suspicion.inspect.v1"
     ADMIN_SUSPICION_CLEAR = "platform.admin.suspicion.clear.v1"
+    ADMIN_AI_SETTINGS = "platform.admin.ai.settings.v1"
+    ADMIN_AI_UPDATE = "platform.admin.ai.update.v1"
+    ADMIN_AI_PLAYERS = "platform.admin.ai.players.v1"
+    ADMIN_AI_TIER = "platform.admin.ai.tier.v1"
+    ADMIN_AI_RESET = "platform.admin.ai.reset.v1"
+    ADMIN_AI_PROVIDER = "platform.admin.ai.provider.v1"
+    ADMIN_AI_CHECK = "platform.admin.ai.check.v1"
     ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
     ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
     ADMIN_TOURNAMENT_RATING_WEIGHT = "platform.admin.tournaments.rating_weight.v1"
@@ -1260,10 +1267,77 @@ class BugReportCreateOperation(ContractModel):
     commentary: str = Field(min_length=1, max_length=4000)
 
 
+AIQuota = Annotated[int, Field(strict=True, ge=0, le=2147483647)] | None
+
+
+class AITierQuotas(ContractModel):
+    dissection: AIQuota
+    best_buzz: AIQuota
+
+
+class AdminAIReadOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_SETTINGS, ActionCode.ADMIN_AI_PROVIDER]
+
+
+class AdminAIUpdateOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_UPDATE]
+    expected_version: int = Field(strict=True, ge=1)
+    dissection_enabled: bool = Field(strict=True)
+    best_buzz_enabled: bool = Field(strict=True)
+    free: AITierQuotas
+    premium: AITierQuotas
+    reset_period: Literal["hour", "day", "week"]
+
+
+class AdminAIPlayersOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_PLAYERS]
+    search: str = Field(min_length=2, max_length=100)
+    limit: int = Field(default=20, ge=1, le=25)
+
+    @field_validator("search")
+    @classmethod
+    def bounded_search(cls, value):
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("Search requires at least two characters")
+        return value
+
+
+class AdminAITierOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_TIER]
+    player_id: UUID
+    tier: Literal["free", "premium", "no_ai"]
+
+
+class AdminAIResetOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_RESET]
+    expected_version: int = Field(strict=True, ge=1)
+    confirm: Literal[True]
+
+    @field_validator("confirm", mode="before")
+    @classmethod
+    def explicit_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Explicit confirmation required")
+        return value
+
+
+class AdminAICheckOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_AI_CHECK]
+    confirm_cost: Literal[True]
+
+    @field_validator("confirm_cost", mode="before")
+    @classmethod
+    def explicit_cost_confirmation(cls, value):
+        if value is not True:
+            raise ValueError("Explicit cost confirmation required")
+        return value
+
+
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
     section: Literal[
-        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games", "ai"
     ] = ("tournaments")
     include_items: bool = True
 
@@ -1482,6 +1556,12 @@ GatewayOperation = Annotated[
     | AdminSuspicionLedgerOperation
     | AdminSuspicionInspectOperation
     | AdminSuspicionClearOperation
+    | AdminAIReadOperation
+    | AdminAIUpdateOperation
+    | AdminAIPlayersOperation
+    | AdminAITierOperation
+    | AdminAIResetOperation
+    | AdminAICheckOperation
     | AdminManagementListOperation
     | AdminPacketListOperation
     | AdminTournamentModerateOperation

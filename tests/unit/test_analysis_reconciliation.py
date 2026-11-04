@@ -354,8 +354,12 @@ async def test_execution_profile_is_checked_before_provider_computation(field, s
 
 @pytest.mark.parametrize("profile", ["current", "other-provider", None])
 @pytest.mark.parametrize("schema_version", ["1", "2"])
-async def test_prepared_best_buzz_requires_current_execution_profile(profile, schema_version):
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_prepared_best_buzz_requires_current_execution_profile(
+    profile, schema_version, enabled,
+):
     app = KnowledgeApplication(object())
+    app.entitlements.policy_for = AsyncMock(return_value=SimpleNamespace(enabled=enabled))
     artifact = SimpleNamespace(
         provider_usage={"execution_profile": (
             app.settings.execution_profile if profile == "current" else profile
@@ -369,7 +373,9 @@ async def test_prepared_best_buzz_requires_current_execution_profile(profile, sc
     result = await app.prepared(session, uuid4(), SimpleNamespace(
         version_id=uuid4(), fingerprint="source", questions=[],
     ))
-    assert result == ({} if profile == "current" else None)
+    assert result == ({} if enabled and profile == "current" else None)
+    if not enabled:
+        session.execute.assert_not_awaited()
 
 
 async def test_statistics_snapshot_uses_producing_artifact_metadata(monkeypatch):

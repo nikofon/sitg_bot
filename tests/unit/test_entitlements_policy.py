@@ -4,8 +4,10 @@ import pytest
 
 from sitg_bot.services.entitlements import (
     RESET_DAILY,
+    RESET_HOURLY,
     RESET_MONTHLY,
     RESET_NONE,
+    RESET_WEEKLY,
     TRAINING_FEATURES,
     UNBOUNDED_PERIOD_END,
     UNBOUNDED_PERIOD_START,
@@ -42,11 +44,35 @@ def test_feature_policy_rejects_unknown_keys_and_invalid_values() -> None:
     with pytest.raises(ValueError, match="Unknown"):
         FeaturePolicy.from_mapping({"enabled": True, "surprise": 1})
     with pytest.raises(ValueError):
-        FeaturePolicy.from_mapping({"enabled": True, "limit": 0})
+        FeaturePolicy.from_mapping({"enabled": True, "limit": -1})
     with pytest.raises(ValueError):
-        FeaturePolicy.from_mapping({"enabled": True, "reset_period": "weekly"})
+        FeaturePolicy.from_mapping({"enabled": True, "reset_period": "yearly"})
     with pytest.raises(ValueError):
         FeaturePolicy.from_mapping({"enabled": True, "queued_request_cap": 0})
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "2", -1, 2147483648])
+def test_feature_limits_are_strict_nonnegative_integers(value):
+    with pytest.raises(ValueError):
+        FeaturePolicy(limit=value)
+
+
+def test_zero_and_unlimited_policies():
+    assert FeaturePolicy(limit=0).limit == 0
+    assert FeaturePolicy(limit=None).limit is None
+
+
+def test_hour_and_monday_week_utc_boundaries():
+    moment = datetime.fromisoformat("2030-06-16T01:30:00+02:00")
+    assert period_bounds(RESET_HOURLY, moment) == (
+        datetime(2030, 6, 15, 23, tzinfo=UTC), datetime(2030, 6, 16, tzinfo=UTC),
+    )
+    # June 17 2030 is a Monday; a request exactly there is in the next window.
+    monday = datetime(2030, 6, 17, tzinfo=UTC)
+    assert period_bounds(RESET_WEEKLY, moment)[1] == monday
+    assert period_bounds(RESET_WEEKLY, monday) == (
+        monday, datetime(2030, 6, 24, tzinfo=UTC),
+    )
 
 
 def test_parse_feature_policies_requires_exactly_all_features() -> None:

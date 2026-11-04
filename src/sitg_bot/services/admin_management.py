@@ -75,12 +75,18 @@ class AdminManagementService:
         self, administrator_id: UUID, section: str, *, include_items: bool = True,
     ) -> dict:
         if section not in {
-            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games"
+            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games", "ai"
         }:
             raise ValueError("Unknown management section")
         async with self.database.sessions() as session:
             await _require_administrator(session, administrator_id)
             items = []
+            if section == "ai":
+                # Navigation bootstrap only; settings/provider APIs remain bounded,
+                # separately authorized reads and never trigger a paid check.
+                return {
+                    "kind": "admin_management", "state": "ready", "section": "ai", "items": [],
+                }
             if section == "packets":
                 if include_items:
                     versions = tuple(await session.scalars(
