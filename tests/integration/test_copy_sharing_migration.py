@@ -148,9 +148,19 @@ def test_upgrade_converts_legacy_shares_and_only_updates_the_old_free_policy(
                     select(TrainingCategoryRecord).where(TrainingCategoryRecord.code == "custom")
                 )
                 assert custom.policy_version == custom_version
-            assert (
-                await app.mutate(owner, "grant", {"recipient": "legacy-recipient"})
-            ).copied_count == 0
+            staged = await app.mutate(owner, "grant", {"recipient": "legacy-recipient"})
+            assert staged["status"] == "pending" and staged["imported_count"] == 0
+            review = await app.reviews.detail(recipient, staged["import_id"])
+            assert not review["sections"]["new"]
+            assert not review["sections"]["potential_duplicates"]
+            duplicates = review["sections"]["duplicates"]
+            assert len(duplicates) == 1 and duplicates[0]["selected"] is False
+            result = await app.reviews.decide(
+                recipient, import_id=staged["import_id"], decision="approve",
+                selected_candidate_ids=[duplicates[0]["id"]],
+            )
+            assert result["approved_count"] == 0 and result["skipped_count"] == 1
+            assert [item["id"] for item in (await app.facts(recipient))["items"]] == [copied_id]
             await app.mutate(
                 owner, "delete", {"fact_id": original_id, "confirm_dissection_origin": False}
             )

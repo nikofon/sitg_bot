@@ -494,14 +494,16 @@ class TrainingHistoryService:
             statistics[identity]["presentations"] = int(presentations)
         # Accepted buzzes: count plus the average opening-to-buzz delay over the
         # usable observations (both timestamps known and the delay non-negative).
-        delay = PlayerQuestionStateRecord.buzzed_at - QuestionRoundRecord.started_at
+        delay = func.extract(
+            "epoch", PlayerQuestionStateRecord.buzzed_at - QuestionRoundRecord.started_at
+        )
         usable = and_(delay.is_not(None), delay >= 0)
         for identity, buzzes, samples, average in await session.execute(
             select(
                 QuestionRoundRecord.question_revision_id,
                 func.count(),
                 func.count(case((usable, True))),
-                func.avg(case((usable, func.extract("epoch", delay)))),
+                func.avg(case((usable, delay))),
             )
             .select_from(PlayerQuestionStateRecord)
             .join(

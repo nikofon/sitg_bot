@@ -373,7 +373,7 @@ async def test_detail_pagination_and_play_mode_statistics(database):
         "presentations": 1, "buzzes": 1, "attempts": 1, "answered": 1,
         "correct": 1, "incorrect": 0, "buzz_time_average": 4.0, "buzz_samples": 1,
     }
-    detail_again = await history.session_detail(owner, UUID(first["id"]), limit=1)
+    detail_again = await history.session_detail(owner, UUID(first["id"]), limit=2)
     assert detail_again["rows"][0]["stats"] == seeded
     # This run's own evidence is separate and untouched by the aggregates.
     assert detail_again["rows"][0]["own"]["answer"] == "Paris"

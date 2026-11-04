@@ -260,7 +260,7 @@ describe("dissection composer", () => {
     expect(toggle.textContent).toBe("Deselect all");
 
     // An individual uncheck is preserved and flips the bulk label back.
-    boxes[0].click();
+    boxes[0]!.click();
     expect(boxes.map((box) => box.checked)).toEqual([false, true]);
     expect(toggle.textContent).toBe("Select all");
 
