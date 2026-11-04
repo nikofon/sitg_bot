@@ -1,6 +1,5 @@
-"""Administrator-only manual AI policy, quota resets and explicit provider checks."""
+"""Administrator-only manual AI policy, quota resets and passive provider status."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -22,22 +21,16 @@ from sitg_bot.storage.models import (
     TrainingAnalysisArtifactRecord,
     TrainingCategoryRecord,
     TrainingPolicyStateRecord,
-    TrainingProviderHealthRecord,
 )
 
 PERIODS = {"hour": "hourly", "day": "daily", "week": "weekly"}
 THEME_FEATURES = ("dissection", "best_buzz")
-COST_NOTICE = (
-    "Check sends a small authenticated model request and may incur provider charges, "
-    "including on timeout. No automatic paid checks."
-)
 
 
 class AIAdministrationService:
-    def __init__(self, database, *, provider=None, settings=None):
+    def __init__(self, database, *, settings=None):
         self.database = database
         self.entitlements = EntitlementService(database)
-        self.provider = provider
         self.settings = settings
 
     async def _state(self, session, actor, *, lock=False):
@@ -105,11 +98,7 @@ class AIAdministrationService:
                 # Persist each appended version before allocating the next one.
                 await session.flush()
                 setattr(state, tier + "_policy_version", version)
-            state.admin_features = {
-                "dissection_enabled": operation.dissection_enabled,
-                "best_buzz_enabled": operation.best_buzz_enabled,
-                "reset_period": operation.reset_period,
-            }
+            state.admin_features = {"reset_period": operation.reset_period}
             state.admin_version += 1
             state.updated_at = datetime.now(UTC)
             await session.flush()
@@ -177,9 +166,12 @@ class AIAdministrationService:
             }
         )
         async with self.database.transaction() as session:
-            await self._state(session, actor, lock=True)
-            if await session.get(PlayerRecord, operation.player_id) is None:
+            await _require_administrator(session, actor)
+            if await session.get(
+                PlayerRecord, operation.player_id, with_for_update={"read": True, "key_share": True}
+            ) is None:
                 raise LookupError("Player not found")
+            await self._state(session, actor, lock=True)
             await session.execute(
                 pg_insert(TrainingAITierRecord)
                 .values(
@@ -193,38 +185,27 @@ class AIAdministrationService:
             )
             return {"id": operation.player_id, "tier": operation.tier}
 
-    def _health_projection(self, row, now, observed_at=None):
+    def _health_projection(self, now, observed_at=None):
         configured = bool(self.settings.api_key and self.settings.model != "unconfigured")
-        checked = row.checked_at if row else None
-        verified = row.verified_at if row else None
-        state = row.state if row else "unknown"
-        error = row.error if row else None
-        if observed_at and (verified is None or observed_at > verified):
-            verified = observed_at
-            if state != "checking" and (checked is None or observed_at >= checked):
-                state, error = "responding", None
         if not configured:
-            state, error = "unconfigured", None
-        elif state == "checking" and checked and now >= checked + timedelta(seconds=10):
-            state, error = "error", "timeout"
-        elif state == "responding" and verified and now >= verified + timedelta(minutes=5):
+            state = "unconfigured"
+        elif observed_at is None:
+            state = "unknown"
+        elif now >= observed_at + timedelta(minutes=5):
             state = "stale"
+        else:
+            state = "responding"
         return {
             "provider": self.settings.provider,
             "model": self.settings.model,
             "configured": configured,
             "state": state,
-            "checked_at": checked,
-            "verified_at": verified,
-            "error": error,
-            "check_available_at": checked + timedelta(seconds=60) if checked else None,
-            "check_cost_notice": COST_NOTICE,
+            "verified_at": observed_at,
         }
 
     async def health(self, actor):
         async with self.database.transaction() as session:
             await _require_administrator(session, actor)
-            row = await session.get(TrainingProviderHealthRecord, self.settings.execution_profile)
             # Partial expression index bounds this lookup; empty/cache-only outcomes
             # cannot establish that the selected model executed successfully.
             observed = await session.scalar(
@@ -240,43 +221,4 @@ class AIAdministrationService:
                 .order_by(TrainingAnalysisArtifactRecord.completed_at.desc())
                 .limit(1)
             )
-            return self._health_projection(row, datetime.now(UTC), observed)
-
-    async def check(self, actor, *, confirm_cost):
-        if confirm_cost is not True:
-            raise ValueError("Explicit provider cost confirmation required")
-        profile = self.settings.execution_profile
-        async with self.database.transaction() as session:
-            await _require_administrator(session, actor)
-            await session.execute(
-                pg_insert(TrainingProviderHealthRecord)
-                .values(
-                    profile=profile,
-                    state="unknown",
-                )
-                .on_conflict_do_nothing()
-            )
-            row = await session.get(TrainingProviderHealthRecord, profile, with_for_update=True)
-            now = datetime.now(UTC)
-            if not self.settings.api_key or self.settings.model == "unconfigured":
-                return self._health_projection(row, now)
-            if row.checked_at and now < row.checked_at + timedelta(seconds=60):
-                return self._health_projection(row, now)
-            row.checked_at, row.state, row.error = now, "checking", None
-        # No transaction/row lock is held during bounded network I/O.
-        error = None
-        try:
-            async with asyncio.timeout(10):
-                await self.provider.verify_response()
-        except TimeoutError:
-            error = "timeout"
-        except Exception:
-            # Never persist or return a raw upstream error, payload or credential.
-            error = "provider_error"
-        async with self.database.transaction() as session:
-            row = await session.get(TrainingProviderHealthRecord, profile, with_for_update=True)
-            if row.checked_at == now:
-                row.state, row.error = ("error", error) if error else ("responding", None)
-                if error is None:
-                    row.verified_at = datetime.now(UTC)
-            return self._health_projection(row, datetime.now(UTC))
+            return self._health_projection(datetime.now(UTC), observed)

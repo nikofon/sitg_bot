@@ -5,7 +5,6 @@ import { renderAdminAi } from "./admin-ai";
 
 const SETTINGS_PATH = "/api/miniapp/admin/ai/settings";
 const PROVIDER_PATH = "/api/miniapp/admin/ai/provider";
-const CHECK_PATH = "/api/miniapp/admin/ai/provider/check";
 const PLAYERS_PATH = "/api/miniapp/admin/ai/players";
 const TIER_PATH = "/api/miniapp/admin/ai/tier";
 const RESET_PATH = "/api/miniapp/admin/ai/reset";
@@ -25,11 +24,7 @@ const provider = {
   model: "gpt-test",
   configured: true,
   state: "responding",
-  checked_at: "2026-05-03T12:00:00Z",
   verified_at: "2026-05-03T12:00:00Z",
-  error: null,
-  check_available_at: null,
-  check_cost_notice: "may incur a small provider charge",
 };
 
 const reply = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), {
@@ -44,7 +39,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-function setup(handlers: Record<string, (call: Call) => Response | Promise<Response>> = {}) {
+function setup(handlers: Record<string, (call: Call) => Response | Promise<Response>> = {}, locale: "en" | "ru" = "en") {
   const controller = new AbortController();
   const calls: Call[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, options) => {
@@ -64,7 +59,7 @@ function setup(handlers: Record<string, (call: Call) => Response | Promise<Respo
   const api = new ApiClient("signed", fetcher);
   const actions = { reload: vi.fn(), confirm: vi.fn(() => true), message: vi.fn() };
   const navigate = vi.fn();
-  const root = renderAdminAi(api, new I18n("en"), controller.signal, navigate, actions);
+  const root = renderAdminAi(api, new I18n(locale), controller.signal, navigate, actions);
   const view = { controller, calls, fetcher, actions, navigate, root };
   const save = (): void => root.querySelector<HTMLFormElement>("form")!.requestSubmit();
   const button = (text: string): HTMLButtonElement =>
@@ -93,7 +88,6 @@ describe("admin AI functionality tab", () => {
       [`GET ${PROVIDER_PATH}`]: () => reply(provider),
     });
     await vi.waitFor(() => expect(view.root.textContent).toContain("Quota generation: 3"));
-    // Zero forbids usage; null renders as the explicit Unlimited switch.
     expect(view.quota("Dissection · Free").number.value).toBe("0");
     expect(view.quota("Dissection · Free").unlimited.checked).toBe(false);
     expect(view.quota("Best buzz · Free").unlimited.checked).toBe(true);
@@ -158,62 +152,80 @@ describe("admin AI functionality tab", () => {
     expect(view.actions.reload).toHaveBeenCalledOnce();
   });
 
-  it("requires cost confirmation before an explicit provider check and applies its result", async () => {
-    const unknown = { ...provider, state: "unknown", verified_at: null, checked_at: null };
+  it.each([
+    ["unknown", "Not verified yet"],
+    ["stale", "No recent response"],
+    ["unconfigured", "Unconfigured"],
+  ])("renders passive provider state %s without offering a probe", async (state, label) => {
     const view = setup({
       [`GET ${SETTINGS_PATH}`]: () => reply(settings),
-      [`GET ${PROVIDER_PATH}`]: () => reply(unknown),
-      [`POST ${CHECK_PATH}`]: () => reply({
-        ...provider, state: "responding",
-        check_available_at: new Date(Date.now() + 60_000).toISOString(),
-      }),
+      [`GET ${PROVIDER_PATH}`]: () => reply({ ...provider, state }),
     });
     await vi.waitFor(() => expect(view.root.textContent).toContain("openai · gpt-test"));
-    expect(view.root.textContent).toContain("Not verified yet");
-    view.actions.confirm.mockReturnValueOnce(false);
-    view.button("Check provider").click();
-    expect(view.calls.filter((call) => call.path === CHECK_PATH)).toHaveLength(0);
-    view.button("Check provider").click();
-    await vi.waitFor(() => expect(view.root.textContent).toContain("Responding"));
-    const post = view.calls.find((call) => call.path === CHECK_PATH)!;
-    expect(post.body).toEqual({ confirm_cost: true });
-    expect(view.actions.confirm).toHaveBeenCalledWith(
-      expect.stringContaining("may incur a small provider charge"));
-    // The cooldown returned by the check itself holds the button until it elapses.
-    await vi.waitFor(() => expect(view.button("Check provider").disabled).toBe(true));
+    expect(view.root.querySelector(".admin-ai-provider")!.textContent).toContain(label);
+    expect(view.root.querySelector(".admin-ai-provider button")).toBeNull();
+    expect(view.calls.filter((call) => call.method !== "GET" && call.path !== "/api/miniapp/session")).toEqual([]);
   });
 
-  it("reports a failed explicit check generically without reinterpreting provider health", async () => {
-    const unknown = { ...provider, state: "unknown", verified_at: null, checked_at: null };
+  it.each(["reset", "save"])("preserves the entire settings draft during %s and updates metadata", async (operation) => {
+    const pending = deferred<Response>();
+    let submitted = 0;
     const view = setup({
       [`GET ${SETTINGS_PATH}`]: () => reply(settings),
-      [`GET ${PROVIDER_PATH}`]: () => reply(unknown),
-      [`POST ${CHECK_PATH}`]: () => reply({ error: { code: "capability_unavailable" } }, 400),
+      [`GET ${PROVIDER_PATH}`]: () => reply(provider),
+      [`POST ${SETTINGS_PATH}`]: () => { ++submitted; return pending.promise; },
+      [`POST ${RESET_PATH}`]: () => { ++submitted; return pending.promise; },
     });
-    await vi.waitFor(() => expect(view.root.textContent).toContain("openai · gpt-test"));
-    expect(view.root.textContent).toContain("Not verified yet");
-    view.button("Check provider").click();
-    await vi.waitFor(() => expect(view.actions.message).toHaveBeenCalled());
-    expect(view.actions.message).toHaveBeenCalledWith(
-      "Management", ["This feature is not supported by the server yet."]);
-    // The failed tiny check never turns into a provider/credential verdict.
-    expect(view.root.textContent).toContain("Not verified yet");
-    expect(view.button("Check provider").disabled).toBe(false);
+    await vi.waitFor(() => expect(view.root.textContent).toContain("Quota generation: 3"));
+    const dissection = view.root.querySelector<HTMLInputElement>('[aria-label="Dissection enabled"]')!;
+    const bestBuzz = view.root.querySelector<HTMLInputElement>('[aria-label="Best buzz enabled"]')!;
+    const period = view.root.querySelector<HTMLSelectElement>("select")!;
+    dissection.checked = true;
+    bestBuzz.checked = false;
+    period.value = "week";
+    for (const label of ["Dissection · Free", "Best buzz · Free", "Dissection · Premium", "Best buzz · Premium"]) {
+      const field = view.quota(label);
+      field.unlimited.checked = false;
+      field.unlimited.dispatchEvent(new Event("change"));
+      field.number.value = "11";
+    }
+    if (operation === "reset") view.button("Reset all AI quotas").click();
+    else view.save();
+    await vi.waitFor(() => expect(submitted).toBe(1));
+    expect(view.button("Save").disabled).toBe(true);
+    expect(view.button("Reset all AI quotas").disabled).toBe(true);
+    view.quota("Dissection · Free").number.value = "12";
+    view.quota("Best buzz · Premium").unlimited.checked = true;
+    view.quota("Best buzz · Premium").unlimited.dispatchEvent(new Event("change"));
+    pending.resolve(reply({ ...settings, version: 6, quota_generation: 4 }));
+    await vi.waitFor(() => expect(view.root.textContent).toContain("Quota generation: 4"));
+    expect(dissection.checked).toBe(true);
+    expect(bestBuzz.checked).toBe(false);
+    expect(period.value).toBe("week");
+    expect(view.quota("Dissection · Free").number.value).toBe("12");
+    expect(view.quota("Best buzz · Free").number.value).toBe("11");
+    expect(view.quota("Best buzz · Free").unlimited.checked).toBe(false);
+    expect(view.quota("Dissection · Premium").number.value).toBe("11");
+    expect(view.quota("Best buzz · Premium").unlimited.checked).toBe(true);
+    await vi.waitFor(() => expect(view.button("Save").disabled).toBe(false));
+    view.save();
+    await vi.waitFor(() => expect(view.calls.filter((call) => call.path === SETTINGS_PATH && call.method === "POST").at(-1)?.body).toEqual({
+      dissection_enabled: true, best_buzz_enabled: false,
+      free: { dissection: 12, best_buzz: 11 },
+      premium: { dissection: 11, best_buzz: null },
+      reset_period: "week", expected_version: 6,
+    }));
   });
 
-  it("keeps the check button idle while checking or inside the cooldown, without raw upstream detail", async () => {
-    const cooldownUntil = new Date(Date.now() + 60_000).toISOString();
+  it.each([
+    ["en", "Next reset (UTC): May 4, 2026, 12:00 AM"],
+    ["ru", "Следующий сброс (UTC): 4 мая 2026 г., 00:00"],
+  ] as const)("displays the reset in UTC for %s", async (locale, expected) => {
     const view = setup({
       [`GET ${SETTINGS_PATH}`]: () => reply(settings),
-      [`GET ${PROVIDER_PATH}`]: () => reply({
-        ...provider, state: "error", error: "timeout", check_available_at: cooldownUntil,
-      }),
-    });
-    await vi.waitFor(() => expect(view.root.textContent).toContain("Last check failed"));
-    expect(view.button("Check provider").disabled).toBe(true);
-    expect(view.root.textContent).toContain("Next check available after");
-    // The raw upstream error kind ("timeout") is never surfaced.
-    expect(view.root.textContent).not.toContain("timeout");
+      [`GET ${PROVIDER_PATH}`]: () => reply(provider),
+    }, locale);
+    await vi.waitFor(() => expect(view.root.textContent).toContain(expected));
   });
 
   it("resets all AI quotas only after explicit confirmation and reflects the new generation", async () => {

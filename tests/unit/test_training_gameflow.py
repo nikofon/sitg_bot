@@ -308,6 +308,26 @@ async def test_old_answer_prompt_cannot_submit_text_to_a_later_question(monkeypa
     assert backend._execute.await_count == 1
 
 
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("approve", [True, False])
+async def test_training_ballot_accepts_localized_text_with_three_controls(locale, approve):
+    state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
+             "status": "paused", "phase": "revealed", "appeal_status": "voting"}
+    backend = SimpleNamespace(_execute=AsyncMock(
+        return_value=SimpleNamespace(data={"session": state}),
+    ))
+    localization = LocalizationService()
+    text = localization.text("button.yes" if approve else "button.no", locale)
+    await training.router.propagate_event(
+        "message", message(text), backend=backend, telegram_update_claim=object(),
+        localization=localization, locale=locale,
+        navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
+    )
+    operation = backend._execute.await_args.args[1]
+    assert operation.command == "vote" and operation.approve is approve
+    assert operation.answer is None
+
+
 async def test_yes_is_still_answer_text_when_not_voting():
     state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
              "status": "active", "phase": "answering"}

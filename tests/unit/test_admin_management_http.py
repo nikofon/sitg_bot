@@ -8,7 +8,6 @@ from test_miniapp_http import FakeAuth, FakeGateway
 
 from sitg_bot.application.contracts import (
     ActionCode,
-    AdminAICheckOperation,
     AdminAIPlayersOperation,
     AdminAIResetOperation,
     AdminAIUpdateOperation,
@@ -51,7 +50,6 @@ async def test_ai_admin_queries_use_existing_session_boundary(path, action):
     ("settings", AI_SETTINGS, ActionCode.ADMIN_AI_UPDATE),
     ("tier", {"player_id": str(UUID(int=30)), "tier": "no_ai"}, ActionCode.ADMIN_AI_TIER),
     ("reset", {"expected_version": 1, "confirm": True}, ActionCode.ADMIN_AI_RESET),
-    ("provider/check", {"confirm_cost": True}, ActionCode.ADMIN_AI_CHECK),
 ])
 async def test_ai_admin_mutations_require_csrf_and_idempotency(path, body, action):
     class RecordingAuth(FakeAuth):
@@ -74,6 +72,15 @@ async def test_ai_admin_mutations_require_csrf_and_idempotency(path, body, actio
     assert (await match.handler(request)).status == 200
     assert gateway.requests[0].operation.action == action
     assert ACTION_POLICIES[action].mutation and ACTION_POLICIES[action].idempotency_required
+
+
+async def test_removed_provider_check_route_is_not_available():
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request("POST", "/api/miniapp/admin/ai/provider/check")
+    match = await http.application.router.resolve(request)
+    assert match.http_exception.status == 404
+    assert not gateway.requests
 
 
 @pytest.mark.parametrize("patch", [
@@ -100,10 +107,9 @@ def test_ai_admin_player_search_is_bounded(values):
 
 @pytest.mark.parametrize("contract,action,values", [
     (AdminAIResetOperation, ActionCode.ADMIN_AI_RESET, {"expected_version": 1, "confirm": False}),
-    (AdminAICheckOperation, ActionCode.ADMIN_AI_CHECK, {"confirm_cost": False}),
-    (AdminAICheckOperation, ActionCode.ADMIN_AI_CHECK, {}),
+    (AdminAIResetOperation, ActionCode.ADMIN_AI_RESET, {"expected_version": 1}),
 ])
-def test_ai_admin_destructive_and_paid_actions_need_confirmation(contract, action, values):
+def test_ai_admin_reset_needs_confirmation(contract, action, values):
     with pytest.raises(ValidationError):
         contract(action=action, **values)
 

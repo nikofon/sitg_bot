@@ -1046,21 +1046,15 @@ export interface AiAdminSettings {
 export type AiAdminProviderState =
   | "unconfigured"
   | "unknown"
-  | "checking"
   | "responding"
-  | "stale"
-  | "error";
+  | "stale";
 
 export interface AiAdminProvider {
   provider: "openai" | "charm";
   model: string;
   configured: boolean;
   state: AiAdminProviderState;
-  checked_at: string | null;
   verified_at: string | null;
-  error: "timeout" | "provider_error" | null;
-  check_available_at: string | null;
-  check_cost_notice: string;
 }
 
 export interface AiAdminPlayer {

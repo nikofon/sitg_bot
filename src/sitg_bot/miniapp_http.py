@@ -19,7 +19,6 @@ from pydantic import ValidationError
 from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
-    AdminAICheckOperation,
     AdminAIPlayersOperation,
     AdminAIReadOperation,
     AdminAIResetOperation,
@@ -344,7 +343,7 @@ class MiniAppHttpServer:
         )
         for command in ("settings", "players", "provider"):
             app.router.add_get("/api/miniapp/admin/ai/" + command, self._admin_ai_query)
-        for command in ("settings", "tier", "reset", "provider/check"):
+        for command in ("settings", "tier", "reset"):
             app.router.add_post("/api/miniapp/admin/ai/" + command, self._admin_ai_mutation)
         app.router.add_get(
             "/api/miniapp/admin/management/packets", self._admin_packet_page
@@ -2031,7 +2030,6 @@ class MiniAppHttpServer:
             "settings": (AdminAIUpdateOperation, ActionCode.ADMIN_AI_UPDATE),
             "tier": (AdminAITierOperation, ActionCode.ADMIN_AI_TIER),
             "reset": (AdminAIResetOperation, ActionCode.ADMIN_AI_RESET),
-            "check": (AdminAICheckOperation, ActionCode.ADMIN_AI_CHECK),
         }
         contract, action = contracts[request.path.rsplit("/", 1)[-1]]
         body = await self._json_body(request)

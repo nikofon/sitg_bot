@@ -177,7 +177,6 @@ class ActionCode(StrEnum):
     ADMIN_AI_TIER = "platform.admin.ai.tier.v1"
     ADMIN_AI_RESET = "platform.admin.ai.reset.v1"
     ADMIN_AI_PROVIDER = "platform.admin.ai.provider.v1"
-    ADMIN_AI_CHECK = "platform.admin.ai.check.v1"
     ADMIN_MANAGEMENT_LIST = "platform.admin.management.list.v1"
     ADMIN_TOURNAMENT_MODERATE = "platform.admin.tournaments.moderate.v1"
     ADMIN_TOURNAMENT_RATING_WEIGHT = "platform.admin.tournaments.rating_weight.v1"
@@ -1322,18 +1321,6 @@ class AdminAIResetOperation(ContractModel):
         return value
 
 
-class AdminAICheckOperation(ContractModel):
-    action: Literal[ActionCode.ADMIN_AI_CHECK]
-    confirm_cost: Literal[True]
-
-    @field_validator("confirm_cost", mode="before")
-    @classmethod
-    def explicit_cost_confirmation(cls, value):
-        if value is not True:
-            raise ValueError("Explicit cost confirmation required")
-        return value
-
-
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
     section: Literal[
@@ -1561,7 +1548,6 @@ GatewayOperation = Annotated[
     | AdminAIPlayersOperation
     | AdminAITierOperation
     | AdminAIResetOperation
-    | AdminAICheckOperation
     | AdminManagementListOperation
     | AdminPacketListOperation
     | AdminTournamentModerateOperation

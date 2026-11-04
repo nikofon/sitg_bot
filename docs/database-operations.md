@@ -78,8 +78,8 @@ concurrent build may leave an INVALID index; operators must inspect and remove o
 failed index before retrying through the normal deployment procedure. The migration does
 not silently accept an existing/invalid index or perform automatic repair.
 Revision `0031_ai_administration` adds independent manual AI tiers, versioned managed
-free/premium policy pointers, constant-time quota generations and profile-scoped explicit
-provider-check cooldown/results. Existing policies, category assignments, usage ledgers and
+free/premium policy pointers, constant-time quota generations and an indexed passive
+provider-outcome lookup. Existing policies, category assignments, usage ledgers and
 accepted work are preserved; no feature is enabled by this migration. Apply before serving
 the AI administration APIs. Downgrade merges generation counters/references without deleting
 reservations; it cannot preserve the newer reset-generation/tier semantics.

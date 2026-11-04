@@ -219,8 +219,7 @@ describe("management shell AI functionality section", () => {
       });
       if (path === "/api/miniapp/admin/ai/provider") return response({
         provider: "openai", model: "gpt-test", configured: true, state: "responding",
-        checked_at: "2026-05-03T12:00:00Z", verified_at: "2026-05-03T12:00:00Z",
-        error: null, check_available_at: null, check_cost_notice: "small charge",
+        verified_at: "2026-05-03T12:00:00Z",
       });
       throw new Error(`Unexpected ${url}`);
     });

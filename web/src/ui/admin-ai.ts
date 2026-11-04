@@ -14,7 +14,6 @@ import { saveReminder } from "./save-reminder";
 
 const SETTINGS_PATH = "/api/miniapp/admin/ai/settings";
 const PROVIDER_PATH = "/api/miniapp/admin/ai/provider";
-const CHECK_PATH = "/api/miniapp/admin/ai/provider/check";
 const PLAYERS_PATH = "/api/miniapp/admin/ai/players";
 const TIER_PATH = "/api/miniapp/admin/ai/tier";
 const RESET_PATH = "/api/miniapp/admin/ai/reset";
@@ -63,56 +62,23 @@ export function renderAdminAi(
   const providerState = element("span", { className: "badge" }, i18n.t("admin_ai.state.unknown"));
   const providerTarget = element("strong", {}, "—");
   const providerTimes = element("p", { className: "field-help" });
-  const checkButton = element("button", { type: "button", className: "secondary-button" },
-    i18n.t("admin_ai.provider.check"));
-  const cooldown = (value: string | null): number | null => {
-    const time = value ? Date.parse(value) : Number.NaN;
-    return Number.isFinite(time) ? time : null;
-  };
   const applyProvider = (data: AiAdminProvider): void => {
     providerTarget.textContent = `${data.provider} · ${data.model}`;
     const classes = data.state === "responding" ? "badge badge-accent"
-      : data.state === "error" || data.state === "stale" || data.state === "unconfigured"
+      : data.state === "stale" || data.state === "unconfigured"
         ? "badge badge-warning" : "badge";
     providerState.className = classes;
     providerState.textContent = i18n.t(`admin_ai.state.${data.state}`);
     const times: string[] = [];
     if (data.verified_at) times.push(i18n.t("admin_ai.provider.verified_at",
       { time: formatDateTime(data.verified_at, i18n.locale) }));
-    if (data.checked_at) times.push(i18n.t("admin_ai.provider.checked_at",
-      { time: formatDateTime(data.checked_at, i18n.locale) }));
-    const available = cooldown(data.check_available_at);
-    if (available !== null && available > Date.now()) times.push(i18n.t("admin_ai.provider.cooldown",
-      { time: formatDateTime(data.check_available_at!, i18n.locale) }));
     providerTimes.textContent = times.join(" · ");
-    checkButton.disabled = data.state === "checking"
-      || (available !== null && available > Date.now());
   };
-  checkButton.addEventListener("click", () => {
-    if (checkButton.disabled) return;
-    const notice = provider?.check_cost_notice ?? "";
-    if (!actions.confirm(i18n.t("admin_ai.provider.check_confirm", { notice }))) return;
-    checkButton.disabled = true;
-    void api.request<AiAdminProvider>(CHECK_PATH, {
-      method: "POST", body: { confirm_cost: true }, signal,
-    }).then((data) => {
-      if (signal.aborted) return;
-      provider = data;
-      applyProvider(data);
-    }).catch((error: unknown) => {
-      // A failed tiny check is never treated as a proven provider/credential failure.
-      writeError(error, () => undefined);
-    }).finally(() => {
-      if (!signal.aborted && provider) applyProvider(provider);
-    });
-  });
   const providerCard = element("article", { className: "resource-card admin-ai-provider" },
     element("h2", {}, i18n.t("admin_ai.provider")),
     element("p", { className: "admin-ai-provider-summary" }, providerTarget, " ", providerState),
     providerTimes,
-    element("p", { className: "field-help" }, i18n.t("admin_ai.provider.policy_note")),
-    checkButton);
-  let provider: AiAdminProvider | undefined;
+    element("p", { className: "field-help" }, i18n.t("admin_ai.provider.policy_note")));
 
   // Settings form: rendered from the server, saved only on explicit submit.
   const quotaField = (labelKey: AiQuotaKey): QuotaField => {
@@ -145,8 +111,16 @@ export function renderAdminAi(
       element("option", { value }, i18n.t(`admin_ai.period.${value}`))));
   const settingsInfo = element("p", { className: "field-help", role: "status" });
   let version = 0;
-  const applySettings = (data: AiAdminSettings): void => {
+  const applyMetadata = (data: AiAdminSettings): void => {
     version = data.version;
+    const time = new Intl.DateTimeFormat(i18n.locale, {
+      dateStyle: "medium", timeStyle: "short", timeZone: "UTC",
+    }).format(new Date(data.reset_at));
+    settingsInfo.textContent = i18n.t("admin_ai.reset_at", { time })
+      + " · " + i18n.t("admin_ai.generation", { count: data.quota_generation });
+  };
+  const applySettings = (data: AiAdminSettings): void => {
+    applyMetadata(data);
     dissection.checked = data.dissection_enabled;
     bestBuzz.checked = data.best_buzz_enabled;
     freeDissection.apply(data.free.dissection);
@@ -154,8 +128,6 @@ export function renderAdminAi(
     premiumDissection.apply(data.premium.dissection);
     premiumBestBuzz.apply(data.premium.best_buzz);
     period.value = data.reset_period;
-    settingsInfo.textContent = i18n.t("admin_ai.reset_at", { time: formatDateTime(data.reset_at, i18n.locale) })
-      + " · " + i18n.t("admin_ai.generation", { count: data.quota_generation });
     controls.disabled = false;
     resetButton.disabled = false;
   };
@@ -192,16 +164,20 @@ export function renderAdminAi(
     if (resetButton.disabled) return;
     if (!actions.confirm(i18n.t("admin_ai.reset_confirm"))) return;
     resetButton.disabled = true;
+    saveButton.disabled = true;
     void api.request<AiAdminSettings>(RESET_PATH, {
       method: "POST", body: { confirm: true, expected_version: version }, signal,
     }).then((data) => {
       if (signal.aborted) return;
-      applySettings(data);
+      applyMetadata(data);
       actions.message(title, [i18n.t("admin_ai.reset_done", { count: data.quota_generation })]);
     }).catch((error: unknown) => {
       writeError(error, stalePrompt);
     }).finally(() => {
-      if (!signal.aborted) resetButton.disabled = false;
+      if (!signal.aborted) {
+        resetButton.disabled = false;
+        saveButton.disabled = false;
+      }
     });
   });
   const controls = element("fieldset", { disabled: true },
@@ -215,8 +191,9 @@ export function renderAdminAi(
   const form = element("form", { className: "settings-form" }, controls);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (saveButton.disabled) return;
+    if (controls.disabled || saveButton.disabled) return;
     saveButton.disabled = true;
+    resetButton.disabled = true;
     void api.request<AiAdminSettings>(SETTINGS_PATH, {
       method: "POST",
       body: {
@@ -230,12 +207,15 @@ export function renderAdminAi(
       signal,
     }).then((data) => {
       if (signal.aborted) return;
-      applySettings(data);
+      applyMetadata(data);
       actions.message(title, [i18n.t("admin_ai.saved")]);
     }).catch((error: unknown) => {
       writeError(error, stalePrompt);
     }).finally(() => {
-      if (!signal.aborted) saveButton.disabled = false;
+      if (!signal.aborted) {
+        saveButton.disabled = false;
+        resetButton.disabled = false;
+      }
     });
   });
 
@@ -347,7 +327,6 @@ export function renderAdminAi(
   });
   void api.request<AiAdminProvider>(PROVIDER_PATH, { signal }).then((data) => {
     if (signal.aborted) return;
-    provider = data;
     applyProvider(data);
   }).catch((error: unknown) => {
     if (error instanceof DOMException && error.name === "AbortError") return;

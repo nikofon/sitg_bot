@@ -37,14 +37,6 @@ def upgrade():
         sa.Column("tier", sa.String(10), nullable=False),
         sa.CheckConstraint("tier IN ('free', 'premium', 'no_ai')"),
     )
-    op.create_table(
-        "training_provider_health",
-        sa.Column("profile", sa.String(64), primary_key=True),
-        sa.Column("checked_at", sa.DateTime(timezone=True)),
-        sa.Column("verified_at", sa.DateTime(timezone=True)),
-        sa.Column("state", sa.String(20), nullable=False, server_default="unknown"),
-        sa.Column("error", sa.String(20)),
-    )
     op.add_column(
         "training_usage_periods",
         sa.Column("quota_generation", sa.Integer(), nullable=False, server_default="0"),
@@ -72,7 +64,6 @@ def downgrade():
     # Keep the generation-aware unique key until the column is dropped; no ledger deletion.
     op.drop_index("ix_training_analysis_health", "training_analysis_artifacts")
     op.drop_index("ix_players_ai_name_prefix", "players")
-    op.drop_table("training_provider_health")
     op.drop_table("training_ai_tiers")
     for column in (
         "admin_features",

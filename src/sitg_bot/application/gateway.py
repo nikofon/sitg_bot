@@ -14,7 +14,6 @@ from sqlalchemy import and_, func, select
 from sitg_bot.application.contracts import (
     AccountLookupOperation,
     ActionCode,
-    AdminAICheckOperation,
     AdminAIPlayersOperation,
     AdminAIReadOperation,
     AdminAIResetOperation,
@@ -583,7 +582,6 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
         ActionCode.ADMIN_AI_TIER: ActionPolicy(mutation=True, idempotency_required=True),
-        ActionCode.ADMIN_AI_CHECK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_MANAGEMENT_LIST: ActionPolicy(sensitive_response=True),
         ActionCode.ADMIN_TOURNAMENT_MODERATE: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
@@ -1771,13 +1769,12 @@ class ApplicationGateway:
             return await self.trust.suspicion_ledger(player_id, limit=operation.limit)
         if isinstance(operation, (
             AdminAIReadOperation, AdminAIUpdateOperation, AdminAIPlayersOperation,
-            AdminAITierOperation, AdminAIResetOperation, AdminAICheckOperation,
+            AdminAITierOperation, AdminAIResetOperation,
         )):
             from sitg_bot.services.ai_administration import AIAdministrationService
 
             service = AIAdministrationService(
-                self.database, provider=self.knowledge.analysis.provider,
-                settings=self.knowledge.settings,
+                self.database, settings=self.knowledge.settings,
             )
             commands = {
                 ActionCode.ADMIN_AI_SETTINGS: service.read,
@@ -1786,7 +1783,6 @@ class ApplicationGateway:
                 ActionCode.ADMIN_AI_PLAYERS: service.players,
                 ActionCode.ADMIN_AI_TIER: service.tier,
                 ActionCode.ADMIN_AI_RESET: service.reset,
-                ActionCode.ADMIN_AI_CHECK: service.check,
             }
             return await commands[action](player_id, **operation.model_dump(exclude={"action"}))
         if isinstance(operation, AdminManagementListOperation):

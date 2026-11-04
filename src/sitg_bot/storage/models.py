@@ -2479,17 +2479,6 @@ class TrainingAITierRecord(Base):
     __table_args__ = (CheckConstraint("tier IN ('free', 'premium', 'no_ai')"),)
 
 
-class TrainingProviderHealthRecord(Base):
-    """Profile-scoped explicit verification, cooldown and cross-process lease."""
-
-    __tablename__ = "training_provider_health"
-    profile: Mapped[str] = mapped_column(String(64), primary_key=True)
-    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    state: Mapped[str] = mapped_column(String(20), nullable=False, server_default="unknown")
-    error: Mapped[str | None] = mapped_column(String(20))
-
-
 class TrainingCategoryAssignmentRecord(Base):
     """One active category assignment per trainee."""
 

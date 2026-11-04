@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from conftest import create_player, seed_category
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.services.admin_management import AdminManagementService
 from sitg_bot.services.ai_administration import AIAdministrationService
@@ -20,10 +21,11 @@ from sitg_bot.services.entitlements import (
 from sitg_bot.services.training_ai import ProviderSettings
 from sitg_bot.storage.models import (
     PlatformAdministratorRecord,
+    PlayerRecord,
     TrainingAnalysisArtifactRecord,
     TrainingCategoryAssignmentRecord,
     TrainingFeaturePolicyRecord,
-    TrainingProviderHealthRecord,
+    TrainingPolicyStateRecord,
     TrainingUsageLedgerRecord,
     TrainingUsagePeriodRecord,
 )
@@ -41,13 +43,13 @@ def payload(**per_feature):
     return base
 
 
-async def ai_admin_setup(database, *, provider=None):
+async def ai_admin_setup(database):
     actor = await create_player(database, 92001, "AI-admin")
     player = await create_player(database, 92002, "AI-player")
     async with database.transaction() as session:
         session.add(PlatformAdministratorRecord(player_id=actor))
     await EntitlementService(database).ensure_defaults()
-    service = AIAdministrationService(database, provider=provider, settings=ProviderSettings(
+    service = AIAdministrationService(database, settings=ProviderSettings(
         "openai", "fixture-model", api_key="fixture-private-key",
     ))
     return service, actor, player
@@ -70,7 +72,7 @@ async def test_ai_admin_denies_nonadministrators_at_every_service_entry(database
         (service.reset, {"confirm": True, "expected_version": 1}),
         (service.players, {"search": "AI"}),
         (service.tier, {"player_id": actor, "tier": "premium"}),
-        (service.health, {}), (service.check, {"confirm_cost": True}),
+        (service.health, {}),
     )
     for method, values in calls:
         with pytest.raises(PermissionError, match="administrator"):
@@ -155,6 +157,80 @@ async def test_ai_manual_tiers_unlimited_zero_no_ai_and_shared_budget(database):
         # Existing free-cache charging convention is retained, but authorization applies.
         assert await service.entitlements.authorize(session, player_id=player,
             feature="dissection", request_id="free-cache", charge=False) is None
+
+
+@pytest.mark.parametrize("tier", ["free", "premium", "no_ai"])
+async def test_first_tier_assignment_does_not_deadlock_player_locked_best_buzz(
+    database, monkeypatch, tier,
+):
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    reached_lock = asyncio.Event()
+    original_get = AsyncSession.get
+    assignment = None
+
+    async def get(session, model, key, **kwargs):
+        assigning = asyncio.current_task() is assignment
+        if assigning and model is PlayerRecord and kwargs.get("with_for_update"):
+            reached_lock.set()
+        result = await original_get(session, model, key, **kwargs)
+        if assigning and model is TrainingPolicyStateRecord and kwargs.get("with_for_update"):
+            reached_lock.set()
+        return result
+
+    monkeypatch.setattr(AsyncSession, "get", get)
+    try:
+        async with asyncio.timeout(5):
+            async with database.transaction() as session:
+                await session.get(PlayerRecord, player, with_for_update=True)
+                assignment = asyncio.create_task(service.tier(actor, player_id=player, tier=tier))
+                await reached_lock.wait()
+                policy = await service.entitlements.policy_for(session, player, "best_buzz")
+                assert policy.enabled and policy.limit == 3
+            assert await assignment == {"id": player, "tier": tier}
+    finally:
+        if assignment is not None:
+            assignment.cancel()
+            await asyncio.gather(assignment, return_exceptions=True)
+    status = await service.entitlements.capabilities(player)
+    assert status["best_buzz"].enabled is (tier != "no_ai")
+
+
+@pytest.mark.parametrize("tier", ["free", "premium", "no_ai"])
+async def test_tier_assignment_does_not_deadlock_policy_locked_quota_admission(
+    database, monkeypatch, tier,
+):
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    reached_policy = asyncio.Event()
+    original_state = service._state
+
+    async def state(session, actor, *, lock=False):
+        if lock:
+            reached_policy.set()
+        return await original_state(session, actor, lock=lock)
+
+    monkeypatch.setattr(service, "_state", state)
+    assignment = None
+    try:
+        async with asyncio.timeout(5):
+            async with database.transaction() as session:
+                await service.entitlements.policy_for(session, player, "dissection")
+                assignment = asyncio.create_task(service.tier(actor, player_id=player, tier=tier))
+                await reached_policy.wait()
+                reservation = await service.entitlements.authorize(
+                    session, player_id=player, feature="dissection", request_id="admitted",
+                )
+                assert reservation is not None
+            assert await assignment == {"id": player, "tier": tier}
+    finally:
+        if assignment is not None:
+            assignment.cancel()
+            await asyncio.gather(assignment, return_exceptions=True)
+    async with database.transaction() as session:
+        assert await service.entitlements.settle(
+            session, player_id=player, feature="dissection", request_id="admitted",
+        )
 
 
 async def test_ai_reset_preserves_inflight_and_identities_and_all_features(database):
@@ -243,14 +319,31 @@ async def test_no_ai_denies_prepared_best_buzz_cache_without_touching_source(dat
 async def test_ai_custom_categories_and_roles_survive_global_toggles(database):
     service, actor, player = await ai_admin_setup(database)
     custom_id = await seed_category(database, "intentional-off", payload(
-        dissection={"enabled": False, "limit": 7}, best_buzz={"limit": 8},
+        dissection={"enabled": False, "limit": 7, "cache_hit_charging": True,
+                    "queued_request_cap": 1},
+        best_buzz={"limit": 8, "in_flight_request_cap": 1},
         common_knowledge={"limit": 9},
     ), [player])
+    initial = await service.entitlements.capabilities(player)
+    assert not initial["dissection"].enabled and initial["dissection"].limit == 24
+    assert not initial["best_buzz"].enabled and initial["best_buzz"].limit == 24
     await service.update(actor, **ai_settings())
     status = await service.entitlements.capabilities(player)
-    assert not status["dissection"].enabled and status["dissection"].limit == 7
-    assert status["best_buzz"].enabled and status["best_buzz"].limit == 8
+    assert status["dissection"].enabled and status["dissection"].limit == 2
+    assert status["best_buzz"].enabled and status["best_buzz"].limit == 3
+    assert status["dissection"].cache_hit_charging
+    assert status["dissection"].queued_request_cap == 1
+    assert status["best_buzz"].in_flight_request_cap == 1
     assert status["common_knowledge"].enabled and status["common_knowledge"].limit == 9
+    await reserve(database, player, "custom-free")
+    await service.tier(actor, player_id=player, tier="free")
+    explicit = await service.entitlements.capabilities(player)
+    assert explicit["dissection"].remaining == 1
+    assert explicit["dissection"].cache_hit_charging
+    assert explicit["best_buzz"] == status["best_buzz"]
+    async with database.transaction() as session:
+        assert await service.entitlements.settle(session, player_id=player,
+            feature="dissection", request_id="custom-free")
     await service.update(actor, **ai_settings(version=2, best_buzz_enabled=False))
     assert not (await service.entitlements.capabilities(player))["best_buzz"].enabled
     await service.tier(actor, player_id=player, tier="premium")
@@ -276,45 +369,6 @@ async def test_ai_player_search_is_limited_literal_and_projects_only_manual_tier
         await service.tier(actor, player_id=uuid4(), tier="premium")
 
 
-async def test_ai_provider_health_is_explicit_singleflight_cached_and_profile_scoped(database):
-    class LocalProvider:
-        def __init__(self):
-            self.started, self.finish = asyncio.Event(), asyncio.Event()
-            self.calls = 0
-
-        async def verify_response(self):
-            self.calls += 1
-            self.started.set()
-            await self.finish.wait()
-
-    provider = LocalProvider()
-    service, actor, _ = await ai_admin_setup(database, provider=provider)
-    assert (await service.health(actor))["state"] == "unknown"
-    assert provider.calls == 0
-    check = asyncio.create_task(service.check(actor, confirm_cost=True))
-    try:
-        async with asyncio.timeout(2):
-            await provider.started.wait()
-        assert (await service.health(actor))["state"] == "checking"
-        assert (await service.check(actor, confirm_cost=True))["state"] == "checking"
-        assert provider.calls == 1
-    finally:
-        provider.finish.set()
-        result = await check
-    assert result["state"] == "responding" and result["verified_at"]
-    assert "fixture-private-key" not in str(result)
-    assert (await service.check(actor, confirm_cost=True))["state"] == "responding"
-    assert provider.calls == 1
-    async with database.transaction() as session:
-        row = await session.get(TrainingProviderHealthRecord, service.settings.execution_profile)
-        row.verified_at = datetime.now(UTC) - timedelta(minutes=6)
-    assert (await service.health(actor))["state"] == "stale"
-    other = AIAdministrationService(database, settings=ProviderSettings(
-        "charm", "fixture-model", api_key="fixture-key"), provider=provider)
-    assert (await other.health(actor))["state"] == "unknown"
-    assert provider.calls == 1
-
-
 async def test_ai_health_uses_only_successful_matching_profile_recorded_calls(database):
     service, actor, player = await ai_admin_setup(database)
     observed = datetime.now(UTC) - timedelta(minutes=1)
@@ -334,20 +388,16 @@ async def test_ai_health_uses_only_successful_matching_profile_recorded_calls(da
             ))
     result = await service.health(actor)
     assert result["state"] == "responding" and result["verified_at"] == observed
-    assert result["checked_at"] is None
-
-
-@pytest.mark.parametrize("failure,error", [(TimeoutError(), "timeout"),
-    (RuntimeError("upstream private secret"), "provider_error")])
-async def test_ai_provider_health_errors_are_honest_and_redacted(database, failure, error):
-    class LocalProvider:
-        async def verify_response(self):
-            raise failure
-
-    service, actor, _ = await ai_admin_setup(database, provider=LocalProvider())
-    result = await service.check(actor, confirm_cost=True)
-    assert result["state"] == "error" and result["error"] == error
-    assert result["verified_at"] is None and "secret" not in str(result)
+    assert "fixture-private-key" not in str(result)
+    async with database.transaction() as session:
+        artifact = await session.scalar(select(TrainingAnalysisArtifactRecord).where(
+            TrainingAnalysisArtifactRecord.artifact_key == "3" * 64
+        ))
+        artifact.completed_at = datetime.now(UTC) - timedelta(minutes=6)
+    assert (await service.health(actor))["state"] == "stale"
+    other = AIAdministrationService(database, settings=ProviderSettings(
+        "charm", "fixture-model", api_key="fixture-key"))
+    assert (await other.health(actor))["state"] == "unknown"
     service.settings = ProviderSettings("openai", "unconfigured")
     assert (await service.health(actor))["state"] == "unconfigured"
 

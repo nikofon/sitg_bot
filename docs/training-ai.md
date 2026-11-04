@@ -138,10 +138,11 @@ then loads settings/provider separately; navigation performs no provider check.
 
 Explicit saves append immutable policy versions for the managed free/premium theme budgets.
 Existing category assignments and Common knowledge policies/caps/cache charging are retained.
-Unassigned custom categories keep their intentional feature settings and limits; global off
-switches deny new work there too, but switching on never enables their disabled features.
-Explicit free/premium assignment selects managed theme budgets, without changing the stored
-category or its unrelated features. Tier changes share the same player/feature/window counters,
+Every player without a manual premium/NO AI assignment uses the configured free theme
+allowances, including players in custom categories. Managed allowances override only the
+theme features' enabled flags, limits and reset periods; category cache charging, request
+caps and unrelated features remain unchanged. Manual assignment does not change the stored
+category. Tier changes share the same player/feature/window counters,
 not a separate tier budget. Changing window selects that UTC bucket; switching back sees its
 previous usage. No startup auto-enablement of previously persisted disabled policies occurs.
 Shared/exclusive state locks serialize new admissions with updates/reset/tier assignment;
@@ -149,28 +150,19 @@ accepted work is neither cancelled nor double-settled by these controls. Existin
 request-audit/idempotency infrastructure records these actions; no separate audit system.
 Stale settings/reset versions return `stale_write`; invalid values are rejected server-side.
 
-### Provider status and explicit Check
+### Passive provider status
 
-GET `provider` never calls upstream. It returns `{provider,model,configured,state,checked_at,
-verified_at,error,check_available_at,check_cost_notice}` for the selected server execution
-profile. Providers remain exactly `openai`/`charm`; models/keys are operator configuration.
-States are `unconfigured`, `unknown` (configured but unverified), `checking`, `responding`,
-`stale` (success older than five minutes), or `error`. `responding` means a validated model
-response from an explicit check or recorded successful analysis of this exact profile,
-**not** guaranteed uptime or future success. Recorded outcomes must contain actual provider
-call metadata; cache-only artifacts and other profiles are excluded by an indexed lookup.
-No public model-list 200 or bare reachability claim is presented as model success.
-Errors are only `timeout`/`provider_error` (or null), never private upstream diagnostics.
-
-POST `provider/check` requires `{confirm_cost:true}`. It sends a fixed tiny authenticated
-structured model request, which **may incur provider charges even on timeout/failure**.
-It reuses the selected fixed endpoint, private transport headers, request identities and
-schema validation, with a 10-second total deadline and at most 64 output tokens. A durable
-profile-scoped row enforces single-flight/cached results and a 60-second cooldown across
-processes. Network I/O holds no database transaction. Interrupted checks time out honestly;
-late completions are fenced by their start timestamp. Polling/page opening/startup never
-performs billable checks. Keys, environment and raw response/error bodies never enter the
-admin projection. Fake transport tests do not establish live provider access or quality.
+GET `provider` never calls upstream. It returns `{provider,model,configured,state,verified_at}`
+for the selected server execution profile. Providers remain exactly `openai`/`charm`;
+models/keys are operator configuration. States are `unconfigured`, `unknown` (configured
+but unverified), `responding`, or `stale` (success at least five minutes old).
+`responding` means a recorded successful analysis of this exact profile, **not** guaranteed
+current uptime or future success. Recorded outcomes must contain actual provider call
+metadata; cache-only artifacts and other profiles are excluded by an indexed lookup.
+No public model-list response or arbitrary job failure establishes provider health.
+There is no probe action, polling or paid monitoring. Keys and raw response/error bodies
+never enter the admin projection. Fake transport tests do not establish live provider
+access or quality.
 
 ## Application integration
 

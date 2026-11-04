@@ -621,29 +621,19 @@ class EntitlementService:
         if tier is not None and tier.tier == "no_ai":
             return {key: replace(value, enabled=False) for key, value in policies.items()}
         if state is not None:
-            managed = tier is not None or (
-                category is not None and category.id == state.default_category_id
-            )
+            default = await session.get(TrainingCategoryRecord, state.default_category_id)
+            default_version = default.policy_version if default else None
             version = (
-                state.premium_policy_version
+                state.premium_policy_version or state.free_policy_version or default_version
                 if tier is not None and tier.tier == "premium"
-                else state.free_policy_version
+                else state.free_policy_version or default_version
             )
-            if managed and version is not None:
-                overrides = await self._policies_version(session, version)
-                for key in (FEATURE_DISSECTION, FEATURE_BEST_BUZZ):
-                    policies[key] = overrides[key]
-            elif tier is not None:
-                default = await session.get(TrainingCategoryRecord, state.default_category_id)
-                overrides = await self._policies_version(
-                    session, default.policy_version if default else None
+            overrides = await self._policies_version(session, version)
+            for key in (FEATURE_DISSECTION, FEATURE_BEST_BUZZ):
+                policies[key] = replace(
+                    policies[key], enabled=overrides[key].enabled,
+                    limit=overrides[key].limit, reset_period=overrides[key].reset_period,
                 )
-                for key in (FEATURE_DISSECTION, FEATURE_BEST_BUZZ):
-                    policies[key] = overrides[key]
-            if state.admin_features:
-                for key in (FEATURE_DISSECTION, FEATURE_BEST_BUZZ):
-                    if not state.admin_features[key + "_enabled"]:
-                        policies[key] = replace(policies[key], enabled=False)
         return policies
 
     @staticmethod

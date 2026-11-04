@@ -13,7 +13,6 @@ from sitg_bot.application.protocol import (
 from sitg_bot.bot.game_delivery import GameDelivery, cleanup_messages
 from sitg_bot.bot.keyboards.common import (
     TRAINING_MENU_ACTIONS,
-    registration_consent_keyboard,
     training_game_keyboard,
 )
 from sitg_bot.bot.library_delivery import library_document_delivery_handler
@@ -142,14 +141,7 @@ class TrainingDelivery(GameDelivery):
 
     async def _send(self, chat, game, messages, key, model, **kwargs):
         state = self.states[game]["session"]
-        # One-time keyboards (the appeal ballot's Yes/No) are passed through;
-        # every persistent reply keyboard is the exact three-button training
-        # controls, restored after the ballot resolves.
-        if (
-            state
-            and isinstance(model.keyboard, ReplyKeyboardModel)
-            and not model.keyboard.one_time
-        ):
+        if state and isinstance(model.keyboard, ReplyKeyboardModel):
             keyboard = (
                 training_game_keyboard(self.localization, self.states[game]["locale"])
                 if state["status"] in {"active", "paused"}
@@ -236,8 +228,6 @@ class TrainingDelivery(GameDelivery):
                     if question["status"] in {"active", "paused"}:
                         controls = "vote" if question.get("appeal_status") == "voting" else "play"
                         if payload.get("force") or presentation.get("controls") != controls:
-                            # The ballot is a one-time Yes/No keyboard on its own
-                            # message; the persistent keyboard stays +/||/! only.
                             await self._send(chat, game, messages,
                                 f"controls:{question['version']}:{controls}:{len(messages)}",
                                 MessageModel(
@@ -247,13 +237,7 @@ class TrainingDelivery(GameDelivery):
                                         else "training.controls",
                                         state["locale"],
                                     ),
-                                    registration_consent_keyboard(
-                                        self.localization, state["locale"]
-                                    )
-                                    if controls == "vote"
-                                    else training_game_keyboard(
-                                        self.localization, state["locale"]
-                                    ),
+                                    training_game_keyboard(self.localization, state["locale"]),
                                 ))
                             await self.protocol.request("telegram.training.record", **identifiers,
                                                         presentation={"controls": controls})

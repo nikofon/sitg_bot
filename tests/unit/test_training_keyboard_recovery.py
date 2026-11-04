@@ -53,8 +53,7 @@ async def test_recovery_preserves_phase_owned_training_controls(monkeypatch, loc
     )
     assert current_keyboard == original_keyboard
     labels = [button.text for row in current_keyboard.keyboard for button in row]
-    assert (loc.text("button.yes", locale) in labels) is voting
-    assert (loc.text("button.no", locale) in labels) is voting
+    assert labels == ["+", "||", "!"]
     count_before = len(case.sends)
     await deliver(case)
     assert len(case.sends) == count_before
@@ -62,12 +61,7 @@ async def test_recovery_preserves_phase_owned_training_controls(monkeypatch, loc
 
 @pytest.mark.parametrize("locale", ["en", "ru"])
 @pytest.mark.parametrize("voting", [True, False])
-async def test_play_keyboard_is_exactly_three_buttons_and_ballot_is_one_time(locale, voting):
-    """The persistent training keyboard never gains rows in any state.
-
-    The appeal ballot is its own one-time Yes/No message, so the persistent
-    reply keyboard stays exactly +, || and ! even while voting.
-    """
+async def test_play_keyboard_is_exactly_three_buttons_including_during_ballot(locale, voting):
     case = delivery_case(locale=locale, phase="revealed", status="paused" if voting
                          else "active", voting=voting)
     loc = LocalizationService()
@@ -77,12 +71,9 @@ async def test_play_keyboard_is_exactly_three_buttons_and_ballot_is_one_time(loc
     labels = [button.text for row in markup.keyboard for button in row]
     if voting:
         assert controls[1] == loc.text("training.appeal_voting", locale)
-        assert sorted(labels) == sorted(
-            [loc.text("button.yes", locale), loc.text("button.no", locale)]
-        )
     else:
         assert controls[1] == loc.text("training.controls", locale)
-        assert labels == ["+", "||", "!"]
+    assert labels == ["+", "||", "!"]
     assert training_game_keyboard(loc, locale).rows == (("+",), ("||", "!"))
 
 
@@ -94,6 +85,6 @@ async def test_forced_delivery_reinstalls_controls_after_external_keyboard_repla
     await deliver(case, force=True)
     assert len(case.sends) == before + 1
     labels = [button.text for row in case.sends[-1][2].keyboard for button in row]
-    assert ("Yes" in labels) is voting
+    assert labels == ["+", "||", "!"]
     await deliver(case)
     assert len(case.sends) == before + 1

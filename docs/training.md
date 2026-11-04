@@ -139,8 +139,8 @@ answers and accepted-buzz answer timeouts subtract it. No-buzz timeouts, reveal 
 skip are neutral. An answer in progress must be submitted or time out before reveal/skip.
 A submitted answer on the current revealed question can be appealed once with `!`.
 The solo trainee explicitly votes Yes/No within 60 seconds, as a one-player
-electorate; the ballot is its own one-time Yes/No keyboard message, so the
-persistent play keyboard stays exactly `+`, `||` and `!` in every state.
+electorate; the localized prompt asks for a literal Yes/No text message. The
+reply keyboard stays exactly `+`, `||` and `!` throughout active and paused training.
 Acceptance flips the verdict and corrects the training score; rejection/expiry leaves
 it unchanged. The prior pause state is restored. Neither attempts nor appeals write
 competitive scores, ratings, suspicion, player statistics or author totals. These

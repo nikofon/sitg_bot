@@ -3,7 +3,6 @@ import json
 import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -98,45 +97,19 @@ def mock_provider(monkeypatch, output, *, provider_name, status="completed", chu
     ), calls
 
 
-def test_admin_health_projection_has_honest_unknown_stale_and_expired_check_states():
+def test_admin_health_projection_has_honest_unknown_stale_and_unconfigured_states():
     service = AIAdministrationService(None, settings=ProviderSettings(
         "openai", "fixture-model", api_key="fixture-private",
     ))
     now = datetime.now(UTC)
-    assert service._health_projection(None, now)["state"] == "unknown"
-    assert service._health_projection(None, now, now)["state"] == "responding"
-    assert service._health_projection(None, now, now - timedelta(minutes=6))["state"] == "stale"
-    row = SimpleNamespace(state="checking", checked_at=now - timedelta(seconds=11),
-                          verified_at=None, error=None)
-    result = service._health_projection(row, now)
-    assert result["state"] == "error" and result["error"] == "timeout"
-    assert result["check_available_at"] == row.checked_at + timedelta(seconds=60)
+    assert service._health_projection(now)["state"] == "unknown"
+    assert service._health_projection(now, now)["state"] == "responding"
+    assert service._health_projection(now, now - timedelta(minutes=6))["state"] == "stale"
+    result = service._health_projection(now, now - timedelta(minutes=5))
+    assert result["state"] == "stale"
     assert "fixture-private" not in str(result)
-
-
-async def test_explicit_admin_check_uses_selected_model_and_tiny_bounds(provider):
-    instance, calls = provider({"result": "ok"})
-    result = await instance.verify_response()
-    assert result.result == "ok"
-    assert len(calls) == 1
-    body = calls[0][1]["json"]
-    assert body["model"] == instance.settings.model
-    assert body["max_output_tokens"] == 64 and body["store"] is False
-    assert calls[0][1]["allow_redirects"] is False
-    assert json.loads(body["input"]) == {}
-
-
-async def test_explicit_admin_check_does_not_treat_http_200_as_model_success(provider):
-    instance, _ = provider({"result": "not a verified response"})
-    with pytest.raises(ValidationError):
-        await instance.verify_response()
-
-
-async def test_explicit_admin_check_timeout_is_honest(provider):
-    instance, calls = provider({}, failure=TimeoutError())
-    with pytest.raises(TimeoutError):
-        await instance.verify_response()
-    assert len(calls) == 1
+    service.settings = ProviderSettings("openai", "unconfigured")
+    assert service._health_projection(now)["state"] == "unconfigured"
 
 
 async def test_provider_uses_strict_private_structured_requests(provider, provider_name):

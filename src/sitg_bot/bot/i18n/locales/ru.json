@@ -28,7 +28,7 @@
   "training.score_value": "Счёт: {score}",
   "training.paused": "Пауза. Нажмите ||, чтобы продолжить.",
   "training.controls": "+ — нажать · || — пауза/продолжить · ! — апелляция · /score — счёт · /quit, /abbandon — выход",
-  "training.appeal_voting": "Апелляция: изменить зачёт этого ответа? Нажмите «Да» или «Нет» в течение 60 секунд.",
+  "training.appeal_voting": "Апелляция: изменить зачёт этого ответа? Отправьте «Да» или «Нет» сообщением в течение 60 секунд.",
   "training.appeal_accepted": "Апелляция принята. Счёт исправлен.",
   "training.appeal_rejected": "Апелляция отклонена. Счёт не изменился.",
   "training.lobby_status": "Лобби тренировки\nПакеты: {packets}\nМодификаторы: {modifiers}",
