@@ -61,6 +61,7 @@ import { renderTournamentProfile } from "./ui/tournament";
 import { renderClassicSeeding } from "./ui/classic-seeding";
 import { renderChatSchedule } from "./ui/chat-schedule";
 import { renderAdminManagement } from "./ui/admin-management";
+import { renderAdminAi } from "./ui/admin-ai";
 import { renderSubscriptions } from "./ui/subscriptions";
 import { renderAuthorProfile, renderAuthors } from "./ui/authors";
 import { renderPlayers } from "./ui/players";
@@ -240,6 +241,10 @@ export class MiniAppShell {
       return;
     }
     if ("kind" in payload.resource && payload.resource.kind === "admin_management") {
+      if (payload.resource.section === "ai" && this.request) {
+        this.renderAdminAiRoute(route);
+        return;
+      }
       this.renderAdminManagementRoute(route, payload.resource);
       return;
     }
@@ -3274,6 +3279,17 @@ export class MiniAppShell {
     }
     this.renderFrame(route, element("section", { className: "route-content" }, list));
     queueMicrotask(() => document.querySelector<HTMLElement>("#page-title")?.focus());
+  }
+
+  private renderAdminAiRoute(route: RouteMatch): void {
+    const content = renderAdminAi(this.api, this.i18n, this.request!.signal,
+      (path) => this.router.navigate(path),
+      {
+        reload: () => void this.load(route),
+        confirm: (message) => window.confirm(message),
+        message: (title, lines) => this.showTextDialog(title, lines),
+      });
+    this.renderFrame(route, content);
   }
 
   private renderAdminManagementRoute(route: RouteMatch, resource: AdminManagementResource): void {

@@ -1013,7 +1013,8 @@ export type AdminSection =
   | "players"
   | "packets"
   | "link_requests"
-  | "ongoing_games";
+  | "ongoing_games"
+  | "ai";
 export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
 export interface AdminCard {
   id: string;
@@ -1025,6 +1026,52 @@ export interface AdminManagementResource {
   section: AdminSection;
   items: AdminCard[];
   packets_deferred?: boolean;
+}
+
+export type AiAdminTier = "free" | "premium" | "no_ai";
+export type AiAdminResetPeriod = "hour" | "day" | "week";
+export type AiAdminQuota = number | null;
+
+export interface AiAdminSettings {
+  version: number;
+  dissection_enabled: boolean;
+  best_buzz_enabled: boolean;
+  free: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
+  premium: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
+  reset_period: AiAdminResetPeriod;
+  reset_at: string;
+  quota_generation: number;
+}
+
+export type AiAdminProviderState =
+  | "unconfigured"
+  | "unknown"
+  | "checking"
+  | "responding"
+  | "stale"
+  | "error";
+
+export interface AiAdminProvider {
+  provider: "openai" | "charm";
+  model: string;
+  configured: boolean;
+  state: AiAdminProviderState;
+  checked_at: string | null;
+  verified_at: string | null;
+  error: "timeout" | "provider_error" | null;
+  check_available_at: string | null;
+  check_cost_notice: string;
+}
+
+export interface AiAdminPlayer {
+  id: string;
+  name: string;
+  tier: AiAdminTier;
+}
+
+export interface AiAdminPlayers {
+  items: AiAdminPlayer[];
+  limit: number;
 }
 
 export interface AdminSuspicionInspectionPayload {
