@@ -187,12 +187,13 @@ function questionRow(row: TrainingHistoryQuestionRow, i18n: I18n): HTMLElement {
     detail("training_history.answered", String(row.stats.answered)),
     detail("training_history.correct", String(row.stats.correct)),
     detail("training_history.incorrect", String(row.stats.incorrect)),
-    detail("training_history.buzz_timings",
-      row.stats.buzz_timings === null
-        ? i18n.t("training_history.timings_unavailable")
-        : row.stats.buzz_timings.length
-          ? row.stats.buzz_timings.map((seconds) => `${seconds}s`).join(", ")
-          : "—"));
+    detail("training_history.right_rate", row.stats.answered
+      ? `${Math.round((row.stats.correct / row.stats.answered) * 100)}%`
+      : "—"),
+    detail("training_history.buzz_time_average",
+      row.stats.buzz_time_average === null
+        ? i18n.t("training_history.no_play_samples")
+        : `${row.stats.buzz_time_average}s · ${row.stats.buzz_samples}`));
   const own = element("dl", { className: "lobby-packet-details training-history-own" },
     ...(row.own
       ? [

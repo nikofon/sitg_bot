@@ -750,15 +750,18 @@ export interface TrainingHistoryListResource {
 }
 
 export interface TrainingHistoryQuestionStats {
+  /** Play-mode presentations of this question revision in competitive games. */
   presentations: number;
-  /** Unknown for legacy runs that did not record accepted buzzes. */
+  /** Accepted play-mode buzzes; null when statistics are withheld (protected). */
   buzzes: number | null;
   attempts: number;
   answered: number;
   correct: number;
   incorrect: number;
-  /** null means timings were never recorded (legacy runs); never fabricated. */
-  buzz_timings: number[] | null;
+  /** Average play-mode opening-to-buzz delay in seconds; null with no usable
+   *  play-mode samples (never training totals). */
+  buzz_time_average: number | null;
+  buzz_samples: number;
 }
 
 export interface TrainingHistoryBuzz {

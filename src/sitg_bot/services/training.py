@@ -85,6 +85,14 @@ class TrainingService:
                     raise StaleWriteError("Training lobby has changed")
                 if command == "quit":
                     lobby = None
+                elif command == "remove_packet":
+                    # Removing clears this lobby's selection only: the packet, its
+                    # history, entitlements and game data are never touched.
+                    if lobby.get("version_id") is None:
+                        raise ValueError("No packet is selected")
+                    lobby = dict(lobby, version_id=None, packet_name=None)
+                    player.training_lobby_version += 1
+                    lobby["version"] = player.training_lobby_version
                 elif command in {"save", "select_packet", "save_settings"}:
                     # Copy the JSON projection: packet autosave must not overwrite
                     # settings, and explicit settings saves must not change packets.
