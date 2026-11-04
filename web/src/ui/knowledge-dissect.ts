@@ -83,6 +83,8 @@ export function dissectComposerDialog(
   const comment = element("textarea", { "aria-label": i18n.t("knowledge.dissection.comment") });
   const tagList = element("div", { className: "knowledge-tag-options", role: "group",
     "aria-label": i18n.t("knowledge.tags.selected") });
+  const tagToggle = element("button", { type: "button", className: "secondary-button",
+    "data-dissect-tags-toggle": "" }, i18n.t("knowledge.dissection.select_all"));
   const warning = element("p", { className: "knowledge-dissection-warning", hidden: true },
     i18n.t("knowledge.confirm_exposure"));
   const hint = element("p", { className: "knowledge-fact-meta", hidden: true },
@@ -100,13 +102,35 @@ export function dissectComposerDialog(
     hint.hidden = !(themesLoaded && selectedThemes.size === 0);
   };
 
+  const tagCheckboxes = new Map<string, HTMLInputElement>();
+  const syncTagToggle = (): void => {
+    const boxes = [...tagCheckboxes.values()];
+    const all = boxes.length > 0 && boxes.every((box) => box.checked);
+    tagToggle.textContent = i18n.t(all
+      ? "knowledge.dissection.deselect_all"
+      : "knowledge.dissection.select_all");
+  };
+  tagToggle.addEventListener("click", () => {
+    const boxes = [...tagCheckboxes.values()];
+    const all = boxes.length > 0 && boxes.every((box) => box.checked);
+    for (const box of boxes) {
+      box.checked = !all;
+      if (all) selectedTags.delete(box.value);
+      else selectedTags.add(box.value);
+    }
+    syncTagToggle();
+  });
+
   const renderTagOptions = (): void => {
     replaceChildren(tagList);
+    tagCheckboxes.clear();
     if (!state.tagPool.size) {
+      tagToggle.hidden = true;
       tagList.append(element("p", { className: "knowledge-fact-meta" },
         i18n.t("knowledge.tags.field_empty")));
       return;
     }
+    tagToggle.hidden = false;
     for (const tag of [...state.tagPool.values()].sort((a, b) =>
       (a.label ?? a.name).localeCompare(b.label ?? b.name))) {
       const input = element("input", { type: "checkbox", value: tag.tag_id });
@@ -114,10 +138,13 @@ export function dissectComposerDialog(
       input.addEventListener("change", () => {
         if (input.checked) selectedTags.add(tag.tag_id);
         else selectedTags.delete(tag.tag_id);
+        syncTagToggle();
       });
+      tagCheckboxes.set(tag.tag_id, input);
       tagList.append(element("div", { className: "knowledge-tag-option" },
         element("label", { className: "checkbox-label" }, input, tagChip(tag))));
     }
+    syncTagToggle();
   };
   renderTagOptions();
   void state.tagPoolReady.then(renderTagOptions).catch(() => { /* the pool reload surfaces failures */ });
@@ -166,7 +193,7 @@ export function dissectComposerDialog(
     element("label", {}, i18n.t("knowledge.dissection.instructions"), instructions),
     element("label", {}, i18n.t("knowledge.dissection.comment"), comment),
     element("fieldset", { className: "knowledge-tag-select" },
-      element("legend", {}, i18n.t("knowledge.tags.selected")), tagList),
+      element("legend", {}, i18n.t("knowledge.tags.selected")), tagToggle, tagList),
     hint,
     warning,
     submit,
