@@ -64,6 +64,19 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0032_play_history_revision_index` adds only
+`ix_question_rounds_question_revision` on `question_rounds(question_revision_id)` for
+revision-scoped, page-batched normal-play history statistics. Child joins already have
+leading UNIQUE indexes on `(round_id, participant_id)` (and answer attempts also
+`(round_id, attempt_number)`); no redundant `round_id` indexes or history backfill are added.
+The new index is created/dropped CONCURRENTLY through Alembic's supported autocommit block:
+normal writes remain available, but building it still scans the rounds table and can wait
+for older transactions. Schedule deployment during lower load. The existing 30-second
+DDL lock timeout remains in effect. Entering the block commits earlier pending migration
+work, so a multi-revision upgrade is not all-or-nothing at this boundary. An interrupted
+concurrent build may leave an INVALID index; operators must inspect and remove only that
+failed index before retrying through the normal deployment procedure. The migration does
+not silently accept an existing/invalid index or perform automatic repair.
 Revision `0031_ai_administration` adds independent manual AI tiers, versioned managed
 free/premium policy pointers, constant-time quota generations and profile-scoped explicit
 provider-check cooldown/results. Existing policies, category assignments, usage ledgers and

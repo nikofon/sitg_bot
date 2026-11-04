@@ -110,6 +110,10 @@ class PlayerRecord(Base, TimestampMixin):
         ),
         CheckConstraint("reputation BETWEEN 0 AND 100"),
         CheckConstraint("suspicion >= 0"),
+        Index(
+            "ix_players_ai_name_prefix", func.lower(public_nickname).label("ai_name"),
+            postgresql_ops={"ai_name": "text_pattern_ops"},
+        ),
     )
 
 
@@ -1934,6 +1938,7 @@ class QuestionRoundRecord(Base):
     __table_args__ = (
         UniqueConstraint("game_id", "sequence"),
         CheckConstraint("status IN ('pending', 'active', 'completed', 'invalidated')"),
+        Index("ix_question_rounds_question_revision", "question_revision_id"),
     )
 
 
