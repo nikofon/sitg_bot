@@ -1080,6 +1080,10 @@ class KnowledgeApplication:
                     break
 
     async def prepared(self, session, player_id, source):
+        # New cache consumption is still an AI capability, even without a call.
+        policy = await self.entitlements.policy_for(session, player_id, "best_buzz")
+        if not policy.enabled:
+            return None
         rows = await session.execute(
             select(TrainingAnalysisArtifactRecord, TrainingAnalysisRequestRecord)
             .join(

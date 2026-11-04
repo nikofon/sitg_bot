@@ -16,7 +16,6 @@ from sitg_bot.storage.models import (
     KnowledgeGrantRecord,
     TrainingCategoryRecord,
     TrainingFeaturePolicyRecord,
-    TrainingPolicyStateRecord,
 )
 
 
@@ -97,7 +96,11 @@ def test_upgrade_converts_legacy_shares_and_only_updates_the_old_free_policy(
                     policy_version=version,
                     is_default=True,
                 )
-                session.add(TrainingPolicyStateRecord(singleton=1, default_category_id=category))
+                # Seed the historical schema, not columns added by later migrations.
+                await session.execute(text(
+                    "INSERT INTO training_policy_state(singleton, default_category_id) "
+                    "VALUES (1, :category)"
+                ), {"category": category})
                 custom_version = await app.entitlements.create_policy(
                     session, {key: {**value, "limit": 7} for key, value in features.items()}
                 )

@@ -2454,7 +2454,35 @@ class TrainingPolicyStateRecord(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
+    admin_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    quota_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    free_policy_version: Mapped[int | None] = mapped_column(Integer)
+    premium_policy_version: Mapped[int | None] = mapped_column(Integer)
+    admin_features: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
     __table_args__ = (CheckConstraint("singleton = 1"),)
+
+
+class TrainingAITierRecord(Base):
+    """Manual AI tiers, independent of category, billing and tournament roles."""
+
+    __tablename__ = "training_ai_tiers"
+    player_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("players.id"), primary_key=True
+    )
+    tier: Mapped[str] = mapped_column(String(10), nullable=False)
+    __table_args__ = (CheckConstraint("tier IN ('free', 'premium', 'no_ai')"),)
+
+
+class TrainingProviderHealthRecord(Base):
+    """Profile-scoped explicit verification, cooldown and cross-process lease."""
+
+    __tablename__ = "training_provider_health"
+    profile: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(20), nullable=False, server_default="unknown")
+    error: Mapped[str | None] = mapped_column(String(20))
 
 
 class TrainingCategoryAssignmentRecord(Base):
@@ -2488,6 +2516,9 @@ class TrainingUsagePeriodRecord(Base):
     feature: Mapped[str] = mapped_column(String(50), nullable=False)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quota_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     reserved: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
@@ -2497,7 +2528,8 @@ class TrainingUsagePeriodRecord(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "player_id", "feature", "period_start", name="uq_training_usage_periods_scope"
+            "player_id", "feature", "period_start", "period_end", "quota_generation",
+            name="uq_training_usage_periods_scope"
         ),
         CheckConstraint("reserved >= 0 AND settled >= 0"),
         CheckConstraint("period_end > period_start"),
@@ -2606,6 +2638,13 @@ class TrainingAnalysisArtifactRecord(Base):
             "AND completed_at IS NULL AND failed_at IS NULL)"
         ),
         Index("ix_training_analysis_artifacts_owner", "owner_player_id", "kind", "created_at"),
+        Index(
+            "ix_training_analysis_health", text("(provider_usage ->> 'execution_profile')"),
+            completed_at.desc(),
+            postgresql_where=text(
+                "status = 'succeeded' AND (provider_usage -> 'calls') @> '[{}]'::jsonb"
+            ),
+        ),
         Index(
             "ix_training_analysis_public_source", "source_fingerprint", "model",
             "prompt_version", "schema_version", "tokenizer_version",

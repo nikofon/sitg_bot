@@ -4,7 +4,11 @@ from uuid import uuid4
 
 import pytest
 from conftest import create_player, seed_category
+from sqlalchemy import func, select
 
+from sitg_bot.services.admin_management import AdminManagementService
+from sitg_bot.services.ai_administration import AIAdministrationService
+from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.entitlements import (
     FEATURE_DISSECTION,
     RESET_MONTHLY,
@@ -12,6 +16,16 @@ from sitg_bot.services.entitlements import (
     EntitlementService,
     FeatureDisabledError,
     QuotaExceededError,
+)
+from sitg_bot.services.training_ai import ProviderSettings
+from sitg_bot.storage.models import (
+    PlatformAdministratorRecord,
+    TrainingAnalysisArtifactRecord,
+    TrainingCategoryAssignmentRecord,
+    TrainingFeaturePolicyRecord,
+    TrainingProviderHealthRecord,
+    TrainingUsageLedgerRecord,
+    TrainingUsagePeriodRecord,
 )
 
 pytestmark = pytest.mark.integration
@@ -25,6 +39,317 @@ def payload(**per_feature):
     for feature, overrides in per_feature.items():
         base[feature] = base[feature] | overrides
     return base
+
+
+async def ai_admin_setup(database, *, provider=None):
+    actor = await create_player(database, 92001, "AI-admin")
+    player = await create_player(database, 92002, "AI-player")
+    async with database.transaction() as session:
+        session.add(PlatformAdministratorRecord(player_id=actor))
+    await EntitlementService(database).ensure_defaults()
+    service = AIAdministrationService(database, provider=provider, settings=ProviderSettings(
+        "openai", "fixture-model", api_key="fixture-private-key",
+    ))
+    return service, actor, player
+
+
+def ai_settings(version=1, **overrides):
+    return {
+        "expected_version": version,
+        "dissection_enabled": True, "best_buzz_enabled": True,
+        "free": {"dissection": 2, "best_buzz": 3},
+        "premium": {"dissection": None, "best_buzz": 10},
+        "reset_period": "day", **overrides,
+    }
+
+
+async def test_ai_admin_denies_nonadministrators_at_every_service_entry(database):
+    service, actor, player = await ai_admin_setup(database)
+    calls = (
+        (service.read, {}), (service.update, ai_settings()),
+        (service.reset, {"confirm": True, "expected_version": 1}),
+        (service.players, {"search": "AI"}),
+        (service.tier, {"player_id": actor, "tier": "premium"}),
+        (service.health, {}), (service.check, {"confirm_cost": True}),
+    )
+    for method, values in calls:
+        with pytest.raises(PermissionError, match="administrator"):
+            await method(player, **values)
+    management = AdminManagementService(database)
+    with pytest.raises(PermissionError):
+        await management.catalogue(player, "ai")
+    assert await management.catalogue(actor, "ai") == {
+        "kind": "admin_management", "state": "ready", "section": "ai", "items": [],
+    }
+    async with database.transaction() as session:
+        admin = await session.get(PlatformAdministratorRecord, actor)
+        admin.revoked_at = datetime.now(UTC)
+    with pytest.raises(PermissionError):
+        await service.read(actor)
+
+
+async def test_ai_admin_defaults_explicit_settings_and_version_fencing(database):
+    service, actor, player = await ai_admin_setup(database)
+    initial = await service.read(actor)
+    assert initial["version"] == 1 and initial["quota_generation"] == 0
+    assert initial["free"] == initial["premium"] == {"dissection": 24, "best_buzz": 24}
+    assert not initial["dissection_enabled"] and not initial["best_buzz_enabled"]
+    before = await service.entitlements.capabilities(player)
+    assert not before["dissection"].enabled
+    result = await service.update(actor, **ai_settings(reset_period="week"))
+    assert result["version"] == 2 and result["reset_period"] == "week"
+    capabilities = await service.entitlements.capabilities(player)
+    assert capabilities["dissection"].remaining == 2
+    assert capabilities["best_buzz"].remaining == 3
+    assert not capabilities["common_knowledge"].enabled
+    assert capabilities["dissection"].reset_at.weekday() == 0
+    with pytest.raises(StaleWriteError):
+        await service.update(actor, **ai_settings())
+    with pytest.raises(StaleWriteError):
+        await service.reset(actor, confirm=True, expected_version=1)
+    await service.entitlements.ensure_defaults(features=payload())
+    assert (await service.read(actor))["version"] == 2
+    async with database.transaction() as session:
+        first = await session.scalar(select(TrainingFeaturePolicyRecord).where(
+            TrainingFeaturePolicyRecord.version == 1
+        ))
+        assert first.features["dissection"]["enabled"] is False
+
+
+async def test_ai_manual_tiers_unlimited_zero_no_ai_and_shared_budget(database):
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    await reserve(database, player, "tier-one")
+    await reserve(database, player, "tier-two")
+    with pytest.raises(QuotaExceededError):
+        await reserve(database, player, "tier-three")
+    await service.tier(actor, player_id=player, tier="premium")
+    assert (await service.entitlements.capabilities(player))["dissection"].remaining is None
+    await reserve(database, player, "premium-one")
+    await service.tier(actor, player_id=player, tier="free")
+    assert (await service.entitlements.capabilities(player))["dissection"].remaining == 0
+    await service.tier(actor, player_id=player, tier="no_ai")
+    for feature in TRAINING_FEATURES:
+        async with database.transaction() as session:
+            with pytest.raises(FeatureDisabledError):
+                await service.entitlements.authorize(session, player_id=player,
+                    feature=feature, request_id="cache-" + feature, charge=False)
+    # Already accepted work survives downgrades and settles/refunds once.
+    async with database.transaction() as session:
+        assert await service.entitlements.settle(session, player_id=player,
+            feature="dissection", request_id="premium-one")
+    await service.reset(actor, confirm=True, expected_version=2)
+    async with database.transaction() as session:
+        assert await service.entitlements.release(session, player_id=player,
+            feature="dissection", request_id="tier-one")
+        assert not await service.entitlements.release(session, player_id=player,
+            feature="dissection", request_id="tier-one")
+    status = await service.entitlements.capabilities(player)
+    assert all(not item.enabled for item in status.values())
+    await service.tier(actor, player_id=player, tier="free")
+    await service.update(actor, **ai_settings(version=3,
+        free={"dissection": 0, "best_buzz": 3}))
+    with pytest.raises(QuotaExceededError):
+        await reserve(database, player, "zero")
+    async with database.transaction() as session:
+        # Existing free-cache charging convention is retained, but authorization applies.
+        assert await service.entitlements.authorize(session, player_id=player,
+            feature="dissection", request_id="free-cache", charge=False) is None
+
+
+async def test_ai_reset_preserves_inflight_and_identities_and_all_features(database):
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    # Custom category enables common knowledge without changing its existing quota.
+    await seed_category(database, "reset-custom", payload(), [player])
+    reservations = []
+    for feature in TRAINING_FEATURES:
+        async with database.transaction() as session:
+            reservations.append(await service.entitlements.authorize(session,
+                player_id=player, feature=feature, request_id="old-" + feature))
+    reset = await service.reset(actor, confirm=True, expected_version=2)
+    assert reset["quota_generation"] == 1
+    for feature in TRAINING_FEATURES:
+        async with database.transaction() as session:
+            new = await service.entitlements.authorize(session, player_id=player,
+                feature=feature, request_id="new-" + feature)
+            assert new.period_id not in {r.period_id for r in reservations}
+            assert await service.entitlements.settle(session, player_id=player,
+                feature=feature, request_id="old-" + feature)
+            assert not await service.entitlements.settle(session, player_id=player,
+                feature=feature, request_id="old-" + feature)
+    async with database.transaction() as session:
+        count = await session.scalar(select(func.count()).select_from(TrainingUsageLedgerRecord))
+        assert count == 9
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert len(periods) == 6
+        assert all(p.reserved == 0 and p.settled == 1 for p in periods if p.quota_generation == 0)
+        assert all(p.reserved == 1 and p.settled == 0 for p in periods if p.quota_generation == 1)
+        for method in (service.entitlements.settle, service.entitlements.release):
+            with pytest.raises(ValueError, match="another player"):
+                await method(session, player_id=actor, feature="dissection",
+                             request_id="new-dissection")
+        with pytest.raises(ValueError, match="another player"):
+            await service.entitlements.authorize(session, player_id=actor,
+                feature="dissection", request_id="new-dissection")
+
+
+async def test_ai_window_switches_do_not_alias_midnight_buckets_or_erase_old_usage(database):
+    service, actor, player = await ai_admin_setup(database)
+    moment = datetime(2030, 6, 17, 0, 30, tzinfo=UTC)
+    await service.update(actor, **ai_settings(reset_period="hour"))
+    first = await reserve(database, player, "hour-window", now=moment)
+    await service.update(actor, **ai_settings(version=2, reset_period="day"))
+    second = await reserve(database, player, "day-window", now=moment)
+    assert first.period_id != second.period_id
+    await service.update(actor, **ai_settings(version=3, reset_period="hour"))
+    status = await service.entitlements.capabilities(player, now=moment)
+    assert status["dissection"].remaining == 1
+    assert status["dissection"].reset_at == datetime(2030, 6, 17, 1, tzinfo=UTC)
+
+
+async def test_ai_migration_roundtrip_preserves_active_reservations(database):
+    from alembic import command
+    from alembic.config import Config
+
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    await reserve(database, player, "before-downgrade")
+    await service.reset(actor, confirm=True, expected_version=2)
+    await reserve(database, player, "after-generation")
+    await database.close()
+    await asyncio.to_thread(command.downgrade, Config("alembic.ini"), "0030_public_analysis_cache")
+    await asyncio.to_thread(command.upgrade, Config("alembic.ini"), "head")
+    async with database.transaction() as session:
+        periods = list(await session.scalars(select(TrainingUsagePeriodRecord)))
+        assert len(periods) == 1 and periods[0].reserved == 2
+        for key in ("before-downgrade", "after-generation"):
+            assert await service.entitlements.settle(session, player_id=player,
+                feature="dissection", request_id=key)
+        assert periods[0].reserved == 0 and periods[0].settled == 2
+
+
+async def test_no_ai_denies_prepared_best_buzz_cache_without_touching_source(database):
+    from sitg_bot.services.training_knowledge import KnowledgeApplication
+
+    service, actor, player = await ai_admin_setup(database)
+    await service.update(actor, **ai_settings())
+    await service.tier(actor, player_id=player, tier="no_ai")
+    app = KnowledgeApplication(database, settings=service.settings, analysis=object())
+    async with database.transaction() as session:
+        assert await app.prepared(session, player, None) is None
+
+
+async def test_ai_custom_categories_and_roles_survive_global_toggles(database):
+    service, actor, player = await ai_admin_setup(database)
+    custom_id = await seed_category(database, "intentional-off", payload(
+        dissection={"enabled": False, "limit": 7}, best_buzz={"limit": 8},
+        common_knowledge={"limit": 9},
+    ), [player])
+    await service.update(actor, **ai_settings())
+    status = await service.entitlements.capabilities(player)
+    assert not status["dissection"].enabled and status["dissection"].limit == 7
+    assert status["best_buzz"].enabled and status["best_buzz"].limit == 8
+    assert status["common_knowledge"].enabled and status["common_knowledge"].limit == 9
+    await service.update(actor, **ai_settings(version=2, best_buzz_enabled=False))
+    assert not (await service.entitlements.capabilities(player))["best_buzz"].enabled
+    await service.tier(actor, player_id=player, tier="premium")
+    async with database.transaction() as session:
+        assignment = await session.get(TrainingCategoryAssignmentRecord, player)
+        assert assignment.category_id == custom_id
+        assert await session.get(PlatformAdministratorRecord, actor) is not None
+
+
+async def test_ai_player_search_is_limited_literal_and_projects_only_manual_tier(database):
+    service, actor, player = await ai_admin_setup(database)
+    assert (await service.players(actor, search=str(player)))["items"] == [
+        {"id": player, "name": "AI-player", "tier": "free"}
+    ]
+    assert len((await service.players(actor, search="ai", limit=1))["items"]) == 1
+    assert not (await service.players(actor, search="AI%"))["items"]
+    assert not (await service.players(actor, search="player"))["items"]
+    await service.tier(actor, player_id=player, tier="no_ai")
+    assert (await service.players(actor, search="AI-player"))["items"][0]["tier"] == "no_ai"
+    with pytest.raises(ValueError):
+        await service.players(actor, search="a", limit=26)
+    with pytest.raises(LookupError):
+        await service.tier(actor, player_id=uuid4(), tier="premium")
+
+
+async def test_ai_provider_health_is_explicit_singleflight_cached_and_profile_scoped(database):
+    class LocalProvider:
+        def __init__(self):
+            self.started, self.finish = asyncio.Event(), asyncio.Event()
+            self.calls = 0
+
+        async def verify_response(self):
+            self.calls += 1
+            self.started.set()
+            await self.finish.wait()
+
+    provider = LocalProvider()
+    service, actor, _ = await ai_admin_setup(database, provider=provider)
+    assert (await service.health(actor))["state"] == "unknown"
+    assert provider.calls == 0
+    check = asyncio.create_task(service.check(actor, confirm_cost=True))
+    try:
+        async with asyncio.timeout(2):
+            await provider.started.wait()
+        assert (await service.health(actor))["state"] == "checking"
+        assert (await service.check(actor, confirm_cost=True))["state"] == "checking"
+        assert provider.calls == 1
+    finally:
+        provider.finish.set()
+        result = await check
+    assert result["state"] == "responding" and result["verified_at"]
+    assert "fixture-private-key" not in str(result)
+    assert (await service.check(actor, confirm_cost=True))["state"] == "responding"
+    assert provider.calls == 1
+    async with database.transaction() as session:
+        row = await session.get(TrainingProviderHealthRecord, service.settings.execution_profile)
+        row.verified_at = datetime.now(UTC) - timedelta(minutes=6)
+    assert (await service.health(actor))["state"] == "stale"
+    other = AIAdministrationService(database, settings=ProviderSettings(
+        "charm", "fixture-model", api_key="fixture-key"), provider=provider)
+    assert (await other.health(actor))["state"] == "unknown"
+    assert provider.calls == 1
+
+
+async def test_ai_health_uses_only_successful_matching_profile_recorded_calls(database):
+    service, actor, player = await ai_admin_setup(database)
+    observed = datetime.now(UTC) - timedelta(minutes=1)
+    async with database.transaction() as session:
+        for index, profile, calls, completed in (
+            (1, "other-profile", [{"request_id": "other"}], datetime.now(UTC)),
+            (2, service.settings.execution_profile, [], datetime.now(UTC)),
+            (3, service.settings.execution_profile, [{"request_id": "recorded"}], observed),
+        ):
+            session.add(TrainingAnalysisArtifactRecord(
+                artifact_key=str(index) * 64, kind="dissection", owner_player_id=player,
+                source_fingerprint="source", instruction_digest="instruction", language="en",
+                model=service.settings.model, prompt_version="2", schema_version="2",
+                tokenizer_version="announcement-v1", status="succeeded", payload={},
+                completed_at=completed,
+                provider_usage={"execution_profile": profile, "calls": calls},
+            ))
+    result = await service.health(actor)
+    assert result["state"] == "responding" and result["verified_at"] == observed
+    assert result["checked_at"] is None
+
+
+@pytest.mark.parametrize("failure,error", [(TimeoutError(), "timeout"),
+    (RuntimeError("upstream private secret"), "provider_error")])
+async def test_ai_provider_health_errors_are_honest_and_redacted(database, failure, error):
+    class LocalProvider:
+        async def verify_response(self):
+            raise failure
+
+    service, actor, _ = await ai_admin_setup(database, provider=LocalProvider())
+    result = await service.check(actor, confirm_cost=True)
+    assert result["state"] == "error" and result["error"] == error
+    assert result["verified_at"] is None and "secret" not in str(result)
+    service.settings = ProviderSettings("openai", "unconfigured")
+    assert (await service.health(actor))["state"] == "unconfigured"
 
 
 async def reserve(database, player_id, request_id, *, now=None):

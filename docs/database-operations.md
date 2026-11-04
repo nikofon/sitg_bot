@@ -64,6 +64,12 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0031_ai_administration` adds independent manual AI tiers, versioned managed
+free/premium policy pointers, constant-time quota generations and profile-scoped explicit
+provider-check cooldown/results. Existing policies, category assignments, usage ledgers and
+accepted work are preserved; no feature is enabled by this migration. Apply before serving
+the AI administration APIs. Downgrade merges generation counters/references without deleting
+reservations; it cannot preserve the newer reset-generation/tier semantics.
 Revision `0029_knowledge_review` adds author text, one-time tag seed claims and private
 review snapshots without changing existing saved facts or replaying historical imports.
 Revision `0030_public_analysis_cache` adds review creation idempotency and an exact

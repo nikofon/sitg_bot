@@ -8,6 +8,10 @@ from test_miniapp_http import FakeAuth, FakeGateway
 
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminAICheckOperation,
+    AdminAIPlayersOperation,
+    AdminAIResetOperation,
+    AdminAIUpdateOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
     AdminTournamentModerateOperation,
@@ -17,9 +21,95 @@ from sitg_bot.application.contracts import (
 from sitg_bot.application.gateway import ACTION_POLICIES
 from sitg_bot.miniapp_http import MiniAppHttpServer
 
+AI_SETTINGS = {
+    "expected_version": 1, "dissection_enabled": True, "best_buzz_enabled": False,
+    "free": {"dissection": 0, "best_buzz": 24},
+    "premium": {"dissection": None, "best_buzz": 100}, "reset_period": "week",
+}
+
+
+@pytest.mark.parametrize("path,action", [
+    ("settings", ActionCode.ADMIN_AI_SETTINGS),
+    ("provider", ActionCode.ADMIN_AI_PROVIDER),
+    ("players?search=Alice&limit=25", ActionCode.ADMIN_AI_PLAYERS),
+])
+async def test_ai_admin_queries_use_existing_session_boundary(path, action):
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(FakeAuth(), gateway)
+    request = make_mocked_request("GET", "/api/miniapp/admin/ai/" + path, headers={
+        "Origin": "https://mini.example.test", "Cookie": "__Host-sitg_session=test-session",
+    })
+    match = await http.application.router.resolve(request)
+    assert match.handler == http._admin_ai_query
+    assert (await match.handler(request)).status == 200
+    assert gateway.requests[0].operation.action == action
+    assert ACTION_POLICIES[action].authentication_required
+    assert not ACTION_POLICIES[action].mutation
+
+
+@pytest.mark.parametrize("path,body,action", [
+    ("settings", AI_SETTINGS, ActionCode.ADMIN_AI_UPDATE),
+    ("tier", {"player_id": str(UUID(int=30)), "tier": "no_ai"}, ActionCode.ADMIN_AI_TIER),
+    ("reset", {"expected_version": 1, "confirm": True}, ActionCode.ADMIN_AI_RESET),
+    ("provider/check", {"confirm_cost": True}, ActionCode.ADMIN_AI_CHECK),
+])
+async def test_ai_admin_mutations_require_csrf_and_idempotency(path, body, action):
+    class RecordingAuth(FakeAuth):
+        async def authorize_request(self, session_token, **values):
+            assert values["csrf_token"] == "csrf"
+            assert values["idempotency_key"] == "ai-admin-key"
+            assert values["method"] == "POST"
+            return await super().authorize_request(session_token, **values)
+
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(RecordingAuth(), gateway)
+    request = make_mocked_request("POST", "/api/miniapp/admin/ai/" + path, headers={
+        "Origin": "https://mini.example.test", "Cookie": "__Host-sitg_session=test-session",
+        "X-CSRF-Token": "csrf", "X-Idempotency-Key": "ai-admin-key",
+        "Content-Type": "application/json",
+    })
+    request._read_bytes = json.dumps(body).encode()
+    match = await http.application.router.resolve(request)
+    assert match.handler == http._admin_ai_mutation
+    assert (await match.handler(request)).status == 200
+    assert gateway.requests[0].operation.action == action
+    assert ACTION_POLICIES[action].mutation and ACTION_POLICIES[action].idempotency_required
+
+
+@pytest.mark.parametrize("patch", [
+    {"free": {"dissection": -1, "best_buzz": 24}},
+    {"free": {"dissection": True, "best_buzz": 24}},
+    {"free": {"dissection": "24", "best_buzz": 24}},
+    {"free": {"dissection": 1.5, "best_buzz": 24}},
+    {"free": {"dissection": 2147483648, "best_buzz": 24}},
+    {"reset_period": "month"}, {"dissection_enabled": "true"}, {"api_key": "forbidden"},
+])
+def test_ai_admin_settings_validation(patch):
+    with pytest.raises(ValidationError):
+        AdminAIUpdateOperation.model_validate({
+            "action": ActionCode.ADMIN_AI_UPDATE, **AI_SETTINGS, **patch,
+        })
+
+
+@pytest.mark.parametrize("values", [{"search": " "}, {"search": "a"},
+    {"search": "ab", "limit": 26}, {"search": "a" * 101}])
+def test_ai_admin_player_search_is_bounded(values):
+    with pytest.raises(ValidationError):
+        AdminAIPlayersOperation(action=ActionCode.ADMIN_AI_PLAYERS, **values)
+
+
+@pytest.mark.parametrize("contract,action,values", [
+    (AdminAIResetOperation, ActionCode.ADMIN_AI_RESET, {"expected_version": 1, "confirm": False}),
+    (AdminAICheckOperation, ActionCode.ADMIN_AI_CHECK, {"confirm_cost": False}),
+    (AdminAICheckOperation, ActionCode.ADMIN_AI_CHECK, {}),
+])
+def test_ai_admin_destructive_and_paid_actions_need_confirmation(contract, action, values):
+    with pytest.raises(ValidationError):
+        contract(action=action, **values)
+
 
 @pytest.mark.parametrize(
-    "section", ["tournaments", "authors", "players", "packets", "link_requests"]
+    "section", ["tournaments", "authors", "players", "packets", "link_requests", "ai"]
 )
 @pytest.mark.parametrize("include_items", ["true", "false"])
 async def test_management_route_resolves_requested_section(section, include_items):
