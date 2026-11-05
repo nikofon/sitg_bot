@@ -517,7 +517,10 @@ async def test_recorded_buzz_without_attempt_and_bounded_samples(database):
     detail = await history.session_detail(owner, last_id)
     row = detail["rows"][0]
     assert row["own"] is None and row["buzz"]["buzz_delay_seconds"] == 29
-    assert row["text"] and row["stats"]["buzzes"] == 30
-    assert row["stats"]["presentations"] == 30
-    assert row["stats"]["buzz_timings"] == list(range(29, 4, -1))
+    assert row["text"]
+    # Training buzzes remain this-run evidence, never competitive aggregates.
+    assert row["stats"] == {
+        "presentations": 0, "buzzes": 0, "attempts": 0, "answered": 0,
+        "correct": 0, "incorrect": 0, "buzz_time_average": None, "buzz_samples": 0,
+    }
     assert detail["score"] == 0
