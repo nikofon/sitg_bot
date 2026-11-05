@@ -60,8 +60,6 @@ def upgrade():
 
 
 def downgrade():
-    # Multiple generations cannot be merged without invalidating reservation references.
-    # Keep the generation-aware unique key until the column is dropped; no ledger deletion.
     op.drop_index("ix_training_analysis_health", "training_analysis_artifacts")
     op.drop_index("ix_players_ai_name_prefix", "players")
     op.drop_table("training_ai_tiers")

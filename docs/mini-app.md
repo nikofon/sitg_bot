@@ -291,30 +291,18 @@ and chair role), status, phase, paused flag, ruleset, tournament type, and timin
 tournament's settings snapshot and remaining execution details stay collapsed under the card's
 details summary.
 
-**AI functionality:** the `/admin/management?section=ai` tab follows the stable AI
-administration API contract (`data/sitg-ai-admin-backend/api-contract.md`). The provider bar
-renders only server-cached observations of the selected provider/model with its
-unconfigured/unknown/responding/stale state and recorded response timestamp, separate from
-the feature switches. It makes no live health guarantee and offers no paid probe. The
-settings form renders dissection and Best buzz switches, free/premium quotas for both with an
-explicit Unlimited switch (zero blocks charged work, null means unlimited), the shared Hour/Day/Week reset
-period, and the quota generation with the next UTC reset only after settings have been
-saved at least once; Save sends the full replacement with
-`expected_version`, and a stale write opens a reload prompt instead of overwriting unsaved
-edits. Save/reset responses update metadata without discarding current drafts.
-**Reset all AI quotas** requires explicit confirmation, sends `expected_version`, and
-switches the whole quota generation server-side without client-side player loops. Player AI
-access uses a bounded, debounced name/UUID search (at most 20 results) and explicit per-player
-free/premium/NO AI assignment. See [training AI](training-ai.md).
+**AI functionality:** `/admin/management?section=ai` presents the controls and passive
+provider status described in [AI administration](training-ai.md#administrator-ai-functionality).
+Save submits the complete settings form; a stale write opens a reload prompt instead of
+overwriting unsaved edits. Save/reset responses update metadata without discarding current
+drafts. **Reset all AI quotas** requires explicit confirmation. Player AI access uses a
+debounced name/UUID search (at most 20 results) with an explicit Apply button per player.
 
 **Training history:** `/training/history` lists the authenticated owner's training
 runs newest first, with packet names, effective scores, modifiers and **More info**
 links to `/training/history/{session_id}`. Detail groups ordered question rows by
-theme, showing authorized played content, training-only question statistics, bounded
-known buzz-delay samples, and the owner's answer/verdict/appeal performance. Both
-screens load pages of at most 25 on explicit request. Retired/revoked content and
-unvisited questions remain redacted; legacy unknown timings say unavailable. See
-[training](training.md#training-history) for disclosure and schema dependencies.
+theme. See [training history](training.md#training-history) for the question-level
+statistics, separate this-run performance, pagination and disclosure rules.
 
 The `/training` solo lobby and `/knowledge` fact library are implemented; see
 [training execution](training.md#execution-and-presentation) and

@@ -137,7 +137,7 @@ def parse_feature_policies(payload: Mapping[str, Any]) -> dict[str, FeaturePolic
     return {feature: FeaturePolicy.from_mapping(payload[feature]) for feature in TRAINING_FEATURES}
 
 
-#: Basic free allowances; provider configuration controls feature availability.
+#: Initial free allowances; administrator policies and provider configuration gate availability.
 DEFAULT_POLICY_PAYLOAD: dict[str, Any] = {
     feature: {
         "enabled": False,
@@ -604,7 +604,7 @@ class EntitlementService:
     async def _effective_policies(
         self, session: AsyncSession, player_id: UUID
     ) -> dict[str, FeaturePolicy]:
-        """Resolve the policies of the player's (or default) category."""
+        """Resolve category policies with manual-tier theme overrides and NO AI denial."""
         # Shared lock fences new admissions against administrative updates/reset.
         state = await session.get(TrainingPolicyStateRecord, 1, with_for_update={"read": True})
         tier = await session.get(TrainingAITierRecord, player_id)

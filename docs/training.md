@@ -52,7 +52,8 @@ artifacts grant no source rights. Cache identity belongs in [Training AI](traini
 
 ## Execution and presentation
 
-Telegram training is keyboard-driven, without training-specific slash commands. The home
+Training setup is keyboard-driven; running sessions also accept the shared slash controls
+listed below. The home
 keyboard contains Start training, Training history, Knowledge library,
 Upload packet for training, and Change mode. Start training creates a persistent solo
 lobby, replacing the keyboard with Packets and settings, Start, and Quit. Packets and settings launches
@@ -186,7 +187,9 @@ Anonymous revision-level question statistics aggregate actual play mode only:
 competitive question rounds (presentations), accepted buzzes (count plus the
 average opening-to-buzz delay over usable observations, excluding missing or
 negative timings), and judged answer attempts (attempts/answered/correct/
-incorrect). Training records are never part of those aggregates, and a
+incorrect). Right-answer percentage uses all judged attempts, including answer timeouts;
+answered counts only attempts that did not time out. With no attempts, the percentage is
+unavailable. Training records are never part of those aggregates, and a
 question without normal-play samples keeps the empty/unavailable presentation
 rather than falling back to training totals. Answers and this run's own buzz
 and performance evidence are always from the owner's selected run and stay a
