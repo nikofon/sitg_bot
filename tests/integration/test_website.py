@@ -23,19 +23,19 @@ from sitg_bot.services.miniapp_auth import (
 )
 from sitg_bot.services.profiles import PlayerProfileService
 from sitg_bot.services.reliable_delivery import DurableJobQueue
+from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
 from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
 from sitg_bot.services.training_packets import TrainingPacketService
-from sitg_bot.services.tournaments import TournamentService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     GameRecord,
     GameRulesetVersionRecord,
-    PlayerRecord,
     PlatformAdministratorRecord,
+    PlayerRecord,
     RulesetRatingRecord,
-    TrainingPolicyStateRecord,
     TournamentRecord,
+    TrainingPolicyStateRecord,
 )
 
 pytestmark = pytest.mark.integration
