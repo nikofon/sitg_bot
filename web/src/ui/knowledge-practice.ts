@@ -51,11 +51,19 @@ export function isValidPracticeCount(value: unknown): value is number {
 }
 
 export class PracticeSettingsStore {
-  constructor(private readonly storage: Storage = window.localStorage) {}
+  private readonly storage: Storage | undefined;
+
+  constructor(storage?: Storage) {
+    try {
+      this.storage = storage ?? window.localStorage;
+    } catch {
+      this.storage = undefined;
+    }
+  }
 
   read(): PracticeSettings {
     try {
-      const raw = this.storage.getItem(PRACTICE_SETTINGS_STORAGE_KEY);
+      const raw = this.storage?.getItem(PRACTICE_SETTINGS_STORAGE_KEY);
       if (!raw) return { ...DEFAULT_PRACTICE_SETTINGS };
       const value: unknown = JSON.parse(raw);
       if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -78,7 +86,7 @@ export class PracticeSettingsStore {
 
   write(settings: PracticeSettings): void {
     try {
-      this.storage.setItem(PRACTICE_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      this.storage?.setItem(PRACTICE_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
     } catch {
       // Unavailable storage never blocks a practice run.
     }

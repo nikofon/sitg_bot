@@ -219,6 +219,38 @@ describe("practice settings store", () => {
     expect(() => store.write({ count: 5, side: "title" })).not.toThrow();
   });
 
+  it("uses defaults and allows practice when acquiring localStorage throws", async () => {
+    const setup = render();
+    const storage = window.localStorage;
+    const acquisition = vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new DOMException("Storage access denied", "SecurityError");
+    });
+    try {
+      const store = new PracticeSettingsStore();
+      expect(store.read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
+      expect(() => store.write({ count: 5, side: "description" })).not.toThrow();
+      expect(store.read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
+      const supplied = new PracticeSettingsStore(storage);
+      supplied.write({ count: 4, side: "description" });
+      expect(supplied.read()).toEqual({ count: 4, side: "description" });
+
+      const dialog = openPractice(setup);
+      expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value)
+        .toBe(String(DEFAULT_PRACTICE_SETTINGS.count));
+      expect(dialog.querySelector<HTMLSelectElement>("select")!.value)
+        .toBe(DEFAULT_PRACTICE_SETTINGS.side);
+      submitSettings(dialog, "1", "description");
+      await flush();
+      expect(prompt(dialog)).not.toBeNull();
+      prompt(dialog).click();
+      await flush();
+      expect(dialog.querySelector(".knowledge-practice-revealed")!.textContent)
+        .toContain("Full description of fact-");
+    } finally {
+      acquisition.mockRestore();
+    }
+  });
+
   it("parses count inputs strictly", () => {
     expect(parsePracticeCount("5")).toBe(5);
     expect(parsePracticeCount(" 12 ")).toBe(12);
