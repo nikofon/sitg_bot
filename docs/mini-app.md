@@ -279,8 +279,9 @@ Ban/Unban and suspicion review/clearance replace the separate Telegram keyboard 
 Review reuses the evidence inspection; clearance requires a note and preserves the ledger.
 The legacy `/admin/suspicion` route remains available for existing links.
 
-Packets include every version regardless of discoverability, release, retirement, or tournament
-access. View reuses the library reader and Download queues the same DOCX delivery. Fresh-content
+Packets include every tournament-scoped version regardless of discoverability, release,
+retirement, or tournament access; [private training uploads](training.md#access-and-uploads)
+are excluded. View reuses the library reader and Download queues the same DOCX delivery. Fresh-content
 confirmation permanently burns the packet for the admin, including existing reserved claims.
 These administrative reads bypass normal library restrictions.
 

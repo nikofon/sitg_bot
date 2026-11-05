@@ -14,17 +14,17 @@ depends_on = None
 def upgrade():
     op.execute("""
         CREATE TABLE knowledge_fact_copies (
-            source_fact_id UUID NOT NULL, 
-            recipient_id UUID NOT NULL, 
-            owner_id UUID NOT NULL, 
-            fact_id UUID NOT NULL, 
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
-            PRIMARY KEY (source_fact_id, recipient_id), 
-            CONSTRAINT ck_knowledge_fact_copies_045e3989e370 CHECK (owner_id <> recipient_id), 
-            FOREIGN KEY(source_fact_id, owner_id) REFERENCES knowledge_facts (id, owner_id), 
-            FOREIGN KEY(fact_id, recipient_id) REFERENCES knowledge_facts (id, owner_id), 
-            FOREIGN KEY(recipient_id) REFERENCES players (id), 
-            FOREIGN KEY(owner_id) REFERENCES players (id), 
+            source_fact_id UUID NOT NULL,
+            recipient_id UUID NOT NULL,
+            owner_id UUID NOT NULL,
+            fact_id UUID NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+            PRIMARY KEY (source_fact_id, recipient_id),
+            CONSTRAINT ck_knowledge_fact_copies_045e3989e370 CHECK (owner_id <> recipient_id),
+            FOREIGN KEY(source_fact_id, owner_id) REFERENCES knowledge_facts (id, owner_id),
+            FOREIGN KEY(fact_id, recipient_id) REFERENCES knowledge_facts (id, owner_id),
+            FOREIGN KEY(recipient_id) REFERENCES players (id),
+            FOREIGN KEY(owner_id) REFERENCES players (id),
             UNIQUE (fact_id)
         )
     """)

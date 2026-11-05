@@ -232,6 +232,32 @@ form input. Each training card offers Best buzz preparation.
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
 
+**Flashcard practice** opens from the Knowledge window's library tab. A settings
+window precedes every new run, including **Practice again**, which reopens the
+previous choices and waits for confirmation before collecting cards again:
+the card count (a positive integer) and the side shown first (fact name or
+description). Only these two settings are persisted,
+device-locally in the Mini App's `localStorage`, so they survive later visits on
+the same device; no fact content, account preferences or cloud synchronization
+are stored, and corrupt, invalid or unavailable stored settings fall back to
+defaults. A run draws the requested number of **distinct** facts at random from
+the user's currently accessible saved library facts matching the library's
+search, author and tag filters at the moment the button is pressed — following
+every page of the capped 25-per-page facts listing through its opaque cursor,
+not just the already loaded first page — and shows them one card at a time.
+Closing the practice window stops collection before any subsequent page request.
+Each card starts concealed showing only the chosen side (a missing description
+shows a placeholder, never the opposite side); activating the card reveals the
+complete fact through the same detail contract and renderer as a normal
+library card expansion (description, author, source links, images, tags,
+statistics, read-only notice) without editing controls and without private
+packet provenance. Runs shorter than the requested count happen when fewer
+facts are available and say so; empty scopes and read failures are reported
+honestly instead of leaking either side. Next-card, progress, finish, restart
+and close controls manage the run. There is no spaced-repetition scheduling,
+scoring or AI involvement, and the library's CRUD, filtering, sharing and
+import flows are unchanged.
+
 Telegram exposes Knowledge library through the Training keyboard, launching the
 knowledge Mini App. When the Mini App is not configured, the keyboard falls back
 to the read-only Telegram library with lazy detail callbacks. Training and

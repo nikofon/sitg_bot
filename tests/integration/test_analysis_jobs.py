@@ -973,10 +973,3 @@ async def test_cleanup_removes_terminal_artifacts_and_requests(database):
     await submit(stack.service, owner, source, "clean-2")
     assert await stack.worker.run_once() == 1
     assert len(stack.provider.extract_calls) == 2
-
-
-
-
-
-
-
