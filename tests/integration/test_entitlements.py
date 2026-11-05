@@ -591,4 +591,3 @@ async def test_reconcile_abandoned_releases_stale_reservations_only(database):
         older_than=timedelta(hours=1), now=later
     )
     assert released_again == 0
-

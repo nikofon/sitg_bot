@@ -266,4 +266,3 @@ class KnowledgeStatisticsService:
             common=common,
             bingo=self.bingo.score(mentions, common),
         )
-

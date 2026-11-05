@@ -157,5 +157,3 @@ async def test_fact_statistics_reports_pending_calibration_bingo():
     assert result.bingo.status == "pending_calibration"
     assert result.bingo.value is None
     assert result.bingo.note is None
-
-
