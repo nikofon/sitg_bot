@@ -110,12 +110,14 @@ export interface PracticeScope {
 export async function loadPracticeFacts(
   actions: KnowledgeActions,
   scope: PracticeScope,
+  isActive: () => boolean,
 ): Promise<KnowledgeFactSummary[]> {
   const items: KnowledgeFactSummary[] = [];
   const seenIds = new Set<string>();
   const seenCursors = new Set<string>();
   let cursor: string | null = null;
   do {
+    if (!isActive()) return items;
     const page = await actions.loadFacts({
       ...(cursor ? { cursor } : {}),
       ...(scope.search ? { search: scope.search } : {}),
@@ -191,6 +193,11 @@ export function openPracticeDialog(options: {
     element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.practice.scope_hint")),
     start,
     error);
+  const showSettings = (): void => {
+    error.textContent = "";
+    replaceChildren(body, form);
+    count.focus();
+  };
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const parsed = parsePracticeCount(count.value);
@@ -204,11 +211,10 @@ export function openPracticeDialog(options: {
     };
     // Saved between runs and app visits on this device.
     store.write(chosen);
-    startRun(dialog, body, chosen, i18n, actions, scope);
+    startRun(dialog, body, chosen, i18n, actions, scope, showSettings);
   });
-  body.append(form);
   openDialog(dialog);
-  count.focus();
+  showSettings();
 }
 
 function startRun(
@@ -218,25 +224,23 @@ function startRun(
   i18n: KnowledgeI18n,
   actions: KnowledgeActions,
   scope: PracticeScope,
+  showSettings: () => void,
 ): void {
-  // A restart re-reads the library so newly saved facts join later runs.
-  const begin = (): void => {
-    replaceChildren(body,
-      element("p", { className: "knowledge-fact-meta", role: "status" },
-        i18n.t("knowledge.practice.loading")));
-    void loadPracticeFacts(actions, scope).then((items) => {
-      if (!dialog.isConnected || actions.signal?.aborted) return;
-      if (!items.length) {
-        renderNotice(body, i18n, dialog, "knowledge.practice.empty", "error-text");
-        return;
-      }
-      renderRun(dialog, body, settings, i18n, actions, scope, items);
-    }).catch(() => {
-      if (!dialog.isConnected || actions.signal?.aborted) return;
-      renderNotice(body, i18n, dialog, "knowledge.error", "error-text");
-    });
-  };
-  begin();
+  const isActive = (): boolean => dialog.isConnected && dialog.open && !actions.signal?.aborted;
+  replaceChildren(body,
+    element("p", { className: "knowledge-fact-meta", role: "status" },
+      i18n.t("knowledge.practice.loading")));
+  void loadPracticeFacts(actions, scope, isActive).then((items) => {
+    if (!isActive()) return;
+    if (!items.length) {
+      renderNotice(body, i18n, dialog, "knowledge.practice.empty", "error-text");
+      return;
+    }
+    renderRun(dialog, body, settings, i18n, actions, showSettings, items);
+  }).catch(() => {
+    if (!isActive()) return;
+    renderNotice(body, i18n, dialog, "knowledge.error", "error-text");
+  });
 }
 
 function renderNotice(
@@ -266,24 +270,27 @@ function renderRun(
   settings: PracticeSettings,
   i18n: KnowledgeI18n,
   actions: KnowledgeActions,
-  scope: PracticeScope,
+  showSettings: () => void,
   items: readonly KnowledgeFactSummary[],
 ): void {
   const cards = selectPracticeFacts(items, settings.count);
   const fewer = cards.length < settings.count;
   let index = 0;
+  let cardGeneration = 0;
   const progress = element("p", { className: "knowledge-practice-progress", role: "status",
     "aria-live": "polite" });
   const cardHolder = element("div", { className: "knowledge-practice-card" });
   const next = element("button", { type: "button", className: "primary-button" },
     i18n.t("knowledge.practice.next"));
 
-  const reveal = (fact: KnowledgeFactSummary): void => {
-    if (!cardHolder.isConnected) return;
+  const reveal = (fact: KnowledgeFactSummary, generation: number): void => {
+    const isCurrent = (): boolean => generation === cardGeneration
+      && cardHolder.isConnected && dialog.open && !actions.signal?.aborted;
+    if (!isCurrent()) return;
     replaceChildren(cardHolder,
       element("p", { className: "knowledge-fact-meta", role: "status" }, i18n.t("knowledge.loading")));
     void actions.loadFact(fact.id).then((detail) => {
-      if (!cardHolder.isConnected || actions.signal?.aborted) return;
+      if (!isCurrent()) return;
       // Same renderer and detail contract as a normal library card: the full
       // fact view without editing controls, private provenance stays hidden.
       const detailBody = element("div", { className: "knowledge-fact-body" });
@@ -293,12 +300,12 @@ function renderRun(
           element("h3", { className: "knowledge-fact-title" }, detail.title),
           detailBody));
     }).catch(() => {
-      if (!cardHolder.isConnected) return;
+      if (!isCurrent()) return;
       // Honest failure: no opposite side leaks on a failed detail read.
       const retry = element("button", {
         type: "button",
         className: "secondary-button",
-        onclick: (() => { reveal(fact); }) as EventListener,
+        onclick: (() => { reveal(fact, generation); }) as EventListener,
       }, i18n.t("knowledge.refresh"));
       replaceChildren(cardHolder,
         element("p", { className: "error-text", role: "alert" }, i18n.t("knowledge.error")),
@@ -307,6 +314,7 @@ function renderRun(
   };
 
   const renderCurrent = (): void => {
+    const generation = ++cardGeneration;
     const fact = cards[index]!;
     progress.textContent = i18n.t("knowledge.practice.progress", {
       index: index + 1, total: cards.length,
@@ -325,20 +333,19 @@ function renderRun(
       element("span", { className: "knowledge-practice-prompt-text" }, concealed),
       element("span", { className: "knowledge-practice-reveal-hint" },
         i18n.t("knowledge.practice.reveal_hint")));
-    prompt.addEventListener("click", () => { reveal(fact); });
+    prompt.addEventListener("click", () => { reveal(fact, generation); });
     replaceChildren(cardHolder,
       element("article", { className: "resource-card knowledge-fact knowledge-practice-card" }, prompt));
   };
 
   next.addEventListener("click", () => {
     if (index === cards.length - 1) {
+      cardGeneration += 1;
       const restart = element("button", {
         type: "button",
         className: "primary-button",
       }, i18n.t("knowledge.practice.restart"));
-      restart.addEventListener("click", () => {
-        startRun(dialog, body, settings, i18n, actions, scope);
-      });
+      restart.addEventListener("click", showSettings);
       replaceChildren(body,
         element("p", { className: "knowledge-practice-done" }, i18n.t("knowledge.practice.done")),
         element("div", { className: "settings-actions" }, restart, closeRow(i18n, dialog)));

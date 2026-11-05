@@ -143,6 +143,16 @@ const flush = async (): Promise<void> => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 };
 
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+};
+
 const openPractice = (setup: ReturnType<typeof render>): HTMLDialogElement => {
   setup.button("Flashcard practice").click();
   const dialog = document.querySelector<HTMLDialogElement>("dialog.knowledge-dialog")!;
@@ -360,18 +370,85 @@ describe("flashcard practice", () => {
     expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 2 of 2");
   });
 
-  it("finishes, restarts a fresh random run and exits via the close control", async () => {
+  it.each(["title", "description"].flatMap((side) =>
+    ["success", "failure"].flatMap((outcome) =>
+      ["concealed", "revealed", "settings"].map((destination) => ({ side, outcome, destination })))))(
+    "ignores late $outcome on the $side side after advancing to $destination",
+    async ({ side, outcome, destination }) => {
+      const pending = deferred<KnowledgeFactDetail>();
+      const loadFact = vi.fn((id: string) => Promise.resolve(detail(id)))
+        .mockImplementationOnce(() => pending.promise);
+      const setup = render(undefined, pagedActions([[fact(1), fact(2)]], { loadFact }));
+      const dialog = openPractice(setup);
+      submitSettings(dialog, "2", side);
+      await flush();
+      prompt(dialog).click();
+      const previousId = loadFact.mock.calls[0]![0];
+      setup.button("Next card", dialog).click();
+      const nextText = prompt(dialog).textContent;
+      expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 2 of 2");
+
+      if (destination === "revealed") {
+        prompt(dialog).click();
+        await flush();
+      } else if (destination === "settings") {
+        setup.button("Finish", dialog).click();
+        setup.button("Practice again", dialog).click();
+        expect(dialog.querySelector("form")).not.toBeNull();
+      }
+      if (outcome === "success") pending.resolve(detail(previousId));
+      else pending.reject(new Error("late failure"));
+      await flush();
+
+      expect(dialog.querySelector(".error-text")?.textContent ?? "").toBe("");
+      expect(setup.button("Refresh", dialog)).toBeUndefined();
+      if (destination === "settings") {
+        expect(dialog.querySelector("form")).not.toBeNull();
+        expect(dialog.querySelector(".knowledge-practice-revealed")).toBeNull();
+        expect(setup.actions.loadFacts).toHaveBeenCalledTimes(1);
+      } else {
+        if (destination === "concealed") {
+          expect(prompt(dialog).textContent).toBe(nextText);
+          expect(dialog.querySelector(".knowledge-practice-revealed")).toBeNull();
+          prompt(dialog).click();
+          await flush();
+        }
+        const currentId = loadFact.mock.calls[1]![0];
+        expect(currentId).not.toBe(previousId);
+        expect(dialog.querySelector(".knowledge-practice-revealed")!.textContent)
+          .toContain(`Full description of ${currentId}`);
+        expect(dialog.querySelector(".knowledge-practice-revealed")!.textContent)
+          .not.toContain(`Full description of ${previousId}`);
+      }
+    },
+  );
+
+  it("requires saved settings confirmation before every restarted run and exits via close", async () => {
     const setup = render();
     const dialog = openPractice(setup);
-    submitSettings(dialog, "1");
+    submitSettings(dialog, "1", "description");
     await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
     setup.button("Finish", dialog).click();
     expect(dialog.textContent).toContain("Practice run complete.");
 
     setup.button("Practice again", dialog).click();
+    expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value).toBe("1");
+    expect(dialog.querySelector<HTMLSelectElement>("select")!.value).toBe("description");
+    expect(prompt(dialog)).toBeNull();
+    expect(setup.actions.loadFacts).toHaveBeenCalledTimes(1);
+    submitSettings(dialog, "2", "title");
     await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
-    expect((setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
-    expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 1 of 1");
+    expect(setup.actions.loadFacts).toHaveBeenCalledTimes(2);
+    expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 1 of 2");
+    expect(prompt(dialog).textContent).toContain("Title ");
+    expect(new PracticeSettingsStore().read()).toEqual({ count: 2, side: "title" });
+
+    setup.button("Next card", dialog).click();
+    setup.button("Finish", dialog).click();
+    setup.button("Practice again", dialog).click();
+    expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value).toBe("2");
+    expect(dialog.querySelector<HTMLSelectElement>("select")!.value).toBe("title");
+    expect(setup.actions.loadFacts).toHaveBeenCalledTimes(2);
 
     // Exit: the dialog's dedicated close control removes the game window.
     const closer = [...dialog.querySelectorAll("button")]
@@ -379,6 +456,42 @@ describe("flashcard practice", () => {
     closer.click();
     expect(document.querySelector("dialog.knowledge-dialog")).toBeNull();
   });
+
+  it.each([0, 1].flatMap((pageIndex) =>
+    ["close control", "native close", "parent abort"].map((exit) => ({ pageIndex, exit }))))(
+    "stops pagination after $exit while page $pageIndex is pending",
+    async ({ pageIndex, exit }) => {
+      const pending = deferred<KnowledgeFactsResource>();
+      const controller = new AbortController();
+      const page = (index: number): KnowledgeFactsResource => ({
+        state: "ready", items: [fact(index + 1)], total: 3,
+        next_cursor: String(index + 1), order: "title_asc",
+      });
+      const loadFacts = vi.fn(() => pending.promise);
+      if (pageIndex === 1) loadFacts.mockResolvedValueOnce(page(0));
+      const setup = render(undefined, pagedActions([[fact(1)]], {
+        loadFacts, signal: controller.signal,
+      }));
+      const dialog = openPractice(setup);
+      submitSettings(dialog, "3");
+      await flush();
+      expect(loadFacts).toHaveBeenCalledTimes(pageIndex + 1);
+      if (exit === "close control") {
+        dialog.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click();
+      } else if (exit === "native close") {
+        dialog.dispatchEvent(new Event("close"));
+      } else {
+        controller.abort();
+      }
+      pending.resolve(page(pageIndex));
+      await flush();
+      expect(loadFacts).toHaveBeenCalledTimes(pageIndex + 1);
+      expect(prompt(dialog)).toBeNull();
+      expect(dialog.querySelector(".knowledge-practice-revealed")).toBeNull();
+      expect(dialog.textContent).not.toContain("Something went wrong.");
+      if (exit !== "parent abort") expect(dialog.isConnected).toBe(false);
+    },
+  );
 
   it("reports empty libraries instead of starting a run", async () => {
     const setup = render([[]]);
@@ -415,7 +528,8 @@ describe("flashcard practice", () => {
 
   it("reports failed detail reads with a retry and no opposite-side leak", async () => {
     const actions = pagedActions([[fact(1)]], {
-      loadFact: vi.fn(() => Promise.reject(new Error("denied"))),
+      loadFact: vi.fn((id: string) => Promise.resolve(detail(id)))
+        .mockRejectedValueOnce(new Error("denied")),
     });
     const setup = render([[fact(1)]], actions);
     const dialog = openPractice(setup);
@@ -427,6 +541,11 @@ describe("flashcard practice", () => {
     });
     expect(dialog.querySelector(".knowledge-fact-title")).toBeNull();
     expect(setup.button("Refresh", dialog)).toBeDefined();
+    setup.button("Refresh", dialog).click();
+    await flush();
+    expect(dialog.querySelector(".knowledge-practice-revealed")!.textContent)
+      .toContain("Full description of fact-1");
+    expect(actions.loadFact).toHaveBeenCalledTimes(2);
   });
 
   it("drills the current search, author and tag filter scope", async () => {

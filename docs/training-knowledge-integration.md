@@ -233,8 +233,10 @@ HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
 
 **Flashcard practice** opens from the Knowledge window's library tab. A settings
-window precedes every new run: the card count (a positive integer) and the side
-shown first (fact name or description). Only these two settings are persisted,
+window precedes every new run, including **Practice again**, which reopens the
+previous choices and waits for confirmation before collecting cards again:
+the card count (a positive integer) and the side shown first (fact name or
+description). Only these two settings are persisted,
 device-locally in the Mini App's `localStorage`, so they survive later visits on
 the same device; no fact content, account preferences or cloud synchronization
 are stored, and corrupt, invalid or unavailable stored settings fall back to
@@ -243,6 +245,7 @@ the user's currently accessible saved library facts matching the library's
 search, author and tag filters at the moment the button is pressed — following
 every page of the capped 25-per-page facts listing through its opaque cursor,
 not just the already loaded first page — and shows them one card at a time.
+Closing the practice window stops collection before any subsequent page request.
 Each card starts concealed showing only the chosen side (a missing description
 shows a placeholder, never the opposite side); activating the card reveals the
 complete fact through the same detail contract and renderer as a normal
