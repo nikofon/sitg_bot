@@ -98,6 +98,7 @@ export const en = {
   "knowledge.practice.tags": "Practice tags",
   "knowledge.practice.tags_hint": "Only facts carrying every selected tag are eligible; with nothing selected, all facts in the current scope are eligible.",
   "knowledge.practice.tags_load_failed": "Your tags could not be loaded, so only saved selections are shown.",
+  "knowledge.practice.tags_invalid": "Choose at most {max} distinct tags in total across practice settings and library filters. Deselect tags to continue.",
   "knowledge.practice.tags_removed": "Some selected tags are no longer in your tag palette.",
   "knowledge.practice.quick_restart": "Quick restart",
   "knowledge.practice.start": "Start practice",

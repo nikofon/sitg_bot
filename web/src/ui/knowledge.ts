@@ -180,6 +180,7 @@ export interface KnowledgeDissection {
 }
 
 export interface KnowledgeViewData {
+  player_id?: string | null;
   facts: KnowledgeFactsResource;
   sharing: KnowledgeSharing;
   dissection: KnowledgeDissection;
@@ -416,6 +417,7 @@ export const knowledgeMessageKeys = [
   "knowledge.practice.scope_hint",
   "knowledge.practice.tags",
   "knowledge.practice.tags_hint",
+  "knowledge.practice.tags_invalid",
   "knowledge.practice.tags_load_failed",
   "knowledge.practice.tags_removed",
   "knowledge.practice.quick_restart",
@@ -1508,6 +1510,7 @@ export function renderKnowledge(
         i18n,
         actions,
         tagPalette: state,
+        playerId: data.player_id,
         scope: {
           ...(search ? { search } : {}),
           ...(authorSearch ? { author: authorSearch } : {}),

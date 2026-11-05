@@ -108,6 +108,7 @@ async def test_knowledge_http_resolves_resource_and_forwards_filters_and_mutatio
         assert response.status == 200
         resource = (await response.json())["resource"]
         assert resource["kind"] == "knowledge"
+        assert resource["player_id"] == str(UUID(int=2))
         assert resource["facts"]["state"] == "empty"
         assert resource["sharing"] == {"grants": [], "shared": []}
         assert resource["dissection"]["next_cursor"] is None

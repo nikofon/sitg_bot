@@ -100,6 +100,7 @@ export const ru: Record<MessageKey, string> = {
   "knowledge.practice.tags": "Метки тренировки",
   "knowledge.practice.tags_hint": "В тренировку попадают только факты, у которых есть все выбранные метки; без выбора доступны все факты в текущем охвате.",
   "knowledge.practice.tags_load_failed": "Не удалось загрузить ваши метки — показаны только сохранённые.",
+  "knowledge.practice.tags_invalid": "Выберите не более {max} разных меток суммарно в настройках тренировки и фильтрах библиотеки. Снимите лишние метки, чтобы продолжить.",
   "knowledge.practice.tags_removed": "Некоторые выбранные метки больше нет в вашей палитре меток.",
   "knowledge.practice.quick_restart": "Быстрый повтор",
   "knowledge.practice.start": "Начать тренировку",
