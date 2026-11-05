@@ -3,6 +3,7 @@ from uuid import UUID
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from aiohttp.web_exceptions import HTTPMethodNotAllowed
 from pydantic import ValidationError
 from test_miniapp_http import FakeAuth, FakeGateway
 
@@ -79,7 +80,10 @@ async def test_removed_provider_check_route_is_not_available():
     http = MiniAppHttpServer(FakeAuth(), gateway)
     request = make_mocked_request("POST", "/api/miniapp/admin/ai/provider/check")
     match = await http.application.router.resolve(request)
-    assert match.http_exception.status == 404
+    assert match.http_exception.status == 405
+    assert "POST" not in match.http_exception.allowed_methods
+    with pytest.raises(HTTPMethodNotAllowed):
+        await match.handler(request)
     assert not gateway.requests
 
 
