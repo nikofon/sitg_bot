@@ -111,9 +111,9 @@ export interface PracticeScope {
 /**
  * Loads every page of the scoped saved library, not just the loaded first
  * page: fact pages are capped at 25 with an opaque cursor, so the run keeps
- * following `next_cursor` until it ends. Duplicate fact ids (defensive) and
- * repeated cursors (a corrupt cursor chain) are stopped honestly by
- * returning what was actually collected.
+ * following `next_cursor` until it ends. Duplicate fact ids are skipped
+ * defensively; a repeated cursor stops a corrupt chain and returns only
+ * what was actually collected.
  */
 export async function loadPracticeFacts(
   actions: KnowledgeActions,
@@ -149,7 +149,7 @@ export async function loadPracticeFacts(
 }
 
 /**
- * Distinct random selection: a partial Fisher-Yates shuffle over positions,
+ * Distinct random selection: a Fisher-Yates shuffle over positions,
  * so every card in a run is a different fact. Fewer available facts than
  * requested yields all of them (the run reports the shortfall).
  */
