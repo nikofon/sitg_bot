@@ -2501,6 +2501,12 @@ p.knowledge-fact-description {
   gap: 0.5rem 0.75rem;
 }
 
+/* Practice dialog tag selection: the palette can be long, so it scrolls. */
+.knowledge-practice-tag-options {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
 .knowledge-tag-option {
   display: inline-flex;
   align-items: center;

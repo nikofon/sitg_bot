@@ -21,6 +21,8 @@ export const TAG_COLOUR_PATTERN = /^#[0-9a-f]{6}$/;
 export interface KnowledgeState {
   tagPool: Map<string, KnowledgeTagPoolEntry>;
   tagPoolReady: Promise<void>;
+  /** True when the last tag pool load failed (the pool may be stale/empty). */
+  tagPoolFailed?: boolean;
 }
 
 export function tagBorderGradient(colours: string[]): string {

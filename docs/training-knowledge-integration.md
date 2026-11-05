@@ -235,14 +235,26 @@ conventions, including edits and deletion.
 **Flashcard practice** opens from the Knowledge window's library tab. A settings
 window precedes every new run, including **Practice again**, which reopens the
 previous choices and waits for confirmation before collecting cards again:
-the card count (a positive integer) and the side shown first (fact name or
-description). Only these two settings are persisted,
+the card count (a positive integer), the side shown first (fact name or
+description), and a tag selection. The tag selection uses the user's existing
+tag palette (read-only checkboxes, no palette maintenance) with the library's
+all-selected-tags semantics: only facts carrying **every** selected tag are
+eligible, and it combines with the library scope's own tag filter, search and
+author filters. With no tag selected, every fact in the current practice scope
+is eligible. Eligibility is applied before sampling across **every** matching
+API page, never just the loaded cards; pending or unapproved imports are never
+included, an empty matching set is reported as nothing to practice with rather
+than widened to unfiltered facts, and tag names removed from the palette or a
+failed palette load never silently widen the intended filter (removed tags
+stay selected; a failed load says so and keeps saved selections).
+These settings are persisted,
 device-locally in the Mini App's `localStorage`, so they survive later visits on
 the same device; no fact content, account preferences or cloud synchronization
 are stored, and corrupt, invalid or unavailable stored settings fall back to
-defaults. A run draws the requested number of **distinct** facts at random from
-the user's currently accessible saved library facts matching the library's
-search, author and tag filters at the moment the button is pressed — following
+defaults (stored settings without a tag selection read as no selection). A run
+draws the requested number of **distinct** facts at random from
+the user's currently accessible saved library facts matching the merged
+filters at the moment the button is pressed — following
 every page of the capped 25-per-page facts listing through its opaque cursor,
 not just the already loaded first page — and shows them one card at a time.
 Closing the practice window stops collection before any subsequent page request.
@@ -254,7 +266,11 @@ statistics, read-only notice) without editing controls and without private
 packet provenance. Runs shorter than the requested count happen when fewer
 facts are available and say so; empty scopes and read failures are reported
 honestly instead of leaking either side. Next-card, progress, finish, restart
-and close controls manage the run. There is no spaced-repetition scheduling,
+and close controls manage the run. After finishing, **Quick restart** starts
+another run immediately without reopening the settings window, reusing the
+last played count, side and tag selection with a fresh random draw (runs may
+naturally repeat facts; there is no disjoint-run guarantee) and every card
+concealed again. There is no spaced-repetition scheduling,
 scoring or AI involvement, and the library's CRUD, filtering, sharing and
 import flows are unchanged.
 

@@ -11,7 +11,9 @@ import {
   DEFAULT_PRACTICE_SETTINGS,
   PRACTICE_SETTINGS_STORAGE_KEY,
   PracticeSettingsStore,
+  mergePracticeTags,
   parsePracticeCount,
+  sanitizePracticeTags,
 } from "./knowledge-practice";
 
 const messages: Record<string, string> = {
@@ -46,6 +48,11 @@ const messages: Record<string, string> = {
   "knowledge.practice.side.title": "Name",
   "knowledge.practice.side.description": "Description",
   "knowledge.practice.scope_hint": "Cards are drawn randomly from the facts currently matching your search, author and tag filters, across all library pages.",
+  "knowledge.practice.tags": "Practice tags",
+  "knowledge.practice.tags_hint": "Only facts carrying every selected tag are eligible; with nothing selected, all facts in the current scope are eligible.",
+  "knowledge.practice.tags_load_failed": "Your tags could not be loaded, so only saved selections are shown.",
+  "knowledge.practice.tags_removed": "Some selected tags are no longer in your tag palette.",
+  "knowledge.practice.quick_restart": "Quick restart",
   "knowledge.practice.start": "Start practice",
   "knowledge.practice.loading": "Collecting cards…",
   "knowledge.practice.progress": "Card {index} of {total}",
@@ -170,6 +177,14 @@ const submitSettings = (dialog: HTMLDialogElement, count: string, side?: string)
   dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 };
 
+const toggleTag = (dialog: HTMLDialogElement, name: string, checked = true): void => {
+  const box = [...dialog.querySelectorAll<HTMLInputElement>(
+    ".knowledge-practice-tag-options input[type=checkbox]")]
+    .find((item) => item.value === name)!;
+  box.checked = checked;
+  box.dispatchEvent(new Event("change", { bubbles: true }));
+};
+
 const prompt = (dialog: HTMLDialogElement): HTMLButtonElement =>
   dialog.querySelector<HTMLButtonElement>(".knowledge-practice-prompt")!;
 
@@ -188,20 +203,30 @@ describe("practice settings store", () => {
     expect(new PracticeSettingsStore().read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
   });
 
-  it("round-trips settings", () => {
+  it("round-trips settings including tags", () => {
     const store = new PracticeSettingsStore();
-    store.write({ count: 7, side: "description" });
-    expect(new PracticeSettingsStore().read()).toEqual({ count: 7, side: "description" });
+    store.write({ count: 7, side: "description", tags: ["history", "war"] });
+    expect(new PracticeSettingsStore().read())
+      .toEqual({ count: 7, side: "description", tags: ["history", "war"] });
   });
 
   it("falls back per field on invalid stored values", () => {
     window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
-      JSON.stringify({ count: 0, side: "bogus", extra: "ignored" }));
+      JSON.stringify({ count: 0, side: "bogus", tags: "history", extra: "ignored" }));
     expect(new PracticeSettingsStore().read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
     window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY, JSON.stringify({ count: 3.5 }));
     expect(new PracticeSettingsStore().read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
-    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY, JSON.stringify({ count: 4, side: "description" }));
-    expect(new PracticeSettingsStore().read()).toEqual({ count: 4, side: "description" });
+    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ count: 4, side: "description", tags: [" history ", "", "history", 7, null] }));
+    expect(new PracticeSettingsStore().read())
+      .toEqual({ count: 4, side: "description", tags: ["history"] });
+  });
+
+  it("reads legacy settings without tags as an empty selection", () => {
+    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ count: 7, side: "description" }));
+    expect(new PracticeSettingsStore().read())
+      .toEqual({ count: 7, side: "description", tags: [] });
   });
 
   it("ignores corrupt stored JSON and unavailable storage", () => {
@@ -216,7 +241,7 @@ describe("practice settings store", () => {
     };
     const store = new PracticeSettingsStore(throwing);
     expect(store.read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
-    expect(() => store.write({ count: 5, side: "title" })).not.toThrow();
+    expect(() => store.write({ count: 5, side: "title", tags: [] })).not.toThrow();
   });
 
   it("uses defaults and allows practice when acquiring localStorage throws", async () => {
@@ -228,11 +253,11 @@ describe("practice settings store", () => {
     try {
       const store = new PracticeSettingsStore();
       expect(store.read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
-      expect(() => store.write({ count: 5, side: "description" })).not.toThrow();
+      expect(() => store.write({ count: 5, side: "description", tags: [] })).not.toThrow();
       expect(store.read()).toEqual(DEFAULT_PRACTICE_SETTINGS);
       const supplied = new PracticeSettingsStore(storage);
-      supplied.write({ count: 4, side: "description" });
-      expect(supplied.read()).toEqual({ count: 4, side: "description" });
+      supplied.write({ count: 4, side: "description", tags: ["history"] });
+      expect(supplied.read()).toEqual({ count: 4, side: "description", tags: ["history"] });
 
       const dialog = openPractice(setup);
       expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value)
@@ -260,21 +285,43 @@ describe("practice settings store", () => {
     expect(parsePracticeCount("abc")).toBeNull();
     expect(parsePracticeCount("1001")).toBeNull();
   });
+
+  it("sanitizes stored tag selections", () => {
+    expect(sanitizePracticeTags(undefined)).toEqual([]);
+    expect(sanitizePracticeTags("history")).toEqual([]);
+    expect(sanitizePracticeTags([" history ", "", "history"])).toEqual(["history"]);
+    expect(sanitizePracticeTags(["history", "war", "history"])).toEqual(["history", "war"]);
+    expect(sanitizePracticeTags([1, null, { name: "war" }])).toEqual([]);
+  });
+
+  it("merges scope tags with the practice selection by union", () => {
+    expect(mergePracticeTags(undefined, [])).toBeUndefined();
+    expect(mergePracticeTags([], [])).toBeUndefined();
+    expect(mergePracticeTags(["history"], [])).toEqual(["history"]);
+    expect(mergePracticeTags([], ["war"])).toEqual(["war"]);
+    expect(mergePracticeTags(["history", "author"], ["war", "history"]))
+      .toEqual(["history", "author", "war"]);
+  });
 });
 
 describe("flashcard practice", () => {
-  it("restores persisted settings and saves new ones between runs", async () => {
+  it("restores persisted settings including tags and saves new ones between runs", async () => {
     window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
-      JSON.stringify({ count: 7, side: "description" }));
+      JSON.stringify({ count: 7, side: "description", tags: ["history"] }));
     const setup = render();
     let dialog = openPractice(setup);
     expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value).toBe("7");
     expect(dialog.querySelector<HTMLSelectElement>("select")!.value).toBe("description");
+    const historyBox = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")]
+      .find((box) => box.value === "history")!;
+    expect(historyBox).toBeDefined();
+    expect(historyBox.checked).toBe(true);
 
     submitSettings(dialog, "3", "title");
     await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
     expect(JSON.parse(window.localStorage.getItem(PRACTICE_SETTINGS_STORAGE_KEY)!))
-      .toEqual({ count: 3, side: "title" });
+      .toEqual({ count: 3, side: "title", tags: ["history"] });
 
     // A later visit reopens with the last saved settings.
     [...dialog.querySelectorAll("button")]
@@ -283,6 +330,10 @@ describe("flashcard practice", () => {
     dialog = document.querySelector<HTMLDialogElement>("dialog.knowledge-dialog")!;
     expect(dialog.querySelector<HTMLInputElement>("input[type=number]")!.value).toBe("3");
     expect(dialog.querySelector<HTMLSelectElement>("select")!.value).toBe("title");
+    const restored = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")]
+      .find((box) => box.value === "history")!;
+    expect(restored.checked).toBe(true);
   });
 
   it("rejects invalid counts without starting a run", () => {
@@ -321,8 +372,6 @@ describe("flashcard practice", () => {
     const dialog = openPractice(setup);
     submitSettings(dialog, "1", "title");
     await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
-    console.log("DBG1", dialog.outerHTML.slice(0, 400));
-    console.log("DBG2", !!prompt(dialog));
     expect(prompt(dialog)!.textContent).toContain("Title ");
     expect(prompt(dialog).textContent).not.toContain("Description ");
     expect(dialog.querySelector(".knowledge-fact-description")).toBeNull();
@@ -473,7 +522,7 @@ describe("flashcard practice", () => {
     expect(setup.actions.loadFacts).toHaveBeenCalledTimes(2);
     expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 1 of 2");
     expect(prompt(dialog).textContent).toContain("Title ");
-    expect(new PracticeSettingsStore().read()).toEqual({ count: 2, side: "title" });
+    expect(new PracticeSettingsStore().read()).toEqual({ count: 2, side: "title", tags: [] });
 
     setup.button("Next card", dialog).click();
     setup.button("Finish", dialog).click();
@@ -605,5 +654,208 @@ describe("flashcard practice", () => {
     await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
     const scoped = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
     expect(scoped).toMatchObject({ search: "battle", author: "ada", tags: ["history"] });
+  });
+
+  it("renders the tag palette as checkboxes and keeps the selection for Practice again", async () => {
+    const pages = [[fact(1), fact(2)]];
+    const setup = render(pages, pagedActions(pages, {
+      loadTags: vi.fn().mockResolvedValue({
+        items: [
+          { tag_id: "tag-1", name: "war", colour: "#2e7d32" },
+          { tag_id: "tag-2", name: "history", colour: "#1565c0" },
+        ],
+      }),
+    }));
+    await flush();
+    const dialog = openPractice(setup);
+    const boxes = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")];
+    // Palette entries only, sorted by name; nothing is preselected.
+    expect(boxes.map((box) => box.value)).toEqual(["history", "war"]);
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+
+    toggleTag(dialog, "history", true);
+    submitSettings(dialog, "1");
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    setup.button("Finish", dialog).click();
+    setup.button("Practice again", dialog).click();
+    const reopened = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")];
+    expect(reopened.find((box) => box.value === "history")!.checked).toBe(true);
+    expect(reopened.find((box) => box.value === "war")!.checked).toBe(false);
+  });
+
+  it("applies selected-tag eligibility before sampling, on every matching page", async () => {
+    const pages = [
+      [fact(1), fact(2)],
+      [fact(3)],
+    ];
+    const setup = render(pages, pagedActions(pages, {
+      loadTags: vi.fn().mockResolvedValue({
+        items: [
+          { tag_id: "tag-1", name: "history", colour: "#2e7d32" },
+          { tag_id: "tag-2", name: "war", colour: "#1565c0" },
+        ],
+      }),
+    }));
+    await flush();
+    // Library tag filter (scope) and practice tag selection merge: every
+    // listed tag must be present on an eligible fact.
+    const chip = [...setup.root.querySelectorAll<HTMLButtonElement>(".knowledge-tag-filter-chip")]
+      .find((item) => item.textContent === "war")!;
+    chip.click();
+    await flush();
+
+    const dialog = openPractice(setup);
+    toggleTag(dialog, "history", true);
+    submitSettings(dialog, "2");
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    const calls = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls;
+    const runCalls = calls.slice(-2);
+    expect(runCalls.map((call) => call[0].cursor ?? null)).toEqual([null, "1"]);
+    for (const call of runCalls) expect(call[0].tags).toEqual(["war", "history"]);
+    // Only the requested number of distinct cards is drawn from the result.
+    expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 1 of 2");
+  });
+
+  it("sends no tag filter when nothing is selected", async () => {
+    const setup = render();
+    const dialog = openPractice(setup);
+    submitSettings(dialog, "1");
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    const scoped = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(scoped.tags).toBeUndefined();
+    expect(scoped).not.toHaveProperty("tags");
+  });
+
+  it("reports an empty matching set instead of widening to unfiltered facts", async () => {
+    const items = [fact(1), fact(2)];
+    const loadFacts = vi.fn((params: { tags?: string[] }) => Promise.resolve({
+      state: params.tags?.length ? "empty" : "ready",
+      items: params.tags?.length ? [] : items,
+      total: items.length,
+      next_cursor: null,
+      order: "title_asc",
+    } as KnowledgeFactsResource));
+    const setup = render([items], pagedActions([items], {
+      loadFacts,
+      loadTags: vi.fn().mockResolvedValue({
+        items: [{ tag_id: "tag-1", name: "history", colour: "#2e7d32" }],
+      }),
+    }));
+    await flush();
+    const dialog = openPractice(setup);
+    toggleTag(dialog, "history", true);
+    submitSettings(dialog, "2");
+    await vi.waitFor(() => {
+      expect(dialog.textContent).toContain("nothing to practice with");
+    });
+    expect(prompt(dialog)).toBeNull();
+    expect(loadFacts).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a removed tag selected and filtering instead of silently widening", async () => {
+    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ count: 2, side: "title", tags: ["gone", "history"] }));
+    const items = [fact(1)];
+    const loadFacts = vi.fn((params: { tags?: string[] }) => Promise.resolve({
+      state: params.tags?.length ? "empty" : "ready",
+      items: params.tags?.length ? [] : items,
+      total: items.length,
+      next_cursor: null,
+      order: "title_asc",
+    } as KnowledgeFactsResource));
+    const setup = render([items], pagedActions([items], {
+      loadFacts,
+      loadTags: vi.fn().mockResolvedValue({
+        items: [{ tag_id: "tag-1", name: "history", colour: "#2e7d32" }],
+      }),
+    }));
+    await flush();
+    const dialog = openPractice(setup);
+    const gone = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")]
+      .find((box) => box.value === "gone")!;
+    expect(gone).toBeDefined();
+    expect(gone.checked).toBe(true);
+    expect(dialog.textContent).toContain("no longer in your tag palette");
+
+    submitSettings(dialog, "2");
+    await vi.waitFor(() => {
+      expect(dialog.textContent).toContain("nothing to practice with");
+    });
+    const scoped = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(scoped.tags).toEqual(["gone", "history"]);
+  });
+
+  it("keeps saved tag selections when the palette fails to load", async () => {
+    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ count: 1, side: "title", tags: ["history"] }));
+    const setup = render([[fact(1)]], pagedActions([[fact(1)]], {
+      loadTags: vi.fn().mockRejectedValue(new Error("palette unavailable")),
+    }));
+    await flush();
+
+    const dialog = openPractice(setup);
+    expect(dialog.textContent).toContain("could not be loaded");
+    const box = [...dialog.querySelectorAll<HTMLInputElement>(
+      ".knowledge-practice-tag-options input[type=checkbox]")]
+      .find((item) => item.value === "history")!;
+    expect(box.checked).toBe(true);
+
+    submitSettings(dialog, "1");
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    const scoped = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(scoped.tags).toEqual(["history"]);
+  });
+
+  it("quick restarts with the last played settings without reopening the settings window", async () => {
+    const pages = [[fact(1), fact(2), fact(3)]];
+    const setup = render(pages, pagedActions(pages, {
+      loadTags: vi.fn().mockResolvedValue({
+        items: [{ tag_id: "tag-1", name: "history", colour: "#2e7d32" }],
+      }),
+    }));
+    await flush();
+    window.localStorage.setItem(PRACTICE_SETTINGS_STORAGE_KEY,
+      JSON.stringify({ count: 2, side: "description", tags: ["history"] }));
+    const dialog = openPractice(setup);
+    submitSettings(dialog, "2", "description");
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    const firstRun = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Reveal a card, then finish: the next run must conceal again.
+    prompt(dialog).click();
+    await vi.waitFor(() => {
+      expect(dialog.querySelector(".knowledge-practice-revealed")).not.toBeNull();
+    });
+    setup.button("Next card", dialog).click();
+    setup.button("Finish", dialog).click();
+    expect(dialog.textContent).toContain("Practice run complete.");
+    expect(setup.button("Quick restart", dialog)).toBeDefined();
+
+    setup.button("Quick restart", dialog).click();
+    // No settings window: the form never reappears and the run restarts
+    // immediately with the last played count, side and tags.
+    expect(dialog.querySelector("form")).toBeNull();
+    await vi.waitFor(() => expect(prompt(dialog)).not.toBeNull());
+    expect((setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.length)
+      .toBe(firstRun + 1);
+    const scoped = (setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(scoped.tags).toEqual(["history"]);
+    expect(dialog.querySelector(".knowledge-practice-progress")!.textContent).toBe("Card 1 of 2");
+    expect(dialog.querySelector(".knowledge-practice-revealed")).toBeNull();
+    expect(prompt(dialog).querySelector(".knowledge-practice-prompt-text")!.textContent)
+      .toContain("Description ");
+    expect(new PracticeSettingsStore().read())
+      .toEqual({ count: 2, side: "description", tags: ["history"] });
+
+    // Normal restart still opens the saved settings for confirmation.
+    setup.button("Next card", dialog).click();
+    setup.button("Finish", dialog).click();
+    setup.button("Practice again", dialog).click();
+    expect(dialog.querySelector("form")).not.toBeNull();
+    expect((setup.actions.loadFacts as ReturnType<typeof vi.fn>).mock.calls.length)
+      .toBe(firstRun + 1);
   });
 });

@@ -5,11 +5,14 @@ import type {
   KnowledgeI18n,
 } from "./knowledge";
 import {
+  DEFAULT_TAG_COLOUR,
   closeDialog,
   dialogFrame,
   openDialog,
   renderFactDetail,
+  tagChip,
 } from "./knowledge-shared";
+import type { KnowledgeState } from "./knowledge-shared";
 
 /**
  * Flashcard practice over the saved Knowledge library: a settings window
@@ -27,12 +30,22 @@ export interface PracticeSettings {
   count: number;
   /** The side shown before the card is revealed. */
   side: PracticeSide;
+  /**
+   * Tag names a fact must carry to be eligible. Empty means every fact in
+   * the current practice scope; several names mean ALL of them (the same
+   * all-selected-tags semantics as the library's tag filter).
+   */
+  tags: string[];
 }
 
 export const PRACTICE_COUNT_MIN = 1;
 export const PRACTICE_COUNT_MAX = 1000;
 
-export const DEFAULT_PRACTICE_SETTINGS: PracticeSettings = { count: 10, side: "title" };
+export const DEFAULT_PRACTICE_SETTINGS: PracticeSettings = {
+  count: 10,
+  side: "title",
+  tags: [],
+};
 
 const practiceSides: readonly PracticeSide[] = ["title", "description"];
 
@@ -48,6 +61,22 @@ export const PRACTICE_SETTINGS_STORAGE_KEY = "sitg:miniapp:knowledge:practice-se
 export function isValidPracticeCount(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value)
     && value >= PRACTICE_COUNT_MIN && value <= PRACTICE_COUNT_MAX;
+}
+
+/**
+ * Stored tag names kept as-is when valid: trimmed non-empty strings, de-
+ * duplicated, unknown entries preserved (a removed tag must not silently
+ * widen the intended filter). Anything else falls back to no selection.
+ */
+export function sanitizePracticeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 export class PracticeSettingsStore {
@@ -78,6 +107,7 @@ export class PracticeSettingsStore {
           ? candidate.count
           : DEFAULT_PRACTICE_SETTINGS.count,
         side,
+        tags: sanitizePracticeTags(candidate.tags),
       };
     } catch {
       return { ...DEFAULT_PRACTICE_SETTINGS };
@@ -106,6 +136,19 @@ export interface PracticeScope {
   search?: string;
   author?: string;
   tags?: string[];
+}
+
+/**
+ * Combines the library scope's tags with the practice tag selection: every
+ * listed tag must be present on a fact (the API's all-selected-tags
+ * semantics), so the two sources are merged by union, de-duplicated.
+ */
+export function mergePracticeTags(
+  scopeTags: string[] | undefined,
+  settingTags: readonly string[],
+): string[] | undefined {
+  if (!scopeTags?.length && !settingTags.length) return undefined;
+  return [...new Set([...(scopeTags ?? []), ...settingTags])];
 }
 
 /**
@@ -172,9 +215,12 @@ export function openPracticeDialog(options: {
   i18n: KnowledgeI18n;
   actions: KnowledgeActions;
   scope: PracticeScope;
+  /** Live tag palette of the library view, for the tag selection field. */
+  tagPalette?: KnowledgeState;
   store?: PracticeSettingsStore;
 }): void {
   const { i18n, actions, scope } = options;
+  const tagPalette = options.tagPalette;
   const store = options.store ?? new PracticeSettingsStore();
   const { dialog, body } = dialogFrame(i18n.t("knowledge.practice.title"), i18n);
   const settings = store.read();
@@ -195,9 +241,59 @@ export function openPracticeDialog(options: {
   const error = element("p", { className: "error-text", role: "alert" });
   const start = element("button", { type: "submit", className: "primary-button" },
     i18n.t("knowledge.practice.start"));
+
+  // Tag eligibility selection: same palette and chip rendering as the
+  // library's tag widgets, read-only here (no palette maintenance).
+  const selectedTags = new Set<string>(settings.tags);
+  const tagNotes = element("div", { className: "knowledge-fact-meta" });
+  const tagList = element("div", {
+    className: "knowledge-tag-options knowledge-practice-tag-options",
+    role: "group",
+    "aria-label": i18n.t("knowledge.practice.tags"),
+  });
+  const syncTagOptions = (): void => {
+    replaceChildren(tagList);
+    const notes: string[] = [];
+    if (tagPalette?.tagPoolFailed) notes.push(i18n.t("knowledge.practice.tags_load_failed"));
+    // Saved tags missing from the palette stay selectable: removing them
+    // silently would widen the intended filter.
+    const names = [...new Set([...(tagPalette?.tagPool.keys() ?? []), ...selectedTags])]
+      .sort((a, b) => a.localeCompare(b));
+    let removed = false;
+    for (const name of names) {
+      const entry = tagPalette?.tagPool.get(name);
+      if (!entry) removed = true;
+      const input = element("input", { type: "checkbox", value: name });
+      input.checked = selectedTags.has(name);
+      input.addEventListener("change", () => {
+        if (input.checked) selectedTags.add(name);
+        else selectedTags.delete(name);
+      });
+      tagList.append(element("div", { className: "knowledge-tag-option" },
+        element("label", { className: "checkbox-label" }, input,
+          tagChip(entry ?? { name, colour: DEFAULT_TAG_COLOUR }))));
+    }
+    if (removed) notes.push(i18n.t("knowledge.practice.tags_removed"));
+    if (!names.length && !tagPalette?.tagPoolFailed) {
+      tagList.append(element("p", { className: "knowledge-fact-meta" },
+        i18n.t("knowledge.tags.field_empty")));
+    }
+    tagNotes.replaceChildren(...notes.map((note) =>
+      element("p", { className: "knowledge-fact-meta", role: "note" }, note)));
+  };
+  const tagField = element("fieldset", { className: "knowledge-tag-select" },
+    element("legend", {}, i18n.t("knowledge.practice.tags")),
+    tagList,
+    tagNotes,
+    element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.practice.tags_hint")));
+  syncTagOptions();
+  // The palette loads (or failed) asynchronously: refresh once it settles.
+  void tagPalette?.tagPoolReady.then(syncTagOptions).catch(() => { syncTagOptions(); });
+
   const form = element("form", { className: "settings-form" },
     element("label", {}, i18n.t("knowledge.practice.count"), count),
     element("label", {}, i18n.t("knowledge.practice.side"), side),
+    tagField,
     element("p", { className: "knowledge-fact-meta" }, i18n.t("knowledge.practice.scope_hint")),
     start,
     error);
@@ -216,6 +312,8 @@ export function openPracticeDialog(options: {
     const chosen: PracticeSettings = {
       count: parsed,
       side: side.value === "description" ? "description" : "title",
+      // Sorted for stable persistence; order never affects eligibility.
+      tags: [...selectedTags].sort((a, b) => a.localeCompare(b)),
     };
     // Saved between runs and app visits on this device.
     store.write(chosen);
@@ -235,16 +333,23 @@ function startRun(
   showSettings: () => void,
 ): void {
   const isActive = (): boolean => dialog.isConnected && dialog.open && !actions.signal?.aborted;
+  // Tag eligibility is applied before sampling, on every page request:
+  // the API filters by all selected tags, so the merged scope guarantees
+  // only facts carrying every chosen tag can enter the run.
+  const effectiveScope: PracticeScope = {
+    ...scope,
+    tags: mergePracticeTags(scope.tags, settings.tags),
+  };
   replaceChildren(body,
     element("p", { className: "knowledge-fact-meta", role: "status" },
       i18n.t("knowledge.practice.loading")));
-  void loadPracticeFacts(actions, scope, isActive).then((items) => {
+  void loadPracticeFacts(actions, effectiveScope, isActive).then((items) => {
     if (!isActive()) return;
     if (!items.length) {
       renderNotice(body, i18n, dialog, "knowledge.practice.empty", "error-text");
       return;
     }
-    renderRun(dialog, body, settings, i18n, actions, showSettings, items);
+    renderRun(dialog, body, settings, i18n, actions, scope, showSettings, items);
   }).catch(() => {
     if (!isActive()) return;
     renderNotice(body, i18n, dialog, "knowledge.error", "error-text");
@@ -278,6 +383,7 @@ function renderRun(
   settings: PracticeSettings,
   i18n: KnowledgeI18n,
   actions: KnowledgeActions,
+  scope: PracticeScope,
   showSettings: () => void,
   items: readonly KnowledgeFactSummary[],
 ): void {
@@ -351,12 +457,21 @@ function renderRun(
       cardGeneration += 1;
       const restart = element("button", {
         type: "button",
-        className: "primary-button",
+        className: "secondary-button",
       }, i18n.t("knowledge.practice.restart"));
       restart.addEventListener("click", showSettings);
+      // Quick restart: another run with the last played count, side and tags
+      // immediately — no settings window, fresh random draw, concealed cards.
+      const quickRestart = element("button", {
+        type: "button",
+        className: "primary-button",
+      }, i18n.t("knowledge.practice.quick_restart"));
+      quickRestart.addEventListener("click", () => {
+        startRun(dialog, body, settings, i18n, actions, scope, showSettings);
+      });
       replaceChildren(body,
         element("p", { className: "knowledge-practice-done" }, i18n.t("knowledge.practice.done")),
-        element("div", { className: "settings-actions" }, restart, closeRow(i18n, dialog)));
+        element("div", { className: "settings-actions" }, quickRestart, restart, closeRow(i18n, dialog)));
       return;
     }
     index += 1;
