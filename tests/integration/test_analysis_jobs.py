@@ -9,6 +9,7 @@ from conftest import create_player, seed_category
 from sqlalchemy import func, select
 
 from sitg_bot.domain.game_settings import announcement_tokens
+from sitg_bot.services.ai_administration import AIAdministrationService
 from sitg_bot.services.analysis_jobs import (
     TRAINING_ANALYSIS_JOB_KIND,
     AnalysisFeatureDisabledError,
@@ -39,7 +40,11 @@ from sitg_bot.services.training_ai import (
     fact_candidate_id,
     text_fingerprint,
 )
-from sitg_bot.storage.models import DurableJobRecord, TrainingUsagePeriodRecord
+from sitg_bot.storage.models import (
+    DurableJobRecord,
+    PlatformAdministratorRecord,
+    TrainingUsagePeriodRecord,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -168,6 +173,62 @@ async def artifact_id_of(database, request_id: str) -> UUID:
 async def artifact_of(database, artifact_id: UUID) -> TrainingAnalysisArtifactRecord:
     async with database.sessions() as session:
         return await session.get(TrainingAnalysisArtifactRecord, artifact_id)
+
+
+@pytest.mark.parametrize("kind", ["dissection", "best_buzz"])
+@pytest.mark.parametrize("cache_hit_charging", [True, False], ids=["charged-cache", "free-cache"])
+async def test_admin_policies_govern_real_requests_and_cache_without_cancelling_accepted_work(
+    database, kind, cache_hit_charging,
+):
+    owner = await create_player(database, 29001, "managed-owner")
+    actor = await create_player(database, 29002, "managed-admin")
+    async with database.transaction() as session:
+        session.add(PlatformAdministratorRecord(player_id=actor))
+    await EntitlementService(database).ensure_defaults()
+    stack = await make_stack(
+        database, [owner], policy=payload(**{kind: {"cache_hit_charging": cache_hit_charging}})
+    )
+    admin = AIAdministrationService(database)
+    settings = {
+        "dissection_enabled": True, "best_buzz_enabled": True,
+        "free": {"dissection": 1, "best_buzz": 1},
+        "premium": {"dissection": None, "best_buzz": None}, "reset_period": "day",
+    }
+    await admin.update(actor, expected_version=1, **settings)
+    await admin.tier(actor, player_id=owner, tier="free")
+    revision = stack.loader.add("A short bounded question for the managed AI policy.")
+    source_type = DissectionSource if kind == "dissection" else BestBuzzSource
+    source = source_type(uuid4(), (revision,))
+    accepted = await submit(stack.service, owner, source, "accepted-before-disable")
+    assert accepted.status == "queued"
+    off = {**settings, "dissection_enabled": False, "best_buzz_enabled": False}
+    await admin.update(actor, expected_version=2, **off)
+    await admin.tier(actor, player_id=owner, tier="no_ai")
+    await admin.reset(actor, expected_version=3, confirm=True)
+    assert await stack.worker.run_once() == 1
+    completed = await stack.service.status(owner_player_id=owner,
+        request_id="accepted-before-disable")
+    assert completed.status == "succeeded"
+    with pytest.raises(AnalysisFeatureDisabledError):
+        await submit(stack.service, owner, source, "forbidden-cached-request")
+    await admin.tier(actor, player_id=owner, tier="free")
+    await admin.update(actor, expected_version=4, **settings)
+    status = await stack.entitlements.capabilities(owner)
+    assert status[kind].remaining == 1
+    assert status[kind].cache_hit_charging is cache_hit_charging
+    cached = await submit(stack.service, owner, source, "allowed-cached-request")
+    assert cached.status == "succeeded"
+    status = await stack.entitlements.capabilities(owner)
+    assert status[kind].remaining == (0 if cache_hit_charging else 1)
+    if not cache_hit_charging:
+        fresh = await submit(
+            stack.service, owner, source_type(uuid4(), (revision,)), "fresh-budget"
+        )
+        assert fresh.status == "queued"
+    with pytest.raises(AnalysisQuotaExceededError):
+        await submit(stack.service, owner, source_type(uuid4(), (revision,)), "over-budget")
+    calls = stack.provider.extract_calls if kind == "dissection" else stack.provider.buzz_calls
+    assert len(calls) == 1
 
 
 async def test_request_executes_to_success_and_settles_usage(database):

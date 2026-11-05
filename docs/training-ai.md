@@ -94,7 +94,7 @@ packed-token persistence limitation.
 subscriptions. Each category references an immutable, versioned
 `training_feature_policies` payload for the three features (`dissection`,
 `common_knowledge`, `best_buzz`) with `enabled`, `limit` (null = unlimited),
-`reset_period` (`none`/`daily`/`monthly`), `cache_hit_charging` and
+`reset_period` (`none`/`hourly`/`daily`/`weekly`/`monthly`), `cache_hit_charging` and
 queued/in-flight request caps. `authorize` reserves quota atomically under a
 period row lock and is idempotent per request ID; `settle` records provider
 usage separately, releases remainders on partial success, and `release`
@@ -103,6 +103,68 @@ and reset time to both adapters; every limit is enforced server-side, and
 feature authorization applies even on cache hits. `reconcile_abandoned`
 releases reservations orphaned by crashes; schedule it periodically. Billing
 and plan purchase flows are deferred.
+
+## Administrator AI functionality
+
+Active platform administrators (not tournament managers) use `/api/miniapp/admin/ai`.
+The existing session/origin boundary applies; POSTs require CSRF and idempotency headers.
+Responses are ordinary HTTP data objects, not the internal gateway envelope.
+The existing `/admin/management?section=ai` route resolves to the administrator-only
+`{kind:"admin_management",state:"ready",section:"ai",items:[]}` resource. The frontend
+then loads settings/provider separately; navigation performs no provider check.
+
+- GET `settings` returns `{version,dissection_enabled,best_buzz_enabled,free,premium,
+  reset_period,reset_at,quota_generation}`. Both quota objects contain `dissection` and
+  `best_buzz`: integer 0–2147483647, or explicit JSON null for Unlimited. Zero blocks
+  charged work; compatible free cache hits retain existing charging behavior.
+- POST `settings` accepts all editable fields plus `expected_version`, without
+  response-only fields. `reset_period` is `hour`, `day`, or `week`. Windows are UTC,
+  half-open: hour on HH:00, day on midnight, week on Monday midnight. `reset_at` is
+  the next boundary after a managed-settings save, or null before that first save.
+  Before the first save the form inherits existing default-category budgets/enabled
+  flags (premium initially the same) and proposes the daily window without claiming
+  a next reset; quota resets alone do not activate that proposal. Historical custom
+  default none/monthly policies remain effective until explicitly saved.
+- GET `players?search=...&limit=20` accepts a literal case-insensitive nickname prefix
+  (2–100 trimmed characters) or exact UUID, with limit 1–25. It uses an indexed bounded
+  query and returns `{items:[{id,name,tier}],limit}`, ordered by lowercase nickname/ID.
+- POST `tier` accepts `{player_id,tier}`, where tier is `free`, `premium`, or `no_ai`
+  (display labels Free, Premium, NO AI), returning `{id,tier}`. Unassigned manual tier is
+  free. Manual AI tiers have no billing/subscription/tournament-role meaning. NO AI denies
+  every new AI authorization, including cache hits and prepared Best-buzz cache consumption.
+- POST `reset` requires `{confirm:true,expected_version}` and returns settings. Confirm
+  that it grants fresh usage for **all three AI features**, all players/manual tiers/custom
+  categories. It changes one quota generation, never scans players or game history, deletes
+  data, changes tiers, or lifts NO AI. Already accepted reservations settle/refund exactly
+  once against their original generation; they do not consume the newly granted budget.
+
+Explicit saves append immutable policy versions for the managed free/premium theme budgets.
+Existing category assignments and Common knowledge policies/caps/cache charging are retained.
+Every player without a manual premium/NO AI assignment uses the configured free theme
+allowances, including players in custom categories. Managed allowances override only the
+theme features' enabled flags, limits and reset periods; category cache charging, request
+caps and unrelated features remain unchanged. Manual assignment does not change the stored
+category. Tier changes share the same player/feature/window counters,
+not a separate tier budget. Changing window selects that UTC bucket; switching back sees its
+previous usage. No startup auto-enablement of previously persisted disabled policies occurs.
+Shared/exclusive state locks serialize new admissions with updates/reset/tier assignment;
+accepted work is neither cancelled nor double-settled by these controls. Existing gateway
+request-audit/idempotency infrastructure records these actions; no separate audit system.
+Stale settings/reset versions return `stale_write`; invalid values are rejected server-side.
+
+### Passive provider status
+
+GET `provider` never calls upstream. It returns `{provider,model,configured,state,verified_at}`
+for the selected server execution profile. Providers remain exactly `openai`/`charm`;
+models/keys are operator configuration. States are `unconfigured`, `unknown` (configured
+but unverified), `responding`, or `stale` (success at least five minutes old).
+`responding` means a recorded successful analysis of this exact profile, **not** guaranteed
+current uptime or future success. Recorded outcomes must contain actual provider call
+metadata; cache-only artifacts and other profiles are excluded by an indexed lookup.
+No public model-list response or arbitrary job failure establishes provider health.
+There is no probe action, polling or paid monitoring. Keys and raw response/error bodies
+never enter the admin projection. Fake transport tests do not establish live provider
+access or quality.
 
 ## Application integration
 
@@ -132,9 +194,11 @@ Credentials and models are server configuration, with no fake production fallbac
    The analysis worker starts inside `sitg-server`; no separate MCP process or proxy is needed.
    There is no fake provider substitute or cross-provider retry. Leaving key or model unset
    keeps AI unavailable (ordinary training/manual facts still work).
-3. Existing disabled administrator policies are not overwritten by configuration. Enable the
-   desired category using `EntitlementService.create_policy` and its `policy_version` explicitly.
-   Verify `training/entitlements` reports enabled features and the intended daily budgets.
+3. Existing disabled administrator policies are not overwritten by configuration. Use the
+   administrator **AI functionality** settings to explicitly enable the desired managed
+   features/budgets. Custom categories can still be maintained through
+   `EntitlementService.create_policy` and their `policy_version`. Verify
+   `training/entitlements` reports the intended feature availability, budgets and reset times.
 4. With authorized test accounts, preview/confirm one theme, select tags and start dissection.
    Close/reopen the window, verify the durable pending review, then approve only selected facts.
    Confirm author attribution, source privacy and that unselected themes remain undisclosed.

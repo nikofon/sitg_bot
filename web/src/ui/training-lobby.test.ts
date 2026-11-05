@@ -522,11 +522,51 @@ describe("training lobby", () => {
       const labels = [...card.querySelectorAll("button")].map((button) => button.textContent);
       expect(labels).not.toContain("Download");
       expect(labels).not.toContain("View");
-      expect(labels).toContain("Select packet");
       expect(labels).toContain("Prepare Best buzz");
     }
+    // The selected card's action is Remove; unselected cards still offer Select.
+    expect(alpha.querySelector("button[data-select]")!.textContent).toBe("Remove");
+    expect(beta.querySelector("button[data-select]")!.textContent).toBe("Select packet");
     expect([...alpha.querySelectorAll("button")].map((b) => b.textContent)).toContain("Delete private packet");
     expect([...beta.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Delete private packet");
+  });
+
+  it("replaces Select with Remove on the selected packet and clears the lobby selection", async () => {
+    const { root, request, feedback } = create({ lobbyCalls: [
+      () => ({ lobby: { version: 4, version_id: null, packet_name: null,
+        settings: { reversed: true, hidden_after: 2, buzz_timeout: 8, best_buzz: false } } }),
+    ] });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    const [alpha] = packetCards(root) as [HTMLElement];
+    expect(alpha.querySelector("button[data-select]")!.textContent).toBe("Remove");
+    alpha.querySelector<HTMLButtonElement>("button[data-select]")!.click();
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "remove_packet", expected_version: 3 });
+    expect(lobbyBodies(request)[0]).not.toHaveProperty("version_id");
+    expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(status(root)).toBe("Packet selection removed."));
+    // Removal clears only the selection: every card offers Select again, the
+    // summary falls back to the placeholder and no packet data was deleted.
+    expect(alpha.querySelector("button[data-select]")!.textContent).toBe("Select packet");
+    expect(alpha.querySelector(".lobby-packet-selected")).toBeNull();
+    expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
+      .toBe("No packet selected");
+  });
+
+  it("offers removal of the selected packet on the General overview tab", async () => {
+    const { root, request } = create({ lobbyCalls: [
+      () => ({ lobby: { version: 4, version_id: null, packet_name: null,
+        settings: { reversed: true, hidden_after: 2, buzz_timeout: 8, best_buzz: false } } }),
+    ] });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    const remove = root.querySelector<HTMLButtonElement>(".training-overview .training-selection button")!;
+    expect(remove.textContent).toBe("Remove");
+    remove.click();
+    await vi.waitFor(() => expect(lobbyBodies(request).length).toBe(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({ command: "remove_packet", expected_version: 3 });
+    await vi.waitFor(() =>
+      expect((root.querySelector(".training-overview .training-selection button") as HTMLButtonElement).hidden)
+        .toBe(true));
   });
 
   it("sends search, sorting and year filters to the catalogue from one bubble", async () => {

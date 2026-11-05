@@ -19,6 +19,11 @@ from pydantic import ValidationError
 from sitg_bot.application.adapters import MiniAppGatewayAdapter
 from sitg_bot.application.contracts import (
     ActionCode,
+    AdminAIPlayersOperation,
+    AdminAIReadOperation,
+    AdminAIResetOperation,
+    AdminAITierOperation,
+    AdminAIUpdateOperation,
     AdminAuthorLinkOperation,
     AdminAuthorMergeOperation,
     AdminAuthorSplitOperation,
@@ -336,6 +341,10 @@ class MiniAppHttpServer:
         app.router.add_get(
             "/api/miniapp/admin/suspicion/ledger", self._admin_suspicion_ledger
         )
+        for command in ("settings", "players", "provider"):
+            app.router.add_get("/api/miniapp/admin/ai/" + command, self._admin_ai_query)
+        for command in ("settings", "tier", "reset"):
+            app.router.add_post("/api/miniapp/admin/ai/" + command, self._admin_ai_mutation)
         app.router.add_get(
             "/api/miniapp/admin/management/packets", self._admin_packet_page
         )
@@ -2000,6 +2009,33 @@ class MiniAppHttpServer:
         _, result = await self._mutation(
             request, contract.model_validate({**body, "action": action}),
         )
+        return self._gateway_response(result)
+
+    async def _admin_ai_query(self, request: web.Request) -> web.Response:
+        command = request.path.rsplit("/", 1)[-1]
+        if command == "players":
+            operation = AdminAIPlayersOperation.model_validate({
+                **request.query, "action": ActionCode.ADMIN_AI_PLAYERS,
+            })
+        else:
+            operation = AdminAIReadOperation(
+                action=(ActionCode.ADMIN_AI_SETTINGS if command == "settings"
+                        else ActionCode.ADMIN_AI_PROVIDER),
+            )
+        _, result = await self._query(request, operation)
+        return self._gateway_response(result)
+
+    async def _admin_ai_mutation(self, request: web.Request) -> web.Response:
+        contracts = {
+            "settings": (AdminAIUpdateOperation, ActionCode.ADMIN_AI_UPDATE),
+            "tier": (AdminAITierOperation, ActionCode.ADMIN_AI_TIER),
+            "reset": (AdminAIResetOperation, ActionCode.ADMIN_AI_RESET),
+        }
+        contract, action = contracts[request.path.rsplit("/", 1)[-1]]
+        body = await self._json_body(request)
+        _, result = await self._mutation(request, contract.model_validate({
+            **body, "action": action,
+        }))
         return self._gateway_response(result)
 
     async def _admin_management_action(self, request: web.Request) -> web.Response:

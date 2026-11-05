@@ -291,14 +291,18 @@ and chair role), status, phase, paused flag, ruleset, tournament type, and timin
 tournament's settings snapshot and remaining execution details stay collapsed under the card's
 details summary.
 
+**AI functionality:** `/admin/management?section=ai` presents the controls and passive
+provider status described in [AI administration](training-ai.md#administrator-ai-functionality).
+Save submits the complete settings form; a stale write opens a reload prompt instead of
+overwriting unsaved edits. Save/reset responses update metadata without discarding current
+drafts. **Reset all AI quotas** requires explicit confirmation. Player AI access uses a
+debounced name/UUID search (at most 20 results) with an explicit Apply button per player.
+
 **Training history:** `/training/history` lists the authenticated owner's training
 runs newest first, with packet names, effective scores, modifiers and **More info**
 links to `/training/history/{session_id}`. Detail groups ordered question rows by
-theme, showing authorized played content, training-only question statistics, bounded
-known buzz-delay samples, and the owner's answer/verdict/appeal performance. Both
-screens load pages of at most 25 on explicit request. Retired/revoked content and
-unvisited questions remain redacted; legacy unknown timings say unavailable. See
-[training](training.md#training-history) for disclosure and schema dependencies.
+theme. See [training history](training.md#training-history) for the question-level
+statistics, separate this-run performance, pagination and disclosure rules.
 
 The `/training` solo lobby and `/knowledge` fact library are implemented; see
 [training execution](training.md#execution-and-presentation) and
@@ -322,6 +326,7 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | GET `/training/history?cursor=&limit=25`; GET `/training/history/{session_id}?cursor=&limit=25` | Owner-only run cards and bounded question detail; also served through route resolution |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
 | POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
+| GET/POST `/admin/ai/settings`; GET `/admin/ai/provider`; GET `/admin/ai/players`; POST `/admin/ai/tier`; POST `/admin/ai/reset` | AI administration UI contract: policy switches and tier quotas with explicit Unlimited, passive provider status, bounded player search, manual tiers, generation-switching quota reset |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |

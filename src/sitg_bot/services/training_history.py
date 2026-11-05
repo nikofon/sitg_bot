@@ -1,10 +1,15 @@
 """Owner-only, batched read projection of past training runs.
 
 The projection reuses TrainingSession/TrainingQuestion/TrainingAttempt and the
-pinned packet revisions; it never writes, never aggregates competitive data and
-never reconstructs timings that were not recorded. Every page uses a bounded
-number of queries independent of row counts (keyset pagination plus grouped
-projections), mirroring the training packet catalogue contract.
+pinned packet revisions; it never writes and never reconstructs timings that
+were not recorded. Every page uses a bounded number of queries independent of
+row counts (keyset pagination plus grouped projections), mirroring the training
+packet catalogue contract.
+
+The question-level historical aggregate on each card comes from actual play
+mode (competitive question rounds, accepted buzzes and judged answer attempts
+for the same pinned question revision), never from training rows; this run's
+own buzz/score evidence stays separate in the owner-only projection below.
 
 Timing and verdict alignment with the gameplay component contract
 (sitg-training-gameflow fields.md): question playback/disclosure evidence and
@@ -24,16 +29,19 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select, tuple_
+from sqlalchemy import and_, case, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sitg_bot.services.training_access import require_trainee
 from sitg_bot.services.training_packets import TrainingPacketService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
+    AnswerAttemptRecord,
     PacketVersionRecord,
     PlayerExposureClaimRecord,
+    PlayerQuestionStateRecord,
     QuestionRevisionRecord,
+    QuestionRoundRecord,
     ThemeRevisionRecord,
     TrainingAttemptRecord,
     TrainingQuestionRecord,
@@ -41,7 +49,6 @@ from sitg_bot.storage.models import (
 )
 
 LIST_SIGNATURE = "training-history-list-v1"
-TIMING_SAMPLE_LIMIT = 25
 
 # Optional columns supplied by the integration owner's reserved 0027 migration.
 QUESTION_TIMING_FIELDS = ("opened_at", "buzzed_at", "buzz_delay_seconds", "buzz_token_cursor")
@@ -293,7 +300,7 @@ class TrainingHistoryService:
             )
             revision_ids = [row.question_revision_id for row in page]
             statistics = (
-                await self._question_statistics(session, revision_ids, timing)
+                await self._question_statistics(session, revision_ids)
                 if revision_ids
                 else {}
             )
@@ -325,8 +332,9 @@ class TrainingHistoryService:
             "answered": 0,
             "correct": 0,
             "incorrect": 0,
-            # Legacy questions recorded no buzz timings; null means unavailable.
-            "buzz_timings": None,
+            # No play-mode samples: unavailable, never training totals.
+            "buzz_time_average": None,
+            "buzz_samples": 0,
         }
         stats = statistics.get(row.question_revision_id, empty_stats)
         buzz = None
@@ -447,105 +455,96 @@ class TrainingHistoryService:
 
     @staticmethod
     async def _question_statistics(
-        session: AsyncSession, question_ids: list[UUID], timing: dict
+        session: AsyncSession, question_ids: list[UUID]
     ) -> dict[UUID, dict]:
-        """Training-only counts and known buzz timing samples per pinned question.
+        """Actual play-mode counts and buzz timing aggregates per pinned question.
 
-        Anonymous revision-level counts aggregate training rows only (a buzz can
-        exist without an attempt). Own answers/verdicts remain in the owner-only
-        projection above. No competitive aggregates, identities or other owners'
-        answers are returned, and protected rows withhold these statistics.
+        Anonymous revision-level aggregates over competitive games only: played
+        rounds, accepted buzzes, judged answer attempts and the average delay
+        from question opening to the accepted buzz (same unit/sample rules as
+        the normal-play profile aggregation: missing/invalid timings are
+        excluded and the sample count reflects only usable observations).
+        Training rows are never counted here; this run's own answers/verdicts
+        stay in the owner-only projection above, and protected rows withhold
+        these statistics. Bounded: three grouped queries for the whole page,
+        never one per question.
         """
-        attempts = {
-            row[0]: {
-                "attempts": int(row[1]),
-                "answered": int(row[2]),
-                "correct": int(row[3]),
-                "incorrect": int(row[4]),
-            }
-            for row in await session.execute(
-                select(
-                    TrainingAttemptRecord.question_revision_id,
-                    func.count(),
-                    func.count().filter(TrainingAttemptRecord.outcome == "answered"),
-                    func.count().filter(TrainingAttemptRecord.correct.is_(True)),
-                    func.count().filter(TrainingAttemptRecord.correct.is_(False)),
-                )
-                .where(
-                    TrainingAttemptRecord.question_revision_id.in_(question_ids),
-                )
-                .group_by(TrainingAttemptRecord.question_revision_id)
-            )
-        }
         statistics = {
             identity: {
-                **counts,
-                "presentations": counts["attempts"],
-                "buzzes": None,
-                "buzz_timings": None,
+                "presentations": 0,
+                "buzzes": 0,
+                "attempts": 0,
+                "answered": 0,
+                "correct": 0,
+                "incorrect": 0,
+                "buzz_time_average": None,
+                "buzz_samples": 0,
             }
-            for identity, counts in attempts.items()
+            for identity in question_ids
         }
-        buzzed_at = timing.get("buzzed_at")
-        buzz_delay = timing.get("buzz_delay_seconds")
-        opened_at = timing.get("opened_at")
-        if buzzed_at is None or buzz_delay is None or opened_at is None:
-            return statistics
-
-        # Count recorded playback, not every pinned (future) question. Legacy
-        # attempts prove play, but not an accepted buzz or its timing.
-        played = or_(opened_at.is_not(None), buzzed_at.is_not(None),
-                     TrainingAttemptRecord.id.is_not(None))
-        scope = (TrainingQuestionRecord.question_revision_id.in_(question_ids),)
-        rows = await session.execute(
-            select(
-                TrainingQuestionRecord.question_revision_id,
-                func.count().filter(played),
-                func.count().filter(buzzed_at.is_not(None)),
-            )
-            .join(TrainingSessionRecord,
-                  TrainingSessionRecord.id == TrainingQuestionRecord.session_id)
-            .outerjoin(TrainingAttemptRecord, and_(
-                TrainingAttemptRecord.session_id == TrainingQuestionRecord.session_id,
-                TrainingAttemptRecord.question_index == TrainingQuestionRecord.position,
-            ))
-            .where(*scope)
-            .group_by(TrainingQuestionRecord.question_revision_id)
+        # A question was presented in play mode only when its round started;
+        # pending rounds never opened and invalidated ones are excluded.
+        played_rounds = QuestionRoundRecord.status.not_in(("pending", "invalidated"))
+        scope = QuestionRoundRecord.question_revision_id.in_(question_ids)
+        for identity, presentations in await session.execute(
+            select(QuestionRoundRecord.question_revision_id, func.count())
+            .where(scope, played_rounds)
+            .group_by(QuestionRoundRecord.question_revision_id)
+        ):
+            statistics[identity]["presentations"] = int(presentations)
+        # Accepted buzzes: count plus the average opening-to-buzz delay over the
+        # usable observations (both timestamps known and the delay non-negative).
+        delay = func.extract(
+            "epoch", PlayerQuestionStateRecord.buzzed_at - QuestionRoundRecord.started_at
         )
-        for identity, presentations, buzzes in rows:
-            entry = statistics.setdefault(identity, {
-                "attempts": 0, "answered": 0, "correct": 0, "incorrect": 0,
-                "buzz_timings": None,
-            })
-            entry.update(presentations=int(presentations), buzzes=int(buzzes))
-
-        # A SQL window bounds samples per question, rather than building an
-        # unbounded array_agg of the player's lifetime history. Recent-first,
-        # stable ties; at most 25 questions x 25 samples cross the DB boundary.
-        samples = (
+        usable = and_(delay.is_not(None), delay >= 0)
+        for identity, buzzes, samples, average in await session.execute(
             select(
-                TrainingQuestionRecord.question_revision_id.label("revision_id"),
-                buzz_delay.label("delay"),
-                func.row_number().over(
-                    partition_by=TrainingQuestionRecord.question_revision_id,
-                    order_by=(buzzed_at.desc(), TrainingQuestionRecord.session_id.desc(),
-                              TrainingQuestionRecord.position.desc()),
-                ).label("rank"),
+                QuestionRoundRecord.question_revision_id,
+                func.count(),
+                func.count(case((usable, True))),
+                func.avg(case((usable, delay))),
             )
-            .join(TrainingSessionRecord,
-                  TrainingSessionRecord.id == TrainingQuestionRecord.session_id)
-            .where(*scope, buzzed_at.is_not(None), buzz_delay.is_not(None))
-            .subquery()
-        )
-        for identity, delay in await session.execute(
-            select(samples.c.revision_id, samples.c.delay)
-            .where(samples.c.rank <= TIMING_SAMPLE_LIMIT)
-            .order_by(samples.c.revision_id, samples.c.rank)
+            .select_from(PlayerQuestionStateRecord)
+            .join(
+                QuestionRoundRecord,
+                QuestionRoundRecord.id == PlayerQuestionStateRecord.round_id,
+            )
+            .where(
+                scope,
+                played_rounds,
+                PlayerQuestionStateRecord.accepted_buzz_order.is_not(None),
+            )
+            .group_by(QuestionRoundRecord.question_revision_id)
         ):
             entry = statistics[identity]
-            if entry["buzz_timings"] is None:
-                entry["buzz_timings"] = []
-            entry["buzz_timings"].append(float(delay))
+            entry["buzzes"] = int(buzzes)
+            entry["buzz_samples"] = int(samples)
+            entry["buzz_time_average"] = (
+                round(float(average), 2) if average is not None else None
+            )
+        # Judged answer attempts in play mode: a timeout submitted no answer.
+        for identity, attempts, answered, correct, incorrect in await session.execute(
+            select(
+                QuestionRoundRecord.question_revision_id,
+                func.count(),
+                func.count().filter(AnswerAttemptRecord.timed_out.is_(False)),
+                func.count().filter(AnswerAttemptRecord.final_correct.is_(True)),
+                func.count().filter(AnswerAttemptRecord.final_correct.is_(False)),
+            )
+            .select_from(AnswerAttemptRecord)
+            .join(
+                QuestionRoundRecord,
+                QuestionRoundRecord.id == AnswerAttemptRecord.round_id,
+            )
+            .where(scope, played_rounds)
+            .group_by(QuestionRoundRecord.question_revision_id)
+        ):
+            entry = statistics[identity]
+            entry["attempts"] = int(attempts)
+            entry["answered"] = int(answered)
+            entry["correct"] = int(correct)
+            entry["incorrect"] = int(incorrect)
         return statistics
 
     @staticmethod

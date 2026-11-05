@@ -36,6 +36,8 @@ export function renderTraining(
   let lobby = initial.lobby ?? null;
   // Optimistic overlay while a packet autosave is in flight; the server state below wins.
   let pending: { id: string; name: string } | null = null;
+  // A removal mutation is in flight; selection buttons stay disabled until it lands.
+  let removing = false;
   const selectedId = (): string | null => pending?.id ?? lobby?.version_id ?? null;
   const selectedName = (): string | null => pending?.name ?? lobby?.packet_name ?? null;
   let dirty = false;
@@ -223,20 +225,27 @@ export function renderTraining(
   bestBuzz.checked = saved.best_buzz === true;
 
   // Shared selection summary: chosen packet plus enabled modifier badges.
-  const selectionCards: Array<{ name: HTMLElement; badges: HTMLElement }> = [];
+  const selectionCards: Array<{ name: HTMLElement; badges: HTMLElement; remove: HTMLButtonElement }> = [];
   const buildSelectionCard = (): HTMLElement => {
     const name = element("p", { className: "training-selection-packet" });
     const badges = element("ul", { className: "training-modifier-badges", "aria-label": i18n.t("training.modifiers") });
-    selectionCards.push({ name, badges });
+    // The General (Overview) tab offers removal of the already selected packet.
+    const remove = element("button", { type: "button", className: "secondary-button",
+      onclick: (() => { removePacket(); }) as EventListener }, i18n.t("lobby.packet_remove"));
+    selectionCards.push({ name, badges, remove });
     return element("div", { className: "resource-card training-selection" },
-      element("h3", {}, i18n.t("training.selected_packet")), name, badges);
+      element("h3", {}, i18n.t("training.selected_packet")), name, badges, remove);
   };
   const updateSelection = (): void => {
     const enabled = MODIFIER_KEYS.filter((key) => modifierBox[key].checked);
+    const selected = selectedName();
     for (const card of selectionCards) {
-      card.name.textContent = selectedName() ?? i18n.t("training.select_packet");
+      card.name.textContent = selected ?? i18n.t("training.select_packet");
       replaceChildren(card.badges, ...enabled.map((key) =>
         element("li", { className: "training-modifier-badge" }, i18n.t(modifierLabelKey(key)))));
+      // Removal exists only while a packet is actually selected.
+      card.remove.hidden = selected === null;
+      card.remove.disabled = !lobby || !!state || !!pending || removing;
     }
     syncSave();
   };
@@ -246,13 +255,16 @@ export function renderTraining(
   };
   const syncPacketSelection = (): void => {
     const current = selectedId();
-    const disabled = !lobby || !!state || !!pending;
+    const disabled = !lobby || !!state || !!pending || removing;
     for (const card of list.querySelectorAll<HTMLElement>(".training-packet-card")) {
       const id = card.dataset.packetId ?? "";
       const button = card.querySelector<HTMLButtonElement>("button[data-select]");
       if (button) {
         button.disabled = disabled;
-        button.className = id === current ? "primary-button" : "secondary-button";
+        // The selected card's action removes the selection, like the regular lobby.
+        const selected = id === current;
+        button.className = selected ? "secondary-button" : "primary-button";
+        button.textContent = i18n.t(selected ? "lobby.packet_remove" : "training.select");
       }
       const badge = card.querySelector<HTMLElement>(".lobby-packet-selected");
       if (id === current) {
@@ -260,6 +272,7 @@ export function renderTraining(
           element("span", { className: "lobby-packet-selected" }, i18n.t("lobby.packet_selected")));
       } else badge?.remove();
     }
+    updateSelection();
   };
 
   // Packet selection autosaves immediately through the owner's split mutation
@@ -285,6 +298,35 @@ export function renderTraining(
         else failure(error);
       } finally {
         pending = null;
+        updateSelection();
+        syncPacketSelection();
+      }
+    });
+  };
+
+  // Removing the selection is the lobby-scoped counterpart of the autosaved
+  // selection: remove_packet clears only this lobby's choice, never the packet.
+  const removePacket = (): void => {
+    if (!lobby || state || pending || removing || !selectedId()) return;
+    removing = true;
+    notice.textContent = i18n.t("training.removing");
+    syncPacketSelection();
+    serialize(async () => {
+      if (!lobby) return;
+      try {
+        const result = await post<TrainingResult>("lobby", {
+          command: "remove_packet", expected_version: lobby.version,
+        });
+        if (signal.aborted) return;
+        if (result.lobby) lobby = result.lobby;
+        feedback?.notifySuccess();
+        notice.textContent = i18n.t("training.packet_removed");
+      } catch (error) {
+        feedback?.notifyError();
+        if (error instanceof ApiError && error.code === "stale_write") await reloadLobby();
+        else failure(error);
+      } finally {
+        removing = false;
         updateSelection();
         syncPacketSelection();
       }
@@ -504,10 +546,14 @@ export function renderTraining(
       const dissectedThemes = packet.dissected_theme_count == null || packet.total_theme_count === undefined
         ? "—" : `${packet.dissected_theme_count} / ${packet.total_theme_count}`;
       const select = element("button", { type: "button",
-        className: selectedId() === packet.id ? "primary-button" : "secondary-button",
+        className: selectedId() === packet.id ? "secondary-button" : "primary-button",
         disabled: !lobby || !!state || !!pending,
-        onclick: (() => { selectPacket(packet); }) as EventListener, "data-select": packet.id },
-        i18n.t("training.select"));
+        onclick: (() => {
+          // The selected card's action removes the selection instead of reselecting.
+          if (selectedId() === packet.id) removePacket();
+          else selectPacket(packet);
+        }) as EventListener, "data-select": packet.id },
+        i18n.t(selectedId() === packet.id ? "lobby.packet_remove" : "training.select"));
       const prepare = element("button", { type: "button", className: "secondary-button", onclick: (async () => {
         try {
           const body = { version_id: packet.id, confirm_exposure: false };

@@ -242,6 +242,63 @@ describe("dissection composer", () => {
       .toBe("Selected themes: 0");
   });
 
+  it("selects and deselects all tags while preserving individual changes", async () => {
+    const actionList = themeActions();
+    actionList.loadTags = vi.fn().mockResolvedValue({ items: [
+      { tag_id: "tag-1", name: "history", label: "History", colour: "#2e7d32" },
+      { tag_id: "tag-2", name: "geography", label: "Geography", colour: "#1565c0" },
+    ] });
+    const dialog = await openComposer(actionList);
+    await flush();
+    const toggle = dialog.querySelector<HTMLButtonElement>("[data-dissect-tags-toggle]")!;
+    expect(toggle.hidden).toBe(false);
+    expect(toggle.textContent).toBe("Select all");
+
+    toggle.click();
+    const boxes = [...dialog.querySelectorAll<HTMLInputElement>(".knowledge-tag-option input")];
+    expect(boxes.map((box) => box.checked)).toEqual([true, true]);
+    expect(toggle.textContent).toBe("Deselect all");
+
+    // An individual uncheck is preserved and flips the bulk label back.
+    boxes[0]!.click();
+    expect(boxes.map((box) => box.checked)).toEqual([false, true]);
+    expect(toggle.textContent).toBe("Select all");
+
+    toggle.click();
+    expect(boxes.map((box) => box.checked)).toEqual([true, true]);
+    toggle.click();
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+    expect(toggle.textContent).toBe("Select all");
+  });
+
+  it("submits every tag id after bulk selection", async () => {
+    const dissect = vi.fn().mockResolvedValue({});
+    const actionList = themeActions();
+    actionList.loadTags = vi.fn().mockResolvedValue({ items: [
+      { tag_id: "tag-1", name: "history", label: "History", colour: "#2e7d32" },
+      { tag_id: "tag-2", name: "geography", label: "Geography", colour: "#1565c0" },
+    ] });
+    actionList.dissect = dissect;
+    const dialog = await openComposer(actionList);
+    await flush();
+    dialog.querySelector<HTMLButtonElement>("[data-dissect-tags-toggle]")!.click();
+    [...dialog.querySelectorAll("button")].find((item) => item.textContent === "Themes")!.click();
+    dialog.querySelector<HTMLElement>('[data-theme-id="theme-1"]')
+      ?.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
+    [...dialog.querySelectorAll("button")].find((item) => item.textContent === "General")!.click();
+    [...dialog.querySelectorAll("button")]
+      .find((item) => item.textContent === "Start dissection")!.click();
+    await flush();
+
+    expect(dissect).toHaveBeenCalledWith("packet-1", {
+      instructions: undefined,
+      comment: undefined,
+      theme_revision_ids: ["theme-1"],
+      tag_ids: ["tag-2", "tag-1"],
+      confirm_exposure: false,
+    });
+  });
+
   it("shows the remaining theme quota and its reset time", async () => {
     const actionList = themeActions();
     const dialog = await openComposer(actionList);

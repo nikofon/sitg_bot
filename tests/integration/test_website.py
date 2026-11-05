@@ -7,27 +7,35 @@ from decimal import Decimal
 from urllib.parse import quote
 
 import pytest
-from aiohttp.test_utils import make_mocked_request
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from conftest import create_player
 from test_lobby_architecture import database_url as _database_url
 from test_player_profiles import active_player, build_fixture, record_game
 
 from sitg_bot.application.contracts import ActionCode
 from sitg_bot.application.gateway import ApplicationGateway
 from sitg_bot.miniapp_http import MiniAppHttpServer
+from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.miniapp_auth import (
     MiniAppAuthenticationError,
     MiniAppAuthService,
     MiniAppCsrfError,
 )
 from sitg_bot.services.profiles import PlayerProfileService
+from sitg_bot.services.reliable_delivery import DurableJobQueue
 from sitg_bot.services.tournaments import TournamentService
+from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
+from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
+from sitg_bot.services.training_packets import TrainingPacketService
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     GameRecord,
     GameRulesetVersionRecord,
+    PlatformAdministratorRecord,
     PlayerRecord,
     RulesetRatingRecord,
     TournamentRecord,
+    TrainingPolicyStateRecord,
 )
 
 pytestmark = pytest.mark.integration
@@ -103,6 +111,130 @@ async def test_website_session_survives_restart_and_enforces_csrf_origin_and_log
             await auth.resume_website_session(credentials.session_token, origin=ORIGIN)
     finally:
         await database.close()
+
+
+async def test_ai_admin_authenticated_loopback_reaches_real_gateway_and_policies(database):
+    """Exercise the HTTP/session/gateway/PG bridge without external services."""
+    actor = await create_player(database, 94001, "Bridge administrator")
+    player = await create_player(database, 94002, "Bridge player")
+    async with database.transaction() as session:
+        session.add(PlatformAdministratorRecord(player_id=actor))
+    settings = ProviderSettings("openai", "fixture-model", api_key="synthetic-private-key")
+    provider = FakeAnalysisProvider()
+    analysis = AnalysisService(
+        database, DurableJobQueue(database), provider, settings,
+        source_loader=TrainingAnalysisAccess(database, TrainingPacketService(database)),
+    )
+    knowledge = KnowledgeApplication(database, settings=settings, analysis=analysis)
+    await knowledge.entitlements.ensure_defaults()
+    auth = auth_service(database)
+    admin = await auth.create_website_session(login_data(94001), origin=ORIGIN)
+    ordinary = await auth.create_website_session(login_data(94002), origin=ORIGIN)
+    http = MiniAppHttpServer(
+        auth, ApplicationGateway(database, knowledge=knowledge), website_origins={ORIGIN},
+    )
+    async with TestClient(TestServer(http.application, host="127.0.0.1")) as client:
+        async def request(method, path, credentials=admin, *, body=None, status=200,
+                          key=None, csrf=True, origin=ORIGIN):
+            headers = {
+                "Origin": origin,
+                "Cookie": f"__Host-sitg_session={credentials.session_token}",
+            }
+            if method == "POST":
+                headers["X-Idempotency-Key"] = key or secrets.token_hex(12)
+                if csrf:
+                    headers["X-CSRF-Token"] = credentials.csrf_token
+            async with client.request(method, path, headers=headers, json=body) as response:
+                result = await response.json()
+                # Product response evidence only: never print session/CSRF/ownership secrets.
+                print(json.dumps({"method": method, "path": path, "request": body,
+                                  "status": response.status, "response": result}, sort_keys=True))
+                assert response.status == status, result
+                return result
+
+        base = "/api/miniapp/admin/ai/"
+        initial = await request("GET", base + "settings")
+        assert initial["reset_at"] is None
+        values = {
+            "expected_version": initial["version"],
+            "dissection_enabled": True, "best_buzz_enabled": True,
+            "free": {"dissection": 0, "best_buzz": 3},
+            "premium": {"dissection": None, "best_buzz": 10}, "reset_period": "day",
+        }
+        for method, path, body in (
+            ("GET", "settings", None), ("GET", "provider", None),
+            ("GET", "players?search=Bridge", None),
+            ("POST", "settings", values),
+            ("POST", "tier", {"player_id": str(player), "tier": "premium"}),
+            ("POST", "reset", {"expected_version": initial["version"], "confirm": True}),
+        ):
+            denied = await request(method, base + path, ordinary, body=body, status=403)
+            assert denied["error"]["code"] == "forbidden"
+        assert await request("GET", base + "settings") == initial
+        await request("POST", base + "settings", body=values, csrf=False, status=403)
+        await request("POST", base + "settings", body=values,
+                      origin="https://evil.example.test", status=403)
+        assert await request("GET", base + "settings") == initial
+        saved = await request("POST", base + "settings", body=values)
+        assert saved["version"] == initial["version"] + 1
+        assert saved["free"] == values["free"] and saved["premium"] == values["premium"]
+        assert saved["dissection_enabled"] and saved["best_buzz_enabled"]
+        assert saved["reset_period"] == "day"
+        reset_at = datetime.fromisoformat(saved["reset_at"])
+        assert reset_at.tzinfo == UTC
+        assert (reset_at.hour, reset_at.minute, reset_at.second) == (0, 0, 0)
+        assert 0 < (reset_at - datetime.now(UTC)).total_seconds() <= 86400
+        assert await request("GET", base + "settings") == saved
+        async with database.sessions() as session:
+            state = await session.get(TrainingPolicyStateRecord, 1)
+            assert state.admin_version == saved["version"]
+            assert state.admin_features == {"reset_period": "day"}
+            assert state.free_policy_version and state.premium_policy_version
+
+        expected_player = {"id": str(player), "name": "Bridge player", "tier": "free"}
+        for search in ("Bridge player", str(player)):
+            found = await request("GET", base + "players?search=" + quote(search))
+            assert found["items"] == [expected_player]
+        capabilities_path = "/api/miniapp/training/entitlements"
+        free = (await request("GET", capabilities_path, ordinary))["features"]
+        assert free["dissection"]["limit"] == 0 and not free["dissection"]["allowed"]
+        assert free["best_buzz"]["remaining"] == 3 and free["best_buzz"]["allowed"]
+        for tier in ("premium", "no_ai", "free"):
+            assigned = await request("POST", base + "tier",
+                                     body={"player_id": str(player), "tier": tier})
+            assert assigned == {"id": str(player), "tier": tier}
+            found = await request("GET", base + "players?search=" + str(player))
+            assert found["items"] == [{**expected_player, "tier": tier}]
+            features = (await request("GET", capabilities_path, ordinary))["features"]
+            if tier == "premium":
+                assert features["dissection"]["remaining"] is None
+                assert features["dissection"]["allowed"]
+                assert features["best_buzz"]["remaining"] == 10
+            elif tier == "no_ai":
+                assert all(not item["enabled"] and not item["allowed"]
+                           for item in features.values())
+            else:
+                assert features == free
+
+        reset_body = {"expected_version": saved["version"], "confirm": True}
+        reset = await request("POST", base + "reset", body=reset_body, key="bridge-reset")
+        assert reset["quota_generation"] == saved["quota_generation"] + 1
+        assert reset["version"] == saved["version"] + 1
+        assert reset["reset_at"] == saved["reset_at"]
+        assert await request("POST", base + "reset", body=reset_body, key="bridge-reset") == reset
+        assert await request("GET", base + "settings") == reset
+        async with database.sessions() as session:
+            state = await session.get(TrainingPolicyStateRecord, 1)
+            assert state.quota_generation == reset["quota_generation"]
+            assert state.admin_version == reset["version"]
+        health = await request("GET", base + "provider")
+        assert health == {
+            "provider": "openai", "model": "fixture-model", "configured": True,
+            "state": "unknown", "verified_at": None,
+        }
+        assert settings.api_key not in json.dumps(health)
+        assert not provider.provider_request_ids
+        print("Passive status: zero scripted-provider calls; loopback listener closed on exit.")
 
 
 async def test_player_directory_search_sort_pagination_and_privacy(database_url: str) -> None:

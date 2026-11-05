@@ -8,7 +8,7 @@ atomic and idempotent per request ID.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -24,6 +24,7 @@ from sqlalchemy.orm import aliased
 from sitg_bot.storage.database import Database
 from sitg_bot.storage.models import (
     Base,
+    TrainingAITierRecord,
     TrainingAnalysisRequestRecord,
     TrainingCategoryAssignmentRecord,
     TrainingCategoryRecord,
@@ -39,9 +40,11 @@ FEATURE_BEST_BUZZ = "best_buzz"
 TRAINING_FEATURES = (FEATURE_DISSECTION, FEATURE_COMMON_KNOWLEDGE, FEATURE_BEST_BUZZ)
 
 RESET_NONE = "none"
+RESET_HOURLY = "hourly"
 RESET_DAILY = "daily"
+RESET_WEEKLY = "weekly"
 RESET_MONTHLY = "monthly"
-RESET_PERIODS = (RESET_NONE, RESET_DAILY, RESET_MONTHLY)
+RESET_PERIODS = (RESET_NONE, RESET_HOURLY, RESET_DAILY, RESET_WEEKLY, RESET_MONTHLY)
 
 LEDGER_RESERVE = "reserve"
 LEDGER_SETTLE = "settle"
@@ -85,8 +88,10 @@ class FeaturePolicy:
     in_flight_request_cap: int | None = None
 
     def __post_init__(self) -> None:
-        if self.limit is not None and self.limit < 1:
-            raise ValueError("Feature limit must be at least 1 when bounded")
+        if self.limit is not None and (
+            type(self.limit) is not int or not 0 <= self.limit <= 2147483647
+        ):
+            raise ValueError("Feature limit must be a nonnegative bounded integer or null")
         if self.reset_period not in RESET_PERIODS:
             raise ValueError(f"Unknown reset period {self.reset_period!r}")
         for cap in (self.queued_request_cap, self.in_flight_request_cap):
@@ -132,7 +137,7 @@ def parse_feature_policies(payload: Mapping[str, Any]) -> dict[str, FeaturePolic
     return {feature: FeaturePolicy.from_mapping(payload[feature]) for feature in TRAINING_FEATURES}
 
 
-#: Basic free allowances; provider configuration controls feature availability.
+#: Initial free allowances; administrator policies and provider configuration gate availability.
 DEFAULT_POLICY_PAYLOAD: dict[str, Any] = {
     feature: {
         "enabled": False,
@@ -154,9 +159,17 @@ def period_bounds(reset_period: str, now: datetime) -> tuple[datetime, datetime]
     if reset_period == RESET_NONE:
         return UNBOUNDED_PERIOD_START, UNBOUNDED_PERIOD_END
     moment = now.astimezone(UTC)
-    if reset_period == RESET_DAILY:
+    if reset_period == RESET_HOURLY:
+        start = moment.replace(minute=0, second=0, microsecond=0)
+        return start, start + timedelta(hours=1)
+    if reset_period in (RESET_DAILY, RESET_WEEKLY):
         start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        if reset_period == RESET_WEEKLY:
+            start -= timedelta(days=start.weekday())
+            return start, start + timedelta(days=7)
         return start, start + timedelta(days=1)
+    if reset_period != RESET_MONTHLY:
+        raise ValueError("Unknown reset period")
     start = moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if start.month == 12:
         end = start.replace(year=start.year + 1, month=1)
@@ -314,6 +327,7 @@ class EntitlementService:
         moment = now or datetime.now(UTC)
         async with self.database.transaction() as session:
             policies = await self._effective_policies(session, player_id)
+            generation = await self._quota_generation(session)
             statuses: dict[str, FeatureStatus] = {}
             for feature, policy in policies.items():
                 start, end = period_bounds(policy.reset_period, moment)
@@ -323,6 +337,8 @@ class EntitlementService:
                             TrainingUsagePeriodRecord.player_id == player_id,
                             TrainingUsagePeriodRecord.feature == feature,
                             TrainingUsagePeriodRecord.period_start == start,
+                            TrainingUsagePeriodRecord.period_end == end,
+                            TrainingUsagePeriodRecord.quota_generation == generation,
                         )
                     )
                 ).scalar_one_or_none()
@@ -379,6 +395,8 @@ class EntitlementService:
         period = await self._locked_period(session, player_id, feature, policy, moment)
         existing = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
         if existing is not None:
+            if existing.player_id != player_id or existing.feature != feature:
+                raise ValueError("Reservation identity belongs to another player or feature")
             return Reservation(
                 existing.reservation_id,
                 existing.period_id,
@@ -427,6 +445,8 @@ class EntitlementService:
         reserve_entry = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
         if reserve_entry is None:
             return False
+        if reserve_entry.player_id != player_id or reserve_entry.feature != feature:
+            raise ValueError("Reservation identity belongs to another player or feature")
         period = await session.get(
             TrainingUsagePeriodRecord, reserve_entry.period_id, with_for_update=True
         )
@@ -484,6 +504,8 @@ class EntitlementService:
         reserve_entry = await self._ledger_entry(session, request_id, LEDGER_RESERVE)
         if reserve_entry is None:
             return False
+        if reserve_entry.player_id != player_id or reserve_entry.feature != feature:
+            raise ValueError("Reservation identity belongs to another player or feature")
         period = await session.get(
             TrainingUsagePeriodRecord, reserve_entry.period_id, with_for_update=True
         )
@@ -582,25 +604,49 @@ class EntitlementService:
     async def _effective_policies(
         self, session: AsyncSession, player_id: UUID
     ) -> dict[str, FeaturePolicy]:
-        """Resolve the policies of the player's (or default) category."""
+        """Resolve category policies with manual-tier theme overrides and NO AI denial."""
+        # Shared lock fences new admissions against administrative updates/reset.
+        state = await session.get(TrainingPolicyStateRecord, 1, with_for_update={"read": True})
+        tier = await session.get(TrainingAITierRecord, player_id)
         assignment = await session.get(TrainingCategoryAssignmentRecord, player_id)
         category: TrainingCategoryRecord | None = None
         if assignment is not None:
             category = await session.get(TrainingCategoryRecord, assignment.category_id)
         else:
-            state = await session.get(TrainingPolicyStateRecord, 1)
             if state is not None:
                 category = await session.get(TrainingCategoryRecord, state.default_category_id)
-        if category is None:
-            return parse_feature_policies(DEFAULT_POLICY_PAYLOAD)
-        policy_row = await session.scalar(
-            select(TrainingFeaturePolicyRecord).where(
-                TrainingFeaturePolicyRecord.version == category.policy_version
-            )
+        policies = await self._policies_version(
+            session, category.policy_version if category else None
         )
-        if policy_row is None:
-            return parse_feature_policies(DEFAULT_POLICY_PAYLOAD)
-        return parse_feature_policies(policy_row.features)
+        if tier is not None and tier.tier == "no_ai":
+            return {key: replace(value, enabled=False) for key, value in policies.items()}
+        if state is not None:
+            default = await session.get(TrainingCategoryRecord, state.default_category_id)
+            default_version = default.policy_version if default else None
+            version = (
+                state.premium_policy_version or state.free_policy_version or default_version
+                if tier is not None and tier.tier == "premium"
+                else state.free_policy_version or default_version
+            )
+            overrides = await self._policies_version(session, version)
+            for key in (FEATURE_DISSECTION, FEATURE_BEST_BUZZ):
+                policies[key] = replace(
+                    policies[key], enabled=overrides[key].enabled,
+                    limit=overrides[key].limit, reset_period=overrides[key].reset_period,
+                )
+        return policies
+
+    @staticmethod
+    async def _policies_version(session, version):
+        row = await session.scalar(select(TrainingFeaturePolicyRecord).where(
+            TrainingFeaturePolicyRecord.version == version
+        )) if version is not None else None
+        return parse_feature_policies(row.features if row else DEFAULT_POLICY_PAYLOAD)
+
+    @staticmethod
+    async def _quota_generation(session):
+        state = await session.get(TrainingPolicyStateRecord, 1)
+        return state.quota_generation if state else 0
 
     async def _locked_period(
         self,
@@ -612,6 +658,7 @@ class EntitlementService:
     ) -> TrainingUsagePeriodRecord:
         """Return the current period row, row-locked, creating it if needed."""
         start, end = period_bounds(policy.reset_period, moment)
+        generation = await self._quota_generation(session)
         record = (
             await session.execute(
                 select(TrainingUsagePeriodRecord)
@@ -619,6 +666,8 @@ class EntitlementService:
                     TrainingUsagePeriodRecord.player_id == player_id,
                     TrainingUsagePeriodRecord.feature == feature,
                     TrainingUsagePeriodRecord.period_start == start,
+                    TrainingUsagePeriodRecord.period_end == end,
+                    TrainingUsagePeriodRecord.quota_generation == generation,
                 )
                 .with_for_update()
             )
@@ -633,8 +682,9 @@ class EntitlementService:
                 feature=feature,
                 period_start=start,
                 period_end=end,
+                quota_generation=generation,
             )
-            .on_conflict_do_nothing(index_elements=["player_id", "feature", "period_start"])
+            .on_conflict_do_nothing(constraint="uq_training_usage_periods_scope")
         )
         record = (
             await session.execute(
@@ -643,6 +693,8 @@ class EntitlementService:
                     TrainingUsagePeriodRecord.player_id == player_id,
                     TrainingUsagePeriodRecord.feature == feature,
                     TrainingUsagePeriodRecord.period_start == start,
+                    TrainingUsagePeriodRecord.period_end == end,
+                    TrainingUsagePeriodRecord.quota_generation == generation,
                 )
                 .with_for_update()
             )

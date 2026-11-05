@@ -750,15 +750,18 @@ export interface TrainingHistoryListResource {
 }
 
 export interface TrainingHistoryQuestionStats {
+  /** Play-mode presentations of this question revision in competitive games. */
   presentations: number;
-  /** Unknown for legacy runs that did not record accepted buzzes. */
+  /** Accepted play-mode buzzes; null when statistics are withheld (protected). */
   buzzes: number | null;
   attempts: number;
   answered: number;
   correct: number;
   incorrect: number;
-  /** null means timings were never recorded (legacy runs); never fabricated. */
-  buzz_timings: number[] | null;
+  /** Average play-mode opening-to-buzz delay in seconds; null with no usable
+   *  play-mode samples (never training totals). */
+  buzz_time_average: number | null;
+  buzz_samples: number;
 }
 
 export interface TrainingHistoryBuzz {
@@ -1010,7 +1013,8 @@ export type AdminSection =
   | "players"
   | "packets"
   | "link_requests"
-  | "ongoing_games";
+  | "ongoing_games"
+  | "ai";
 export type AdminValue = string | number | boolean | null | AdminValue[] | { [key: string]: AdminValue };
 export interface AdminCard {
   id: string;
@@ -1022,6 +1026,46 @@ export interface AdminManagementResource {
   section: AdminSection;
   items: AdminCard[];
   packets_deferred?: boolean;
+}
+
+export type AiAdminTier = "free" | "premium" | "no_ai";
+export type AiAdminResetPeriod = "hour" | "day" | "week";
+export type AiAdminQuota = number | null;
+
+export interface AiAdminSettings {
+  version: number;
+  dissection_enabled: boolean;
+  best_buzz_enabled: boolean;
+  free: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
+  premium: { dissection: AiAdminQuota; best_buzz: AiAdminQuota };
+  reset_period: AiAdminResetPeriod;
+  reset_at: string | null;
+  quota_generation: number;
+}
+
+export type AiAdminProviderState =
+  | "unconfigured"
+  | "unknown"
+  | "responding"
+  | "stale";
+
+export interface AiAdminProvider {
+  provider: "openai" | "charm";
+  model: string;
+  configured: boolean;
+  state: AiAdminProviderState;
+  verified_at: string | null;
+}
+
+export interface AiAdminPlayer {
+  id: string;
+  name: string;
+  tier: AiAdminTier;
+}
+
+export interface AiAdminPlayers {
+  items: AiAdminPlayer[];
+  limit: number;
 }
 
 export interface AdminSuspicionInspectionPayload {

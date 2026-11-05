@@ -11,6 +11,7 @@ from training_delivery_support import RUN, deliver, delivery_case
 from sitg_bot.bot.handlers.navigation import router as navigation_router
 from sitg_bot.bot.handlers.training import router as training_router
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.keyboards.common import training_game_keyboard
 
 
 @pytest.mark.parametrize("locale", ["en", "ru"])
@@ -52,11 +53,28 @@ async def test_recovery_preserves_phase_owned_training_controls(monkeypatch, loc
     )
     assert current_keyboard == original_keyboard
     labels = [button.text for row in current_keyboard.keyboard for button in row]
-    assert (loc.text("button.yes", locale) in labels) is voting
-    assert (loc.text("button.no", locale) in labels) is voting
+    assert labels == ["+", "||", "!"]
     count_before = len(case.sends)
     await deliver(case)
     assert len(case.sends) == count_before
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("voting", [True, False])
+async def test_play_keyboard_is_exactly_three_buttons_including_during_ballot(locale, voting):
+    case = delivery_case(locale=locale, phase="revealed", status="paused" if voting
+                         else "active", voting=voting)
+    loc = LocalizationService()
+    await deliver(case)
+    controls = [entry for entry in case.sends if entry[2] is not None][-1]
+    markup = controls[2]
+    labels = [button.text for row in markup.keyboard for button in row]
+    if voting:
+        assert controls[1] == loc.text("training.appeal_voting", locale)
+    else:
+        assert controls[1] == loc.text("training.controls", locale)
+    assert labels == ["+", "||", "!"]
+    assert training_game_keyboard(loc, locale).rows == (("+",), ("||", "!"))
 
 
 @pytest.mark.parametrize("voting", [True, False])
@@ -67,6 +85,6 @@ async def test_forced_delivery_reinstalls_controls_after_external_keyboard_repla
     await deliver(case, force=True)
     assert len(case.sends) == before + 1
     labels = [button.text for row in case.sends[-1][2].keyboard for button in row]
-    assert ("Yes" in labels) is voting
+    assert labels == ["+", "||", "!"]
     await deliver(case)
     assert len(case.sends) == before + 1

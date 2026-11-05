@@ -11,7 +11,10 @@ from sitg_bot.application.protocol import (
     TerminalDeliveryError,
 )
 from sitg_bot.bot.game_delivery import GameDelivery, cleanup_messages
-from sitg_bot.bot.keyboards.common import TRAINING_MENU_ACTIONS, training_game_keyboard
+from sitg_bot.bot.keyboards.common import (
+    TRAINING_MENU_ACTIONS,
+    training_game_keyboard,
+)
 from sitg_bot.bot.library_delivery import library_document_delivery_handler
 from sitg_bot.bot.presenters.models import (
     InlineButtonModel,
@@ -139,10 +142,11 @@ class TrainingDelivery(GameDelivery):
     async def _send(self, chat, game, messages, key, model, **kwargs):
         state = self.states[game]["session"]
         if state and isinstance(model.keyboard, ReplyKeyboardModel):
-            keyboard = (training_game_keyboard(
-                self.localization, self.states[game]["locale"],
-                voting=state.get("appeal_status") == "voting",
-            ) if state["status"] in {"active", "paused"} else None)
+            keyboard = (
+                training_game_keyboard(self.localization, self.states[game]["locale"])
+                if state["status"] in {"active", "paused"}
+                else None
+            )
             model = MessageModel(model.text, keyboard)
         return await super()._send(chat, game, messages, key, model, **kwargs)
 
@@ -227,9 +231,13 @@ class TrainingDelivery(GameDelivery):
                             await self._send(chat, game, messages,
                                 f"controls:{question['version']}:{controls}:{len(messages)}",
                                 MessageModel(
-                                    self.localization.text("training.controls", state["locale"]),
-                                    training_game_keyboard(self.localization, state["locale"],
-                                                           voting=controls == "vote"),
+                                    self.localization.text(
+                                        "training.appeal_voting"
+                                        if controls == "vote"
+                                        else "training.controls",
+                                        state["locale"],
+                                    ),
+                                    training_game_keyboard(self.localization, state["locale"]),
                                 ))
                             await self.protocol.request("telegram.training.record", **identifiers,
                                                         presentation={"controls": controls})

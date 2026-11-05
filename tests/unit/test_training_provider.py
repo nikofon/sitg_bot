@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestServer
 from pydantic import ValidationError
 
 from sitg_bot.domain.game_settings import announcement_tokens
+from sitg_bot.services.ai_administration import AIAdministrationService
 from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.training_ai import (
     PROVIDER_CALL_METADATA,
@@ -94,6 +95,21 @@ def mock_provider(monkeypatch, output, *, provider_name, status="completed", chu
     return analysis_provider_from_settings(
         ProviderSettings(provider_name, "configured-model", api_key="test-secret")
     ), calls
+
+
+def test_admin_health_projection_has_honest_unknown_stale_and_unconfigured_states():
+    service = AIAdministrationService(None, settings=ProviderSettings(
+        "openai", "fixture-model", api_key="fixture-private",
+    ))
+    now = datetime.now(UTC)
+    assert service._health_projection(now)["state"] == "unknown"
+    assert service._health_projection(now, now)["state"] == "responding"
+    assert service._health_projection(now, now - timedelta(minutes=6))["state"] == "stale"
+    result = service._health_projection(now, now - timedelta(minutes=5))
+    assert result["state"] == "stale"
+    assert "fixture-private" not in str(result)
+    service.settings = ProviderSettings("openai", "unconfigured")
+    assert service._health_projection(now)["state"] == "unconfigured"
 
 
 async def test_provider_uses_strict_private_structured_requests(provider, provider_name):

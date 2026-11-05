@@ -20,13 +20,16 @@ See [database operations](database-operations.md#schema-baseline) for migrations
   [training](training.md); analysis cache isolation and provider setup belong in
   [Training AI](training-ai.md). Instructions/comments remain verbatim, including
   whitespace and ambiguous dates such as “before 1500 A.C.”.
-- The basic free plan allows 24 themes for dissection and a separate 24 themes for
-  Best buzz per trainee per day; Common knowledge remains 50 estimates per day.
+- Initial free policy defaults are 24 themes for dissection and a separate 24 themes for
+  Best buzz per trainee per day; Common knowledge defaults to 50 estimates per day.
+  These are not fixed plan guarantees: effective tier allowances and administrator overrides
+  follow [AI administration](training-ai.md#administrator-ai-functionality).
   Packet requests reserve their distinct theme count, settle that count on success,
   and refund it on failure/cancellation. Over-budget packets are rejected atomically.
-  Reset: midnight UTC. Cache hits are free, with feature authorization still
-  enforced. Each feature allows 3 queued requests and 2 concurrent computations;
-  coalesced waiters count as one computation. Custom categories are preserved;
+  The initial reset is midnight UTC, with free cache hits and feature authorization still
+  enforced. Category cache charging and request caps remain configurable; initial caps are
+  3 queued requests and 2 concurrent computations per feature. Coalesced waiters count as
+  one computation. Custom category assignments are preserved;
   former free defaults migrate to 24 themes. Recorded usage is not repriced.
 - Common knowledge is an LLM estimate for adults in the relevant language
   community, rather than quiz specialists. Packet language takes precedence;
@@ -208,8 +211,10 @@ search plus a dedicated case-insensitive `author` substring filter, additive tag
 sorting, pagination, and permanent copy sharing. Fact cards never display the internal
 source-packet provenance (privacy on imported libraries); the description renders as
 regular text. Dissection launches from a packet card into a closable General/Themes
-composer window: General carries the selected-theme counter, commentary, auto-assign
-tag selection (tag ids) and the start action; Themes lists collapsed theme rows whose
+composer window: General carries the selected-theme counter, separate Instructions and
+Commentary fields, auto-assign tag selection (tag ids) with select/deselect all, and the
+start action. The tag toggle is hidden when no tags are available and leaves both text
+fields and theme selection unchanged. Themes lists collapsed theme rows whose
 checkboxes are independent of expansion, with select/deselect all, the remaining theme
 quota and reset time, and full theme reveal only through the exposure-confirmed
 `theme_preview` mutation. Started dissections are durable: closing the window never

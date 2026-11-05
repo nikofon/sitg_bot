@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from sqlalchemy import column
 
 from sitg_bot.services.training_history import (
     TrainingHistoryService,
@@ -106,15 +105,25 @@ def test_cursor_preserves_owner_and_session_filter_identity():
         _decode_cursor(encoded, "owner:another-session")
 
 
-async def test_timing_statistics_projects_recorded_values():
-    timing = {name: column(f"training_questions.{name}") for name in (
-        "opened_at", "buzzed_at", "buzz_delay_seconds",
-    )}
+async def test_play_mode_statistics_project_recorded_values():
     session = SimpleNamespace(execute=AsyncMock(side_effect=[
-        [(REVISION, 2, 1, 1, 0)], [(REVISION, 2, 1)], [(REVISION, Decimal("1.5"))],
+        [(REVISION, 3)],
+        [(REVISION, 2, 1, Decimal("4.25"))],
+        [(REVISION, 2, 1, 1, 0)],
     ]))
-    stats = await TrainingHistoryService._question_statistics(
-        session, [REVISION], timing
-    )
-    assert stats[REVISION]["buzzes"] == 1
-    assert stats[REVISION]["buzz_timings"] == [1.5]
+    stats = await TrainingHistoryService._question_statistics(session, [REVISION])
+    assert stats[REVISION] == {
+        "presentations": 3, "buzzes": 2, "attempts": 2, "answered": 1,
+        "correct": 1, "incorrect": 0, "buzz_time_average": 4.25, "buzz_samples": 1,
+    }
+
+
+async def test_play_mode_statistics_without_samples_never_fall_back_to_training():
+    # No competitive rows at all: every metric stays empty/unavailable rather
+    # than silently aggregating this player's training records.
+    session = SimpleNamespace(execute=AsyncMock(side_effect=[[], [], []]))
+    stats = await TrainingHistoryService._question_statistics(session, [REVISION])
+    assert stats[REVISION] == {
+        "presentations": 0, "buzzes": 0, "attempts": 0, "answered": 0,
+        "correct": 0, "incorrect": 0, "buzz_time_average": None, "buzz_samples": 0,
+    }

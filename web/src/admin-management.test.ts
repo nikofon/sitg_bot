@@ -182,3 +182,66 @@ describe("management shell", () => {
     await vi.waitFor(() => expect(document.querySelector("dialog")).toBeNull());
   });
 });
+
+describe("management shell AI functionality section", () => {
+  let shell: MiniAppShell;
+  afterEach(() => { shell?.stop(); document.body.replaceChildren(); sessionStorage.clear(); vi.restoreAllMocks(); });
+
+  function startAi(allowed: boolean, fetcher: typeof fetch): { root: HTMLElement; resolvePath: () => string } {
+    window.history.replaceState({}, "", "/admin/management?section=ai");
+    const platform: MiniAppPlatform = {
+      initData: "signed", isTelegram: true, initialize: vi.fn(), destroy: vi.fn(),
+      setBackHandler: vi.fn(), setMainAction: vi.fn(), notifySuccess: vi.fn(),
+      notifyError: vi.fn(), returnToBot: vi.fn(),
+    };
+    let resolvePath = "";
+    const root = document.createElement("div"); document.body.append(root);
+    const api = new ApiClient(platform.initData, vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en" });
+      if (String(url).includes("/routes/resolve")) {
+        resolvePath = String(url);
+        return response({ locale: "en", authorization: { allowed },
+          resource: { kind: "admin_management", state: "ready", section: "ai", items: [] } });
+      }
+      return fetcher(url, options);
+    }));
+    shell = new MiniAppShell(root, api, new Router(), platform, false); shell.start();
+    return { root, resolvePath: () => resolvePath };
+  }
+
+  it("renders the AI tab from the resolved section and reads the AI administration API", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      const path = new URL(String(url), "https://app.local").pathname;
+      if (path === "/api/miniapp/admin/ai/settings") return response({
+        version: 5, dissection_enabled: false, best_buzz_enabled: true,
+        free: { dissection: 0, best_buzz: null }, premium: { dissection: 24, best_buzz: null },
+        reset_period: "day", reset_at: "2026-05-04T00:00:00Z", quota_generation: 3,
+      });
+      if (path === "/api/miniapp/admin/ai/provider") return response({
+        provider: "openai", model: "gpt-test", configured: true, state: "responding",
+        verified_at: "2026-05-03T12:00:00Z",
+      });
+      throw new Error(`Unexpected ${url}`);
+    });
+    const view = startAi(true, fetcher);
+    await vi.waitFor(() => expect(view.root.textContent).toContain("Player AI access"));
+    // The existing management route resolves the AI section like every other tab.
+    expect(view.resolvePath()).toContain(encodeURIComponent("/admin/management?section=ai"));
+    const tab = [...view.root.querySelectorAll("nav button")]
+      .find((button) => button.textContent === "AI functionality")!;
+    expect(tab.getAttribute("aria-current")).toBe("page");
+    expect(view.root.textContent).toContain("Quota generation: 3");
+    expect(view.root.textContent).toContain("Responding");
+    const aiPaths = fetcher.mock.calls.map(([url]) => new URL(String(url), "https://app.local").pathname);
+    expect(aiPaths).toEqual(["/api/miniapp/admin/ai/settings", "/api/miniapp/admin/ai/provider"]);
+  });
+
+  it("denies the AI tab to unauthorized administrators without touching the AI API", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      throw new Error(`Unexpected ${url}`);
+    });
+    const view = startAi(false, fetcher);
+    await vi.waitFor(() => expect(view.root.textContent).toContain("no longer have access"));
+    expect(view.root.textContent).not.toContain("Player AI access");
+  });
+});
