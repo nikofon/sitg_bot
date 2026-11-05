@@ -2082,6 +2082,54 @@ p {
   margin: 0;
 }
 
+/* Flashcard practice: concealed prompt, revealed fact, progress line. */
+.knowledge-practice-progress {
+  margin: 0;
+  color: var(--tg-theme-hint-color);
+  font-variant-numeric: tabular-nums;
+}
+
+.knowledge-practice-card,
+.knowledge-practice-revealed {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-practice-prompt {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  width: 100%;
+  min-height: 7rem;
+  padding: 1.1rem 1rem;
+  border: 1px dashed color-mix(in srgb, var(--tg-theme-hint-color) 45%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--tg-theme-section-bg-color) 92%, var(--tg-theme-bg-color));
+  color: var(--tg-theme-text-color);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.knowledge-practice-prompt-text {
+  font-size: 1.05rem;
+  font-weight: 700;
+  white-space: pre-line;
+}
+
+.knowledge-practice-reveal-hint {
+  color: var(--tg-theme-hint-color);
+  font-size: 0.85rem;
+}
+
+.knowledge-practice-revealed .knowledge-fact-title {
+  padding: 0.9rem 1rem 0;
+}
+
+.knowledge-practice-done {
+  margin: 0;
+}
+
 .knowledge-total {
   margin: 0;
   color: var(--tg-theme-hint-color);
