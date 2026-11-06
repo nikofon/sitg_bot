@@ -180,6 +180,7 @@ export interface KnowledgeDissection {
 }
 
 export interface KnowledgeViewData {
+  player_id?: string | null;
   facts: KnowledgeFactsResource;
   sharing: KnowledgeSharing;
   dissection: KnowledgeDissection;
@@ -414,6 +415,12 @@ export const knowledgeMessageKeys = [
   "knowledge.practice.side.title",
   "knowledge.practice.side.description",
   "knowledge.practice.scope_hint",
+  "knowledge.practice.tags",
+  "knowledge.practice.tags_hint",
+  "knowledge.practice.tags_invalid",
+  "knowledge.practice.tags_load_failed",
+  "knowledge.practice.tags_removed",
+  "knowledge.practice.quick_restart",
   "knowledge.practice.start",
   "knowledge.practice.loading",
   "knowledge.practice.progress",
@@ -1287,9 +1294,11 @@ export function renderKnowledge(
     state.tagPoolReady = actions.loadTags().then((pool) => {
       if (actions.signal?.aborted) return;
       state.tagPool = new Map(pool.items.map((tag) => [tag.name, tag]));
+      state.tagPoolFailed = false;
       refreshTagFilterOptions();
       applyTagOutlines();
     }).catch((error: unknown) => {
+      state.tagPoolFailed = true;
       if (propagateError) throw error;
       reportError(i18n.t("knowledge.error"));
     });
@@ -1500,6 +1509,8 @@ export function renderKnowledge(
       openPracticeDialog({
         i18n,
         actions,
+        tagPalette: state,
+        playerId: data.player_id,
         scope: {
           ...(search ? { search } : {}),
           ...(authorSearch ? { author: authorSearch } : {}),

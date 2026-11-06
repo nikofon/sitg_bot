@@ -578,6 +578,10 @@ class MiniAppHttpServer:
                     "resource": {
                         "kind": "knowledge",
                         "state": "ready",
+                        "player_id": (
+                            str(session.principal.player_id)
+                            if session.principal.player_id is not None else None
+                        ),
                         "facts": result.data,
                         "sharing": sharing.data,
                         "dissection": {

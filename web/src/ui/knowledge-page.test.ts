@@ -3,6 +3,7 @@ import { ApiClient } from "../api/client";
 import { I18n } from "../i18n";
 import { renderKnowledgePage } from "./knowledge-page";
 import type { KnowledgeImportCard, KnowledgeViewData, ShareLink } from "./knowledge";
+import { PracticeSettingsStore } from "./knowledge-practice";
 
 const initial: KnowledgeViewData = {
   facts: { state: "empty", items: [], total: 0, next_cursor: null, order: "title_asc" },
@@ -21,7 +22,7 @@ const reply = (data: unknown, status = 200): Response => new Response(JSON.strin
 const button = (name: string): HTMLButtonElement => [...document.querySelectorAll("button")]
   .find((item) => item.textContent === name)!;
 
-function setup(overrides: Record<string, unknown> = {}) {
+function setup(overrides: Record<string, unknown> = {}, playerId?: string) {
   const controller = new AbortController();
   let links: ShareLink[] = [];
   const fetcher = vi.fn<typeof fetch>(async (url, options) => {
@@ -47,19 +48,46 @@ function setup(overrides: Record<string, unknown> = {}) {
     });
     throw new Error(`Unexpected ${options?.method ?? "GET"} ${url}`);
   });
-  const root = renderKnowledgePage(structuredClone(initial),
+  const root = renderKnowledgePage({ ...structuredClone(initial), player_id: playerId },
     new ApiClient("signed-init-data", fetcher), new I18n("en"), controller.signal);
   document.body.append(root);
   return { root, fetcher, controller };
 }
 
 afterEach(() => {
+  window.localStorage.clear();
   document.body.replaceChildren();
   window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
 });
 
 describe("Knowledge page direct HTTP payload contract", () => {
+  it("uses the route's authenticated player to restore practice tags in HTTP queries", async () => {
+    new PracticeSettingsStore(undefined, "player-a")
+      .write({ count: 1, side: "title", tags: ["private-a"] });
+    new PracticeSettingsStore(undefined, "player-b")
+      .write({ count: 1, side: "title", tags: ["private-b"] });
+    for (const playerId of ["player-a", "player-b"]) {
+      const { root, fetcher, controller } = setup({}, playerId);
+      try {
+        button("Flashcard practice").click();
+        const dialog = document.querySelector<HTMLDialogElement>("dialog.knowledge-dialog")!;
+        const privateTag = playerId === "player-a" ? "private-a" : "private-b";
+        expect(dialog.querySelector<HTMLInputElement>(`input[value="${privateTag}"]`)!.checked).toBe(true);
+        dialog.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await vi.waitFor(() => expect(fetcher.mock.calls.some(([url]) =>
+          String(url).includes("/knowledge/facts?"))).toBe(true));
+        const request = fetcher.mock.calls.find(([url]) => String(url).includes("/knowledge/facts?"))!;
+        expect(new URL(String(request[0]), window.location.origin).searchParams.getAll("tags"))
+          .toEqual([privateTag]);
+        dialog.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click();
+      } finally {
+        controller.abort();
+        root.remove();
+      }
+    }
+  });
+
   it("forwards import cursors through authenticated requests and opens older reviews", async () => {
     const newest: KnowledgeImportCard = {
       id: "newest", type: "collection", author: "Sender", status: "approved", fact_count: 0,
