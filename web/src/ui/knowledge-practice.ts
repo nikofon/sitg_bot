@@ -15,11 +15,8 @@ import {
 import type { KnowledgeState } from "./knowledge-shared";
 
 /**
- * Flashcard practice over the saved Knowledge library: a settings window
- * (persisted device-locally), then a run of N randomly selected distinct
- * facts shown one at a time. Each card starts concealed on the chosen side
- * (name or description); activating it reveals the complete fact through
- * the normal detail contract and renderer, without editing controls.
+ * Flashcard practice over the saved Knowledge library.
+ * User flow and persistence: docs/training-knowledge-integration.md, Adapters.
  */
 
 /** Which fact side is shown concealed before the reveal. */
@@ -58,9 +55,8 @@ export function isValidPracticeCount(value: unknown): value is number {
 }
 
 /**
- * Stored tag names kept as-is when valid: trimmed non-empty strings, de-
- * duplicated, unknown entries preserved (a removed tag must not silently
- * widen the intended filter). Anything else falls back to no selection.
+ * Unknown tag names must survive restoration: dropping a removed tag would
+ * silently widen the intended filter.
  */
 export function sanitizePracticeTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
