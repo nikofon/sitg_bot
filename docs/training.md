@@ -69,6 +69,11 @@ session. A durable lobby status message shows the selected packet and localized 
 modifiers; packet/settings saves update that message through the transactional outbox.
 Reopening the menu recovers the same status instead of posting another copy.
 
+A successful Telegram Start leaves the opening message to the durable event consumer,
+without also invoking menu recovery. It sends one controls announcement; outbox retries
+reuse its recorded message identity. Explicit menu recovery can still reinstall a displaced
+reply keyboard without replaying the opening lifecycle.
+
 Starting follows the regular SI lifecycle automatically: countdown, theme list,
 numbered theme and optional commentary, question value, incremental question text,
 answer/commentary/author, theme completion and scores, then final training score.
@@ -140,8 +145,12 @@ answers and accepted-buzz answer timeouts subtract it. No-buzz timeouts, reveal 
 skip are neutral. An answer in progress must be submitted or time out before reveal/skip.
 A submitted answer on the current revealed question can be appealed once with `!`.
 The solo trainee explicitly votes Yes/No within 60 seconds, as a one-player
-electorate; the localized prompt asks for a literal Yes/No text message. The
-reply keyboard stays exactly `+`, `||` and `!` throughout active and paused training.
+electorate, using localized inline buttons appended to the appeal prompt. The
+reply keyboard stays exactly `+`, `||` and `!` throughout active and paused training;
+Yes/No are never extra reply-keyboard rows. Legacy localized text votes remain accepted.
+Inline votes require the owning trainee, current session/action version, pinned question
+and recorded ballot message. Resolved/expired ballot buttons are removed through durable
+message edits; stale or repeated callbacks cannot vote on a later answer or appeal.
 Acceptance flips the verdict and corrects the training score; rejection/expiry leaves
 it unchanged. The prior pause state is restored. Neither attempts nor appeals write
 competitive scores, ratings, suspicion, player statistics or author totals. These

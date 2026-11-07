@@ -981,6 +981,15 @@ class TrainingService:
                 if entry.get("kind") == "question" and entry.get("round_id") == str(revision.id)
                 for mid in entry.get("ids", [])
             ] or presentation.get("ids", []),
+            # A ballot is bound to this session's action version and pinned question.
+            # Only receipts for that exact ballot may authorize an inline vote.
+            "appeal_message_ids": [
+                mid for entry in presentation.get("messages", {}).values()
+                if entry.get("kind") == "training_ballot"
+                and entry.get("version") == record.version
+                and entry.get("round_id") == str(revision.id)
+                for mid in entry.get("ids", [])
+            ],
             "version": record.version,
             "status": record.status,
             "presentation_version": record.presentation_version,
