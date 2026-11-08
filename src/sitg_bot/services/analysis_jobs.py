@@ -841,12 +841,16 @@ class AnalysisService:
                         key: text_fingerprint(question.text)
                         for key, question in chunk_questions_by_id.items()
                     },
+                    question_texts={key: question.text
+                                    for key, question in chunk_questions_by_id.items()},
                 )
                 partial.extend(
                     {
                         "question_revision_id": str(boundary.question_revision_id),
                         "text_digest": boundary.text_digest,
                         "token_index": boundary.token_index,
+                        **({"source_end": boundary.source_end}
+                           if boundary.source_end is not None else {}),
                     }
                     for boundary in result
                 )
@@ -926,6 +930,7 @@ class AnalysisService:
                     UUID(item["question_revision_id"]),
                     item["text_digest"],
                     item["token_index"],
+                    item.get("source_end"),
                 )
                 for item in partial
             )
@@ -941,7 +946,9 @@ class AnalysisService:
                 for question in questions
             }
             validated_boundaries = validate_buzz_boundaries(
-                boundaries, token_counts=token_counts, text_digests=text_digests
+                boundaries, token_counts=token_counts, text_digests=text_digests,
+                question_texts={question.question_revision_id: question.text
+                                for question in questions},
             )
             payload = {
                 "boundaries": [
@@ -950,6 +957,8 @@ class AnalysisService:
                         "text_digest": boundary.text_digest,
                         "token_index": boundary.token_index,
                         "token_count": token_counts[boundary.question_revision_id],
+                        **({"source_end": boundary.source_end}
+                           if boundary.source_end is not None else {}),
                     }
                     for boundary in validated_boundaries
                 ],

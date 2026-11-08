@@ -325,10 +325,6 @@ class TrainingService:
             query = select(TrainingSessionRecord.id).where(
                 TrainingSessionRecord.owner_id == player_id,
             )
-            if not score_only:
-                query = query.where(
-                    TrainingSessionRecord.status.in_(("active", "paused", "completed")),
-                )
             identifier = await session.scalar(query.order_by(
                 TrainingSessionRecord.created_at.desc(), TrainingSessionRecord.id.desc(),
             ).limit(1))
@@ -481,13 +477,18 @@ class TrainingService:
                     )
                 elif command == "continue" and record.phase == "best_buzz":
                     record.best_buzz_consumed = True
-                    if record.token_cursor == len(settings.tokens(revision.text)):
+                    tokens = settings.question_tokens(
+                        revision.text, revision_id=revision.id, analysis=question.best_buzz,
+                    )
+                    if settings.token_delay == 0:
+                        record.token_cursor = len(tokens)
+                    if record.token_cursor == len(tokens):
                         record.phase = "waiting"
                         record.deadline = now + timedelta(seconds=settings.buzz_timeout)
                     else:
                         record.phase = "reading"
                         record.deadline = now + timedelta(seconds=settings.token_delay)
-                    await self._reading_event(session, record, revision)
+                    await self._reading_event(session, record, question, revision)
                 elif command == "next" and record.phase == "revealed":
                     question_data = await self._progress(session, record, now)
                 else:
@@ -588,16 +589,19 @@ class TrainingService:
         question, revision, _ = question_data
         question.opened_at, question.paused_seconds = now, 0
         settings = TrainingSettings.from_mapping(record.settings)
+        tokens = settings.question_tokens(
+            revision.text, revision_id=revision.id, analysis=question.best_buzz,
+        )
         record.best_buzz_consumed = False
         record.text_hidden = False
         record.hidden_deadline = None
         if settings.hidden_after is not None:
-            record.phase, record.token_cursor = "waiting", len(settings.tokens(revision.text))
+            record.phase, record.token_cursor = "waiting", len(tokens)
             record.hidden_deadline = now + timedelta(seconds=settings.hidden_after)
             record.deadline = now + timedelta(seconds=settings.buzz_timeout)
         else:
             record.phase = "reading"
-            record.token_cursor = min(1, len(settings.tokens(revision.text)))
+            record.token_cursor = len(tokens) if settings.token_delay == 0 else min(1, len(tokens))
             record.deadline = now + timedelta(seconds=settings.token_delay)
             if settings.best_buzz:
                 boundary = best_buzz_cursor(
@@ -607,10 +611,10 @@ class TrainingService:
                 if boundary <= record.token_cursor:
                     record.token_cursor, record.phase, record.deadline = boundary, "best_buzz", None
             if (record.phase == "reading"
-                and record.token_cursor == len(settings.tokens(revision.text))):
+                and record.token_cursor == len(tokens)):
                 record.phase = "waiting"
                 record.deadline = now + timedelta(seconds=settings.buzz_timeout)
-        await self._reading_event(session, record, revision)
+        await self._reading_event(session, record, question, revision)
         return question_data
 
     async def _advance(self, session, record, now, *, question_data=None):
@@ -657,7 +661,9 @@ class TrainingService:
             question, revision, _ = question_data
             settings = TrainingSettings.from_mapping(record.settings)
             if record.phase == "reading":
-                tokens = settings.tokens(revision.text)
+                tokens = settings.question_tokens(
+                    revision.text, revision_id=revision.id, analysis=question.best_buzz,
+                )
                 # Regular SI advances one frame per persisted deadline. A delayed
                 # worker must not consume the unseen question and buzz window.
                 cursor = min(len(tokens), record.token_cursor + 1)
@@ -680,7 +686,7 @@ class TrainingService:
                         record.deadline = now + timedelta(seconds=settings.buzz_timeout)
                     else:
                         record.deadline = now + timedelta(seconds=settings.token_delay)
-                await self._reading_event(session, record, revision)
+                await self._reading_event(session, record, question, revision)
                 changed = True
             if (
                 record.deadline
@@ -753,9 +759,11 @@ class TrainingService:
             parameters={"round_id": str(revision.id), "theme": theme, **parameters},
         ))
 
-    async def _reading_event(self, session, record, revision):
+    async def _reading_event(self, session, record, question, revision):
         settings = TrainingSettings.from_mapping(record.settings)
-        tokens = settings.tokens(revision.text)
+        tokens = settings.question_tokens(
+            revision.text, revision_id=revision.id, analysis=question.best_buzz,
+        )
         await self._event(session, record, "question_token_revealed", {
             "text": " ".join(tokens[:record.token_cursor]),
             "revealed_token_count": record.token_cursor, "total_token_count": len(tokens),
@@ -880,7 +888,7 @@ class TrainingService:
                 "author": await self._authors(session, record, revision),
             })
         else:
-            await self._reading_event(session, record, revision)
+            await self._reading_event(session, record, question, revision)
             if record.phase == "answering":
                 await self._event(session, record, "player_buzzed", {
                     "mine": True, "form": revision.form,
@@ -955,7 +963,9 @@ class TrainingService:
             record.text_hidden
             or record.hidden_deadline is not None and record.hidden_deadline <= now
         )
-        tokens = settings.tokens(revision.text)
+        tokens = settings.question_tokens(
+            revision.text, revision_id=revision.id, analysis=question.best_buzz,
+        )
         text = "" if hidden or record.phase == "intermission" else " ".join(
             tokens if revealed else tokens[: record.token_cursor]
         )

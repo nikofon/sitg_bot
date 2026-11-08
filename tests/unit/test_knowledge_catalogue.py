@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
@@ -41,29 +40,6 @@ async def test_colours_validate_normalize_preserve_and_enforce_owner():
         with pytest.raises(ValueError, match="RGB"):
             await service.create_tag(OWNER, "invalid", colour)
     assert (await service.create_tag(OWNER, "default")).colour == "#64748b"
-
-
-async def test_hash_dedup_across_senders_preserves_edits_deletion_and_recipient_independence():
-    service = KnowledgeService(InMemoryKnowledgeStore())
-    await service.create_tag(OWNER, "history", "#112233")
-    for sender in (OWNER, OWNER, OTHER):
-        await service.create_fact(
-            sender, title="Same", description="Canonical", tag_names=["history"]
-        )
-    results = await asyncio.gather(
-        service.grant_collection_access(OWNER, RECIPIENT),
-        service.grant_collection_access(OTHER, RECIPIENT),
-    )
-    assert sum(result.copied_count for result in results) == 1
-    copied = (await service.list_facts(RECIPIENT)).items[0].fact_id
-    assert (await service.fact_detail(RECIPIENT, copied)).tags[0].colour == "#112233"
-    await service.update_fact(RECIPIENT, copied, expected_version=1, title="Recipient edit")
-    assert (await service.grant_collection_access(OTHER, RECIPIENT)).copied_count == 0
-    await service.delete_fact(RECIPIENT, copied)
-    assert (await service.grant_collection_access(OWNER, RECIPIENT)).copied_count == 0
-    assert (await service.grant_collection_access(RECIPIENT, OTHER)).copied_count == 0
-    assert (await service.grant_collection_access(OWNER, UUID(int=4))).copied_count == 1
-    assert (await service.list_facts(RECIPIENT)).total == 0
 
 
 @pytest.mark.parametrize(

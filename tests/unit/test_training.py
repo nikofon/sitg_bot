@@ -12,6 +12,7 @@ from sitg_bot.application.gateway import ACTION_POLICIES
 from sitg_bot.domain.training import (
     TrainingSettings,
     best_buzz_cursor,
+    best_buzz_tokens,
     normal_game_modifiers,
     text_digest,
 )
@@ -57,6 +58,9 @@ def test_best_buzz_maps_source_characters_to_packed_tokens():
         "text_digest": text_digest(source),
         "source_end": 8,
     }
+    assert best_buzz_tokens(source, revision_id=revision, analysis=analysis, target_chars=14) == (
+        "One two", "three", "four five",
+    )
     assert best_buzz_cursor(source, revision_id=revision, analysis=analysis, target_chars=14) == 1
     assert best_buzz_cursor(source, revision_id=revision, analysis=analysis, target_chars=3) == 2
     for invalid in (

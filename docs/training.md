@@ -88,12 +88,15 @@ one frame at a time rather than silently consuming an unseen question's buzz win
 
 Reply-keyboard controls use only `+` to buzz, `||` to pause/resume, and `!` to appeal,
 like regular games; no other play buttons remain on the training keyboard.
-`/score` reads the current or latest finished training score. `/quit`, the requested
+`/score` reads the current or latest finished training score. Current-state reads
+select the newest run before hiding stopped/dismissed sessions; they never resurface
+an older completed run. `/quit`, the requested
 `/abbandon` spelling and the existing `/abandon` alias stop a running session or
 dismiss a completed run; progression is automatic, so the former Next/reveal/skip
 buttons and their labels are gone. Ordinary question messages have no inline controls.
 Each Best buzz question retains inline Continue reading at its prepared pause;
-it resumes the configured token cadence rather than instantly revealing the remainder.
+it resumes the configured token cadence. A zero reading interval reveals only the
+prepared prefix initially; Continue reading reveals the remainder instantaneously.
 Pauses and solo appeal voting also suspend automatic progression. Replies to old
 answer prompts cannot answer a later question.
 
@@ -171,15 +174,19 @@ is reported explicitly. Normal-game modifier hooks default to disabled.
 Playback accepts a validated per-question dictionary: `schema_version: 1`,
 `tokenizer_version: "announcement-v1"`, `question_revision_id` (UUID string),
 `text_digest` (SHA-256 of exact UTF-8 text), and `source_end` (exclusive source-word
-end offset; zero pauses before the first word). `best_buzz_cursor` maps it to the
-pinned `announcement_tokens` stream, pausing after a packed chunk if the boundary
-falls inside it. Unavailable/pending/failed analysis cannot start Best buzz.
+end offset; zero pauses before the first word). Playback splits any crossing
+announcement chunk at that word, so snapshots and Telegram frames expose only the
+prefix until Continue reading. This also applies when `token_delay` is zero
+(instantaneous reveal). Preparation and playback chunk sizes may differ.
+Unavailable/pending/failed analysis cannot start Best buzz.
 
-The provider currently persists a packed-token index, and `KnowledgeApplication.prepared`
-reconstructs the source offset from that chunk's end. The exact provider-selected
-word boundary can therefore be lost, particularly when preparation and playback use
-different chunk sizes. Exact-boundary persistence/compatibility remains unresolved;
-the port's character-offset validation does not establish lossless provider conversion.
+New provider boundaries retain canonical `source_end` in durable checkpoints and
+artifact payloads alongside the historical packed-token index. Existing records,
+cache identities and schema versions remain readable. For legacy index-only
+artifacts/checkpoints, `KnowledgeApplication.prepared` decodes the recorded index
+using the original preparation chunk size, preserving that known chunk-end boundary.
+The original provider-selected word within a legacy chunk is unknown and is not
+invented. Legacy artifacts are not automatically regenerated or charged again.
 
 ## Training history
 

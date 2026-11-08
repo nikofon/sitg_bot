@@ -23,7 +23,7 @@ class Modifier:
 MODIFIERS = {
     "reversed": Modifier("reversed", 1, ("incremental", "instant")),
     "hidden": Modifier("hidden", 1, ("instant",)),
-    "best_buzz": Modifier("best_buzz", 1, ("incremental",), ("reversed", "hidden")),
+    "best_buzz": Modifier("best_buzz", 1, ("incremental", "instant"), ("reversed", "hidden")),
 }
 
 
@@ -54,8 +54,11 @@ class TrainingSettings:
             value = getattr(self, name)
             if name == "hidden_after" and value is None:
                 continue
-            if type(value) not in (float, int) or not math.isfinite(value) or not 0 < value <= 3600:
-                raise ValueError(f"{name} must be a positive number no greater than 3600")
+            if (
+                type(value) not in (float, int) or not math.isfinite(value)
+                or not 0 <= value <= 3600 or value == 0 and name != "token_delay"
+            ):
+                raise ValueError(f"Invalid {name} duration")
         if type(self.token_target_chars) is not int or not 1 <= self.token_target_chars <= 200:
             raise ValueError("token_target_chars must be between 1 and 200")
         if any(type(getattr(self, name)) is not bool for name in ("reversed", "best_buzz")):
@@ -63,7 +66,7 @@ class TrainingSettings:
         if self.hidden_after is not None and self.hidden_after >= self.buzz_timeout:
             raise ValueError("Hidden text must disappear before the buzz timer ends")
         if self.best_buzz and (self.reversed or self.hidden_after is not None):
-            raise ValueError("Best buzz requires untransformed incremental text")
+            raise ValueError("Best buzz requires untransformed text without hiding")
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "TrainingSettings":
@@ -78,25 +81,32 @@ class TrainingSettings:
         displayed = display_text(source, ("reversed",) if self.reversed else ())
         return announcement_tokens(displayed, self.token_target_chars)
 
+    def question_tokens(
+        self, source: str, *, revision_id: UUID, analysis: dict | None,
+    ) -> tuple[str, ...]:
+        if self.best_buzz:
+            return best_buzz_tokens(
+                source, revision_id=revision_id, analysis=analysis,
+                target_chars=self.token_target_chars,
+            )
+        return self.tokens(source)
+
 
 def text_digest(source: str) -> str:
     return sha256(source.encode()).hexdigest()
 
 
-def best_buzz_cursor(
+def best_buzz_tokens(
     source: str,
     *,
     revision_id: UUID,
-    analysis: dict[str, Any],
+    analysis: dict[str, Any] | None,
     target_chars: int,
-) -> int:
-    """Convert an exclusive source character boundary to an application token cursor.
-
-    A boundary inside a packed chunk pauses after that chunk. Provider token indexes
-    are never used. Whitespace in the original revision is included in offsets.
-    """
+) -> tuple[str, ...]:
+    """Split the crossing announcement chunk at the exact source-word boundary."""
     if (
-        analysis.get("schema_version") != 1
+        not isinstance(analysis, dict)
+        or analysis.get("schema_version") != 1
         or analysis.get("tokenizer_version") != TOKENIZER_VERSION
         or analysis.get("question_revision_id") != str(revision_id)
         or analysis.get("text_digest") != text_digest(source)
@@ -105,18 +115,35 @@ def best_buzz_cursor(
     boundary = analysis.get("source_end")
     if type(boundary) is not int or not 0 <= boundary <= len(source):
         raise ValueError("Best buzz source boundary is invalid")
-    if boundary == 0:
-        return 0
     words = list(re.finditer(r"\S+", source))
-    if not any(word.end() == boundary for word in words):
+    if boundary != 0 and not any(word.end() == boundary for word in words):
         raise ValueError("Best buzz must end at a source word boundary")
-    word_count = next(i + 1 for i, word in enumerate(words) if word.end() == boundary)
+    word_count = len(source[:boundary].split())
+    tokens = announcement_tokens(source, target_chars)
     consumed = 0
-    for cursor, token in enumerate(announcement_tokens(source, target_chars), 1):
-        consumed += len(token.split())
-        if consumed >= word_count:
+    for index, token in enumerate(tokens):
+        chunk_words = token.split()
+        split = word_count - consumed
+        if 0 < split < len(chunk_words):
+            return (*tokens[:index], " ".join(chunk_words[:split]),
+                    " ".join(chunk_words[split:]), *tokens[index + 1:])
+        consumed += len(chunk_words)
+    return tokens
+
+
+def best_buzz_cursor(
+    source: str, *, revision_id: UUID, analysis: dict[str, Any], target_chars: int,
+) -> int:
+    tokens = best_buzz_tokens(
+        source, revision_id=revision_id, analysis=analysis, target_chars=target_chars,
+    )
+    word_count = len(source[:analysis["source_end"]].split())
+    consumed = 0
+    for cursor, token in enumerate(tokens):
+        if consumed == word_count:
             return cursor
-    raise ValueError("Best buzz source boundary is unavailable")
+        consumed += len(token.split())
+    return len(tokens)
 
 
 def normal_game_modifiers(values: tuple[str, ...], *, allowed: tuple[str, ...] = ()) -> None:

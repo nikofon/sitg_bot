@@ -6,21 +6,29 @@ import pytest
 from conftest import create_player, seed_category
 from knowledge_review_support import approve_all, send_and_approve
 from sqlalchemy import event, select
-from test_training import upload
+from test_training import open_question, upload
 
 from sitg_bot.domain.training import TrainingSettings
 from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
 from sitg_bot.services.reliable_delivery import DurableJobQueue, DurableJobWorker
 from sitg_bot.services.training import TrainingService
-from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
+from sitg_bot.services.training_ai import (
+    BuzzBoundary,
+    FakeAnalysisProvider,
+    ProviderSettings,
+    chunk_questions,
+    text_fingerprint,
+)
 from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
 from sitg_bot.services.training_packets import TrainingPacketService
+from sitg_bot.services.training_provider import analysis_provider_from_settings
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
     TrainingBestBuzzCompletionRecord,
+    TrainingSessionRecord,
     TrainingUsagePeriodRecord,
 )
 
@@ -54,6 +62,138 @@ async def application(database, owner, *, limit=100, cache_hit_charging=False):
         [owner],
     )
     return app
+
+
+@pytest.mark.parametrize("completed", [False, True])
+async def test_current_does_not_resurface_completed_run_after_newer_stop(database, completed):
+    owner = await create_player(database, 8104, "latest-run")
+    version, _ = await upload(database, owner)
+    training = TrainingService(database)
+    first = (await training.start(owner, version, confirm=True))["session"]
+    async with database.transaction() as session:
+        record = await session.get(TrainingSessionRecord, UUID(first["id"]))
+        record.status, record.phase, record.deadline = "completed", "revealed", None
+        record.ended_at = datetime.now(UTC)
+    assert (await training.current(owner))["session"]["id"] == first["id"]
+    second = (await training.start(owner, version))["session"]
+    if completed:
+        async with database.transaction() as session:
+            record = await session.get(TrainingSessionRecord, UUID(second["id"]))
+            record.status, record.phase, record.deadline = "completed", "revealed", None
+            record.ended_at = datetime.now(UTC)
+    await training.act(
+        owner, UUID(second["id"]), "stop", expected_version=second["version"],
+        question_revision_id=UUID(second["question_revision_id"]),
+    )
+    assert (await training.current(owner))["session"] is None
+    score = (await training.current(owner, score_only=True))["session"]
+    assert score["id"] == second["id"]
+    assert score["status"] == ("completed" if completed else "stopped")
+    lobby = (await training.lobby(owner, "create"))["lobby"]
+    assert await training.current(owner) == {"session": None, "lobby": lobby}
+    third = (await training.start(owner, version))["session"]
+    assert (await training.current(owner))["session"]["id"] == third["id"]
+
+
+@pytest.mark.parametrize("key,model", [
+    (None, "fixture-model"), ("fixture-key", "unconfigured"), (None, "unconfigured"),
+])
+async def test_incomplete_provider_configuration_denies_preview_admission_and_statistics(
+    database, key, model,
+):
+    from sitg_bot.services.analysis_jobs import AnalysisFeatureDisabledError
+
+    owner = await create_player(database, 8100, "not-configured")
+    app = await application(database, owner)
+    app.settings = ProviderSettings("openai", model, api_key=key)
+    app.analysis.provider = analysis_provider_from_settings(app.settings)
+    version, _ = await upload(database, owner)
+    before = await app.entitlements.capabilities(owner)
+    preview = await app.best_buzz_preview(owner, version)
+    assert not preview["can_begin"] and preview["eligible_theme_count"] == 0
+    for kind in ("dissection", "best_buzz"):
+        with pytest.raises(AnalysisFeatureDisabledError, match="not configured"):
+            await app.request_analysis(
+                owner, version_id=version, kind=kind, confirm_exposure=True,
+                idempotency_key=f"unconfigured-{kind}",
+            )
+    fact = await app.mutate(owner, "create", {"title": "Fact", "description": "D"})
+    await app.statistics_job({"owner_id": str(owner), "fact_id": str(fact["id"]), "version": 1})
+    detail = await app.detail(owner, fact["id"])
+    assert detail["statistics"]["common_knowledge"] is None
+    assert detail["statistics"]["status"] == "unavailable"
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+    after = await app.entitlements.capabilities(owner)
+    assert {key: value.remaining for key, value in after.items()} == {
+        key: value.remaining for key, value in before.items()
+    }
+
+
+@pytest.mark.parametrize("preparation,playback,delay,legacy", [
+    (18, 3, 1, False), (3, 18, 1, False), (18, 18, 1, False),
+    (18, 3, 0, False), (18, 3, 1, True), (3, 18, 0, True),
+])
+async def test_persisted_best_buzz_keeps_exact_boundary_and_reads_legacy_results(
+    database, preparation, playback, delay, legacy,
+):
+    owner = await create_player(database, 8103, "exact-buzz")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    app.analysis.provider.buzz_response = lambda request: tuple(
+        BuzzBoundary(revision, text_fingerprint(text), 1, 3)
+        for chunk in request.chunks for revision, text in chunk_questions(chunk)
+    )
+    accepted = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", token_target_chars=preparation,
+        confirm_exposure=True, idempotency_key="exact-boundary",
+    )
+    worker = DurableJobWorker(app.analysis.jobs, {"training.analysis": app.analysis_job},
+                              kinds=("training.analysis",))
+    assert await worker.run_once() == 1
+    async with database.transaction() as session:
+        request = await session.scalar(select(TrainingAnalysisRequestRecord).where(
+            TrainingAnalysisRequestRecord.request_id == accepted["request_id"],
+        ))
+        artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
+        assert all(item["source_end"] == 3 for item in artifact.checkpoint["partial"])
+        assert all(item["source_end"] == 3 for item in artifact.payload["boundaries"])
+        if legacy:
+            artifact.schema_version = "1"
+            artifact.payload = {**artifact.payload, "boundaries": [
+                {key: value for key, value in item.items() if key != "source_end"}
+                for item in artifact.payload["boundaries"]
+            ]}
+    app = KnowledgeApplication(database, settings=app.settings, analysis=app.analysis)
+    training = TrainingService(database, best_buzz=app)
+    now = datetime.now(UTC)
+    state = (await training.start(
+        owner, version, now=now,
+        settings=TrainingSettings(best_buzz=True, token_target_chars=playback, token_delay=delay),
+    ))["session"]
+    state, now = await open_question(training, owner, state, now)
+    for _ in range(6):
+        if state["phase"] == "best_buzz":
+            break
+        now = state["deadline"]
+        state = (await training.view(owner, UUID(state["id"]), now=now))["session"]
+    assert state["phase"] == "best_buzz" and state["deadline"] is None
+    expected = "One two three" if legacy and preparation == 18 else "One"
+    assert state["text"] == expected
+    state = (await training.view(
+        owner, UUID(state["id"]), now=now + timedelta(seconds=100),
+    ))["session"]
+    assert state["text"] == expected
+    continued = (await training.act(
+        owner, UUID(state["id"]), "continue", expected_version=state["version"],
+        question_revision_id=UUID(state["question_revision_id"]), now=now,
+    ))["session"]
+    if delay == 0:
+        assert continued["phase"] == "waiting"
+        assert continued["text"] == "One two three <four> five"
+    else:
+        assert continued["phase"] == "reading" and continued["text"] == expected
+    assert len(app.analysis.provider.buzz_calls) == 1
 
 
 async def test_persistent_crud_pagination_and_permanent_independent_copies(database):

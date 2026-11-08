@@ -176,6 +176,7 @@ async def test_provider_maps_source_word_offsets_to_the_real_announcement_stream
     chunks = packet_chunks((QuestionText(revision, text),), max_chunk_characters=1000)
     result = await instance.best_buzz_boundaries(BuzzRequest(chunks, "en", target_chars=7))
     assert len(result) == 1
+    assert result[0].source_end == source_end
     consumed = sum(
         len(token.split()) for token in announcement_tokens(text, 7)[: result[0].token_index]
     )
@@ -185,6 +186,18 @@ async def test_provider_maps_source_word_offsets_to_the_real_announcement_stream
     }]})
     with pytest.raises(AnalysisValidationError, match="source word"):
         await instance.best_buzz_boundaries(BuzzRequest(chunks, "en"))
+
+
+@pytest.mark.parametrize("target", [3, 18])
+async def test_provider_retains_exact_boundary_independently_of_chunk_size(provider, target):
+    revision = uuid4()
+    instance, _ = provider({"boundaries": [{
+        "question_revision_id": str(revision), "source_end": 3,
+    }]})
+    chunks = packet_chunks((QuestionText(revision, "One two three four"),),
+                           max_chunk_characters=1000)
+    result = await instance.best_buzz_boundaries(BuzzRequest(chunks, "en", target_chars=target))
+    assert result[0].source_end == 3
 
 
 async def test_common_knowledge_accepts_fragmented_provider_response(provider):

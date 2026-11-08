@@ -300,11 +300,9 @@ concealed again. There is no spaced-repetition scheduling,
 scoring or AI involvement, and the library's CRUD, filtering, sharing and
 import flows are unchanged.
 
-Review follow-ups outside this quick-restart/tag-selection feature remain
-unaddressed: ordinary library listing/CRUD and dissection tag-limit validation
-(R2 outside practice), and inherited Training current-session selection that can
-resurface an older completed run after a newer run is stopped (R3). Neither is
-claimed fixed by this feature.
+Ordinary library listing/CRUD and dissection tag-limit validation remain outside
+this quick-restart/tag-selection feature. Training current-state selection now
+uses only the newest run, so stopping it cannot resurface an older completed run.
 
 Telegram exposes Knowledge library through the Training keyboard, launching the
 knowledge Mini App. When the Mini App is not configured, the keyboard falls back

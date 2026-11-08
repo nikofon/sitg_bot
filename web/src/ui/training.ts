@@ -243,7 +243,7 @@ export function renderTraining(
   const seconds = element("input", { type: "number", min: "0.1", max: "3599", step: "0.1", value: "3", required: true });
   const buzzSeconds = element("input", { type: "number", min: "1", max: "3600", value: "10", required: true });
   const answerSeconds = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "15", required: true });
-  const tokenDelay = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "0.6", required: true });
+  const tokenDelay = element("input", { type: "number", min: "0", max: "3600", step: "0.1", value: "0.6", required: true });
   const tokenChars = element("input", { type: "number", min: "1", max: "200", step: "1", value: "18", required: true });
   const bestBuzz = element("input", { type: "checkbox" });
   const settingLabel = (key: MessageKey, control: HTMLElement): HTMLElement =>

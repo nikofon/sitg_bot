@@ -91,6 +91,10 @@ class ProviderSettings:
             raise ValueError("Provider concurrency must be positive")
 
     @property
+    def configured(self) -> bool:
+        return bool(self.api_key) and self.model != "unconfigured"
+
+    @property
     def execution_profile(self) -> str:
         """Versioned compute identity, never salted with a credential."""
         return text_fingerprint(
@@ -225,6 +229,7 @@ class BuzzBoundary:
     question_revision_id: UUID
     text_digest: str
     token_index: int
+    source_end: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +493,7 @@ def validate_buzz_boundaries(
     *,
     token_counts: Mapping[UUID, int],
     text_digests: Mapping[UUID, str],
+    question_texts: Mapping[UUID, str] | None = None,
 ) -> tuple[BuzzBoundary, ...]:
     """Validate Best buzz boundaries against the announcement token stream."""
     covered: set[UUID] = set()
@@ -515,6 +521,16 @@ def validate_buzz_boundaries(
                 f"Best buzz boundary index {boundary.token_index} is outside the "
                 f"{token_counts[revision_id]}-token question stream"
             )
+        if boundary.source_end is not None:
+            text = question_texts.get(revision_id) if question_texts is not None else None
+            if (
+                type(boundary.source_end) is not int
+                or text is None
+                or boundary.source_end != 0 and not any(
+                    word.end() == boundary.source_end for word in re.finditer(r"\S+", text)
+                )
+            ):
+                raise AnalysisValidationError("Best buzz source boundary is invalid")
     missing = set(token_counts) - covered
     if missing:
         raise AnalysisValidationError(
@@ -677,7 +693,7 @@ class FakeAnalysisProvider:
             boundaries: list[BuzzBoundary] = []
             for chunk in request.chunks:
                 for revision_id, text in chunk_questions(chunk):
-                    boundaries.append(BuzzBoundary(revision_id, text_fingerprint(text), 0))
+                    boundaries.append(BuzzBoundary(revision_id, text_fingerprint(text), 0, 0))
             return tuple(boundaries)
         finally:
             self._exit()

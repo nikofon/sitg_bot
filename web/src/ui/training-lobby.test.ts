@@ -172,6 +172,23 @@ describe("training lobby", () => {
     expect(request.mock.calls.filter(([path]) => path === "/api/miniapp/training/lobby")).toHaveLength(0);
   });
 
+  it("saves zero reading delay with Best buzz for instantaneous reveal", async () => {
+    const { root, request } = create({ initial: {
+      version: 3, version_id: "one", packet_name: "Alpha packet",
+      settings: { reversed: false, hidden_after: null, best_buzz: true },
+    } });
+    tab(root, 2);
+    const interval = settingInput(root, "Reading interval (seconds)");
+    interval.value = "0";
+    interval.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(interval.checkValidity()).toBe(true);
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(lobbyBodies(request)).toHaveLength(1));
+    expect(lobbyBodies(request)[0]).toMatchObject({
+      command: "save_settings", settings: { token_delay: 0, best_buzz: true },
+    });
+  });
+
   it("reruns the reading preview when the Hidden modifier overrides the interval", () => {
     const { root } = create({
       initial: { version: 3, version_id: "one", packet_name: "Alpha packet",

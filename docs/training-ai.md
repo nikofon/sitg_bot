@@ -105,11 +105,14 @@ Failures are never cached as successful empty data: terminal job failure
 remains retryable via a new generation. `cleanup(before)` prunes terminal
 artifacts and requests.
 
-Best buzz boundaries are validated against the application
-`announcement_tokens` stream with pinned tokenizer settings
-(`question_token_target_chars`), not a provider's tokenization. The
-[playback port](training.md#best-buzz-playback-port) documents the current
-packed-token persistence limitation.
+Best buzz boundaries preserve a validated canonical source-word end offset in
+checkpoints and results, independently of `question_token_target_chars`. The
+historical application `announcement_tokens` index remains available for legacy
+consumers; it is not a provider token index. The
+[playback port](training.md#best-buzz-playback-port) defines exact prefix playback,
+instantaneous reveal/Continue, and explicit legacy index-only compatibility.
+Provider admission, preview and statistics require both an API key and a configured
+model; enabled persisted policies do not override missing runtime configuration.
 
 ## Categories, policies and metering
 

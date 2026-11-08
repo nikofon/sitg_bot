@@ -3,7 +3,7 @@
 import json
 from dataclasses import asdict
 from datetime import date, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -39,7 +39,6 @@ from sitg_bot.storage.models import (
     KnowledgeFactRecord,
     KnowledgeFactTagRecord,
     KnowledgeGrantRecord,
-    KnowledgeImportHashRecord,
     KnowledgeSnapshotRecord,
     KnowledgeTagRecord,
 )
@@ -134,154 +133,6 @@ class PostgresKnowledgeStore:
         return tuple(
             CollectionCopyView(owner, recipient, count) for owner, recipient, count in rows
         )
-
-    async def copy_collection(self, owner_id, recipient_id, now):
-        """Copy in bounded batches under the caller's two-account lock."""
-        total = 0
-        cursor = None
-        model = KnowledgeFactRecord
-        while True:
-            statement = select(model).where(
-                model.owner_id == owner_id,
-                model.deleted_at.is_(None),
-                ~select(KnowledgeFactCopyRecord.source_fact_id)
-                .where(
-                    KnowledgeFactCopyRecord.source_fact_id == model.id,
-                    KnowledgeFactCopyRecord.recipient_id == recipient_id,
-                )
-                .exists(),
-            )
-            if cursor is not None:
-                statement = statement.where(model.id > cursor)
-            rows = list(await self.session.scalars(statement.order_by(model.id).limit(100)))
-            if not rows:
-                break
-            cursor = rows[-1].id
-            # A durable unique recipient/hash claim is the concurrency boundary.
-            # The caller also serializes account mutations using sorted account locks.
-            hashes = {row.content_fingerprint for row in rows}
-            existing = set(await self.session.scalars(
-                select(model.content_fingerprint).where(
-                    model.owner_id == recipient_id, model.content_fingerprint.in_(hashes)
-                )
-            ))
-            claimed = set(await self.session.scalars(
-                insert(KnowledgeImportHashRecord).values([
-                    {"recipient_id": recipient_id, "content_fingerprint": digest}
-                    for digest in sorted(hashes)
-                ]).on_conflict_do_nothing().returning(KnowledgeImportHashRecord.content_fingerprint)
-            ))
-            selected = []
-            for row in rows:
-                if row.content_fingerprint in claimed and row.content_fingerprint not in existing:
-                    selected.append(row)
-                    claimed.remove(row.content_fingerprint)
-            rows = selected
-            if not rows:
-                continue
-            tags = await self._tags([row.id for row in rows])
-            names = {name for source_tags in tags.values() for _, name in source_tags}
-            if names:
-                colours = dict((await self.session.execute(
-                    select(KnowledgeTagRecord.name, KnowledgeTagRecord.colour).where(
-                        KnowledgeTagRecord.owner_id == owner_id, KnowledgeTagRecord.name.in_(names)
-                    )
-                )).all())
-                await self.session.execute(
-                    insert(KnowledgeTagRecord)
-                    .values(
-                        [
-                            {"id": uuid4(), "owner_id": recipient_id, "name": name,
-                             "colour": colours[name]}
-                            for name in sorted(names)
-                        ]
-                    )
-                    .on_conflict_do_nothing(index_elements=["owner_id", "name"])
-                )
-            tag_ids = dict(
-                (
-                    await self.session.execute(
-                        select(KnowledgeTagRecord.name, KnowledgeTagRecord.id).where(
-                            KnowledgeTagRecord.owner_id == recipient_id,
-                            KnowledgeTagRecord.name.in_(names),
-                        )
-                    )
-                ).all()
-            )
-            snapshots = {
-                row.fact_id: row
-                for row in await self.session.scalars(
-                    select(KnowledgeSnapshotRecord)
-                    .where(KnowledgeSnapshotRecord.fact_id.in_([row.id for row in rows]))
-                    .distinct(KnowledgeSnapshotRecord.fact_id)
-                    .order_by(
-                        KnowledgeSnapshotRecord.fact_id,
-                        KnowledgeSnapshotRecord.created_at.desc(),
-                        KnowledgeSnapshotRecord.id.desc(),
-                    )
-                )
-            }
-            facts, copies, associations, statistics = [], [], [], []
-            for row in rows:
-                copied_id = uuid4()
-                snapshot = snapshots.get(row.id)
-                fresh = (
-                    row.statistic_status == "fresh"
-                    and snapshot is not None
-                    and snapshot.content_version == row.content_version
-                )
-                facts.append(
-                    {
-                        "id": copied_id,
-                        "owner_id": recipient_id,
-                        "title": row.title,
-                        "title_key": row.title_key,
-                        "description": row.description,
-                        "author": row.author,
-                        "links": row.links,
-                        "image_ids": row.image_ids,
-                        "provenance": {"origin": "manual"},
-                        "content_fingerprint": row.content_fingerprint,
-                        "content_version": 1,
-                        "statistic_status": "fresh" if fresh else "none",
-                        "created_at": now,
-                        "updated_at": now,
-                    }
-                )
-                copies.append(
-                    {
-                        "source_fact_id": row.id,
-                        "recipient_id": recipient_id,
-                        "owner_id": owner_id,
-                        "fact_id": copied_id,
-                        "created_at": now,
-                    }
-                )
-                associations.extend(
-                    {"fact_id": copied_id, "tag_id": tag_ids[name], "owner_id": recipient_id}
-                    for _, name in tags.get(row.id, [])
-                )
-                if fresh:
-                    statistics.append(
-                        {
-                            "id": uuid4(),
-                            "fact_id": copied_id,
-                            "owner_id": recipient_id,
-                            "content_version": 1,
-                            "created_at": now,
-                            "mentions": snapshot.mentions,
-                            "common": snapshot.common,
-                            "bingo": snapshot.bingo,
-                        }
-                    )
-            await self.session.execute(insert(KnowledgeFactRecord), facts)
-            await self.session.execute(insert(KnowledgeFactCopyRecord), copies)
-            if associations:
-                await self.session.execute(insert(KnowledgeFactTagRecord), associations)
-            if statistics:
-                await self.session.execute(insert(KnowledgeSnapshotRecord), statistics)
-            total += len(rows)
-        return total
 
     def __init__(self, session):
         self.session = session

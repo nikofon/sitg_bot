@@ -221,10 +221,6 @@ class InMemoryKnowledgeStore:
         self.requests: dict[UUID, StoredDissectionRequest] = {}
         self.snapshots: dict[UUID, StoredStatisticSnapshot] = {}
         self.copies: dict[tuple[UUID, UUID], FactCopy] = {}
-        self.import_hashes: set[tuple[UUID, str]] = set()
-
-    async def add_copy(self, copy: FactCopy) -> None:
-        self.copies[(copy.source_fact_id, copy.recipient_id)] = copy
 
     async def copies_for_owner(self, owner_id: UUID) -> list[FactCopy]:
         return [copy for copy in self.copies.values() if copy.owner_id == owner_id]
@@ -675,72 +671,6 @@ class KnowledgeService:
         if tag is None or tag.owner_id != owner_id:
             raise LookupError("Tag not found")
         await self.store.remove_tag(tag_id)
-
-    async def grant_collection_access(
-        self, owner_id: UUID, recipient_id: UUID
-    ) -> CollectionCopyView:
-        """Send independent, permanent copies of the current collection.
-
-        The legacy gateway operation name is retained. Repeated sends add only
-        uncopied facts and never overwrite or resurrect a recipient's copy.
-        """
-        if owner_id == recipient_id:
-            raise ValueError("A trainee cannot copy a collection to themselves")
-        if hasattr(self.store, "copy_collection"):
-            count = await self.store.copy_collection(owner_id, recipient_id, self._now())
-            return CollectionCopyView(owner_id, recipient_id, count)
-        copied = {
-            copy.source_fact_id for copy in await self.store.copies_for_recipient(recipient_id)
-        }
-        existing = {
-            fact.content.fingerprint() for fact in await self.store.facts_for_owner(recipient_id)
-        }
-        count = 0
-        for source in await self.store.facts_for_owner(owner_id):
-            if source.deleted_at is not None or source.id in copied:
-                continue
-            fingerprint = source.content.fingerprint()
-            claim = recipient_id, fingerprint
-            if claim in self.store.import_hashes:
-                continue
-            self.store.import_hashes.add(claim)
-            if fingerprint in existing:
-                continue
-            existing.add(fingerprint)
-            tags = await self._tag_views(owner_id, source.tag_ids)
-            recipient_tags = {tag.name for tag in await self.store.tags_for_owner(recipient_id)}
-            for tag in tags:
-                if tag.name not in recipient_tags:
-                    await self.create_tag(recipient_id, tag.name, tag.colour)
-            detail = await self.create_fact(
-                recipient_id,
-                title=source.content.title,
-                description=source.content.description,
-                links=source.content.links,
-                image_ids=source.content.image_ids,
-                tag_names=[tag.name for tag in tags],
-            )
-            await self.store.add_copy(
-                FactCopy(source.id, recipient_id, owner_id, detail.fact_id, self._now())
-            )
-            if source.statistic_status == "fresh":
-                snapshots = await self.store.snapshots_for_fact(source.id)
-                current = [
-                    snapshot
-                    for snapshot in snapshots
-                    if snapshot.content_version == source.content_version
-                ]
-                if current:
-                    latest = max(current, key=lambda snapshot: snapshot.created_at)
-                    await self.record_statistics(
-                        recipient_id,
-                        detail.fact_id,
-                        mentions=latest.mentions,
-                        common=latest.common,
-                        bingo=latest.bingo,
-                    )
-            count += 1
-        return CollectionCopyView(owner_id, recipient_id, count)
 
     async def revoke_collection_access(self, owner_id: UUID, grant_id: UUID) -> GrantView:
         raise PermissionError("Shared copies are permanent and cannot be revoked")

@@ -173,9 +173,15 @@ class KnowledgeApplication:
             source_loader=TrainingAnalysisAccess(database, self.packets),
         )
 
+    @property
+    def provider_ready(self):
+        return self.settings.configured or not isinstance(
+            self.analysis.provider, ResponsesAnalysisProvider
+        )
+
     async def initialize(self):
         features = None
-        if self.settings.api_key and self.settings.model != "unconfigured":
+        if self.settings.configured:
             features = {
                 feature: {
                     "enabled": True,
@@ -610,9 +616,7 @@ class KnowledgeApplication:
             )
             if len(chunks) > 16:
                 raise ValueError("Analysis accepts at most 16 source chunks per packet")
-            if not self.settings.api_key and isinstance(
-                self.analysis.provider, ResponsesAnalysisProvider
-            ):
+            if not self.provider_ready:
                 raise AnalysisFeatureDisabledError("Training AI provider is not configured")
             policy = await self.entitlements.policy_for(session, actor, kind)
             if not policy.enabled:
@@ -704,9 +708,7 @@ class KnowledgeApplication:
             theme_count = len({theme for _, theme in manifest})
             question_ids = [str(question) for question, _ in manifest]
             policy = await self.entitlements.policy_for(session, actor, "best_buzz")
-            provider_ready = bool(self.settings.api_key) or not isinstance(
-                self.analysis.provider, ResponsesAnalysisProvider
-            )
+            provider_ready = self.provider_ready
             active = await self.analysis._active_duplicate(
                 session, owner_player_id=actor, kind="best_buzz",
                 packet_revision_id=str(version_id),
@@ -1046,9 +1048,7 @@ class KnowledgeApplication:
             ):
                 return
             request_id = f"statistics:{fact_id}:{version}"
-            if self.settings.api_key or not isinstance(
-                self.analysis.provider, ResponsesAnalysisProvider
-            ):
+            if self.provider_ready:
                 try:
                     async with session.begin_nested():
                         source = CommonKnowledgeSource(
@@ -1188,17 +1188,21 @@ class KnowledgeApplication:
             question = by_id[revision]
             if boundary["text_digest"] != text_fingerprint(question.text):
                 raise ValueError("Best buzz source changed")
-            tokens = announcement_tokens(question.text, target)
-            index = boundary["token_index"]
-            if type(index) is not int or not 0 <= index <= len(tokens):
-                raise ValueError("Invalid Best buzz token boundary")
-            word_count = sum(len(token.split()) for token in tokens[:index])
-            words = list(re.finditer(r"\S+", question.text))
+            if "source_end" in boundary:
+                source_end = boundary["source_end"]
+            else:
+                tokens = announcement_tokens(question.text, target)
+                index = boundary["token_index"]
+                if type(index) is not int or not 0 <= index <= len(tokens):
+                    raise ValueError("Invalid Best buzz token boundary")
+                word_count = sum(len(token.split()) for token in tokens[:index])
+                words = list(re.finditer(r"\S+", question.text))
+                source_end = words[word_count - 1].end() if word_count else 0
             result[revision] = {
                 "schema_version": 1,
                 "tokenizer_version": "announcement-v1",
                 "question_revision_id": str(revision),
                 "text_digest": text_digest(question.text),
-                "source_end": words[word_count - 1].end() if word_count else 0,
+                "source_end": source_end,
             }
         return result
