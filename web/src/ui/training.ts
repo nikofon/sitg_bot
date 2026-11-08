@@ -395,7 +395,7 @@ export function renderTraining(
           play.append(element("p", {}, i18n.t(current.correct ? "training.correct" : "training.incorrect")));
         }
         button("next", "training.next");
-      } else {
+      } else if (["reading", "waiting", "best_buzz"].includes(current.phase)) {
         button("reveal", "training.reveal");
         button("skip", "training.skip");
       }

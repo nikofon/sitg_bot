@@ -226,11 +226,12 @@ class TrainingDelivery(GameDelivery):
                 self.payloads[game] = identifiers
                 while True:
                     state = await self._state("telegram.training.delivery", identifiers)
+                    state["controls_sent"] = self.states.get(game, {}).get("controls_sent", False)
                     self.states[game] = state
                     question, presentation = state.get("session"), state["presentation"]
                     if question is None or presentation.get("dismissed"):
-                        if (state.get("status") == "stopped" and state.get("show_menu")
-                            and not presentation.get("menu_restored")):
+                        if (state.get("status") in {"stopped", "completed"}
+                            and state.get("show_menu") and not presentation.get("menu_restored")):
                             keyboard = ReplyKeyboardModel(rows=tuple(tuple(
                                 self.localization.text(
                                     "button.training.mode_switch" if action == "mode.switch"

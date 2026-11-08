@@ -659,7 +659,7 @@ export interface TrainingSession {
   version: number;
   presentation_version?: number;
   status: "active" | "paused" | "completed" | "stopped";
-  phase: "reading" | "waiting" | "answering" | "revealed" | "best_buzz";
+  phase: "intermission" | "reading" | "waiting" | "answering" | "revealed" | "best_buzz";
   packet_version_id: string;
   question_revision_id: string;
   question_index: number;

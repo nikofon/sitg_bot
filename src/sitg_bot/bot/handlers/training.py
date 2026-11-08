@@ -175,6 +175,7 @@ async def handle_training_menu(
                         command="stop",
                     ),
                 )
+                return
             elif current.get("lobby"):
                 await call(
                     backend,
@@ -461,8 +462,6 @@ async def handle_training_control(
             command=command, approve=training_approve,
             answer=message.text if command == "answer" else None,
         ))
-        if command == "stop":
-            await show_menu(message, backend, telegram_update_claim, localization, locale)
     except (ValueError, GatewayCallError):
         await message.answer(localization.text("training.unavailable", locale))
 

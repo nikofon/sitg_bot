@@ -385,6 +385,7 @@ class TrainingService:
             if command == "stop":
                 if record.status == "completed":
                     await self._dismiss(session, record)
+                    await self._notice(session, record)
                     return {"session": None, "stopped": True}
                 if record.status not in {"active", "paused"}:
                     raise ValueError("Training has already ended")

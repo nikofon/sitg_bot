@@ -95,6 +95,37 @@ async def test_forced_first_delivery_does_not_duplicate_opening_controls(locale)
     assert len(case.sends) == 1
 
 
+@pytest.mark.parametrize("pending", [100, 101, 200, 201])
+@pytest.mark.parametrize("opening_delivered", [True, False])
+async def test_forced_recovery_sends_controls_once_across_all_event_pages(pending, opening_delivered):
+    case = delivery_case(phase="intermission")
+    case.state["events"] = case.state["events"][:1]
+    if opening_delivered:
+        await deliver(case)
+    before = len(case.sends)
+    for _ in range(pending - int(not opening_delivered)):
+        case.event("question_cost_announced", theme="Theme", value=10)
+    pages = []
+
+    async def request(action, **params):
+        result = await case.request(action, **params)
+        if action == "telegram.training.delivery":
+            pages.append(len(result["events"]))
+        return result
+
+    case.delivery.protocol.request = request
+    await deliver(case, force=True)
+    controls = [entry for entry in case.sends[before:]
+                if isinstance(entry[2], ReplyKeyboardMarkup)]
+    assert len(controls) == 1
+    assert [button.text for row in controls[0][2].keyboard for button in row] == ["+", "||", "!"]
+    assert pages == [min(pending, 100), *([100] * (pending // 100)), pending % 100]
+    assert case.state["presentation"]["sequence"] == pending + int(opening_delivered)
+    before = len(case.sends)
+    await deliver(case)
+    assert len(case.sends) == before
+
+
 @pytest.mark.parametrize("failure", ["send", "controls_record", "cursor_record"])
 async def test_opening_retry_reuses_receipt_and_keeps_event_cursor(failure):
     case = delivery_case(phase="intermission")

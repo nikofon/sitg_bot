@@ -265,9 +265,7 @@ def message(text):
                                            ("/pause", "pause"), ("/resume", "resume"),
                                            ("/quit", "stop"), ("/abbandon", "stop"),
                                            ("/abandon", "stop")])
-async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command, monkeypatch):
-    if command == "stop":
-        monkeypatch.setattr(training, "show_menu", AsyncMock())
+async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command):
     state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
              "presented_question_revision_id": str(QUESTION), "status": "active",
              "phase": "answering"}
@@ -284,7 +282,7 @@ async def test_registered_keyboard_controls_are_actions_not_answer_text(text, co
     assert operation.answer is None
 
 
-async def test_registered_quit_dismisses_completed_training_and_restores_menu(monkeypatch):
+async def test_registered_quit_dismisses_completed_training_and_defers_menu_to_delivery(monkeypatch):
     menu = AsyncMock()
     monkeypatch.setattr(training, "show_menu", menu)
     state = {
@@ -300,7 +298,7 @@ async def test_registered_quit_dismisses_completed_training_and_restores_menu(mo
         navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
     )
     assert backend._execute.await_args.args[1].command == "stop"
-    menu.assert_awaited_once()
+    menu.assert_not_awaited()
 
 
 async def test_registered_score_command_reads_finished_score_without_mutation(monkeypatch):

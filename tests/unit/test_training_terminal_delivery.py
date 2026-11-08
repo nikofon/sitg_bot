@@ -7,10 +7,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from aiogram.methods import DeleteMessage
+from aiogram.methods import DeleteMessage, SendMessage
+from test_telegram_frontend import navigation
 from training_delivery_support import RUN, deliver, delivery_case
 
+from sitg_bot.application.contracts import ActionCode
 from sitg_bot.application.protocol import RetryableDeliveryError
+from sitg_bot.bot.handlers.training import handle_training_control, handle_training_menu
+from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.training_delivery import TrainingDelivery
 from sitg_bot.services.training import TrainingService
 from sitg_bot.storage.models import TrainingMemberRecord
 
@@ -41,9 +46,12 @@ async def test_delayed_completed_events_do_not_replace_new_navigation_keyboard(d
 
 
 @pytest.mark.parametrize("eligible", [True, False])
-async def test_stopped_delivery_restores_home_once_only_when_navigation_is_still_eligible(eligible):
+@pytest.mark.parametrize("status", ["stopped", "completed"])
+async def test_dismissed_delivery_restores_home_once_only_when_navigation_is_still_eligible(
+    eligible, status,
+):
     case = delivery_case()
-    case.state.update(status="stopped", session=None, show_menu=eligible)
+    case.state.update(status=status, session=None, show_menu=eligible)
     case.state["presentation"]["dismissed"] = True
     await deliver(case)
     if eligible:
@@ -56,10 +64,93 @@ async def test_stopped_delivery_restores_home_once_only_when_navigation_is_still
     assert len(case.sends) == int(eligible)
 
 
-async def test_shared_appeal_delivery_delay_survives_retry_and_presenter_restart(monkeypatch):
-    from sitg_bot.bot.i18n import LocalizationService
-    from sitg_bot.bot.training_delivery import TrainingDelivery
+@pytest.mark.parametrize("entry", ["command", "menu"])
+@pytest.mark.parametrize("status", ["active", "paused", "completed"])
+@pytest.mark.parametrize("outbox_first", [True, False])
+async def test_quit_has_one_durable_terminal_menu_owner(entry, status, outbox_first):
+    case = delivery_case(status=status)
+    home = navigation(active_mode="training", context="menu", allowed_actions=[
+        "training.train", "training.knowledge", "training.upload", "mode.switch",
+    ])
 
+    async def execute(claim, operation):
+        if operation.action == ActionCode.TRAINING_CURRENT:
+            return SimpleNamespace(data={"session": case.state["session"]})
+        assert operation.action == ActionCode.TRAINING_ACT
+        assert operation.command == "stop"
+        case.state.update(status="completed" if status == "completed" else "stopped", session=None)
+        case.state["presentation"]["dismissed"] = True
+        if outbox_first:
+            await deliver(case)
+        return SimpleNamespace(data={"session": None, "stopped": True})
+
+    async def answer(text, **kwargs):
+        return await case.bot.send_message(42, text, **kwargs)
+
+    backend = SimpleNamespace(_execute=AsyncMock(side_effect=execute),
+                              navigation=AsyncMock(return_value=home),
+                              training_delivery=case.delivery)
+    message = SimpleNamespace(message_id=1, chat=SimpleNamespace(id=42), text="/quit",
+                              answer=AsyncMock(side_effect=answer))
+    if entry == "command":
+        await handle_training_control(message, backend, object(), LocalizationService(), "en", "stop")
+    else:
+        await handle_training_menu(
+            message, backend, object(), LocalizationService(), "en", "training.quit",
+        )
+    message.answer.assert_not_awaited()
+    await deliver(case)
+    assert len(case.sends) == 1
+    assert case.sends[0][2].keyboard[0][0].text == "Start training"
+    assert case.state["presentation"]["menu_restored"] is True
+    case.delivery = TrainingDelivery(case.bot, LocalizationService(),
+                                     SimpleNamespace(request=case.request))
+    await deliver(case, force=True)
+    assert len(case.sends) == 1
+
+
+async def test_terminal_menu_retries_failed_send_and_records_success_once():
+    case = delivery_case()
+    case.state.update(status="stopped", session=None)
+    case.state["presentation"]["dismissed"] = True
+    send = case.bot.send_message.side_effect
+    case.bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=42, text="menu"), message="flood", retry_after=1,
+    )
+    with pytest.raises(RetryableDeliveryError):
+        await deliver(case)
+    assert not case.state["presentation"].get("menu_restored")
+    case.bot.send_message.side_effect = send
+    await deliver(case)
+    await deliver(case)
+    assert len(case.sends) == 1
+    assert case.state["presentation"]["menu_restored"] is True
+
+
+@pytest.mark.parametrize("status", ["active", "paused", "completed"])
+async def test_stop_dismisses_session_and_enqueues_terminal_presentation(monkeypatch, status):
+    from test_training_gameflow import action, harness
+
+    service, record, _, _, _, session = harness(status=status, phase="revealed")
+    record.presentation_version = 0
+    service._notice = TrainingService._notice
+    member = SimpleNamespace(presentation={})
+    session.get.return_value = member
+    enqueue = AsyncMock()
+    monkeypatch.setattr("sitg_bot.services.training.TransactionalOutbox.enqueue", enqueue)
+    result = await action(service, record, "stop")
+    assert result == {"session": None, "stopped": True}
+    assert record.status == ("completed" if status == "completed" else "stopped")
+    assert member.presentation["dismissed"] is True
+    assert [call.kwargs["topic"] for call in enqueue.await_args_list] == [
+        "telegram.training.cleanup", "training.changed",
+    ]
+    assert enqueue.await_args.kwargs["payload"] == {
+        "session_id": str(record.id), "owner_id": str(record.owner_id),
+    }
+
+
+async def test_shared_appeal_delivery_delay_survives_retry_and_presenter_restart(monkeypatch):
     case = delivery_case()
     await deliver(case)
     monkeypatch.setattr("sitg_bot.bot.game_delivery.time.time", lambda: 100)

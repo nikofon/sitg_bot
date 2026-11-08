@@ -41,6 +41,52 @@ describe("training", () => {
     controller.abort();
   });
 
+  it.each([
+    ["intermission", ["Pause", "Stop"]],
+    ["reading", ["Buzz", "Reveal answer", "Skip", "Pause", "Stop"]],
+    ["waiting", ["Buzz", "Reveal answer", "Skip", "Pause", "Stop"]],
+    ["best_buzz", ["Buzz", "Continue reading", "Reveal answer", "Skip", "Pause", "Stop"]],
+    ["answering", ["Pause", "Stop"]],
+    ["revealed", ["Next question", "Pause", "Stop"]],
+  ] as const)("renders only supported active controls during %s", (phase, expected) => {
+    const { root } = create({ ...state, phase });
+    const controls = root.querySelector(".training-question")!.nextElementSibling!;
+    expect(Array.from(controls.querySelectorAll("button"), (button) => button.textContent)).toEqual(expected);
+    expect(root.querySelector('input[aria-label="Submit answer"]') !== null).toBe(phase === "answering");
+  });
+
+  it.each(["intermission", "reading", "waiting", "best_buzz", "answering", "revealed"] as const)(
+    "keeps only resume and stop while paused during %s", (phase) => {
+      const { root } = create({ ...state, status: "paused", phase });
+      const controls = root.querySelector(".training-question")!.nextElementSibling!;
+      expect(Array.from(controls.querySelectorAll("button"), (button) => button.textContent)).toEqual(["Resume", "Stop"]);
+      expect(root.querySelector('input[aria-label="Submit answer"]')).toBeNull();
+    },
+  );
+
+  it.each(["completed", "stopped"] as const)("omits play controls when %s", (status) => {
+    const { root } = create({ ...state, status, phase: "revealed" });
+    const controls = root.querySelector(".training-question")!.nextElementSibling!;
+    expect(controls.querySelectorAll("button")).toHaveLength(0);
+    expect(root.querySelector('input[aria-label="Submit answer"]')).toBeNull();
+  });
+
+  describe.each(["reading", "waiting", "best_buzz"] as const)("actions during %s", (phase) => {
+    it.each([["reveal", "Reveal answer"], ["skip", "Skip"]])("submits %s", (command, label) => {
+      const { root, request, controller } = create({ ...state, phase });
+      const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
+        .find((value) => value.textContent === label)!;
+      button.click();
+      expect(request).toHaveBeenCalledWith("/api/miniapp/training/act", {
+        method: "POST", signal: controller.signal,
+        body: {
+          session_id: state.id, expected_version: state.version,
+          question_revision_id: state.question_revision_id, command, answer: undefined,
+        },
+      });
+    });
+  });
+
   it("keeps answer input while polling the same version and cancels on navigation", async () => {
     vi.useFakeTimers();
     const { root, request, controller } = create({ ...state, phase: "answering" });
