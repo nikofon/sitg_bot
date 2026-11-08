@@ -453,6 +453,12 @@ describe("dissection composer", () => {
     await flush();
     expect(notifySuccess).not.toHaveBeenCalled();
     expect(notifyError).not.toHaveBeenCalled();
+    // Repeated confirmation-needed responses still are not an accepted start.
+    [...dialog.querySelectorAll("button")]
+      .find((item) => item.textContent === "Confirm and start")!.click();
+    await flush();
+    expect(notifySuccess).not.toHaveBeenCalled();
+    expect(document.contains(dialog)).toBe(true);
     // The confirmed pass is accepted: success buzz, window closes.
     outcome = {};
     [...dialog.querySelectorAll("button")]

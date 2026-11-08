@@ -168,7 +168,8 @@ export function dissectComposerDialog(
     };
     void actions.dissect(packet.id, request)
       .then((outcome) => {
-        if (outcome.confirmation_required && !confirmExposure) {
+        if (actions.signal?.aborted) return;
+        if (outcome.confirmation_required) {
           warning.hidden = false;
           submit.textContent = i18n.t("knowledge.dissection.confirm");
           submit.setAttribute("data-confirm", "true");
@@ -181,6 +182,7 @@ export function dissectComposerDialog(
         onStarted();
       })
       .catch(() => {
+        if (actions.signal?.aborted) return;
         feedback?.notifyError();
         error.textContent = i18n.t("knowledge.error");
       })
