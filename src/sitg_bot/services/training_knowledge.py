@@ -62,6 +62,7 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlayerRecord,
     QuestionRevisionRecord,
+    ThemeRevisionRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
 )
@@ -696,9 +697,12 @@ class KnowledgeApplication:
                 else player.preferred_locale
             manifest = list((await session.execute(select(
                 PacketQuestionRecord.question_revision_id, PacketQuestionRecord.theme_revision_id,
-            ).where(PacketQuestionRecord.packet_version_id == version_id))).all())
+            ).join(ThemeRevisionRecord, ThemeRevisionRecord.id
+                   == PacketQuestionRecord.theme_revision_id)
+                .where(PacketQuestionRecord.packet_version_id == version_id)
+                .order_by(ThemeRevisionRecord.position, PacketQuestionRecord.position))).all())
             theme_count = len({theme for _, theme in manifest})
-            question_ids = {str(question) for question, _ in manifest}
+            question_ids = [str(question) for question, _ in manifest]
             policy = await self.entitlements.policy_for(session, actor, "best_buzz")
             provider_ready = bool(self.settings.api_key) or not isinstance(
                 self.analysis.provider, ResponsesAnalysisProvider
@@ -712,7 +716,8 @@ class KnowledgeApplication:
             # private artifact or a historical calculation flag.
             cache_hit = False
             if logical.scope != "training":
-                candidates = await session.execute(select(TrainingAnalysisRequestRecord.source)
+                cached = await session.scalar(select(TrainingAnalysisArtifactRecord.id)
+                    .select_from(TrainingAnalysisRequestRecord)
                     .join(TrainingAnalysisArtifactRecord,
                           TrainingAnalysisArtifactRecord.id
                           == TrainingAnalysisRequestRecord.artifact_id)
@@ -720,19 +725,19 @@ class KnowledgeApplication:
                         TrainingAnalysisRequestRecord.kind == "best_buzz",
                         TrainingAnalysisRequestRecord.source["packet_revision_id"].astext
                         == str(version_id),
+                        TrainingAnalysisRequestRecord.source["language"].astext == language,
+                        TrainingAnalysisRequestRecord.source["question_token_target_chars"].astext
+                        == str(token_target_chars),
+                        TrainingAnalysisRequestRecord.source["question_revision_ids"]
+                        == question_ids,
                         TrainingAnalysisArtifactRecord.shared.is_(True),
                         TrainingAnalysisArtifactRecord.status.in_(
                             ("succeeded", "partially_succeeded")
                         ),
                         TrainingAnalysisArtifactRecord.provider_usage["execution_profile"].astext
                         == self.settings.execution_profile,
-                    ))
-                cache_hit = any(
-                    source.get("language") == language
-                    and source.get("question_token_target_chars") == token_target_chars
-                    and set(source.get("question_revision_ids", [])) == question_ids
-                    for source in candidates.scalars()
-                )
+                    ).limit(1))
+                cache_hit = cached is not None
         quota = (await self.entitlements.capabilities(actor))["best_buzz"]
         enabled = policy.enabled and provider_ready and quota.enabled
         free_cache = cache_hit and not policy.cache_hit_charging
