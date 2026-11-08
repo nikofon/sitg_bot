@@ -6,37 +6,47 @@ import pytest
 from conftest import create_player, seed_category
 from knowledge_review_support import approve_all, send_and_approve
 from sqlalchemy import event, select
-from test_training import upload
+from test_training import open_question, upload
 
 from sitg_bot.domain.training import TrainingSettings
 from sitg_bot.services.analysis_jobs import AnalysisService
 from sitg_bot.services.entitlements import TRAINING_FEATURES, EntitlementService
 from sitg_bot.services.reliable_delivery import DurableJobQueue, DurableJobWorker
 from sitg_bot.services.training import TrainingService
-from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
+from sitg_bot.services.training_ai import (
+    BuzzBoundary,
+    FakeAnalysisProvider,
+    ProviderSettings,
+    chunk_questions,
+    text_fingerprint,
+)
 from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
+from sitg_bot.services.training_packets import TrainingPacketService
+from sitg_bot.services.training_provider import analysis_provider_from_settings
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
     TrainingBestBuzzCompletionRecord,
+    TrainingSessionRecord,
     TrainingUsagePeriodRecord,
 )
 
 pytestmark = pytest.mark.integration
 
 
-async def application(database, owner, *, limit=100):
+async def application(database, owner, *, limit=100, cache_hit_charging=False):
     settings = ProviderSettings("fake", "fixture")
-    app = KnowledgeApplication(database, settings=settings)
-    app.analysis = AnalysisService(
+    packets = TrainingPacketService(database)
+    analysis = AnalysisService(
         database,
         DurableJobQueue(database),
         FakeAnalysisProvider(),
         settings,
         entitlements=EntitlementService(database),
-        source_loader=TrainingAnalysisAccess(database, app.packets),
+        source_loader=TrainingAnalysisAccess(database, packets),
     )
+    app = KnowledgeApplication(database, settings=settings, analysis=analysis)
     await seed_category(
         database,
         "integration",
@@ -45,13 +55,145 @@ async def application(database, owner, *, limit=100):
                 "enabled": True,
                 "limit": limit,
                 "reset_period": "daily",
-                "cache_hit_charging": False,
+                "cache_hit_charging": cache_hit_charging,
             }
             for feature in TRAINING_FEATURES
         },
         [owner],
     )
     return app
+
+
+@pytest.mark.parametrize("completed", [False, True])
+async def test_current_does_not_resurface_completed_run_after_newer_stop(database, completed):
+    owner = await create_player(database, 8104, "latest-run")
+    version, _ = await upload(database, owner)
+    training = TrainingService(database)
+    first = (await training.start(owner, version, confirm=True))["session"]
+    async with database.transaction() as session:
+        record = await session.get(TrainingSessionRecord, UUID(first["id"]))
+        record.status, record.phase, record.deadline = "completed", "revealed", None
+        record.ended_at = datetime.now(UTC)
+    assert (await training.current(owner))["session"]["id"] == first["id"]
+    second = (await training.start(owner, version))["session"]
+    if completed:
+        async with database.transaction() as session:
+            record = await session.get(TrainingSessionRecord, UUID(second["id"]))
+            record.status, record.phase, record.deadline = "completed", "revealed", None
+            record.ended_at = datetime.now(UTC)
+    await training.act(
+        owner, UUID(second["id"]), "stop", expected_version=second["version"],
+        question_revision_id=UUID(second["question_revision_id"]),
+    )
+    assert (await training.current(owner))["session"] is None
+    score = (await training.current(owner, score_only=True))["session"]
+    assert score["id"] == second["id"]
+    assert score["status"] == ("completed" if completed else "stopped")
+    lobby = (await training.lobby(owner, "create"))["lobby"]
+    assert await training.current(owner) == {"session": None, "lobby": lobby}
+    third = (await training.start(owner, version))["session"]
+    assert (await training.current(owner))["session"]["id"] == third["id"]
+
+
+@pytest.mark.parametrize("key,model", [
+    (None, "fixture-model"), ("fixture-key", "unconfigured"), (None, "unconfigured"),
+])
+async def test_incomplete_provider_configuration_denies_preview_admission_and_statistics(
+    database, key, model,
+):
+    from sitg_bot.services.analysis_jobs import AnalysisFeatureDisabledError
+
+    owner = await create_player(database, 8100, "not-configured")
+    app = await application(database, owner)
+    app.settings = ProviderSettings("openai", model, api_key=key)
+    app.analysis.provider = analysis_provider_from_settings(app.settings)
+    version, _ = await upload(database, owner)
+    before = await app.entitlements.capabilities(owner)
+    preview = await app.best_buzz_preview(owner, version)
+    assert not preview["can_begin"] and preview["eligible_theme_count"] == 0
+    for kind in ("dissection", "best_buzz"):
+        with pytest.raises(AnalysisFeatureDisabledError, match="not configured"):
+            await app.request_analysis(
+                owner, version_id=version, kind=kind, confirm_exposure=True,
+                idempotency_key=f"unconfigured-{kind}",
+            )
+    fact = await app.mutate(owner, "create", {"title": "Fact", "description": "D"})
+    await app.statistics_job({"owner_id": str(owner), "fact_id": str(fact["id"]), "version": 1})
+    detail = await app.detail(owner, fact["id"])
+    assert detail["statistics"]["common_knowledge"] is None
+    assert detail["statistics"]["status"] == "unavailable"
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+    after = await app.entitlements.capabilities(owner)
+    assert {key: value.remaining for key, value in after.items()} == {
+        key: value.remaining for key, value in before.items()
+    }
+
+
+@pytest.mark.parametrize("preparation,playback,delay,legacy", [
+    (18, 3, 1, False), (3, 18, 1, False), (18, 18, 1, False),
+    (18, 3, 0, False), (18, 3, 1, True), (3, 18, 0, True),
+])
+async def test_persisted_best_buzz_keeps_exact_boundary_and_reads_legacy_results(
+    database, preparation, playback, delay, legacy,
+):
+    owner = await create_player(database, 8103, "exact-buzz")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    app.analysis.provider.buzz_response = lambda request: tuple(
+        BuzzBoundary(revision, text_fingerprint(text), 1, 3)
+        for chunk in request.chunks for revision, text in chunk_questions(chunk)
+    )
+    accepted = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", token_target_chars=preparation,
+        confirm_exposure=True, idempotency_key="exact-boundary",
+    )
+    worker = DurableJobWorker(app.analysis.jobs, {"training.analysis": app.analysis_job},
+                              kinds=("training.analysis",))
+    assert await worker.run_once() == 1
+    async with database.transaction() as session:
+        request = await session.scalar(select(TrainingAnalysisRequestRecord).where(
+            TrainingAnalysisRequestRecord.request_id == accepted["request_id"],
+        ))
+        artifact = await session.get(TrainingAnalysisArtifactRecord, request.artifact_id)
+        assert all(item["source_end"] == 3 for item in artifact.checkpoint["partial"])
+        assert all(item["source_end"] == 3 for item in artifact.payload["boundaries"])
+        if legacy:
+            artifact.schema_version = "1"
+            artifact.payload = {**artifact.payload, "boundaries": [
+                {key: value for key, value in item.items() if key != "source_end"}
+                for item in artifact.payload["boundaries"]
+            ]}
+    app = KnowledgeApplication(database, settings=app.settings, analysis=app.analysis)
+    training = TrainingService(database, best_buzz=app)
+    now = datetime.now(UTC)
+    state = (await training.start(
+        owner, version, now=now,
+        settings=TrainingSettings(best_buzz=True, token_target_chars=playback, token_delay=delay),
+    ))["session"]
+    state, now = await open_question(training, owner, state, now)
+    for _ in range(6):
+        if state["phase"] == "best_buzz":
+            break
+        now = state["deadline"]
+        state = (await training.view(owner, UUID(state["id"]), now=now))["session"]
+    assert state["phase"] == "best_buzz" and state["deadline"] is None
+    expected = "One two three" if legacy and preparation == 18 else "One"
+    assert state["text"] == expected
+    state = (await training.view(
+        owner, UUID(state["id"]), now=now + timedelta(seconds=100),
+    ))["session"]
+    assert state["text"] == expected
+    continued = (await training.act(
+        owner, UUID(state["id"]), "continue", expected_version=state["version"],
+        question_revision_id=UUID(state["question_revision_id"]), now=now,
+    ))["session"]
+    if delay == 0:
+        assert continued["phase"] == "waiting"
+        assert continued["text"] == "One two three <four> five"
+    else:
+        assert continued["phase"] == "reading" and continued["text"] == expected
+    assert len(app.analysis.provider.buzz_calls) == 1
 
 
 async def test_persistent_crud_pagination_and_permanent_independent_copies(database):
@@ -281,6 +423,105 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
         assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 2
 
 
+@pytest.mark.parametrize("limit,charged", [(1, False), (1, True), (None, False), (0, False)])
+async def test_best_buzz_preview_is_non_charging_and_matches_cache_policy(database, limit, charged):
+    from test_lobby_architecture import tournament_fixture
+
+    from sitg_bot.storage.models import (
+        PlayerExposureClaimRecord,
+        TournamentPacketAssignmentRecord,
+    )
+
+    fixture = await tournament_fixture(database, player_count=1)
+    owner = fixture.manager.id
+    app = await application(database, owner, limit=limit, cache_hit_charging=charged)
+    async with database.sessions() as session:
+        version = await session.scalar(select(TournamentPacketAssignmentRecord.adopted_version_id)
+            .where(TournamentPacketAssignmentRecord.packet_id == fixture.packet_id))
+        exposure_before = set(await session.scalars(select(PlayerExposureClaimRecord.id)))
+    before = await app.best_buzz_preview(owner, version)
+    assert before["theme_count"] == 1
+    assert before["eligible_theme_count"] == (0 if limit == 0 else 1)
+    assert before["can_begin"] is (limit != 0)
+    # Opening a dialog does not disclose, reserve, create requests or call upstream.
+    async with database.sessions() as session:
+        assert set(await session.scalars(select(PlayerExposureClaimRecord.id))) == exposure_before
+        assert not list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+    assert app.analysis.provider.buzz_calls == []
+    other = fixture.players[0].id
+    private, _ = await upload(database, owner)
+    with pytest.raises(LookupError):
+        await app.best_buzz_preview(other, private)
+    if limit == 0:
+        return
+    accepted = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="preview-buzz",
+    )
+    active = await app.best_buzz_preview(owner, version)
+    assert active["active_request_id"] == accepted["request_id"]
+    card = (await app.packets.list_packets(owner))["items"]
+    assert next(item for item in card if item["id"] == version)["best_buzz_request_id"] \
+        == accepted["request_id"]
+    worker = DurableJobWorker(app.analysis.jobs, {"training.analysis": app.analysis_job},
+                              kinds=("training.analysis",))
+    assert await worker.run_once() == 1
+    after = await app.best_buzz_preview(owner, version)
+    assert after["cache_hit"] is True
+    assert after["can_begin"] is (not charged or limit is None)
+    # Another tokenization is not the same cache, and private packets never get
+    # cross-request cache eligibility from the public packet's artifact.
+    different = await app.best_buzz_preview(owner, version, token_target_chars=7)
+    assert different["cache_hit"] is False
+    private_preview = await app.best_buzz_preview(owner, private)
+    assert private_preview["cache_hit"] is False
+    assert private_preview["can_begin"] is (limit is None)
+    assert len(app.analysis.provider.buzz_calls) == 1
+
+
+async def test_best_buzz_duplicate_concurrent_preparation_is_suppressed(database):
+    owner = await create_player(database, 8232, "buzz-dedup")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-1",
+    )
+    assert first["status"] == "queued"
+    # A second concurrent preparation of the same packet (double click, new
+    # idempotency key) returns the active request, not a duplicate job.
+    second = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-2",
+    )
+    assert second["request_id"] == first["request_id"]
+    assert second["status"] == "queued"
+    async with database.sessions() as session:
+        rows = list(await session.scalars(
+            select(TrainingAnalysisRequestRecord).where(
+                TrainingAnalysisRequestRecord.owner_player_id == owner
+            )
+        ))
+        assert len(rows) == 1
+    # Quota is reserved once: the packet has one theme and the limit is 100.
+    capabilities = await app.entitlements.capabilities(owner)
+    assert capabilities["best_buzz"].remaining == 99
+    # An independent packet is never blocked by the same-packet guard.
+    other, _ = await upload(database, owner)
+    third = await app.request_analysis(
+        owner, version_id=other, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-other-packet",
+    )
+    assert third["request_id"] != first["request_id"]
+    # Cancelling the active preparation frees the packet for an explicit retry.
+    assert await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    retried = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-3",
+    )
+    assert retried["request_id"] != first["request_id"]
+
+
 async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks(
     database, monkeypatch,
 ):
@@ -301,7 +542,7 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         artifact.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
     terminal_locked, waiter_lookup = asyncio.Event(), asyncio.Event()
     original_complete = app.analysis._complete_requests
-    original_lookup = app.analysis._artifact_for_key
+    original_lookup = app.analysis._active_duplicate
 
     async def complete(*args):
         terminal_locked.set()
@@ -313,7 +554,7 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         return await original_lookup(*args, **kwargs)
 
     monkeypatch.setattr(app.analysis, "_complete_requests", complete)
-    monkeypatch.setattr(app.analysis, "_artifact_for_key", lookup)
+    monkeypatch.setattr(app.analysis, "_active_duplicate", lookup)
     terminal = asyncio.create_task(app.analysis._write_terminal(
         artifact_id, lease, status="succeeded", payload={"boundaries": []},
     ))

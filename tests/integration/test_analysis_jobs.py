@@ -21,6 +21,7 @@ from sitg_bot.services.analysis_jobs import (
     TrainingAnalysisRequestRecord,
 )
 from sitg_bot.services.entitlements import (
+    FEATURE_BEST_BUZZ,
     FEATURE_DISSECTION,
     TRAINING_FEATURES,
     EntitlementService,
@@ -930,6 +931,100 @@ async def test_best_buzz_boundaries_are_validated_against_token_streams(database
     view = await invalid_stack.service.status(owner_player_id=owner, request_id="buzz-2")
     assert view.status == "failed"
     assert view.retryable is True
+
+
+async def test_active_same_packet_best_buzz_requests_are_deduplicated(database):
+    owner = await create_player(database, 226, "buzz-dedupe")
+    stack = await make_stack(database, [owner])
+    revision_id = stack.loader.add("Dedupe guard fact text.")
+    source = BestBuzzSource(uuid4(), (revision_id,), question_token_target_chars=10)
+
+    async with database_transaction(stack.service) as session:
+        first = await stack.service.request(
+            session, owner_player_id=owner, source=source,
+            idempotency_key="buzz-dedupe-1",
+        )
+    assert first.status == "queued"
+    # A second concurrent preparation of the same packet (double click, new
+    # idempotency key) returns the active request instead of enqueuing again.
+    async with database_transaction(stack.service) as session:
+        second = await stack.service.request(
+            session, owner_player_id=owner, source=source,
+            idempotency_key="buzz-dedupe-2",
+        )
+    assert second.request_id == first.request_id
+    assert second.status == "queued"
+    async with database.sessions() as session:
+        rows = list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+        assert len(rows) == 1
+        job_count = await session.scalar(
+            select(func.count())
+            .select_from(DurableJobRecord)
+            .where(DurableJobRecord.kind == TRAINING_ANALYSIS_JOB_KIND)
+        )
+        assert job_count == 1
+    # Quota is reserved exactly once for the packet.
+    remaining = (await stack.entitlements.capabilities(owner))[FEATURE_BEST_BUZZ].remaining
+    assert remaining == 9
+
+    # Independent packets are never serialized by the same-packet guard.
+    other = BestBuzzSource(uuid4(), (revision_id,), question_token_target_chars=10)
+    async with database_transaction(stack.service) as session:
+        third = await stack.service.request(
+            session, owner_player_id=owner, source=other,
+            idempotency_key="buzz-other",
+        )
+    assert third.request_id != first.request_id
+
+    # A terminal artifact frees the packet for an explicit new request.
+    # (Both pending jobs run: one per independently requested packet.)
+    assert await stack.worker.run_once() == 2
+    async with database_transaction(stack.service) as session:
+        retry = await stack.service.request(
+            session, owner_player_id=owner, source=source,
+            idempotency_key="buzz-retry",
+        )
+    assert retry.request_id != first.request_id
+    assert retry.status == "succeeded"  # cache hit on the finished computation
+
+    # Dissection requests keep their independent revision semantics.
+    dissection = DissectionSource(uuid4(), (revision_id,))
+    await submit(stack.service, owner, dissection, "d-dedupe-a")
+    await submit(stack.service, owner, dissection, "d-dedupe-b")
+    async with database.sessions() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(TrainingAnalysisRequestRecord)
+            .where(TrainingAnalysisRequestRecord.kind == "dissection")
+        )
+        assert count == 2
+
+
+async def test_concurrent_private_best_buzz_admissions_share_one_owner_request(database):
+    owner = await create_player(database, 227, "buzz-race")
+    other = await create_player(database, 228, "buzz-other-owner")
+    stack = await make_stack(database, [owner, other])
+    source = BestBuzzSource(uuid4(), (stack.loader.add("Concurrent private content."),))
+
+    async def request(player, key, packet=source):
+        async with stack.service.database.transaction() as session:
+            return await stack.service.request(
+                session, owner_player_id=player, source=packet,
+                idempotency_key=key, private=True,
+            )
+
+    first, second = await asyncio.wait_for(asyncio.gather(
+        request(owner, "private-a"), request(owner, "private-b"),
+    ), timeout=10)
+    assert first.request_id == second.request_id
+    assert (await stack.entitlements.capabilities(owner))[FEATURE_BEST_BUZZ].remaining == 9
+    # No owner-crossing: private artifacts and status remain separate.
+    foreign = await request(other, "private-other")
+    assert foreign.request_id != first.request_id
+    assert await stack.service.status(owner_player_id=other, request_id=first.request_id) is None
+    assert await stack.service.cancel(owner_player_id=owner, request_id=first.request_id)
+    replacement = await request(owner, "private-retry")
+    assert replacement.request_id != first.request_id
 
 
 async def test_status_results_and_cancellation_are_owner_scoped(database):

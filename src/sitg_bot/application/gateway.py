@@ -42,6 +42,7 @@ from sitg_bot.application.contracts import (
     AuthorLinkMineOperation,
     AuthorProfileOperation,
     AuthorsSearchOperation,
+    BestBuzzPreviewOperation,
     BugReportCreateOperation,
     CapabilityAction,
     CapabilityPayload,
@@ -370,6 +371,7 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.KNOWLEDGE_THEMES: ActionPolicy(sensitive_response=True),
+        ActionCode.BEST_BUZZ_PREVIEW: ActionPolicy(sensitive_response=True),
         ActionCode.KNOWLEDGE_IMPORTS: ActionPolicy(sensitive_response=True),
         ActionCode.KNOWLEDGE_IMPORT_DETAIL: ActionPolicy(sensitive_response=True),
         ActionCode.KNOWLEDGE_THEME_PREVIEW: ActionPolicy(
@@ -1233,6 +1235,10 @@ class ApplicationGateway:
             return await self.knowledge.facts(player_id, **operation.model_dump(exclude={"action"}))
         if isinstance(operation, KnowledgeFactOperation):
             return await self.knowledge.detail(player_id, operation.fact_id)
+        if isinstance(operation, BestBuzzPreviewOperation):
+            return await self.knowledge.best_buzz_preview(
+                player_id, **operation.model_dump(exclude={"action"})
+            )
         if isinstance(operation, KnowledgeThemesOperation):
             return await self.knowledge.themes.list(player_id, operation.version_id)
         if isinstance(operation, KnowledgeThemePreviewOperation):

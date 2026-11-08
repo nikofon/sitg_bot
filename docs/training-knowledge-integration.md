@@ -11,6 +11,8 @@ See [database operations](database-operations.md#schema-baseline) for migrations
   recipient's explicitly selected candidates become permanent, independently editable copies
   in their own library. Later edits/deletions never propagate. Repeating
   a send adds only uncopied facts; it never overwrites or resurrects prior copies.
+  Approval skips an already-copied source before claiming any new content fingerprint,
+  so a skipped edited resend cannot block that content from an independent sender.
   Durable recipient/content-fingerprint claims also deduplicate equivalent facts
   arriving through different sources or sharing links, including after editing or
   deleting the imported copy. Existing copies are preserved by migration.
@@ -198,9 +200,9 @@ when the request is older than the bounded 100-row history listing.
 Execution-profile compatibility, cache isolation and legacy-work handling belong in
 [Training AI caching](training-ai.md#analysis-requests-jobs-and-caching).
 New statistic snapshots use the producing artifact's model and versions, not the current
-application configuration; historical metadata and Best-buzz position representation remain
-unchanged. Statistics batches acquire accounts in UUID order, matching collection imports
-and direct copying.
+application configuration; historical metadata remains unchanged. Best-buzz position
+compatibility belongs to the [playback port](training.md#best-buzz-playback-port).
+Statistics batches acquire accounts in UUID order, matching collection imports.
 
 ## Adapters
 
@@ -211,10 +213,15 @@ search plus a dedicated case-insensitive `author` substring filter, additive tag
 sorting, pagination, and permanent copy sharing. Fact cards never display the internal
 source-packet provenance (privacy on imported libraries); the description renders as
 regular text. Dissection launches from a packet card into a closable General/Themes
-composer window: General carries the selected-theme counter, separate Instructions and
-Commentary fields, auto-assign tag selection (tag ids) with select/deselect all, and the
-start action. The tag toggle is hidden when no tags are available and leaves both text
-fields and theme selection unchanged. Themes lists collapsed theme rows whose
+composer window: General carries the selected-theme counter, one optional Additional
+instructions field (any commentary or guidance for the analysis, with a short memo;
+the two legacy Instruction/Commentary inputs fed one merged model payload, so the
+composer now collects a single text and submits it as the request's `instructions`;
+the legacy API fields, stored provenance, revision/cache identities and historical
+records are preserved without rewriting or merging old data),
+auto-assign tag selection (tag ids) with select/deselect all, and the
+start action. The tag toggle is hidden when no tags are available and leaves the text
+field and theme selection unchanged. Themes lists collapsed theme rows whose
 checkboxes are independent of expansion, with select/deselect all, the remaining theme
 quota and reset time, and full theme reveal only through the exposure-confirmed
 `theme_preview` mutation. Started dissections are durable: closing the window never
@@ -228,7 +235,21 @@ classification defaults: new and potential selected, exact duplicates deselected
 per-section select/deselect all, per-fact checkboxes independent of expansion, and
 Add selected / Reject controls at the top and bottom; approval refreshes the library
 and the pending list. Job polling preserves
-form input. Each training card offers Best buzz preparation.
+form input. Each training card offers Best buzz preparation: the request opens a
+confirmation dialog that states how many of the packet's themes the player's quota
+can prepare (unlimited, sufficient, or honestly short) and requires an explicit
+**Begin preparation**; fresh content is exposure-confirmed inside the dialog, and
+no preparation starts merely by opening it. An accepted preparation shows a
+"Preparing best buzz…" plaque on that packet card with status until the durable
+request reaches a terminal state, which clears the plaque and updates the card's
+calculated flag; a failed status query marks the status unknown and retries instead
+of claiming completion or leaving a permanently stale preparing plaque. Reopening
+the Mini App restores owner-scoped active preparation from the catalogue. The
+authoritative backend path suppresses duplicate concurrent preparation of the same
+packet by returning the owner's active request (see
+[Training AI](training-ai.md#analysis-requests-jobs-and-caching)); independent packets
+are unaffected. Dissection start, confirmed theme exposure and confirmed Best buzz
+begin give mobile haptic feedback (see the [Mini App guide](mini-app.md)).
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
 
@@ -281,11 +302,8 @@ concealed again. There is no spaced-repetition scheduling,
 scoring or AI involvement, and the library's CRUD, filtering, sharing and
 import flows are unchanged.
 
-Review follow-ups outside this quick-restart/tag-selection feature remain
-unaddressed: ordinary library listing/CRUD and dissection tag-limit validation
-(R2 outside practice), and inherited Training current-session selection that can
-resurface an older completed run after a newer run is stopped (R3). Neither is
-claimed fixed by this feature.
+Ordinary library listing/CRUD and dissection tag-limit validation remain outside
+this quick-restart/tag-selection feature.
 
 Telegram exposes Knowledge library through the Training keyboard, launching the
 knowledge Mini App. When the Mini App is not configured, the keyboard falls back

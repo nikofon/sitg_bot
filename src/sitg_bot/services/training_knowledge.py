@@ -62,6 +62,7 @@ from sitg_bot.storage.models import (
     PacketVersionRecord,
     PlayerRecord,
     QuestionRevisionRecord,
+    ThemeRevisionRecord,
     TrainingAnalysisArtifactRecord,
     TrainingAnalysisRequestRecord,
 )
@@ -172,9 +173,15 @@ class KnowledgeApplication:
             source_loader=TrainingAnalysisAccess(database, self.packets),
         )
 
+    @property
+    def provider_ready(self):
+        return self.settings.configured or not isinstance(
+            self.analysis.provider, ResponsesAnalysisProvider
+        )
+
     async def initialize(self):
         features = None
-        if self.settings.api_key and self.settings.model != "unconfigured":
+        if self.settings.configured:
             features = {
                 feature: {
                     "enabled": True,
@@ -609,9 +616,7 @@ class KnowledgeApplication:
             )
             if len(chunks) > 16:
                 raise ValueError("Analysis accepts at most 16 source chunks per packet")
-            if not self.settings.api_key and isinstance(
-                self.analysis.provider, ResponsesAnalysisProvider
-            ):
+            if not self.provider_ready:
                 raise AnalysisFeatureDisabledError("Training AI provider is not configured")
             policy = await self.entitlements.policy_for(session, actor, kind)
             if not policy.enabled:
@@ -685,6 +690,70 @@ class KnowledgeApplication:
             )) if row else None
             return {**asdict(result), "dissection_id": row.id if row else None,
                     "import_id": review_id}
+
+    async def best_buzz_preview(self, actor, version_id, *, token_target_chars=18):
+        """Content-free, non-charging preview; admission rechecks all permissions."""
+        async with self.database.transaction() as session:
+            await require_trainee(session, actor)
+            version, logical = await self.packets.authorize(session, actor, version_id)
+            player = await session.get(PlayerRecord, actor)
+            language = version.language if version.language in ("en", "ru") \
+                else player.preferred_locale
+            manifest = list((await session.execute(select(
+                PacketQuestionRecord.question_revision_id, PacketQuestionRecord.theme_revision_id,
+            ).join(ThemeRevisionRecord, ThemeRevisionRecord.id
+                   == PacketQuestionRecord.theme_revision_id)
+                .where(PacketQuestionRecord.packet_version_id == version_id)
+                .order_by(ThemeRevisionRecord.position, PacketQuestionRecord.position))).all())
+            theme_count = len({theme for _, theme in manifest})
+            question_ids = [str(question) for question, _ in manifest]
+            policy = await self.entitlements.policy_for(session, actor, "best_buzz")
+            provider_ready = self.provider_ready
+            active = await self.analysis._active_duplicate(
+                session, owner_player_id=actor, kind="best_buzz",
+                packet_revision_id=str(version_id),
+            )
+            # Public immutable versions have one exact manifest. Match the
+            # producing profile and complete manifest, never another owner's
+            # private artifact or a historical calculation flag.
+            cache_hit = False
+            if logical.scope != "training":
+                cached = await session.scalar(select(TrainingAnalysisArtifactRecord.id)
+                    .select_from(TrainingAnalysisRequestRecord)
+                    .join(TrainingAnalysisArtifactRecord,
+                          TrainingAnalysisArtifactRecord.id
+                          == TrainingAnalysisRequestRecord.artifact_id)
+                    .where(
+                        TrainingAnalysisRequestRecord.kind == "best_buzz",
+                        TrainingAnalysisRequestRecord.source["packet_revision_id"].astext
+                        == str(version_id),
+                        TrainingAnalysisRequestRecord.source["language"].astext == language,
+                        TrainingAnalysisRequestRecord.source["question_token_target_chars"].astext
+                        == str(token_target_chars),
+                        TrainingAnalysisRequestRecord.source["question_revision_ids"]
+                        == question_ids,
+                        TrainingAnalysisArtifactRecord.shared.is_(True),
+                        TrainingAnalysisArtifactRecord.status.in_(
+                            ("succeeded", "partially_succeeded")
+                        ),
+                        TrainingAnalysisArtifactRecord.provider_usage["execution_profile"].astext
+                        == self.settings.execution_profile,
+                    ).limit(1))
+                cache_hit = cached is not None
+        quota = (await self.entitlements.capabilities(actor))["best_buzz"]
+        enabled = policy.enabled and provider_ready and quota.enabled
+        free_cache = cache_hit and not policy.cache_hit_charging
+        allowed_count = theme_count if free_cache or quota.remaining is None \
+            else min(theme_count, quota.remaining)
+        return {
+            "theme_count": theme_count,
+            "eligible_theme_count": allowed_count if enabled else 0,
+            "can_begin": enabled and theme_count > 0 and allowed_count == theme_count,
+            "enabled": enabled,
+            "remaining": quota.remaining,
+            "cache_hit": cache_hit,
+            "active_request_id": active[0].request_id if active else None,
+        }
 
     async def dissections(self, actor):
         async with self.database.transaction() as session:
@@ -979,9 +1048,7 @@ class KnowledgeApplication:
             ):
                 return
             request_id = f"statistics:{fact_id}:{version}"
-            if self.settings.api_key or not isinstance(
-                self.analysis.provider, ResponsesAnalysisProvider
-            ):
+            if self.provider_ready:
                 try:
                     async with session.begin_nested():
                         source = CommonKnowledgeSource(
@@ -1121,17 +1188,21 @@ class KnowledgeApplication:
             question = by_id[revision]
             if boundary["text_digest"] != text_fingerprint(question.text):
                 raise ValueError("Best buzz source changed")
-            tokens = announcement_tokens(question.text, target)
-            index = boundary["token_index"]
-            if type(index) is not int or not 0 <= index <= len(tokens):
-                raise ValueError("Invalid Best buzz token boundary")
-            word_count = sum(len(token.split()) for token in tokens[:index])
-            words = list(re.finditer(r"\S+", question.text))
+            if "source_end" in boundary:
+                source_end = boundary["source_end"]
+            else:
+                tokens = announcement_tokens(question.text, target)
+                index = boundary["token_index"]
+                if type(index) is not int or not 0 <= index <= len(tokens):
+                    raise ValueError("Invalid Best buzz token boundary")
+                word_count = sum(len(token.split()) for token in tokens[:index])
+                words = list(re.finditer(r"\S+", question.text))
+                source_end = words[word_count - 1].end() if word_count else 0
             result[revision] = {
                 "schema_version": 1,
                 "tokenizer_version": "announcement-v1",
                 "question_revision_id": str(revision),
                 "text_digest": text_digest(question.text),
-                "source_end": words[word_count - 1].end() if word_count else 0,
+                "source_end": source_end,
             }
         return result

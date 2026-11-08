@@ -13,6 +13,8 @@ from sitg_bot.services.reliable_delivery import DurableJobWorker
 from sitg_bot.services.training_knowledge import KnowledgeApplication
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
+    KnowledgeFactRecord,
+    KnowledgeImportHashRecord,
     KnowledgeImportRecord,
     KnowledgeTagRecord,
     PacketQuestionRecord,
@@ -183,6 +185,74 @@ async def test_review_dedupe_snapshot_decisions_and_no_resurrection(database):
         selected_candidate_ids=selected(repeat_detail),
     )
     assert approved["approved_count"] == 0  # source claims survive changed source and deletion
+
+
+@pytest.mark.parametrize("copy_state", ["live", "edited", "deleted"])
+async def test_skipped_source_resend_does_not_claim_unimported_content(database, copy_state):
+    owner = await create_player(database, 9912, "resend-owner")
+    recipient = await create_player(database, 9913, "resend-recipient")
+    other = await create_player(database, 9914, "independent-sender")
+    app = KnowledgeApplication(database)
+    content = {
+        "title": "Shared fact", "description": "Version one", "author": "Shared author",
+        "links": [{"url": "https://example.org/fact", "origin": "dissection"}],
+    }
+    source = await app.mutate(owner, "create", content)
+    first = await collection(app, owner, recipient)
+    detail = await app.reviews.detail(recipient, first)
+    approved = await app.reviews.decide(
+        recipient, import_id=first, decision="approve", selected_candidate_ids=selected(detail),
+    )
+    assert approved["approved_count"] == 1 and approved["skipped_count"] == 0
+    copied = (await app.facts(recipient))["items"][0]
+    expected_description = "Version one"
+    if copy_state == "edited":
+        expected_description = "Recipient edit"
+        await app.mutate(recipient, "update", {
+            "fact_id": copied["id"], "expected_version": 1, "description": expected_description,
+        })
+    elif copy_state == "deleted":
+        await app.mutate(recipient, "delete", {
+            "fact_id": copied["id"], "confirm_dissection_origin": False,
+        })
+    await app.mutate(owner, "update", {
+        "fact_id": source["id"], "expected_version": 1, "description": "Version two",
+    })
+    async with database.sessions() as session:
+        original_claims = set(await session.scalars(
+            select(KnowledgeImportHashRecord.content_fingerprint).where(
+                KnowledgeImportHashRecord.recipient_id == recipient,
+            ),
+        ))
+        assert len(original_claims) == 2
+    repeat = await collection(app, owner, recipient)
+    detail = await app.reviews.detail(recipient, repeat)
+    skipped = await app.reviews.decide(
+        recipient, import_id=repeat, decision="approve", selected_candidate_ids=selected(detail),
+    )
+    assert skipped["approved_count"] == 0 and skipped["skipped_count"] == 1
+    async with database.sessions() as session:
+        assert set(await session.scalars(
+            select(KnowledgeImportHashRecord.content_fingerprint).where(
+                KnowledgeImportHashRecord.recipient_id == recipient,
+            ),
+        )) == original_claims
+    await app.mutate(other, "create", {**content, "description": "Version two"})
+    independent = await collection(app, other, recipient)
+    detail = await app.reviews.detail(recipient, independent)
+    approved = await app.reviews.decide(
+        recipient, import_id=independent, decision="approve",
+        selected_candidate_ids=selected(detail),
+    )
+    assert approved["approved_count"] == 1 and approved["skipped_count"] == 0
+    facts = (await app.facts(recipient))["items"]
+    assert len(facts) == (1 if copy_state == "deleted" else 2)
+    incoming = next(fact for fact in facts if fact["id"] != copied["id"])
+    assert incoming["description"] == "Version two" and incoming["author"] == content["author"]
+    async with database.sessions() as session:
+        original = await session.get(KnowledgeFactRecord, copied["id"])
+        assert original.description == expected_description
+        assert (original.deleted_at is not None) == (copy_state == "deleted")
 
 
 async def test_concurrent_reviews_recheck_current_library(database):

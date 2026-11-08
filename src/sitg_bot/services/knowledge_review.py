@@ -480,6 +480,9 @@ class KnowledgeReview:
                 if value.get("source_fact_id")
                 else None
             )
+            if copied is not None:
+                skipped += 1
+                continue
             claimed = set(await session.scalars(
                 insert(KnowledgeImportHashRecord)
                 .values([
@@ -489,7 +492,7 @@ class KnowledgeReview:
                 .on_conflict_do_nothing()
                 .returning(KnowledgeImportHashRecord.content_fingerprint)
             ))
-            if digest in hashes or copied is not None or claimed != digests:
+            if digest in hashes or claimed != digests:
                 skipped += 1
                 continue
             candidates.append(value)

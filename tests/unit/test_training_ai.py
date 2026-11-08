@@ -170,6 +170,22 @@ def test_validate_buzz_boundaries_require_coverage_digests_and_range() -> None:
         )
 
 
+@pytest.mark.parametrize("offset", [0, 3, 8, True, -1, 1, 9])
+def test_canonical_buzz_boundary_is_a_source_word_end(offset):
+    revision = uuid4()
+    text = "One  two"
+    boundary = BuzzBoundary(revision, text_fingerprint(text), 1, offset)
+    values = {
+        "token_counts": {revision: 2}, "text_digests": {revision: text_fingerprint(text)},
+        "question_texts": {revision: text},
+    }
+    if type(offset) is int and offset in (0, 3, 8):
+        assert validate_buzz_boundaries((boundary,), **values) == (boundary,)
+    else:
+        with pytest.raises(AnalysisValidationError, match="source boundary"):
+            validate_buzz_boundaries((boundary,), **values)
+
+
 def test_validate_common_knowledge_bounds() -> None:
     assert validate_common_knowledge(0) == 0
     assert validate_common_knowledge(100) == 100

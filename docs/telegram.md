@@ -249,4 +249,11 @@ tests. PostgreSQL recovery and chat tests are in [tests/integration](../tests/in
 Live Telegram rendering, media, and cleanup still need manual validation after affected changes.
 Training uses the same ordered SI event presenter and deletion helper with a separate
 owner-scoped event/presentation ledger; see [training execution](training.md#execution-and-presentation).
-It never creates competitive games or rating/reputation controls.
+It never creates competitive games or rating/reputation controls. Successful training
+Start uses only the durable opening event, not the forced menu-recovery path. Training
+appeals attach localized Yes/No inline buttons to their own prompt while leaving the
+persistent `+`, `||`, `!` reply keyboard intact. The existing owner-authorized training
+callback route binds each vote to the recorded ballot message, session action version and
+current question; the existing solo-vote action enforces expiry and resolves scores/pause.
+Callbacks are acknowledged and durable presentation edits retire resolved ballot buttons.
+Competitive appeal controls are unchanged.

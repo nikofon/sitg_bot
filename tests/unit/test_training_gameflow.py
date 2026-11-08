@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from aiogram.types import Chat, Message
+from aiogram.types import CallbackQuery, Chat, Message, User
 
 from sitg_bot.application.contracts import ActionCode
 from sitg_bot.bot.handlers import training
 from sitg_bot.bot.i18n import LocalizationService
+from sitg_bot.bot.state import GatewayCallError
 from sitg_bot.bot.training_delivery import TrainingDelivery, training_keyboard
 from sitg_bot.domain.training import TrainingSettings, text_digest
 from sitg_bot.services.concurrency import StaleWriteError
@@ -137,6 +138,69 @@ async def test_best_buzz_continue_resumes_configured_reading_not_instant_dump():
         await action(service, record, "continue", now=NOW + timedelta(seconds=32))
 
 
+@pytest.mark.parametrize("target,boundary,prefix", [
+    (18, 3, "One"), (12, 13, "One two three"),
+])
+async def test_best_buzz_splits_initial_and_crossing_frames(target, boundary, prefix):
+    service, record, question, revision, _, session = harness(
+        TrainingSettings(best_buzz=True, token_delay=1, token_target_chars=target),
+    )
+    question.best_buzz = {
+        "schema_version": 1, "tokenizer_version": "announcement-v1",
+        "question_revision_id": str(QUESTION), "text_digest": text_digest(revision.text),
+        "source_end": boundary,
+    }
+    await service._begin_question(session, record, NOW)
+    for tick in range(1, 5):
+        if record.phase == "best_buzz":
+            break
+        await service._advance(session, record, NOW + timedelta(seconds=tick))
+    assert record.phase == "best_buzz" and record.deadline is None
+    frames = [event.parameters["text"] for event in session.events
+              if event.kind == "question_token_revealed"]
+    assert frames[-1] == prefix
+    assert all(prefix.startswith(frame) for frame in frames)
+    await service._advance(session, record, NOW + timedelta(seconds=100))
+    assert session.events[-1].parameters["text"] == prefix
+    await action(service, record, "continue", now=NOW + timedelta(seconds=100))
+    await service._advance(session, record, NOW + timedelta(seconds=101))
+    assert session.events[-1].parameters["text"].startswith(prefix + " ")
+
+
+async def test_instantaneous_reading_without_best_buzz_reveals_the_full_question():
+    service, record, _, revision, _, session = harness(TrainingSettings(token_delay=0))
+    await service._begin_question(session, record, NOW)
+    assert record.phase == "waiting"
+    assert record.deadline == NOW + timedelta(seconds=10)
+    assert session.events[-1].parameters["text"] == revision.text
+
+
+async def test_instantaneous_best_buzz_waits_for_explicit_continue():
+    service, record, question, revision, _, session = harness(
+        TrainingSettings(best_buzz=True, token_delay=0, token_target_chars=18),
+    )
+    question.best_buzz = {
+        "schema_version": 1, "tokenizer_version": "announcement-v1",
+        "question_revision_id": str(QUESTION), "text_digest": text_digest(revision.text),
+        "source_end": 3,
+    }
+    await service._begin_question(session, record, NOW)
+    assert record.phase == "best_buzz" and record.deadline is None
+    assert session.events[-1].parameters["text"] == "One"
+    await action(service, record, "pause")
+    await action(service, record, "resume", now=NOW + timedelta(seconds=10))
+    await service._advance(session, record, NOW + timedelta(seconds=20))
+    assert record.phase == "best_buzz"
+    assert [event.parameters["text"] for event in session.events
+            if event.kind == "question_token_revealed"] == ["One"]
+    await action(service, record, "continue", now=NOW + timedelta(seconds=20))
+    assert record.phase == "waiting" and record.best_buzz_consumed
+    assert record.deadline == NOW + timedelta(seconds=30)
+    assert session.events[-1].parameters["text"] == revision.text
+    with pytest.raises(ValueError):
+        await action(service, record, "continue", now=NOW + timedelta(seconds=21))
+
+
 @pytest.mark.parametrize("approve", [True, False])
 @pytest.mark.parametrize("paused", [True, False])
 async def test_solo_ballot_preserves_original_verdict_and_prior_pause(approve, paused):
@@ -201,9 +265,7 @@ def message(text):
                                            ("/pause", "pause"), ("/resume", "resume"),
                                            ("/quit", "stop"), ("/abbandon", "stop"),
                                            ("/abandon", "stop")])
-async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command, monkeypatch):
-    if command == "stop":
-        monkeypatch.setattr(training, "show_menu", AsyncMock())
+async def test_registered_keyboard_controls_are_actions_not_answer_text(text, command):
     state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
              "presented_question_revision_id": str(QUESTION), "status": "active",
              "phase": "answering"}
@@ -220,7 +282,9 @@ async def test_registered_keyboard_controls_are_actions_not_answer_text(text, co
     assert operation.answer is None
 
 
-async def test_registered_quit_dismisses_completed_training_and_restores_menu(monkeypatch):
+async def test_registered_quit_dismisses_completed_training_and_defers_menu_to_delivery(
+    monkeypatch,
+):
     menu = AsyncMock()
     monkeypatch.setattr(training, "show_menu", menu)
     state = {
@@ -236,7 +300,7 @@ async def test_registered_quit_dismisses_completed_training_and_restores_menu(mo
         navigation=SimpleNamespace(active_mode="training", allowed_actions=()),
     )
     assert backend._execute.await_args.args[1].command == "stop"
-    menu.assert_awaited_once()
+    menu.assert_not_awaited()
 
 
 async def test_registered_score_command_reads_finished_score_without_mutation(monkeypatch):
@@ -326,6 +390,111 @@ async def test_training_ballot_accepts_localized_text_with_three_controls(locale
     operation = backend._execute.await_args.args[1]
     assert operation.command == "vote" and operation.approve is approve
     assert operation.answer is None
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("approve", [True, False])
+async def test_registered_inline_ballot_routes_to_existing_solo_vote(locale, approve, monkeypatch):
+    acknowledge = AsyncMock()
+    monkeypatch.setattr(CallbackQuery, "answer", acknowledge)
+    state = {"id": str(RUN), "version": 7, "question_revision_id": str(QUESTION),
+             "appeal_status": "voting", "appeal_message_ids": [10]}
+    backend = SimpleNamespace(_execute=AsyncMock(
+        return_value=SimpleNamespace(data={"session": state}),
+    ))
+    callback = CallbackQuery(
+        id="vote", from_user=User(id=42, is_bot=False, first_name="Player"),
+        chat_instance="chat", message=message("Ballot"),
+        data=f"tr:{RUN.hex}:7:{'yes' if approve else 'no'}",
+    )
+    claim = object()
+    await training.router.propagate_event(
+        "callback_query", callback, backend=backend, telegram_update_claim=claim,
+        localization=LocalizationService(), locale=locale,
+    )
+    read, mutation = backend._execute.await_args_list
+    assert read.args[0] is claim and read.args[1].action == ActionCode.TRAINING_VIEW
+    operation = mutation.args[1]
+    assert operation.command == "vote" and operation.approve is approve
+    assert operation.session_id == RUN and operation.expected_version == 7
+    assert operation.question_revision_id == QUESTION
+    acknowledge.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("invalid", ["resolved", "expired", "new_ballot", "untracked",
+                                     "old_question", "foreign", "malformed"])
+async def test_inline_ballot_rejects_stale_or_unauthorized_targets(invalid):
+    state = {"version": 7, "question_revision_id": str(QUESTION),
+             "appeal_status": "voting", "appeal_message_ids": [10]}
+    if invalid in {"resolved", "expired"}:
+        state["appeal_status"] = "rejected"
+    if invalid == "new_ballot":
+        state["version"] = 9
+    if invalid in {"untracked", "old_question"}:
+        state["appeal_message_ids"] = [99]
+    backend = SimpleNamespace(_execute=AsyncMock(
+        return_value=SimpleNamespace(data={"session": state}),
+    ))
+    if invalid == "foreign":
+        backend._execute.side_effect = GatewayCallError(SimpleNamespace(
+            error=SimpleNamespace(message_key="not_found"),
+        ))
+    callback = SimpleNamespace(
+        data=f"tr:{RUN.hex}:{'bad' if invalid == 'malformed' else '7'}:yes",
+        message=message("Ballot"), answer=AsyncMock(),
+    )
+    await training.handle_training_action(callback, backend, object(), LocalizationService(), "en")
+    assert backend._execute.await_count == 1  # authorized read only; no vote mutation
+    assert callback.answer.await_args.kwargs["show_alert"] is True
+
+
+async def test_ballot_receipt_projection_matches_version_and_question_only():
+    service, record, question, revision, _, session = harness(phase="revealed", status="paused")
+    record.presentation_version = 1
+    service._score = AsyncMock(return_value=10)
+    session.get.return_value = SimpleNamespace(public_nickname="Player")
+    messages = {
+        "current": {"kind": "training_ballot", "version": 1,
+                    "round_id": str(QUESTION), "ids": [10]},
+        "old_version": {"kind": "training_ballot", "version": 0,
+                        "round_id": str(QUESTION), "ids": [11]},
+        "old_question": {"kind": "training_ballot", "version": 1,
+                         "round_id": str(UUID(int=99)), "ids": [12]},
+        "question": {"kind": "question", "version": 1,
+                     "round_id": str(QUESTION), "ids": [13]},
+    }
+    result = await TrainingService._view(
+        service, session, record, NOW, question_data=(question, revision, "Theme"),
+        presentation={"messages": messages},
+    )
+    assert result["session"]["appeal_message_ids"] == [10]
+
+
+async def test_foreign_actor_cannot_read_the_ballot_session(monkeypatch):
+    monkeypatch.setattr("sitg_bot.services.training.require_trainee", AsyncMock())
+    session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
+    with pytest.raises(LookupError):
+        await TrainingService._owned(session, UUID(int=99), RUN)
+
+
+@pytest.mark.parametrize("approve", [True, False])
+async def test_double_vote_and_expired_vote_cannot_change_later_verdict(approve):
+    service, record, _, _, attempt, _ = harness(phase="revealed")
+    await action(service, record, "appeal")
+    ballot_version = record.version
+    await action(service, record, "vote", approve=approve, now=NOW + timedelta(seconds=1))
+    verdict = attempt.correct
+    with pytest.raises(StaleWriteError):
+        await service.act(OWNER, RUN, "vote", expected_version=ballot_version,
+                          question_revision_id=QUESTION, approve=not approve,
+                          now=NOW + timedelta(seconds=2))
+    assert attempt.correct is verdict
+    # An expiry between callback read and mutation also invalidates its version.
+    service, record, _, _, attempt, _ = harness(phase="revealed")
+    await action(service, record, "appeal")
+    with pytest.raises(StaleWriteError):
+        await action(service, record, "vote", approve=True, now=NOW + timedelta(seconds=60))
+    assert attempt.correct is False
 
 
 async def test_yes_is_still_answer_text_when_not_voting():

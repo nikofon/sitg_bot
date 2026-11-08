@@ -43,6 +43,7 @@ from sitg_bot.application.contracts import (
     AuthorLinkMineOperation,
     AuthorProfileOperation,
     AuthorsSearchOperation,
+    BestBuzzPreviewOperation,
     GameObserveOperation,
     GatewayOperation,
     GatewayResponse,
@@ -212,6 +213,7 @@ class MiniAppHttpServer:
         app.router.add_get("/api/miniapp/knowledge/tags", self._knowledge_tags)
         app.router.add_get("/api/miniapp/knowledge/dissections", self._knowledge_dissections)
         app.router.add_get("/api/miniapp/knowledge/themes", self._knowledge_themes)
+        app.router.add_get("/api/miniapp/knowledge/best_buzz_preview", self._best_buzz_preview)
         app.router.add_get("/api/miniapp/knowledge/imports", self._knowledge_imports)
         app.router.add_get(
             "/api/miniapp/knowledge/imports/{import_id}", self._knowledge_import_detail
@@ -1891,6 +1893,12 @@ class MiniAppHttpServer:
         _, result = await self._query(
             request, KnowledgeDissectionsOperation(action=ActionCode.KNOWLEDGE_DISSECTIONS)
         )
+        return self._gateway_response(result)
+
+    async def _best_buzz_preview(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, BestBuzzPreviewOperation.model_validate({
+            **request.query, "action": ActionCode.BEST_BUZZ_PREVIEW,
+        }))
         return self._gateway_response(result)
 
     async def _knowledge_themes(self, request: web.Request) -> web.Response:

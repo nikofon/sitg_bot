@@ -7,7 +7,7 @@ Existing behavior belongs in the linked subsystem guides.
 
 | Area | Remaining work and implementation direction |
 | --- | --- |
-| Training | Group training and product selection of normal-game modifiers; exact Best-buzz boundary persistence/compatibility (see [playback limitation](training.md#best-buzz-playback-port)). Outstanding statistics inputs, legacy dissection identity compatibility and commercial categories are tracked in [Knowledge requirements](training-knowledge-integration.md#outstanding-requirements-and-limitations); real-provider/deployment acceptance is in [Training AI](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims). |
+| Training | Group training and product selection of normal-game modifiers. Outstanding statistics inputs, legacy dissection identity compatibility and commercial categories are tracked in [Knowledge requirements](training-knowledge-integration.md#outstanding-requirements-and-limitations); real-provider/deployment acceptance is in [Training AI](training-ai.md#enabling-and-live-acceptance-operator-steps-not-automated-test-claims). |
 | Historical packet access | Define post-game/post-tournament visibility beyond current library entitlements. See [packets](packet-administration.md). |
 | Upload moderation and retention | Optional review requirements, cross-tournament assignment consent, quotas, copyright handling, and source/draft retention. Opt-in community upload/publication is implemented. |
 | Additional rulesets | Generalize SI-specific execution persistence before registering another ruleset. Define content-schema compatibility and meaningful cross-ruleset statistics; preserve the existing assignment/claim contract. See [game rulesets](game-rulesets.md). |

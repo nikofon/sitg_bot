@@ -8,6 +8,7 @@ from sitg_bot.domain.knowledge import (
     dissection_candidate_id,
 )
 from sitg_bot.services.knowledge import (
+    FactCopy,
     InMemoryKnowledgeStore,
     KnowledgeService,
     dissection_candidate_from_payload,
@@ -69,44 +70,19 @@ async def test_create_and_view_fact_with_tags():
         await knowledge.fact_detail(OWNER, UUID(int=99))
 
 
-async def test_sharing_creates_permanent_independently_editable_copies():
+async def test_historical_copy_records_remain_readable_and_permanent():
     knowledge = service()
-    original = await knowledge.create_fact(
-        OWNER, title="Fact", description="D", tag_names=["history"]
+    original = await knowledge.create_fact(OWNER, title="Fact", description="D")
+    copied = await knowledge.create_fact(RECIPIENT, title="Fact", description="D")
+    knowledge.store.copies[original.fact_id, RECIPIENT] = FactCopy(
+        original.fact_id, RECIPIENT, OWNER, copied.fact_id, knowledge._now(),
     )
-    result = await knowledge.grant_collection_access(OWNER, RECIPIENT)
-    assert result.copied_count == 1
-    copied_id = (await knowledge.list_facts(RECIPIENT)).items[0].fact_id
-    assert copied_id != original.fact_id
-    copied = await knowledge.fact_detail(RECIPIENT, copied_id)
-    assert copied.editable and copied.tags[0].name == "history"
-    assert copied.tags[0].tag_id != original.tags[0].tag_id
-    await knowledge.update_fact(RECIPIENT, copied_id, expected_version=1, title="Recipient edit")
-    await knowledge.update_fact(
-        OWNER, original.fact_id, expected_version=1, description="Owner edit"
-    )
-    assert (await knowledge.fact_detail(OWNER, original.fact_id)).content.title == "Fact"
-    assert (await knowledge.fact_detail(RECIPIENT, copied_id)).content.description == "D"
-    with pytest.raises(PermissionError):
-        await knowledge.fact_detail(RECIPIENT, original.fact_id)
+    assert (await knowledge.list_grants(OWNER))[0].copied_count == 1
+    assert (await knowledge.shared_collections(RECIPIENT))[0].owner_id == OWNER
     with pytest.raises(PermissionError, match="permanent"):
         await knowledge.revoke_collection_access(OWNER, RECIPIENT)
     await knowledge.delete_fact(OWNER, original.fact_id)
-    assert (await knowledge.fact_detail(RECIPIENT, copied_id)).content.title == "Recipient edit"
-
-
-async def test_repeat_shares_add_new_facts_without_overwriting_or_resurrecting_copies():
-    knowledge = service()
-    await knowledge.create_fact(OWNER, title="First", description="D")
-    assert (await knowledge.grant_collection_access(OWNER, RECIPIENT)).copied_count == 1
-    copied_id = (await knowledge.list_facts(RECIPIENT)).items[0].fact_id
-    await knowledge.delete_fact(RECIPIENT, copied_id)
-    assert (await knowledge.grant_collection_access(OWNER, RECIPIENT)).copied_count == 0
-    await knowledge.create_fact(OWNER, title="Second", description="D")
-    assert (await knowledge.grant_collection_access(OWNER, RECIPIENT)).copied_count == 1
-    assert [fact.title for fact in (await knowledge.list_facts(RECIPIENT)).items] == ["Second"]
-    assert (await knowledge.list_grants(OWNER))[0].copied_count == 2
-    assert (await knowledge.shared_collections(RECIPIENT))[0].owner_id == OWNER
+    assert (await knowledge.fact_detail(RECIPIENT, copied.fact_id)).content.title == "Fact"
 
 
 async def test_stale_edits_conflict_and_content_changes_invalidate_statistics():
@@ -197,11 +173,10 @@ async def test_tags_are_owner_scoped_and_deleting_removes_associations():
         await knowledge.delete_tag(OWNER, tag_id)
 
 
-async def test_recipient_lists_copies_without_source_collection_access():
+async def test_recipient_cannot_list_another_collection():
     knowledge = service()
-    await knowledge.create_fact(OWNER, title="Shared fact", description="D")
+    await knowledge.create_fact(RECIPIENT, title="Shared fact", description="D")
     await knowledge.create_fact(STRANGER, title="Private fact", description="D")
-    await knowledge.grant_collection_access(OWNER, RECIPIENT)
     page = await knowledge.list_facts(RECIPIENT)
     assert [item.title for item in page.items] == ["Shared fact"]
     with pytest.raises(PermissionError):
@@ -219,7 +194,7 @@ async def test_additive_tag_search_requires_all_tags_and_stays_owner_scoped():
     assert (await knowledge.list_facts(OWNER, tags=[])).total == 2
 
 
-async def test_images_are_separate_versioned_content_and_permanent_copies_retain_them():
+async def test_images_are_separate_versioned_content():
     knowledge = service()
     image = UUID(int=999)
     original = await knowledge.create_fact(
@@ -227,8 +202,6 @@ async def test_images_are_separate_versioned_content_and_permanent_copies_retain
     )
     assert original.content.links == ()
     assert original.content.image_ids == (image,)
-    await knowledge.grant_collection_access(OWNER, RECIPIENT)
-    copy = (await knowledge.list_facts(RECIPIENT)).items[0]
     edited = await knowledge.update_fact(
         OWNER, original.fact_id, expected_version=1, image_ids=[]
     )
@@ -236,8 +209,6 @@ async def test_images_are_separate_versioned_content_and_permanent_copies_retain
     assert edited.content.image_ids == ()
     with pytest.raises(ValueError, match="changed"):
         await knowledge.update_fact(OWNER, original.fact_id, expected_version=1, image_ids=[image])
-    await knowledge.delete_fact(OWNER, original.fact_id)
-    assert (await knowledge.fact_detail(RECIPIENT, copy.fact_id)).content.image_ids == (image,)
 
 
 async def test_old_dissection_identity_does_not_depend_on_the_history_window():

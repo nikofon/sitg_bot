@@ -1873,6 +1873,21 @@ p {
   margin-top: 0.35rem;
 }
 
+/* In-flight Best buzz preparation plaque on the packet card. */
+.training-buzz-plaque {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.22rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--tg-theme-button-color) 45%, transparent);
+  border-radius: 99rem;
+  background: color-mix(in srgb, var(--tg-theme-button-color) 14%, transparent);
+  color: var(--tg-theme-link-color);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 @media (max-width: 34rem) {
   .training-lobby .training-packet-filters {
     padding: 0.75rem;

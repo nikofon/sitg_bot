@@ -9,6 +9,7 @@ import {
   type KnowledgeDissectRequest,
   type KnowledgeFactDetail,
   type KnowledgeFactImage,
+  type KnowledgeFeedback,
   type KnowledgeFactsResource,
   type KnowledgeImportsResource,
   type KnowledgeImportDecision,
@@ -40,10 +41,23 @@ function consumeImportToken(): void {
 
 export function renderKnowledgePage(
   initial: KnowledgeViewData, api: ApiClient, i18n: I18n, signal: AbortSignal,
+  feedback?: KnowledgeFeedback,
 ): HTMLElement {
   const pendingImport = initial.import_token ?? importTokenFromLocation();
-  const post = <T>(command: string, body: unknown): Promise<T> =>
-    api.request<T>(`/api/miniapp/knowledge/${command}`, { method: "POST", body, signal });
+  const post = async <T>(command: string, body: unknown): Promise<T> => {
+    // Dissection/exposure own their multi-step confirmation feedback. Other
+    // important Knowledge mutations acknowledge only accepted user actions.
+    const ownsFeedback = !["dissect", "theme_preview"].includes(command);
+    try {
+      const result = await api.request<T>(`/api/miniapp/knowledge/${command}`,
+        { method: "POST", body, signal });
+      if (!signal.aborted && ownsFeedback) feedback?.notifySuccess();
+      return result;
+    } catch (error) {
+      if (!signal.aborted && ownsFeedback) feedback?.notifyError();
+      throw error;
+    }
+  };
   const dissect = async (
     versionId: string, request: KnowledgeDissectRequest,
   ): Promise<KnowledgeDissectOutcome> =>
@@ -124,7 +138,7 @@ export function renderKnowledgePage(
   };
   const root = element("section", { className: "stack" },
     renderKnowledge({ ...initial, ...(pendingImport ? { import_token: pendingImport } : {}) },
-      i18n, actions));
+      i18n, actions, feedback));
   const limits = element("p", { role: "status" });
   root.append(limits);
   void api.request<{ features: Record<string, { enabled: boolean; remaining: number | null; limit: number | null; unit: "themes" | "estimates"; reset_at: string | null }> }>(

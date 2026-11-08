@@ -108,6 +108,7 @@ class ActionCode(StrEnum):
     ANALYSIS_CANCEL = "training.analysis.cancel.v1"
     TRAINING_ENTITLEMENTS = "training.entitlements.view.v1"
     BEST_BUZZ_PREPARE = "training.best_buzz.prepare.v1"
+    BEST_BUZZ_PREVIEW = "training.best_buzz.preview.v1"
     PLAYER_LIST = "players.list.v1"
     PLAYER_PROFILE = "players.profile.get.v1"
     PLAYER_GAME_RESULTS = "players.game_results.get.v1"
@@ -296,6 +297,12 @@ class KnowledgeSharingOperation(ContractModel):
 class KnowledgeThemesOperation(ContractModel):
     action: Literal[ActionCode.KNOWLEDGE_THEMES]
     version_id: UUID
+
+
+class BestBuzzPreviewOperation(ContractModel):
+    action: Literal[ActionCode.BEST_BUZZ_PREVIEW]
+    version_id: UUID
+    token_target_chars: int = Field(default=18, ge=1, le=200)
 
 
 class KnowledgeThemePreviewOperation(ContractModel):
@@ -1418,6 +1425,7 @@ GatewayOperation = Annotated[
     | KnowledgeSharingOperation
     | KnowledgeDissectionsOperation
     | KnowledgeThemesOperation
+    | BestBuzzPreviewOperation
     | KnowledgeThemePreviewOperation
     | KnowledgeImportsOperation
     | KnowledgeImportDetailOperation

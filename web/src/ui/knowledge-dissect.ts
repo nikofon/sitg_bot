@@ -3,6 +3,7 @@ import type {
   KnowledgeActions,
   KnowledgeDissectRequest,
   KnowledgeDissectionQuota,
+  KnowledgeFeedback,
   KnowledgeI18n,
   KnowledgePacketCard,
   KnowledgeThemeDetail,
@@ -19,10 +20,11 @@ import {
 
 /**
  * Packet dissection composer: a closable window with General/Themes tabs.
- * General carries the selected-theme counter, commentary, the auto-assigned
- * tag pool selection and the start action; Themes lists the packet's themes,
- * collapsed with independent dissect checkboxes, expanding through the
- * explicit exposure-confirmed theme preview contract.
+ * General carries the selected-theme counter, one optional Additional
+ * instructions field (any commentary or guidance for the analysis), the
+ * auto-assigned tag pool selection and the start action; Themes lists the
+ * packet's themes, collapsed with independent dissect checkboxes, expanding
+ * through the explicit exposure-confirmed theme preview contract.
  */
 export function dissectComposerDialog(
   packet: KnowledgePacketCard | { id: string; name: string },
@@ -30,6 +32,7 @@ export function dissectComposerDialog(
   state: KnowledgeState,
   actions: KnowledgeActions,
   onStarted: () => void,
+  feedback?: KnowledgeFeedback,
 ): HTMLDialogElement {
   const { dialog, body } = dialogFrame(i18n.t("knowledge.dissection.title"), i18n);
 
@@ -77,10 +80,14 @@ export function dissectComposerDialog(
   const selectedCount = element("p", {
     className: "knowledge-fact-meta", "data-dissect-selected-count": "",
   }, i18n.t("knowledge.dissection.selected_count", { count: 0 }));
+  // One optional field for all commentary/instructions: both legacy fields fed
+  // a single model payload, so the composer collects one text and submits it
+  // as the request's instructions.
   const instructions = element("textarea", {
-    "aria-label": i18n.t("knowledge.dissection.instructions"),
+    "aria-label": i18n.t("knowledge.dissection.additional_instructions"),
   });
-  const comment = element("textarea", { "aria-label": i18n.t("knowledge.dissection.comment") });
+  const instructionsHint = element("p", { className: "knowledge-fact-meta" },
+    i18n.t("knowledge.dissection.additional_instructions_hint"));
   const tagList = element("div", { className: "knowledge-tag-options", role: "group",
     "aria-label": i18n.t("knowledge.tags.selected") });
   const tagToggle = element("button", { type: "button", className: "secondary-button",
@@ -156,13 +163,13 @@ export function dissectComposerDialog(
     const request: KnowledgeDissectRequest = {
       theme_revision_ids: [...selectedThemes],
       instructions: instructions.value || undefined,
-      comment: comment.value || undefined,
       tag_ids: [...selectedTags],
       confirm_exposure: confirmExposure,
     };
     void actions.dissect(packet.id, request)
       .then((outcome) => {
-        if (outcome.confirmation_required && !confirmExposure) {
+        if (actions.signal?.aborted) return;
+        if (outcome.confirmation_required) {
           warning.hidden = false;
           submit.textContent = i18n.t("knowledge.dissection.confirm");
           submit.setAttribute("data-confirm", "true");
@@ -170,10 +177,15 @@ export function dissectComposerDialog(
           return;
         }
         // The job is durable server-side: the window closes freely.
+        feedback?.notifySuccess();
         closeDialog(dialog);
         onStarted();
       })
-      .catch(() => { error.textContent = i18n.t("knowledge.error"); })
+      .catch(() => {
+        if (actions.signal?.aborted) return;
+        feedback?.notifyError();
+        error.textContent = i18n.t("knowledge.error");
+      })
       .finally(() => {
         submitting = false;
         if (document.contains(dialog)) syncSelectedCount();
@@ -190,8 +202,8 @@ export function dissectComposerDialog(
         { fresh: packet.fresh_theme_count, total: packet.total_theme_count }))
       : element("p", { className: "knowledge-fact-meta", hidden: true }),
     selectedCount,
-    element("label", {}, i18n.t("knowledge.dissection.instructions"), instructions),
-    element("label", {}, i18n.t("knowledge.dissection.comment"), comment),
+    element("label", {}, i18n.t("knowledge.dissection.additional_instructions"), instructions),
+    instructionsHint,
     element("fieldset", { className: "knowledge-tag-select" },
       element("legend", {}, i18n.t("knowledge.tags.selected")), tagToggle, tagList),
     hint,
@@ -292,10 +304,13 @@ export function dissectComposerDialog(
             void preview(packet.id, theme.theme_revision_id, true)
               .then((confirmed: KnowledgeThemePreview) => {
                 if (confirmed.confirmation_required) return;
+                // The confirmed exposure is the irreversible action: acknowledge it.
+                feedback?.notifySuccess();
                 themeDetails.set(theme.theme_revision_id, confirmed.theme);
                 replaceChildren(themeBody, renderThemeDetail(confirmed.theme));
               })
               .catch(() => {
+                feedback?.notifyError();
                 replaceChildren(themeBody, element("p", { className: "error-text" },
                   i18n.t("knowledge.error")));
               });

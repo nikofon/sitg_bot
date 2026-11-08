@@ -122,8 +122,8 @@ async def start_lobby(
         )
     elif result.get("preparation"):
         await message.answer(localization.text("training.preparation_unavailable", locale))
-    else:
-        await show_menu(message, backend, claim, localization, locale)
+    # Successful starts are presented by the durable training.changed consumer.
+    # Menu recovery forces a fresh controls message, duplicating that opening.
 
 
 @router.message(TrainingMenuAction())
@@ -175,6 +175,7 @@ async def handle_training_menu(
                         command="stop",
                     ),
                 )
+                return
             elif current.get("lobby"):
                 await call(
                     backend,
@@ -235,8 +236,9 @@ async def handle_training_action(
         if not isinstance(callback.message, Message):
             raise ValueError("Question message is unavailable")
         _, identifier, version, command = callback.data.split(":")
-        # Obsolete action keyboards must not keep controlling a recovered session.
-        if command != "continue":
+        # Ordinary inline question actions remain prohibited; only Best buzz
+        # Continue and the current solo appeal ballot are supported.
+        if command not in {"continue", "yes", "no"}:
             raise ValueError("Use the reply keyboard")
         result = await call(
             backend,
@@ -244,7 +246,12 @@ async def handle_training_action(
             TrainingViewOperation(action=ActionCode.TRAINING_VIEW, session_id=UUID(identifier)),
         )
         state = result["session"]
-        if callback.message.message_id not in state.get("message_ids", []):
+        voting = command in {"yes", "no"}
+        if voting:
+            if (state.get("appeal_status") != "voting" or state["version"] != int(version)
+                or callback.message.message_id not in state.get("appeal_message_ids", [])):
+                raise ValueError("Appeal ballot has changed")
+        elif callback.message.message_id not in state.get("message_ids", []):
             raise ValueError("Question message has changed")
         await call(
             backend,
@@ -254,7 +261,8 @@ async def handle_training_action(
                 session_id=UUID(identifier),
                 expected_version=int(version),
                 question_revision_id=UUID(state["question_revision_id"]),
-                command=command,
+                command="vote" if voting else command,
+                approve=(command == "yes") if voting else None,
             ),
         )
         await callback.answer()
@@ -454,8 +462,6 @@ async def handle_training_control(
             command=command, approve=training_approve,
             answer=message.text if command == "answer" else None,
         ))
-        if command == "stop":
-            await show_menu(message, backend, telegram_update_claim, localization, locale)
     except (ValueError, GatewayCallError):
         await message.answer(localization.text("training.unavailable", locale))
 

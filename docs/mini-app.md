@@ -356,6 +356,18 @@ controls. Use yellow warning styling for cautionary actions such as Halt, and re
 styling for destructive or restrictive actions such as Abolish and Ban. Keep labels explicit
 and text legible; color supplements the label and any required confirmation.
 
+Important user-triggered Mini App actions must give mobile haptic feedback through the
+shared Telegram `HapticFeedback` bridge (the platform's `notifySuccess`/`notifyError`,
+or the equivalent feedback parameter handed to route renderers such as the training
+lobby and Knowledge views). This covers actions that start durable, metered or
+irreversible work — starting a dissection, confirming theme exposure, beginning Best
+buzz preparation, packet selection/removal and explicit saves — and every analogous
+important action added to a Mini App flow. Signal success only when the action was
+actually accepted (a confirmation prompt, a cancelled dialog, a background refresh or a
+failed initiation must not buzz as if it succeeded; failed initiations use the error
+signal). Desktop and unsupported devices must remain fully usable: haptics are
+additive feedback, never a gate on the action.
+
 Run from `web/`:
 
 ```bash

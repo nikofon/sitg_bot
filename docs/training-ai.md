@@ -67,11 +67,35 @@ lease, avoiding repeated completed steps after restart.
 Private uploads never reuse a cross-request analysis artifact, even for the same owner;
 the idempotency key salts the compute identity. Same-request recovery checkpoints and
 prepared Best-buzz records remain durable, but do not count as reusable cache hits.
-Provider schema/prompt defaults are v2; Best-buzz playback payload shape is unchanged
-and the adapter explicitly accepts compatible v1/v2 producing artifacts. Concurrent
+Provider schema/prompt defaults are v2; the adapter accepts compatible v1/v2
+producing artifacts. Best-buzz payload compatibility is defined by the
+[playback port](training.md#best-buzz-playback-port). Concurrent
 requests coalesce onto one computation guarded by a lease; each waiter keeps
 its own request, authorization and refund. Cancelling one waiter never cancels
 work others need; cancelling the last waiter abandons the computation.
+
+Best buzz additionally admits at most one active request per owner/packet version,
+including private uploads and requests with different retry keys or tokenization.
+A transaction-scoped advisory lock covers the lookup/admission; a duplicate returns
+the authorized owner's active request without another quota reservation. Other
+packets and owners use separate locks. Terminal-job reconciliation permits an
+explicit retry after failure/cancellation; completed historical requests and cache
+keys are unchanged. Dissection revision behavior is unchanged.
+
+`GET /api/miniapp/knowledge/best_buzz_preview?version_id=...` (optional
+`token_target_chars`, default 18) is an authenticated, source-authorized read. It
+returns `theme_count`, quota-constrained `eligible_theme_count`, `can_begin`,
+`enabled`, `remaining`, `cache_hit` and owner-only `active_request_id`. It creates
+no analysis request, reservation, job or exposure claim and makes no provider call.
+It checks public immutable manifest/profile/tokenization cache compatibility;
+private sources never receive cross-request cache eligibility. A free compatible
+cache hit remains eligible with zero remaining quota; charged hits and uncached
+work require the entire packet's theme allowance. Unlimited is distinct from zero.
+The UI cannot partially prepare an over-budget packet: it explains the shortfall
+and disables Begin. Admission rechecks current rights, feature policy, quota and
+request caps; the preview does not reserve or guarantee future availability.
+Packet catalogue cards also expose an owner-scoped `best_buzz_request_id` for
+recovering active preparation status after reopening the Mini App.
 
 Workers claim jobs with the kind filter (`DurableJobWorker(kinds=...)`), so
 slow analysis never occupies gameplay workers. Chunk checkpoints persist
@@ -82,11 +106,14 @@ Failures are never cached as successful empty data: terminal job failure
 remains retryable via a new generation. `cleanup(before)` prunes terminal
 artifacts and requests.
 
-Best buzz boundaries are validated against the application
-`announcement_tokens` stream with pinned tokenizer settings
-(`question_token_target_chars`), not a provider's tokenization. The
-[playback port](training.md#best-buzz-playback-port) documents the current
-packed-token persistence limitation.
+Best buzz boundaries preserve a validated canonical source-word end offset in
+checkpoints and results, independently of `question_token_target_chars`. The
+historical application `announcement_tokens` index remains available for legacy
+consumers; it is not a provider token index. The
+[playback port](training.md#best-buzz-playback-port) defines exact prefix playback,
+instantaneous reveal/Continue, and explicit legacy index-only compatibility.
+Provider admission, preview and statistics require both an API key and a configured
+model; enabled persisted policies do not override missing runtime configuration.
 
 ## Categories, policies and metering
 

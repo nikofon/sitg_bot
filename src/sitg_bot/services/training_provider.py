@@ -94,7 +94,7 @@ class ResponsesAnalysisProvider:
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
 
     async def _generate(self, schema, task, data):
-        if not self.settings.api_key or self.settings.model == "unconfigured":
+        if not self.settings.configured:
             raise RuntimeError("Training AI provider is not configured")
         request_id = uuid4().hex
         metadata = PROVIDER_CALL_METADATA.get()
@@ -301,7 +301,9 @@ class ResponsesAnalysisProvider:
             for index, token in enumerate(announcement_tokens(text, request.target_chars), 1):
                 consumed += len(token.split())
                 if consumed >= wanted:
-                    boundaries.append(BuzzBoundary(revision, text_fingerprint(text), index))
+                    boundaries.append(BuzzBoundary(
+                        revision, text_fingerprint(text), index, item.source_end,
+                    ))
                     break
         return tuple(boundaries)
 

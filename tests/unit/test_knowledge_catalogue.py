@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
@@ -43,29 +42,6 @@ async def test_colours_validate_normalize_preserve_and_enforce_owner():
     assert (await service.create_tag(OWNER, "default")).colour == "#64748b"
 
 
-async def test_hash_dedup_across_senders_preserves_edits_deletion_and_recipient_independence():
-    service = KnowledgeService(InMemoryKnowledgeStore())
-    await service.create_tag(OWNER, "history", "#112233")
-    for sender in (OWNER, OWNER, OTHER):
-        await service.create_fact(
-            sender, title="Same", description="Canonical", tag_names=["history"]
-        )
-    results = await asyncio.gather(
-        service.grant_collection_access(OWNER, RECIPIENT),
-        service.grant_collection_access(OTHER, RECIPIENT),
-    )
-    assert sum(result.copied_count for result in results) == 1
-    copied = (await service.list_facts(RECIPIENT)).items[0].fact_id
-    assert (await service.fact_detail(RECIPIENT, copied)).tags[0].colour == "#112233"
-    await service.update_fact(RECIPIENT, copied, expected_version=1, title="Recipient edit")
-    assert (await service.grant_collection_access(OTHER, RECIPIENT)).copied_count == 0
-    await service.delete_fact(RECIPIENT, copied)
-    assert (await service.grant_collection_access(OWNER, RECIPIENT)).copied_count == 0
-    assert (await service.grant_collection_access(RECIPIENT, OTHER)).copied_count == 0
-    assert (await service.grant_collection_access(OWNER, UUID(int=4))).copied_count == 1
-    assert (await service.list_facts(RECIPIENT)).total == 0
-
-
 @pytest.mark.parametrize(
     "order,value",
     [
@@ -101,6 +77,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
     theme_a, theme_b = UUID(int=20), UUID(int=21)
     question = UUID(int=30)
     author, tournament = UUID(int=40), UUID(int=50)
+    request_id = UUID(int=60)
     statements = []
     results = iter(
         [
@@ -119,6 +96,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
                 ),
                 (str(second), "partially_succeeded", None, None, None),
             ],
+            SimpleNamespace(all=lambda: [(str(first), request_id)]),
         ]
     )
 
@@ -140,7 +118,7 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
     await enrich_packet_cards(
         session, OWNER, cards, TrainingPacketService._library_assignments(OWNER)
     )
-    assert len(statements) == 7
+    assert len(statements) == 8
     assert cards[0] == {
         "id": first,
         "authors": [{"id": author, "name": "Author"}],
@@ -150,10 +128,13 @@ async def test_batched_metadata_known_zero_partial_unknown_and_user_scoping(monk
         "dissected_theme_count": 1,
         "dissected": True,
         "best_buzz_calculated": True,
+        "best_buzz_request_id": request_id,
     }
     assert cards[1]["dissected_theme_count"] is None and cards[1]["dissected"]
     assert cards[2]["dissected_theme_count"] == 0 and not cards[2]["dissected"]
     assert not cards[2]["best_buzz_calculated"]
+    assert cards[1]["best_buzz_request_id"] is None
+    assert cards[2]["best_buzz_request_id"] is None
     assert cards[2]["authors"] == [{"id": None, "name": "Alice"}]
     assert fresh.await_args.args[-1] == [OWNER]
     # Owner predicates bind this user, never another trainee's results.
@@ -283,7 +264,8 @@ async def test_saved_dissection_coverage_and_best_buzz_survive_missing_analysis_
     version, theme = UUID(int=7), UUID(int=8)
     results = iter(
         [[], [], [], [(version, theme)], [],
-         [(str(version), "succeeded", None, [str(theme)], None)]]
+         [(str(version), "succeeded", None, [str(theme)], None)],
+         SimpleNamespace(all=lambda: [])]
     )
     session = SimpleNamespace(
         execute=AsyncMock(side_effect=lambda _: next(results)),
@@ -299,6 +281,7 @@ async def test_saved_dissection_coverage_and_best_buzz_survive_missing_analysis_
     )
     assert cards[0]["dissected_theme_count"] == 1
     assert cards[0]["best_buzz_calculated"]
+    assert cards[0]["best_buzz_request_id"] is None
 
 
 async def test_link_application_checks_sorted_accounts_and_rechecks_revocation(monkeypatch):

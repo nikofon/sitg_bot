@@ -161,6 +161,17 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
             )
         )
     )
+    active_buzz = dict((await session.execute(select(
+        TrainingAnalysisRequestRecord.source["packet_revision_id"].astext,
+        TrainingAnalysisRequestRecord.request_id,
+    ).where(
+        TrainingAnalysisRequestRecord.owner_player_id == player_id,
+        TrainingAnalysisRequestRecord.kind == "best_buzz",
+        TrainingAnalysisRequestRecord.status.in_(("queued", "running")),
+        TrainingAnalysisRequestRecord.source["packet_revision_id"].astext.in_(
+            [str(identity) for identity in ids]
+        ),
+    ).order_by(TrainingAnalysisRequestRecord.created_at))).all())
     for item in items:
         identity = item["id"]
         revision = str(identity)
@@ -175,6 +186,7 @@ async def enrich_packet_cards(session, player_id, items, readable_assignments):
             dissected_theme_count=count,
             dissected=revision in dissected,
             best_buzz_calculated=identity in best_buzz,
+            best_buzz_request_id=active_buzz.get(revision),
         )
     return items
 

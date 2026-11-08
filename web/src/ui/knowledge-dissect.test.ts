@@ -39,7 +39,8 @@ const messages: Record<string, string> = {
   "knowledge.dissection.submit_short": "Dissect",
   "knowledge.dissection.confirm": "Confirm and start",
   "knowledge.dissection.confirm_theme": "Confirm and reveal",
-  "knowledge.dissection.instructions": "Instructions (optional)",
+  "knowledge.dissection.additional_instructions": "Additional instructions (optional)",
+  "knowledge.dissection.additional_instructions_hint": "Any comments or guidance for the analysis. Leave empty for the standard dissection.",
   "knowledge.dissection.comment": "Follow-up comment (optional)",
   "knowledge.dissection.tab.general": "General",
   "knowledge.dissection.tab.themes": "Themes",
@@ -124,8 +125,11 @@ const themeActions = (): KnowledgeActions => ({
   loadImports: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
 });
 
-async function openComposer(actionList: KnowledgeActions): Promise<HTMLDialogElement> {
-  const root = renderKnowledge(structuredClone(data), i18n as never, actionList);
+async function openComposer(
+  actionList: KnowledgeActions,
+  feedback?: { notifySuccess: () => void; notifyError: () => void },
+): Promise<HTMLDialogElement> {
+  const root = renderKnowledge(structuredClone(data), i18n as never, actionList, feedback);
   document.body.append(root);
   const packetsTab = [...root.querySelectorAll("button")]
     .find((item) => item.textContent === "Packets")!;
@@ -292,7 +296,6 @@ describe("dissection composer", () => {
 
     expect(dissect).toHaveBeenCalledWith("packet-1", {
       instructions: undefined,
-      comment: undefined,
       theme_revision_ids: ["theme-1"],
       tag_ids: ["tag-2", "tag-1"],
       confirm_exposure: false,
@@ -370,7 +373,7 @@ describe("dissection composer", () => {
     expect(previewTheme).toHaveBeenCalledTimes(2);
   });
 
-  it("submits selected themes, auto-assign tags and commentary verbatim", async () => {
+  it("submits selected themes, auto-assign tags and additional instructions verbatim", async () => {
     const dissect = vi.fn().mockResolvedValue({});
     const actionList = { ...themeActions(), dissect };
     const dialog = await openComposer(actionList);
@@ -381,9 +384,10 @@ describe("dissection composer", () => {
     [...dialog.querySelectorAll("button")].find((item) => item.textContent === "General")!.click();
     await flush();
 
-    const comment = [...dialog.querySelectorAll("textarea")]
-      .find((node) => node.getAttribute("aria-label") === "Follow-up comment (optional)")!;
-    comment.value = "Extract naval terms";
+    // One optional Additional instructions field carries all commentary/guidance.
+    const instructions = [...dialog.querySelectorAll("textarea")]
+      .find((node) => node.getAttribute("aria-label") === "Additional instructions (optional)")!;
+    instructions.value = "Extract naval terms";
     // The tag chip is offered from the user's pool and sent as a tag id.
     const tagBox = [...dialog.querySelectorAll<HTMLInputElement>(".knowledge-tag-option input")][0]!;
     tagBox.click();
@@ -393,13 +397,85 @@ describe("dissection composer", () => {
     await flush();
 
     expect(dissect).toHaveBeenCalledWith("packet-1", {
-      instructions: undefined,
-      comment: "Extract naval terms",
+      instructions: "Extract naval terms",
       theme_revision_ids: ["theme-1"],
       tag_ids: ["tag-1"],
       confirm_exposure: false,
     });
     expect(document.contains(dialog)).toBe(false);
+  });
+
+  it("replaces the two legacy fields with one optional instructions field and memo", async () => {
+    const actionList = themeActions();
+    const dialog = await openComposer(actionList);
+    await flush();
+    const textareas = [...dialog.querySelectorAll("textarea")];
+    expect(textareas).toHaveLength(1);
+    expect(textareas[0]!.getAttribute("aria-label")).toBe("Additional instructions (optional)");
+    // A short memo explains the field in product language.
+    expect(dialog.textContent)
+      .toContain("Any comments or guidance for the analysis. Leave empty for the standard dissection.");
+  });
+
+  it("signals haptic success for an accepted start and error for a rejected one", async () => {
+    const notifySuccess = vi.fn();
+    const notifyError = vi.fn();
+    const feedback = { notifySuccess, notifyError };
+    const openAndSelect = async (dissect: KnowledgeActions["dissect"]): Promise<HTMLDialogElement> => {
+      const actionList = { ...themeActions(), dissect };
+      const root = renderKnowledge(structuredClone(data), i18n as never, actionList, feedback);
+      document.body.append(root);
+      const packetsTab = [...root.querySelectorAll("button")]
+        .find((item) => item.textContent === "Packets")!;
+      packetsTab.click();
+      const dissectButton = await vi.waitFor(() => {
+        const found = [...root.querySelectorAll("button")]
+          .find((item) => item.textContent === "Dissect");
+        expect(found, "Dissect button").toBeDefined();
+        return found!;
+      });
+      dissectButton.click();
+      const dialog = document.querySelector<HTMLDialogElement>(".knowledge-dialog")!;
+      await flush();
+      [...dialog.querySelectorAll("button")].find((item) => item.textContent === "Themes")!.click();
+      dialog.querySelector<HTMLElement>('[data-theme-id="theme-1"]')
+        ?.querySelector<HTMLInputElement>("input[type=checkbox]")!.click();
+      [...dialog.querySelectorAll("button")].find((item) => item.textContent === "General")!.click();
+      await flush();
+      return dialog;
+    };
+    // The exposure-confirmation pass is not a start: no buzz yet.
+    let outcome: { confirmation_required?: boolean } = { confirmation_required: true };
+    const dissect = vi.fn(async () => outcome);
+    const dialog = await openAndSelect(dissect);
+    [...dialog.querySelectorAll("button")]
+      .find((item) => item.textContent === "Start dissection")!.click();
+    await flush();
+    expect(notifySuccess).not.toHaveBeenCalled();
+    expect(notifyError).not.toHaveBeenCalled();
+    // Repeated confirmation-needed responses still are not an accepted start.
+    [...dialog.querySelectorAll("button")]
+      .find((item) => item.textContent === "Confirm and start")!.click();
+    await flush();
+    expect(notifySuccess).not.toHaveBeenCalled();
+    expect(document.contains(dialog)).toBe(true);
+    // The confirmed pass is accepted: success buzz, window closes.
+    outcome = {};
+    [...dialog.querySelectorAll("button")]
+      .find((item) => item.textContent === "Confirm and start")!.click();
+    await flush();
+    expect(notifySuccess).toHaveBeenCalledTimes(1);
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(document.contains(dialog)).toBe(false);
+    // A rejected start signals an error, never success.
+    document.body.replaceChildren();
+    notifySuccess.mockClear();
+    const rejected = await openAndSelect(vi.fn().mockRejectedValue(new Error("no")));
+    [...rejected.querySelectorAll("button")]
+      .find((item) => item.textContent === "Start dissection")!.click();
+    await flush();
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifySuccess).not.toHaveBeenCalled();
   });
 
   it("requires at least one selected theme before starting", async () => {

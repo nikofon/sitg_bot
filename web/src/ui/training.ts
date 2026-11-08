@@ -46,6 +46,193 @@ export function renderTraining(
   // Mutations run one at a time in user-action order; each reads the newest version.
   let queue: Promise<void> = Promise.resolve();
   const notice = element("p", { role: "status", "aria-live": "polite" });
+  // Accepted Best buzz preparations: packet version id -> analysis request id.
+  // The plaque is truthful presentation state; the backend enforces one
+  // active preparation per packet independently of this map.
+  const preparing = new Map<string, string>();
+  const buzzTimers = new Set<number>();
+  const buzzDialogs = new Map<string, HTMLDialogElement>();
+  const calculated = new Set<string>();
+  const retryBuzzPoll = (poll: () => Promise<void>): void => {
+    const timer = window.setTimeout(() => { buzzTimers.delete(timer); void poll(); }, 2000);
+    buzzTimers.add(timer);
+  };
+  const buzzPlaque = (): HTMLElement => element("p",
+    { className: "training-buzz-plaque", role: "status" },
+    i18n.t("training.preparing_buzz"));
+  const buzzCard = (packetId: string): HTMLElement | null =>
+    // Packet ids are server UUIDs; the quoted attribute selector is sufficient.
+    list.querySelector<HTMLElement>(
+      `.training-packet-card[data-packet-id="${packetId}"]`);
+  const markPreparing = (packetId: string): void => {
+    const card = buzzCard(packetId);
+    if (!card) return;
+    const plaque = card.querySelector(".training-buzz-plaque");
+    if (plaque) plaque.textContent = i18n.t("training.preparing_buzz");
+    else card.querySelector("dl")?.before(buzzPlaque());
+    const button = card.querySelector<HTMLButtonElement>("button[data-prepare]");
+    if (button) button.disabled = true;
+  };
+  const finishPreparing = (packetId: string, status: string): void => {
+    const card = buzzCard(packetId);
+    card?.querySelector(".training-buzz-plaque")?.remove();
+    const button = card?.querySelector<HTMLButtonElement>("button[data-prepare]");
+    if (button) button.disabled = false;
+    if (["succeeded", "partially_succeeded"].includes(status)) {
+      for (const row of card?.querySelectorAll(".lobby-packet-detail") ?? []) {
+        if (row.querySelector("dt")?.textContent === i18n.t("training.packet_best_buzz")) {
+          row.querySelector("dd")!.textContent = i18n.t("lobby.packet_yes");
+        }
+      }
+    }
+  };
+  const pollBestBuzz = (packetId: string, requestId: string): void => {
+    const poll = async (): Promise<void> => {
+      if (signal.aborted || preparing.get(packetId) !== requestId) return;
+      try {
+        const status = await api.request<{ status: string } | null>(
+          `/api/miniapp/training/analysis?request_id=${encodeURIComponent(requestId)}`, { signal });
+        if (signal.aborted || preparing.get(packetId) !== requestId) return;
+        if (!status) {
+          preparing.delete(packetId);
+          finishPreparing(packetId, "failed");
+          notice.textContent = i18n.t("knowledge.error");
+          return;
+        }
+        markPreparing(packetId);
+        notice.textContent = i18n.t(`knowledge.dissection.status.${status.status}` as MessageKey);
+        if (["queued", "running"].includes(status.status)) {
+          retryBuzzPoll(poll);
+          return;
+        }
+        // Terminal: clear the plaque and refresh the card's calculation flag.
+        preparing.delete(packetId);
+        if (["succeeded", "partially_succeeded"].includes(status.status)) calculated.add(packetId);
+        finishPreparing(packetId, status.status);
+      } catch (error) {
+        if (signal.aborted) return;
+        // A failed refresh is not evidence that the durable work stopped.
+        // Say status is unknown, then retry so recovery doesn't strand the card.
+        const plaque = buzzCard(packetId)?.querySelector(".training-buzz-plaque");
+        if (plaque) plaque.textContent = i18n.t("training.buzz_status_unknown");
+        failure(error);
+        retryBuzzPoll(poll);
+      }
+    };
+    void poll();
+  };
+  // Best buzz preparation starts only from an explicit confirmation dialog:
+  // opening it never starts paid work; Begin performs the exposure-confirmed
+  // request, and the accepted preparation shows its state on the packet card.
+  const openBestBuzzDialog = (packet: TrainingPacket): void => {
+    if (preparing.has(packet.id) || buzzDialogs.has(packet.id)) return;
+    const dialog = element("dialog", { className: "tournament-dialog",
+      "aria-label": i18n.t("training.prepare") });
+    buzzDialogs.set(packet.id, dialog);
+    const closeDialog = (): void => {
+      if (typeof dialog.close === "function") dialog.close();
+      dialog.remove();
+      buzzDialogs.delete(packet.id);
+    };
+    dialog.addEventListener("close", closeDialog, { once: true });
+    const quotaLine = element("p", { role: "status" }, i18n.t("common.loading"));
+    const warning = element("p", { className: "knowledge-dissection-warning", hidden: true });
+    const error = element("p", { className: "error-text", role: "alert" });
+    const begin = element("button", { type: "button", className: "primary-button",
+      disabled: true }, i18n.t("training.best_buzz_begin"));
+    const cancel = element("button", { type: "button", className: "secondary-button",
+      onclick: closeDialog }, i18n.t("common.cancel"));
+    let confirming = false;
+    let busy = false;
+    void api.request<{
+      enabled: boolean; can_begin: boolean; theme_count: number;
+      eligible_theme_count: number; active_request_id: string | null;
+    }>(`/api/miniapp/knowledge/best_buzz_preview?version_id=${encodeURIComponent(packet.id)}`, { signal })
+      .then((data) => {
+        if (signal.aborted || !document.contains(dialog)) return;
+        if (data.active_request_id) {
+          closeDialog();
+          preparing.set(packet.id, data.active_request_id);
+          markPreparing(packet.id);
+          pollBestBuzz(packet.id, data.active_request_id);
+          return;
+        }
+        if (!data.enabled) {
+          quotaLine.textContent = i18n.t("knowledge.ai_unavailable");
+          return;
+        }
+        quotaLine.textContent = data.can_begin
+          ? i18n.t("training.best_buzz_themes", { count: data.eligible_theme_count })
+          : i18n.t("training.best_buzz_quota_short",
+            { remaining: data.eligible_theme_count, total: data.theme_count });
+        begin.disabled = !data.can_begin;
+      })
+      .catch(() => {
+        if (signal.aborted || !document.contains(dialog)) return;
+        quotaLine.textContent = i18n.t("knowledge.error");
+      });
+    begin.addEventListener("click", () => {
+      if (begin.disabled || busy) return;
+      busy = true;
+      begin.disabled = true;
+      error.textContent = "";
+      void api.request<{ confirmation_required?: boolean; request_id?: string; fresh_unit_count?: number }>(
+        "/api/miniapp/knowledge/best_buzz", {
+          method: "POST",
+          body: { version_id: packet.id, confirm_exposure: confirming },
+          signal,
+        })
+        .then((job) => {
+          if (signal.aborted) return;
+          if (job.confirmation_required && !confirming) {
+            // Fresh content needs explicit exposure confirmation before starting.
+            confirming = true;
+            busy = false;
+            warning.hidden = false;
+            warning.textContent = `${i18n.t("knowledge.dissection.exposure_units",
+              { count: job.fresh_unit_count ?? 0 })} ${i18n.t("knowledge.confirm_exposure")}`;
+            begin.textContent = i18n.t("knowledge.dissection.confirm");
+            begin.className = "warning-button";
+            begin.disabled = false;
+            return;
+          }
+          if (!job.request_id) {
+            busy = false;
+            begin.disabled = false;
+            error.textContent = i18n.t("knowledge.error");
+            return;
+          }
+          // Accepted: the durable preparation is running server-side.
+          feedback?.notifySuccess();
+          closeDialog();
+          preparing.set(packet.id, job.request_id);
+          markPreparing(packet.id);
+          notice.textContent = i18n.t("knowledge.dissection.status.queued");
+          pollBestBuzz(packet.id, job.request_id);
+        })
+        .catch(() => {
+          if (signal.aborted) return;
+          feedback?.notifyError();
+          busy = false;
+          begin.disabled = false;
+          error.textContent = i18n.t("knowledge.error");
+        });
+    });
+    dialog.append(
+      element("div", { className: "dialog-heading" },
+        element("h2", {}, i18n.t("training.prepare")),
+        element("button", { type: "button", className: "icon-button",
+          "aria-label": i18n.t("common.close"), onclick: closeDialog }, "×")),
+      element("div", {},
+        element("h3", {}, packet.name),
+        quotaLine,
+        warning,
+        error,
+        element("div", { className: "settings-actions" }, cancel, begin)));
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  };
   const play = element("div", { className: "stack" });
   const list = element("div", { className: "stack", "aria-live": "polite" });
   const drafts = element("div", { className: "stack" });
@@ -56,7 +243,7 @@ export function renderTraining(
   const seconds = element("input", { type: "number", min: "0.1", max: "3599", step: "0.1", value: "3", required: true });
   const buzzSeconds = element("input", { type: "number", min: "1", max: "3600", value: "10", required: true });
   const answerSeconds = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "15", required: true });
-  const tokenDelay = element("input", { type: "number", min: "0.1", max: "3600", step: "0.1", value: "0.6", required: true });
+  const tokenDelay = element("input", { type: "number", min: "0", max: "3600", step: "0.1", value: "0.6", required: true });
   const tokenChars = element("input", { type: "number", min: "1", max: "200", step: "1", value: "18", required: true });
   const bestBuzz = element("input", { type: "checkbox" });
   const settingLabel = (key: MessageKey, control: HTMLElement): HTMLElement =>
@@ -151,7 +338,9 @@ export function renderTraining(
         session_id: current.id, expected_version: current.version,
         question_revision_id: current.question_revision_id, command, answer,
       }), revision);
+      if (!signal.aborted) feedback?.notifySuccess();
     } catch (error) {
+      if (!signal.aborted) feedback?.notifyError();
       failure(error);
       if (error instanceof ApiError && error.code === "stale_write") {
         busy = false;
@@ -206,7 +395,7 @@ export function renderTraining(
           play.append(element("p", {}, i18n.t(current.correct ? "training.correct" : "training.incorrect")));
         }
         button("next", "training.next");
-      } else {
+      } else if (["reading", "waiting", "best_buzz"].includes(current.phase)) {
         button("reveal", "training.reveal");
         button("skip", "training.skip");
       }
@@ -538,7 +727,12 @@ export function renderTraining(
       "div", { className: "lobby-packet-detail" }, element("dt", {}, i18n.t(key)), element("dd", {}, value));
     const yesNo = (value: boolean | undefined): string =>
       value === undefined ? "—" : i18n.t(value ? "lobby.packet_yes" : "lobby.packet_no");
+    const restored: Array<[string, string]> = [];
     const cards = packets.map((packet) => {
+      if (packet.best_buzz_request_id && !preparing.has(packet.id)) {
+        preparing.set(packet.id, packet.best_buzz_request_id);
+        restored.push([packet.id, packet.best_buzz_request_id]);
+      }
       const authors = packet.authors?.map((author) => author.name).join(", ");
       const tournaments = packet.tournaments?.map((tournament) => tournament.name).join(", ");
       const fresh = packet.fresh_theme_count === undefined || packet.total_theme_count === undefined
@@ -554,36 +748,19 @@ export function renderTraining(
           else selectPacket(packet);
         }) as EventListener, "data-select": packet.id },
         i18n.t(selectedId() === packet.id ? "lobby.packet_remove" : "training.select"));
-      const prepare = element("button", { type: "button", className: "secondary-button", onclick: (async () => {
-        try {
-          const body = { version_id: packet.id, confirm_exposure: false };
-          let job = await api.request<{ confirmation_required?: boolean; request_id?: string }>(
-            "/api/miniapp/knowledge/best_buzz", { method: "POST", body, signal });
-          if (job.confirmation_required && window.confirm(i18n.t("knowledge.confirm_exposure"))) {
-            job = await api.request("/api/miniapp/knowledge/best_buzz", {
-              method: "POST", body: { ...body, confirm_exposure: true }, signal });
-          }
-          if (job.request_id) {
-            notice.textContent = i18n.t("knowledge.dissection.status.queued");
-            const poll = async (): Promise<void> => {
-              if (signal.aborted) return;
-              try {
-                const status = await api.request<{ status: string }>(
-                  `/api/miniapp/training/analysis?request_id=${encodeURIComponent(job.request_id ?? "")}`, { signal });
-                if (signal.aborted) return;
-                notice.textContent = i18n.t(`knowledge.dissection.status.${status.status}` as MessageKey);
-                if (["queued", "running"].includes(status.status)) window.setTimeout(() => { void poll(); }, 2000);
-              } catch (error) { failure(error); }
-            };
-            void poll();
-          }
-        } catch (error) { failure(error); }
-      }) as EventListener }, i18n.t("training.prepare"));
+      const prepare = element("button", {
+        type: "button", className: "secondary-button", "data-prepare": packet.id,
+        // Presentation-only guard: the backend path refuses duplicate
+        // concurrent preparation of the same packet regardless of this button.
+        disabled: preparing.has(packet.id),
+        onclick: (() => { openBestBuzzDialog(packet); }) as EventListener,
+      }, i18n.t("training.prepare"));
       const retire = packet.scope === "training" ? element("button", { type: "button", className: "danger-button", onclick: (() => {
         if (queued || !window.confirm(i18n.t("training.retire_confirm"))) return;
         serialize(async () => {
           try {
             await post("retire", { version_id: packet.id });
+            if (!signal.aborted) feedback?.notifySuccess();
             const revision = ++requestRevision;
             const current = await api.request<TrainingResult>("/api/miniapp/training/current", { signal });
             if (signal.aborted || revision !== requestRevision) return;
@@ -601,6 +778,7 @@ export function renderTraining(
       }) as EventListener }, i18n.t("training.retire")) : null;
       return element("article", { className: "resource-card lobby-packet-card training-packet-card", "data-packet-id": packet.id },
         element("h3", {}, packet.name),
+        preparing.has(packet.id) ? buzzPlaque() : null,
         element("dl", { className: "lobby-packet-details" },
           detail("lobby.packet_year", packet.year?.toString() ?? "—"),
           detail("lobby.packet_authors", authors ?? "—"),
@@ -609,13 +787,14 @@ export function renderTraining(
           detail("training.packet_fresh", fresh),
           detail("training.packet_dissected", yesNo(packet.dissected)),
           detail("training.packet_dissected_themes", dissectedThemes),
-          detail("training.packet_best_buzz", yesNo(packet.best_buzz_calculated))),
+          detail("training.packet_best_buzz", yesNo(calculated.has(packet.id) || packet.best_buzz_calculated))),
         element("div", { className: "settings-actions" }, select, prepare, retire));
     });
     replaceChildren(list, ...cards,
       loading ? element("p", { role: "status" }, i18n.t("common.loading")) : null,
       !loading && !cards.length ? element("p", {}, i18n.t(hasActiveFilters() ? "lobby.packet_no_matches" : "training.empty")) : null);
     syncPacketSelection();
+    for (const [packetId, requestId] of restored) pollBestBuzz(packetId, requestId);
   };
   const loader = new PacketLoader<TrainingPacket>(signal,
     async (query, pageSignal) => {
@@ -688,6 +867,7 @@ export function renderTraining(
         question_values: values.value.split(",").map(Number),
       });
       if (signal.aborted) return;
+      feedback?.notifySuccess();
       for (const draft of result.drafts) {
         const card = element("article", { className: "resource-card" },
           element("pre", {}, JSON.stringify(draft.packet, null, 2)),
@@ -696,8 +876,13 @@ export function renderTraining(
           card.append(element("button", { type: "button", onclick: (async () => {
             try {
               await post("draft", { draft_id: draft.draft_id, expected_version: draft.version, publish });
+              if (signal.aborted) return;
+              feedback?.notifySuccess();
               card.remove(); loader.reconcile();
-            } catch (error) { failure(error); }
+            } catch (error) {
+              if (!signal.aborted) feedback?.notifyError();
+              failure(error);
+            }
           }) as EventListener }, i18n.t(publish ? "training.publish" : "training.reject")));
         }
         drafts.append(card);
@@ -721,7 +906,6 @@ export function renderTraining(
     bubble,
     list);
   const optionsPanel = element("section", { className: "stack training-options" },
-    buildSelectionCard(),
     saveReminder(i18n),
     settingsFieldset,
     save);
@@ -749,7 +933,12 @@ export function renderTraining(
   } else {
     root.append(play, tabs, ...panels);
   }
-  signal.addEventListener("abort", () => { window.clearTimeout(timer); window.clearTimeout(hideTimer); }, { once: true });
+  signal.addEventListener("abort", () => {
+    window.clearTimeout(timer); window.clearTimeout(hideTimer);
+    buzzTimers.forEach((timer) => window.clearTimeout(timer));
+    buzzDialogs.forEach((dialog) => dialog.remove());
+    buzzDialogs.clear();
+  }, { once: true });
   syncModifierUi();
   renderSession(); schedule();
   if (!uploadOnly) loader.start({});
