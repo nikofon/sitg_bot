@@ -93,7 +93,9 @@ async def test_quit_has_one_durable_terminal_menu_owner(entry, status, outbox_fi
     message = SimpleNamespace(message_id=1, chat=SimpleNamespace(id=42), text="/quit",
                               answer=AsyncMock(side_effect=answer))
     if entry == "command":
-        await handle_training_control(message, backend, object(), LocalizationService(), "en", "stop")
+        await handle_training_control(
+            message, backend, object(), LocalizationService(), "en", "stop",
+        )
     else:
         await handle_training_menu(
             message, backend, object(), LocalizationService(), "en", "training.quit",

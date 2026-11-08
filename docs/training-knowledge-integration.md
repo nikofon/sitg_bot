@@ -11,6 +11,8 @@ See [database operations](database-operations.md#schema-baseline) for migrations
   recipient's explicitly selected candidates become permanent, independently editable copies
   in their own library. Later edits/deletions never propagate. Repeating
   a send adds only uncopied facts; it never overwrites or resurrects prior copies.
+  Approval skips an already-copied source before claiming any new content fingerprint,
+  so a skipped edited resend cannot block that content from an independent sender.
   Durable recipient/content-fingerprint claims also deduplicate equivalent facts
   arriving through different sources or sharing links, including after editing or
   deleting the imported copy. Existing copies are preserved by migration.
@@ -198,9 +200,9 @@ when the request is older than the bounded 100-row history listing.
 Execution-profile compatibility, cache isolation and legacy-work handling belong in
 [Training AI caching](training-ai.md#analysis-requests-jobs-and-caching).
 New statistic snapshots use the producing artifact's model and versions, not the current
-application configuration; historical metadata and Best-buzz position representation remain
-unchanged. Statistics batches acquire accounts in UUID order, matching collection imports
-and direct copying.
+application configuration; historical metadata remains unchanged. Best-buzz position
+compatibility belongs to the [playback port](training.md#best-buzz-playback-port).
+Statistics batches acquire accounts in UUID order, matching collection imports.
 
 ## Adapters
 
@@ -301,8 +303,7 @@ scoring or AI involvement, and the library's CRUD, filtering, sharing and
 import flows are unchanged.
 
 Ordinary library listing/CRUD and dissection tag-limit validation remain outside
-this quick-restart/tag-selection feature. Training current-state selection now
-uses only the newest run, so stopping it cannot resurface an older completed run.
+this quick-restart/tag-selection feature.
 
 Telegram exposes Knowledge library through the Training keyboard, launching the
 knowledge Mini App. When the Mini App is not configured, the keyboard falls back

@@ -282,7 +282,9 @@ async def test_registered_keyboard_controls_are_actions_not_answer_text(text, co
     assert operation.answer is None
 
 
-async def test_registered_quit_dismisses_completed_training_and_defers_menu_to_delivery(monkeypatch):
+async def test_registered_quit_dismisses_completed_training_and_defers_menu_to_delivery(
+    monkeypatch,
+):
     menu = AsyncMock()
     monkeypatch.setattr(training, "show_menu", menu)
     state = {

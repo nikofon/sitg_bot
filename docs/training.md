@@ -74,7 +74,8 @@ Reopening the menu recovers the same status instead of posting another copy.
 A successful Telegram Start leaves the opening message to the durable event consumer,
 without also invoking menu recovery. It sends one controls announcement; outbox retries
 reuse its recorded message identity. Explicit menu recovery can still reinstall a displaced
-reply keyboard without replaying the opening lifecycle.
+reply keyboard without replaying the opening lifecycle; controls sent during that recovery
+suppress further control announcements across all event pages, including a final empty page.
 
 Starting follows the regular SI lifecycle automatically: countdown, theme list,
 numbered theme and optional commentary, question value, incremental question text,
@@ -88,7 +89,7 @@ one frame at a time rather than silently consuming an unseen question's buzz win
 
 Reply-keyboard controls use only `+` to buzz, `||` to pause/resume, and `!` to appeal,
 like regular games; no other play buttons remain on the training keyboard.
-`/score` reads the current or latest finished training score. Current-state reads
+`/score` reads the newest run's score, including a stopped run. Current-state reads
 select the newest run before hiding stopped/dismissed sessions; they never resurface
 an older completed run. `/quit`, the requested
 `/abbandon` spelling and the existing `/abandon` alias stop a running session or
@@ -105,9 +106,11 @@ coalescing, chunk rendering, question hiding, answer prompts, verdict/answer/the
 presentation, appeal delivery delays and best-effort deletion. Training records ordered
 `training_events` and its own member presentation ledger, not competitive game rows.
 Terminal delivery removes play controls without replacing a newer navigation keyboard.
-Quit (or `/quit`, `/abbandon`, `/abandon`) stops a running session or dismisses a completed run and restores
-the home menu. A retired/stopped session also recovers the home keyboard, but only
-when the player has not moved to a different navigation context.
+Quit (or `/quit`, `/abbandon`, `/abandon`) stops a running session or dismisses a completed run.
+The durable delivery adapter alone restores the home menu and records `menu_restored`;
+the command/menu handler does not send a second menu. A retired/stopped session also
+recovers the home keyboard, but only when the player has not moved to a different
+navigation context.
 As in regular play, completed messages remain available until quit or the shared
 12-hour finished-game closure job. Cleanup snapshots the old session's gameplay,
 control and input IDs, records deletion progress across retries, and includes late
@@ -132,7 +135,10 @@ uses default question values while the Mini App permits custom values. Both
 adapters call authenticated, versioned gateway operations.
 
 Sessions support incremental reading, buzz, deterministic answer matching, reveal,
-skip, next, pause/resume, stop and replay. Paused sessions still exclude normal play.
+skip, next, pause/resume, stop and replay. The Mini App offers Reveal answer and Skip
+only during reading, waiting or Best buzz, not during answering or intermission;
+answering retains its answer form, with pause/stop controls still available.
+Paused sessions still exclude normal play.
 Deadline jobs and authoritative snapshots recover progress after restarts. Account
 locks serialize training start with normal-game entry. Commands carry expected
 versions and question revision IDs. Reading cursors have a separate presentation

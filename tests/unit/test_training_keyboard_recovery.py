@@ -97,7 +97,9 @@ async def test_forced_first_delivery_does_not_duplicate_opening_controls(locale)
 
 @pytest.mark.parametrize("pending", [100, 101, 200, 201])
 @pytest.mark.parametrize("opening_delivered", [True, False])
-async def test_forced_recovery_sends_controls_once_across_all_event_pages(pending, opening_delivered):
+async def test_forced_recovery_sends_controls_once_across_all_event_pages(
+    pending, opening_delivered,
+):
     case = delivery_case(phase="intermission")
     case.state["events"] = case.state["events"][:1]
     if opening_delivered:

@@ -67,8 +67,9 @@ lease, avoiding repeated completed steps after restart.
 Private uploads never reuse a cross-request analysis artifact, even for the same owner;
 the idempotency key salts the compute identity. Same-request recovery checkpoints and
 prepared Best-buzz records remain durable, but do not count as reusable cache hits.
-Provider schema/prompt defaults are v2; Best-buzz playback payload shape is unchanged
-and the adapter explicitly accepts compatible v1/v2 producing artifacts. Concurrent
+Provider schema/prompt defaults are v2; the adapter accepts compatible v1/v2
+producing artifacts. Best-buzz payload compatibility is defined by the
+[playback port](training.md#best-buzz-playback-port). Concurrent
 requests coalesce onto one computation guarded by a lease; each waiter keeps
 its own request, authorization and refund. Cancelling one waiter never cancels
 work others need; cancelling the last waiter abandons the computation.
