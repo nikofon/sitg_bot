@@ -148,7 +148,42 @@ class TrainingDelivery(GameDelivery):
                 else None
             )
             model = MessageModel(model.text, keyboard)
-        return await super()._send(chat, game, messages, key, model, **kwargs)
+        installs_controls = (
+            isinstance(model.keyboard, ReplyKeyboardModel)
+            and not messages.get(key, {}).get("ids")
+        )
+        result = await super()._send(chat, game, messages, key, model, **kwargs)
+        if installs_controls:
+            self.states[game]["controls_sent"] = True
+        return result
+
+    async def _close_ballots(self, chat, game, messages):
+        state = self.states[game]["session"]
+        for key, entry in list(messages.items()):
+            if entry.get("kind") != "training_ballot":
+                continue
+            if (state.get("appeal_status") == "voting"
+                and entry.get("version") == state["version"]
+                and entry.get("round_id") == state["question_revision_id"]):
+                continue
+            await self._send(chat, game, messages, key, MessageModel(
+                self.localization.text("training.appeal_closed", self.states[game]["locale"]),
+            ), edit=True)
+
+    async def _ballot(self, chat, game, messages):
+        state, locale = self.states[game]["session"], self.states[game]["locale"]
+        keyboard = InlineKeyboardModel(rows=(tuple(
+            InlineButtonModel(
+                self.localization.text("button." + command, locale),
+                callback_data=f"tr:{UUID(game).hex}:{state['version']}:{command}",
+            ) for command in ("yes", "no")
+        ),))
+        await self._send(
+            chat, game, messages, f"ballot:{state['version']}",
+            MessageModel(self.localization.text("training.appeal_voting", locale), keyboard),
+            edit=True, kind="training_ballot", version=state["version"],
+            round_id=state["question_revision_id"],
+        )
 
     async def _event(self, chat, game, messages, view, event):
         kind = event["kind"]
@@ -224,23 +259,23 @@ class TrainingDelivery(GameDelivery):
                         }],
                     }
                     events = state["events"]
+                    # Retire old affordances even when event delivery is delayed/retried.
+                    await self._close_ballots(chat, game, messages)
                     await self._deliver_events(chat, game, messages, view, events)
                     if question["status"] in {"active", "paused"}:
-                        controls = "vote" if question.get("appeal_status") == "voting" else "play"
-                        if payload.get("force") or presentation.get("controls") != controls:
+                        controls = "play"
+                        if ((payload.get("force") and not state.get("controls_sent"))
+                            or presentation.get("controls") != controls):
                             await self._send(chat, game, messages,
                                 f"controls:{question['version']}:{controls}:{len(messages)}",
                                 MessageModel(
-                                    self.localization.text(
-                                        "training.appeal_voting"
-                                        if controls == "vote"
-                                        else "training.controls",
-                                        state["locale"],
-                                    ),
+                                    self.localization.text("training.controls", state["locale"]),
                                     training_game_keyboard(self.localization, state["locale"]),
                                 ))
                             await self.protocol.request("telegram.training.record", **identifiers,
                                                         presentation={"controls": controls})
+                        if question.get("appeal_status") == "voting":
+                            await self._ballot(chat, game, messages)
                         if payload.get("force"):
                             text = (self.localization.text("flow.hidden", state["locale"])
                                     if question["hidden"] or question["phase"] == "answering"
