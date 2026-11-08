@@ -228,17 +228,17 @@ describe("Knowledge Mini App shell with redesigned dialogs", () => {
     expect(previewBodies[1]).toMatchObject({ confirm_exposure: true });
     expect(dialog.textContent).toContain("Question text");
 
-    // Select the theme, submit commentary, and confirm the exposure warning.
+    // Select the theme, submit additional instructions, confirm the exposure warning.
     dialog.querySelector<HTMLInputElement>("[data-theme-id='theme-1'] input[type=checkbox]")!.click();
     button(dialog, i18n.t("knowledge.dissection.tab.general")).click();
-    const comment = [...dialog.querySelectorAll("textarea")]
-      .find((node) => node.getAttribute("aria-label") === i18n.t("knowledge.dissection.comment"))!;
-    comment.value = "Extract naval terms";
+    const instructions = [...dialog.querySelectorAll("textarea")]
+      .find((node) => node.getAttribute("aria-label") === i18n.t("knowledge.dissection.additional_instructions"))!;
+    instructions.value = "Extract naval terms";
     button(dialog, i18n.t("knowledge.dissection.submit")).click();
     await vi.waitFor(() => expect(dissectBodies).toHaveLength(1));
     expect(dissectBodies[0]).toMatchObject({
       version_id: "packet-1", theme_revision_ids: ["theme-1"], tag_ids: [],
-      comment: "Extract naval terms", confirm_exposure: false,
+      instructions: "Extract naval terms", confirm_exposure: false,
     });
     button(dialog, i18n.t("knowledge.dissection.confirm")).click();
     await vi.waitFor(() => expect(document.contains(dialog)).toBe(false));

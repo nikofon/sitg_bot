@@ -221,7 +221,11 @@ class AnalysisService:
         units: int = 1,
         now: datetime | None = None,
     ) -> AnalysisRequestView:
-        """Authorize, reserve quota, persist and enqueue within one transaction."""
+        """Authorize, reserve quota, persist and enqueue within one transaction.
+
+        Best buzz reuses an active owner/packet request under a transaction lock,
+        including for private sources. Independent packets use different locks.
+        """
         if not idempotency_key:
             raise ValueError("Analysis idempotency key is required")
         if type(units) is not int or units < 1:
@@ -237,6 +241,10 @@ class AnalysisService:
             descriptor["content_fingerprint"] = content_fingerprint
         if self.source_loader is not None and hasattr(self.source_loader, "authorize_in_session"):
             await self.source_loader.authorize_in_session(session, owner_player_id, descriptor)
+        if kind == ANALYSIS_BEST_BUZZ:
+            await session.execute(select(func.pg_advisory_xact_lock(int(text_fingerprint(
+                "best-buzz-admission", str(owner_player_id), descriptor["packet_revision_id"]
+            )[:15], 16))))
         if self.entitlements is not None:
             await session.get(
                 PlayerRecord, owner_player_id,
@@ -251,6 +259,21 @@ class AnalysisService:
             if existing.instructions != instructions or existing.source != descriptor:
                 raise AnalysisIdempotencyConflictError("Analysis request content changed")
             return self._view(existing, artifact=None)
+        if kind == ANALYSIS_BEST_BUZZ:
+            if self.entitlements is not None:
+                policy = await self.entitlements.policy_for(session, owner_player_id, kind)
+                if not policy.enabled:
+                    raise AnalysisFeatureDisabledError(f"Feature {kind} is disabled")
+            duplicate = await self._active_duplicate(
+                session, owner_player_id=owner_player_id, kind=kind,
+                packet_revision_id=descriptor["packet_revision_id"],
+            )
+            if duplicate is not None:
+                row, artifact = duplicate
+                await self._reconcile_artifact(session, artifact, moment)
+                await session.refresh(row)
+                if row.status in REQUEST_ACTIVE_STATUSES:
+                    return self._view(row, artifact=artifact)
         fingerprint = text_fingerprint(
             source_fingerprint_of(source), content_fingerprint or "",
             self.settings.execution_profile,
@@ -350,6 +373,40 @@ class AnalysisService:
             )
         await session.flush()
         return self._view(row, artifact=artifact)
+
+    async def _active_duplicate(
+        self,
+        session: AsyncSession,
+        *,
+        owner_player_id: UUID,
+        kind: str,
+        packet_revision_id: str,
+    ) -> tuple[TrainingAnalysisRequestRecord, TrainingAnalysisArtifactRecord] | None:
+        """Find this owner's in-flight same-packet request, if any.
+
+        Only a request whose artifact computation is still pending or running
+        counts as an active duplicate; terminal artifacts leave room for an
+        explicit retry request. Independent packets are never affected.
+        """
+        rows = await session.execute(
+            select(TrainingAnalysisRequestRecord, TrainingAnalysisArtifactRecord)
+            .join(
+                TrainingAnalysisArtifactRecord,
+                TrainingAnalysisRequestRecord.artifact_id
+                == TrainingAnalysisArtifactRecord.id,
+            )
+            .where(
+                TrainingAnalysisRequestRecord.owner_player_id == owner_player_id,
+                TrainingAnalysisRequestRecord.kind == kind,
+                TrainingAnalysisRequestRecord.status.in_(REQUEST_ACTIVE_STATUSES),
+                TrainingAnalysisArtifactRecord.status.in_(("pending", "running")),
+                TrainingAnalysisRequestRecord.source["packet_revision_id"].astext
+                == packet_revision_id,
+            )
+            .order_by(TrainingAnalysisRequestRecord.created_at.desc())
+            .limit(1)
+        )
+        return rows.first()
 
     async def _authorize_request(
         self,

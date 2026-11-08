@@ -713,6 +713,7 @@ export interface TrainingPacket {
   dissected_theme_count?: number | null;
   dissected?: boolean;
   best_buzz_calculated?: boolean;
+  best_buzz_request_id?: string | null;
 }
 
 export interface TrainingDraft {

@@ -115,7 +115,7 @@ const messages: Record<string, string> = {
   "knowledge.packets.jobs": "Dissection jobs",
   "knowledge.dissection.title": "Packet dissection",
   "knowledge.dissection.packet": "Packet",
-  "knowledge.dissection.instructions": "Instructions (optional)",
+  "knowledge.dissection.additional_instructions": "Additional instructions (optional)",
   "knowledge.dissection.submit": "Start dissection",
   "knowledge.dissection.submit_short": "Dissect",
   "knowledge.dissection.tab.general": "General",
@@ -1269,12 +1269,11 @@ describe("packets tab", () => {
       button("General", dialog)!.click();
       expect(dialog.querySelector("[data-dissect-selected-count]")!.textContent)
         .toBe("Selected themes: 1");
-      field<HTMLTextAreaElement>("Instructions (optional)", dialog).value = "Focus on naval history";
+      field<HTMLTextAreaElement>("Additional instructions (optional)", dialog).value = "Focus on naval history";
       button("Start dissection", dialog)!.click();
       await flush();
       expect(dissect).toHaveBeenCalledWith("packet-1", {
         instructions: "Focus on naval history",
-        comment: undefined,
         theme_revision_ids: ["theme-1"],
         tag_ids: [],
         confirm_exposure: false,
@@ -1284,7 +1283,6 @@ describe("packets tab", () => {
       await flush();
       expect(dissect).toHaveBeenLastCalledWith("packet-1", {
         instructions: "Focus on naval history",
-        comment: undefined,
         theme_revision_ids: ["theme-1"],
         tag_ids: [],
         confirm_exposure: true,

@@ -93,11 +93,19 @@ export class TelegramPlatform implements MiniAppPlatform {
   }
 
   notifySuccess(): void {
-    this.webApp?.HapticFeedback?.notificationOccurred("success");
+    this.notify("success");
   }
 
   notifyError(): void {
-    this.webApp?.HapticFeedback?.notificationOccurred("error");
+    this.notify("error");
+  }
+
+  private notify(type: "success" | "error"): void {
+    try {
+      this.webApp?.HapticFeedback?.notificationOccurred(type);
+    } catch {
+      // Unsupported clients must never turn an accepted action into a UI error.
+    }
   }
 
   returnToBot(): void {

@@ -211,10 +211,15 @@ search plus a dedicated case-insensitive `author` substring filter, additive tag
 sorting, pagination, and permanent copy sharing. Fact cards never display the internal
 source-packet provenance (privacy on imported libraries); the description renders as
 regular text. Dissection launches from a packet card into a closable General/Themes
-composer window: General carries the selected-theme counter, separate Instructions and
-Commentary fields, auto-assign tag selection (tag ids) with select/deselect all, and the
-start action. The tag toggle is hidden when no tags are available and leaves both text
-fields and theme selection unchanged. Themes lists collapsed theme rows whose
+composer window: General carries the selected-theme counter, one optional Additional
+instructions field (any commentary or guidance for the analysis, with a short memo;
+the two legacy Instruction/Commentary inputs fed one merged model payload, so the
+composer now collects a single text and submits it as the request's `instructions`;
+the legacy API fields, stored provenance, revision/cache identities and historical
+records are preserved without rewriting or merging old data),
+auto-assign tag selection (tag ids) with select/deselect all, and the
+start action. The tag toggle is hidden when no tags are available and leaves the text
+field and theme selection unchanged. Themes lists collapsed theme rows whose
 checkboxes are independent of expansion, with select/deselect all, the remaining theme
 quota and reset time, and full theme reveal only through the exposure-confirmed
 `theme_preview` mutation. Started dissections are durable: closing the window never
@@ -228,7 +233,21 @@ classification defaults: new and potential selected, exact duplicates deselected
 per-section select/deselect all, per-fact checkboxes independent of expansion, and
 Add selected / Reject controls at the top and bottom; approval refreshes the library
 and the pending list. Job polling preserves
-form input. Each training card offers Best buzz preparation.
+form input. Each training card offers Best buzz preparation: the request opens a
+confirmation dialog that states how many of the packet's themes the player's quota
+can prepare (unlimited, sufficient, or honestly short) and requires an explicit
+**Begin preparation**; fresh content is exposure-confirmed inside the dialog, and
+no preparation starts merely by opening it. An accepted preparation shows a
+"Preparing best buzz…" plaque on that packet card with status until the durable
+request reaches a terminal state, which clears the plaque and updates the card's
+calculated flag; a failed status query marks the status unknown and retries instead
+of claiming completion or leaving a permanently stale preparing plaque. Reopening
+the Mini App restores owner-scoped active preparation from the catalogue. The
+authoritative backend path suppresses duplicate concurrent preparation of the same
+packet by returning the owner's active request (see
+[Training AI](training-ai.md#analysis-requests-jobs-and-caching)); independent packets
+are unaffected. Dissection start, confirmed theme exposure and confirmed Best buzz
+begin give mobile haptic feedback (see the [Mini App guide](mini-app.md)).
 HTTP follows existing GET-query and CSRF/idempotency-protected POST-mutation
 conventions, including edits and deletion.
 

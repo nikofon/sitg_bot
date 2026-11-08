@@ -686,6 +686,68 @@ class KnowledgeApplication:
             return {**asdict(result), "dissection_id": row.id if row else None,
                     "import_id": review_id}
 
+    async def best_buzz_preview(self, actor, version_id, *, token_target_chars=18):
+        """Content-free, non-charging preview; admission rechecks all permissions."""
+        async with self.database.transaction() as session:
+            await require_trainee(session, actor)
+            version, logical = await self.packets.authorize(session, actor, version_id)
+            player = await session.get(PlayerRecord, actor)
+            language = version.language if version.language in ("en", "ru") \
+                else player.preferred_locale
+            manifest = list((await session.execute(select(
+                PacketQuestionRecord.question_revision_id, PacketQuestionRecord.theme_revision_id,
+            ).where(PacketQuestionRecord.packet_version_id == version_id))).all())
+            theme_count = len({theme for _, theme in manifest})
+            question_ids = {str(question) for question, _ in manifest}
+            policy = await self.entitlements.policy_for(session, actor, "best_buzz")
+            provider_ready = bool(self.settings.api_key) or not isinstance(
+                self.analysis.provider, ResponsesAnalysisProvider
+            )
+            active = await self.analysis._active_duplicate(
+                session, owner_player_id=actor, kind="best_buzz",
+                packet_revision_id=str(version_id),
+            )
+            # Public immutable versions have one exact manifest. Match the
+            # producing profile and complete manifest, never another owner's
+            # private artifact or a historical calculation flag.
+            cache_hit = False
+            if logical.scope != "training":
+                candidates = await session.execute(select(TrainingAnalysisRequestRecord.source)
+                    .join(TrainingAnalysisArtifactRecord,
+                          TrainingAnalysisArtifactRecord.id
+                          == TrainingAnalysisRequestRecord.artifact_id)
+                    .where(
+                        TrainingAnalysisRequestRecord.kind == "best_buzz",
+                        TrainingAnalysisRequestRecord.source["packet_revision_id"].astext
+                        == str(version_id),
+                        TrainingAnalysisArtifactRecord.shared.is_(True),
+                        TrainingAnalysisArtifactRecord.status.in_(
+                            ("succeeded", "partially_succeeded")
+                        ),
+                        TrainingAnalysisArtifactRecord.provider_usage["execution_profile"].astext
+                        == self.settings.execution_profile,
+                    ))
+                cache_hit = any(
+                    source.get("language") == language
+                    and source.get("question_token_target_chars") == token_target_chars
+                    and set(source.get("question_revision_ids", [])) == question_ids
+                    for source in candidates.scalars()
+                )
+        quota = (await self.entitlements.capabilities(actor))["best_buzz"]
+        enabled = policy.enabled and provider_ready and quota.enabled
+        free_cache = cache_hit and not policy.cache_hit_charging
+        allowed_count = theme_count if free_cache or quota.remaining is None \
+            else min(theme_count, quota.remaining)
+        return {
+            "theme_count": theme_count,
+            "eligible_theme_count": allowed_count if enabled else 0,
+            "can_begin": enabled and theme_count > 0 and allowed_count == theme_count,
+            "enabled": enabled,
+            "remaining": quota.remaining,
+            "cache_hit": cache_hit,
+            "active_request_id": active[0].request_id if active else None,
+        }
+
     async def dissections(self, actor):
         async with self.database.transaction() as session:
             await require_trainee(session, actor)

@@ -60,7 +60,9 @@ lobby, replacing the keyboard with Packets and settings, Start, and Quit. Packet
 the `/training` Mini App, using the regular lobby's Overview / Packets / Options
 sections. The Overview (General) tab shows the selected packet with a Remove action,
 and the packet list toggles each card's Select button to Remove for the currently
-selected packet; removal clears only this lobby's selection. Packet selection
+selected packet; removal clears only this lobby's selection. The Options tab carries
+the settings form only — selected-packet information stays in the General overview and
+on the packet cards. Packet selection
 autosaves independently, while settings require an
 explicit save. Selecting a packet never starts questions.
 Return to Telegram and press Start after choosing a packet and saving any settings; exposure confirmation and Best

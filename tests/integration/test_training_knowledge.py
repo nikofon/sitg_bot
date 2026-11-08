@@ -15,6 +15,7 @@ from sitg_bot.services.reliable_delivery import DurableJobQueue, DurableJobWorke
 from sitg_bot.services.training import TrainingService
 from sitg_bot.services.training_ai import FakeAnalysisProvider, ProviderSettings
 from sitg_bot.services.training_knowledge import KnowledgeApplication, TrainingAnalysisAccess
+from sitg_bot.services.training_packets import TrainingPacketService
 from sitg_bot.storage.models import (
     KnowledgeDissectionRecord,
     TrainingAnalysisArtifactRecord,
@@ -26,17 +27,18 @@ from sitg_bot.storage.models import (
 pytestmark = pytest.mark.integration
 
 
-async def application(database, owner, *, limit=100):
+async def application(database, owner, *, limit=100, cache_hit_charging=False):
     settings = ProviderSettings("fake", "fixture")
-    app = KnowledgeApplication(database, settings=settings)
-    app.analysis = AnalysisService(
+    packets = TrainingPacketService(database)
+    analysis = AnalysisService(
         database,
         DurableJobQueue(database),
         FakeAnalysisProvider(),
         settings,
         entitlements=EntitlementService(database),
-        source_loader=TrainingAnalysisAccess(database, app.packets),
+        source_loader=TrainingAnalysisAccess(database, packets),
     )
+    app = KnowledgeApplication(database, settings=settings, analysis=analysis)
     await seed_category(
         database,
         "integration",
@@ -45,7 +47,7 @@ async def application(database, owner, *, limit=100):
                 "enabled": True,
                 "limit": limit,
                 "reset_period": "daily",
-                "cache_hit_charging": False,
+                "cache_hit_charging": cache_hit_charging,
             }
             for feature in TRAINING_FEATURES
         },
@@ -281,6 +283,105 @@ async def test_explicit_dissection_retry_applies_facts_without_resurrecting_them
         assert len(periods) == 1 and periods[0].reserved == 0 and periods[0].settled == 2
 
 
+@pytest.mark.parametrize("limit,charged", [(1, False), (1, True), (None, False), (0, False)])
+async def test_best_buzz_preview_is_non_charging_and_matches_cache_policy(database, limit, charged):
+    from test_lobby_architecture import tournament_fixture
+
+    from sitg_bot.storage.models import (
+        PlayerExposureClaimRecord,
+        TournamentPacketAssignmentRecord,
+    )
+
+    fixture = await tournament_fixture(database, player_count=1)
+    owner = fixture.manager.id
+    app = await application(database, owner, limit=limit, cache_hit_charging=charged)
+    async with database.sessions() as session:
+        version = await session.scalar(select(TournamentPacketAssignmentRecord.adopted_version_id)
+            .where(TournamentPacketAssignmentRecord.packet_id == fixture.packet_id))
+        exposure_before = set(await session.scalars(select(PlayerExposureClaimRecord.id)))
+    before = await app.best_buzz_preview(owner, version)
+    assert before["theme_count"] == 1
+    assert before["eligible_theme_count"] == (0 if limit == 0 else 1)
+    assert before["can_begin"] is (limit != 0)
+    # Opening a dialog does not disclose, reserve, create requests or call upstream.
+    async with database.sessions() as session:
+        assert set(await session.scalars(select(PlayerExposureClaimRecord.id))) == exposure_before
+        assert not list(await session.scalars(select(TrainingAnalysisRequestRecord)))
+    assert app.analysis.provider.buzz_calls == []
+    other = fixture.players[0].id
+    private, _ = await upload(database, owner)
+    with pytest.raises(LookupError):
+        await app.best_buzz_preview(other, private)
+    if limit == 0:
+        return
+    accepted = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="preview-buzz",
+    )
+    active = await app.best_buzz_preview(owner, version)
+    assert active["active_request_id"] == accepted["request_id"]
+    card = (await app.packets.list_packets(owner))["items"]
+    assert next(item for item in card if item["id"] == version)["best_buzz_request_id"] \
+        == accepted["request_id"]
+    worker = DurableJobWorker(app.analysis.jobs, {"training.analysis": app.analysis_job},
+                              kinds=("training.analysis",))
+    assert await worker.run_once() == 1
+    after = await app.best_buzz_preview(owner, version)
+    assert after["cache_hit"] is True
+    assert after["can_begin"] is (not charged or limit is None)
+    # Another tokenization is not the same cache, and private packets never get
+    # cross-request cache eligibility from the public packet's artifact.
+    different = await app.best_buzz_preview(owner, version, token_target_chars=7)
+    assert different["cache_hit"] is False
+    private_preview = await app.best_buzz_preview(owner, private)
+    assert private_preview["cache_hit"] is False
+    assert private_preview["can_begin"] is (limit is None)
+    assert len(app.analysis.provider.buzz_calls) == 1
+
+
+async def test_best_buzz_duplicate_concurrent_preparation_is_suppressed(database):
+    owner = await create_player(database, 8232, "buzz-dedup")
+    app = await application(database, owner)
+    version, _ = await upload(database, owner)
+    first = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-1",
+    )
+    assert first["status"] == "queued"
+    # A second concurrent preparation of the same packet (double click, new
+    # idempotency key) returns the active request, not a duplicate job.
+    second = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-2",
+    )
+    assert second["request_id"] == first["request_id"]
+    assert second["status"] == "queued"
+    async with database.sessions() as session:
+        rows = list(await session.scalars(
+            select(TrainingAnalysisRequestRecord).where(
+                TrainingAnalysisRequestRecord.owner_player_id == owner
+            )
+        ))
+        assert len(rows) == 1
+    # Quota is reserved once: the packet has one theme and the limit is 100.
+    capabilities = await app.entitlements.capabilities(owner)
+    assert capabilities["best_buzz"].remaining == 99
+    # An independent packet is never blocked by the same-packet guard.
+    other, _ = await upload(database, owner)
+    third = await app.request_analysis(
+        owner, version_id=other, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-other-packet",
+    )
+    assert third["request_id"] != first["request_id"]
+    # Cancelling the active preparation frees the packet for an explicit retry.
+    assert await app.analysis.cancel(owner_player_id=owner, request_id=first["request_id"])
+    retried = await app.request_analysis(
+        owner, version_id=version, kind="best_buzz", confirm_exposure=True,
+        idempotency_key="buzz-dedup-3",
+    )
+    assert retried["request_id"] != first["request_id"]
+
+
 async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks(
     database, monkeypatch,
 ):
@@ -301,7 +402,7 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         artifact.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
     terminal_locked, waiter_lookup = asyncio.Event(), asyncio.Event()
     original_complete = app.analysis._complete_requests
-    original_lookup = app.analysis._artifact_for_key
+    original_lookup = app.analysis._active_duplicate
 
     async def complete(*args):
         terminal_locked.set()
@@ -313,7 +414,7 @@ async def test_best_buzz_completion_and_real_disclosure_have_compatible_fk_locks
         return await original_lookup(*args, **kwargs)
 
     monkeypatch.setattr(app.analysis, "_complete_requests", complete)
-    monkeypatch.setattr(app.analysis, "_artifact_for_key", lookup)
+    monkeypatch.setattr(app.analysis, "_active_duplicate", lookup)
     terminal = asyncio.create_task(app.analysis._write_terminal(
         artifact_id, lease, status="succeeded", payload={"boundaries": []},
     ))

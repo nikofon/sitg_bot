@@ -50,6 +50,7 @@ async def test_production_request_admits_entitled_requests_and_replays(monkeypat
             row.status = "queued"
 
     session = SimpleNamespace(
+        execute=AsyncMock(),
         get=AsyncMock(), scalar=AsyncMock(return_value=0), scalars=AsyncMock(return_value=[]),
         add=added.append,
         flush=AsyncMock(side_effect=flush),
@@ -65,6 +66,7 @@ async def test_production_request_admits_entitled_requests_and_replays(monkeypat
         entitlements=entitlements, source_loader=loader,
     )
     service._request_row = AsyncMock(return_value=existing if replay else None)
+    service._active_duplicate = AsyncMock(return_value=None)
     artifact = SimpleNamespace(id=uuid4(), status="pending", generation=1)
     service._artifact_for_key = AsyncMock(return_value=artifact)
     schedule = AsyncMock()
@@ -122,6 +124,7 @@ async def test_all_artifact_and_public_cache_identities_pin_execution_profile(
     service = AnalysisService(object(), object(), FakeAnalysisProvider(),
                               ProviderSettings("openai", "same-model"))
     service._request_row = AsyncMock(return_value=None)
+    service._active_duplicate = AsyncMock(return_value=None)
     artifact = SimpleNamespace(id=uuid4(), status="pending", generation=1)
     service._artifact_for_key = AsyncMock(return_value=artifact)
     public_lookup = AsyncMock(return_value=None)
@@ -132,7 +135,7 @@ async def test_all_artifact_and_public_cache_identities_pin_execution_profile(
     def add(row):
         row.status = "queued"
 
-    session = SimpleNamespace(add=add, flush=AsyncMock())
+    session = SimpleNamespace(add=add, flush=AsyncMock(), execute=AsyncMock())
     owner = uuid4()
     for settings in (service.settings, replace(service.settings, **change)):
         service.settings = settings

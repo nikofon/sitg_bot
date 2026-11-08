@@ -194,10 +194,17 @@ export interface KnowledgeDissectOutcome {
 /** Dissection composer request per the knowledge LLM library contract. */
 export interface KnowledgeDissectRequest {
   instructions?: string;
+  /** Legacy API input retained for clients; the composer uses instructions only. */
   comment?: string;
   theme_revision_ids?: string[];
   tag_ids?: string[];
   confirm_exposure?: boolean;
+}
+
+/** Haptic feedback bridge for important Knowledge actions on mobile. */
+export interface KnowledgeFeedback {
+  notifySuccess(): void;
+  notifyError(): void;
 }
 
 export interface KnowledgeDissectionQuota {
@@ -357,7 +364,6 @@ export const knowledgeMessageKeys = [
   "knowledge.tag_filter",
   "knowledge.tag_rename",
   "knowledge.tag_delete",
-  "knowledge.dissection.comment",
   "knowledge.dissection.status.queued",
   "knowledge.dissection.status.running",
   "knowledge.dissection.status.cancelled",
@@ -478,7 +484,8 @@ export const knowledgeMessageKeys = [
   "knowledge.packets.jobs",
   "knowledge.dissection.title",
   "knowledge.dissection.packet",
-  "knowledge.dissection.instructions",
+  "knowledge.dissection.additional_instructions",
+  "knowledge.dissection.additional_instructions_hint",
   "knowledge.dissection.submit",
   "knowledge.dissection.submit_short",
   "knowledge.dissection.confirm",
@@ -1235,6 +1242,7 @@ function packetCard(
   state: KnowledgeState,
   actions: KnowledgeActions,
   onDissectStarted: () => void,
+  feedback?: KnowledgeFeedback,
 ): HTMLElement {
   const dissect = element("button", {
     type: "button",
@@ -1242,7 +1250,7 @@ function packetCard(
     onclick: (() => {
       // The composer window stays closable: the dissection job is durable
       // server-side and closing never cancels it.
-      openDialog(dissectComposerDialog(packet, i18n, state, actions, onDissectStarted));
+      openDialog(dissectComposerDialog(packet, i18n, state, actions, onDissectStarted, feedback));
     }) as EventListener,
   }, i18n.t("knowledge.dissection.submit_short"));
   const detail = (key: KnowledgeMessageKey, value: string): HTMLElement => element(
@@ -1281,6 +1289,7 @@ export function renderKnowledge(
   data: KnowledgeViewData,
   i18n: KnowledgeI18n,
   actions: KnowledgeActions,
+  feedback?: KnowledgeFeedback,
 ): HTMLElement {
   const root = element("div", { className: "knowledge-library" });
   const errorText = element("p", { className: "error-text", role: "alert" });
@@ -1655,7 +1664,7 @@ export function renderKnowledge(
     for (const packet of items) packetNames.set(packet.id, packet.name);
     renderJobs(data.dissection.requests);
     replaceChildren(packetList, ...items.map((packet) =>
-      packetCard(packet, i18n, state, actions, onDissectStarted)));
+      packetCard(packet, i18n, state, actions, onDissectStarted, feedback)));
     if (!items.length && !loading) {
       packetList.append(element("p", {}, i18n.t(
         Object.values(packetFilters).some((value) => value) ? "knowledge.packets.no_matches" : "knowledge.packets.empty",

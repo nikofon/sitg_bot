@@ -26,6 +26,7 @@ class ReviewGateway(FakeGateway):
     "method,path,body,action",
     [
         ("GET", f"themes?version_id={UUID(int=8)}", None, ActionCode.KNOWLEDGE_THEMES),
+        ("GET", f"best_buzz_preview?version_id={UUID(int=8)}", None, ActionCode.BEST_BUZZ_PREVIEW),
         ("GET", "imports", None, ActionCode.KNOWLEDGE_IMPORTS),
         ("GET", "imports?cursor=opaque&limit=7", None, ActionCode.KNOWLEDGE_IMPORTS),
         ("GET", f"imports/{UUID(int=9)}", None, ActionCode.KNOWLEDGE_IMPORT_DETAIL),
@@ -93,6 +94,17 @@ async def test_review_transport_is_authenticated_typed_and_direct(method, path, 
         listing.assert_awaited_once_with(
             UUID(int=2), cursor=operation.cursor, limit=operation.limit,
         )
+    if action == ActionCode.BEST_BUZZ_PREVIEW:
+        app = dispatch_gateway()
+        preview = AsyncMock(return_value={"theme_count": 2, "can_begin": True})
+        app.knowledge = SimpleNamespace(best_buzz_preview=preview)
+        principal = (await auth.authorize_request(
+            "test-session", method="GET", action=action,
+        )).principal
+        assert await app._dispatch(principal, gateway.requests[-1]) == {
+            "theme_count": 2, "can_begin": True,
+        }
+        preview.assert_awaited_once_with(UUID(int=2), version_id=UUID(int=8), token_target_chars=18)
     if action == ActionCode.KNOWLEDGE_DISSECT:
         assert operation.theme_revision_ids == [UUID(int=10)]
         assert operation.tag_ids == [UUID(int=11)] and operation.comment == "  Exact\n"

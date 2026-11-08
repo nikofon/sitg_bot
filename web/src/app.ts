@@ -205,7 +205,8 @@ export class MiniAppShell {
 
   private renderRoute(route: RouteMatch, payload: RoutePayload): void {
     if ("kind" in payload.resource && payload.resource.kind === "knowledge" && this.request) {
-      this.renderFrame(route, renderKnowledgePage(payload.resource, this.api, this.i18n, this.request.signal));
+      // Dissection start and confirmed theme exposure give mobile haptic feedback.
+      this.renderFrame(route, renderKnowledgePage(payload.resource, this.api, this.i18n, this.request.signal, this.platform));
       return;
     }
     if ("kind" in payload.resource && payload.resource.kind === "training" && this.request) {

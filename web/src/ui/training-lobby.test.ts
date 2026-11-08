@@ -5,7 +5,10 @@ import { I18n } from "../i18n";
 import { renderTraining, type TrainingFeedback } from "./training";
 
 const controllers: AbortController[] = [];
-afterEach(() => controllers.splice(0).forEach((controller) => controller.abort()));
+afterEach(() => {
+  controllers.splice(0).forEach((controller) => controller.abort());
+  document.body.replaceChildren();
+});
 const lobby = { version: 3, version_id: "one", packet_name: "Alpha packet", settings: {
   reversed: true, hidden_after: 2, buzz_timeout: 8, best_buzz: false,
 } };
@@ -36,8 +39,11 @@ interface CreateOptions {
   locale?: "en" | "ru";
   initial?: LobbyFixture;
   current?: unknown;
+  activeBuzz?: string;
   /** Handlers for POST /api/miniapp/training/lobby, consumed in order. */
   lobbyCalls?: LobbyHandler[];
+  /** Extra route handler consulted before the empty default response. */
+  routes?: (path: string, init: { body?: unknown; method?: string }) => unknown;
 }
 
 function create(options: CreateOptions = {}) {
@@ -54,13 +60,17 @@ function create(options: CreateOptions = {}) {
     if (body.settings) server = { ...server, settings: body.settings as Record<string, unknown> };
     return { lobby: { ...server } };
   };
-  const request = vi.fn(async (path: string, init: { body?: unknown } = {}) => {
-    if (path.includes("/packets?")) return { items: packets.map((packet) => ({ ...packet })), next_cursor: null };
+  const request = vi.fn(async (path: string, init: { body?: unknown; method?: string } = {}) => {
+    if (path.includes("/packets?")) return { items: packets.map((packet, index) => ({
+      ...packet, best_buzz_request_id: index === 0 ? options.activeBuzz : null,
+    })), next_cursor: null };
     if (path === "/api/miniapp/training/lobby") {
       const handler = calls.shift() ?? defaultLobby;
       return handler(init.body as Record<string, unknown>);
     }
     if (path === "/api/miniapp/training/current") return options.current ?? {};
+    const routed = options.routes?.(path, init);
+    if (routed !== undefined) return routed;
     return {};
   });
   const root = renderTraining({ session: null, lobby: initial }, { request } as unknown as ApiClient,
@@ -110,7 +120,9 @@ describe("training lobby", () => {
     tab(root, 2);
     const options = root.querySelector<HTMLElement>(".training-options")!;
     expect(options.querySelector('button[type="submit"]')!.textContent).toBe("Save lobby settings");
-    expect(options.querySelector(".training-selection-packet")!.textContent).toBe("Alpha packet");
+    // Settings carry the form only: the selected packet lives in General/Packets.
+    expect(options.querySelector(".training-selection-packet")).toBeNull();
+    expect(options.querySelector(".training-selection")).toBeNull();
     // Best buzz is its own section, separate from the other modifiers.
     const groups = [...options.querySelectorAll(".descriptor-category")].map((node) => node.textContent);
     expect(groups).toEqual(["Modifiers", "Best buzz", "Timing", "Reading"]);
@@ -551,6 +563,229 @@ describe("training lobby", () => {
     expect(alpha.querySelector(".lobby-packet-selected")).toBeNull();
     expect(root.querySelector(".training-overview .training-selection-packet")!.textContent)
       .toBe("No packet selected");
+  });
+
+  it("confirms Best buzz preparation from a quota dialog and tracks it on the card", async () => {
+    const buzzBodies: Array<Record<string, unknown>> = [];
+    let statusCalls = 0;
+    const { root, request, feedback } = create({ routes: (path, init) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: true, theme_count: 12, eligible_theme_count: 12 };
+      if (path === "/api/miniapp/knowledge/best_buzz") {
+        buzzBodies.push(init.body as Record<string, unknown>);
+        return { request_id: "buzz-1" };
+      }
+      if (path.startsWith("/api/miniapp/training/analysis")) {
+        statusCalls += 1;
+        return { status: statusCalls === 1 ? "queued" : "succeeded" };
+      }
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    const [alpha] = packetCards(root) as [HTMLElement, HTMLElement];
+    expect(detailValue(alpha, "Best buzz calculated")).toBe("No");
+    // Preparing opens a dialog first; no paid work starts from the request itself.
+    alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    expect(buzzBodies).toHaveLength(0);
+    vi.useFakeTimers();
+    try {
+      // The dialog states the quota-constrained theme count before Begin unlocks.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dialog.querySelector("[role=status]")!.textContent).toBe("Themes to prepare: 12.");
+      const begin = dialog.querySelector<HTMLButtonElement>(".settings-actions .primary-button")!;
+      expect(begin.disabled).toBe(false);
+      begin.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(buzzBodies).toHaveLength(1);
+      expect(buzzBodies[0]).toMatchObject({ version_id: "one", confirm_exposure: false });
+      // Accepted: haptic success, dialog closes, plaque appears on the packet card.
+      expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+      expect(feedback.notifyError).not.toHaveBeenCalled();
+      expect(document.contains(dialog)).toBe(false);
+      expect(alpha.querySelector(".training-buzz-plaque")!.textContent).toBe("Preparing best buzz…");
+      expect(alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.disabled).toBe(true);
+      expect(status(root)).toBe("Queued");
+      // The next poll reports terminal completion: plaque clears, flag flips.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(alpha.querySelector(".training-buzz-plaque")).toBeNull();
+      expect(detailValue(alpha, "Best buzz calculated")).toBe("Yes");
+      expect(alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.disabled).toBe(false);
+      expect(request.mock.calls.some(([path]) => path.startsWith("/api/miniapp/training/analysis"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Begin locked while the quota cannot cover the whole packet", async () => {
+    const buzzBodies: Array<Record<string, unknown>> = [];
+    const { root, feedback } = create({ routes: (path, init) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: false, theme_count: 12, eligible_theme_count: 3 };
+      if (path === "/api/miniapp/knowledge/best_buzz") {
+        buzzBodies.push(init.body as Record<string, unknown>);
+        return { request_id: "never" };
+      }
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[0]!.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    await vi.waitFor(() => expect(dialog.querySelector("[role=status]")!.textContent)
+      .toContain("Your quota allows only 3 of 12 themes"));
+    const begin = dialog.querySelector<HTMLButtonElement>(".settings-actions .primary-button")!;
+    expect(begin.disabled).toBe(true);
+    begin.click();
+    expect(buzzBodies).toHaveLength(0);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    // Disabled feature: honest unavailability instead of a silent no-op.
+    document.querySelector<HTMLButtonElement>("dialog .icon-button")!.click();
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const second = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    expect(second).not.toBe(dialog);
+  });
+
+  it("requires the in-dialog exposure confirmation before starting preparation", async () => {
+    const buzzBodies: Array<Record<string, unknown>> = [];
+    const { root, feedback } = create({ routes: (path, init) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: true, theme_count: 12, eligible_theme_count: 12 };
+      if (path === "/api/miniapp/knowledge/best_buzz") {
+        buzzBodies.push(init.body as Record<string, unknown>);
+        return buzzBodies.length === 1
+          ? { confirmation_required: true, fresh_unit_count: 4 }
+          : { request_id: "buzz-2" };
+      }
+      if (path.startsWith("/api/miniapp/training/analysis")) return { status: "queued" };
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[0]!.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    // Unlimited quota still counts the packet's themes.
+    await vi.waitFor(() =>
+      expect(dialog.querySelector("[role=status]")!.textContent).toBe("Themes to prepare: 12."));
+    const begin = dialog.querySelector<HTMLButtonElement>(".settings-actions .primary-button")!;
+    begin.click();
+    await vi.waitFor(() => expect(buzzBodies).toHaveLength(1));
+    expect(buzzBodies[0]).toMatchObject({ confirm_exposure: false });
+    // Fresh content: the warning appears in the dialog; no start, no buzz yet.
+    await vi.waitFor(() => expect(dialog.textContent).toContain("Fresh themes to mark as seen: 4"));
+    expect(document.contains(dialog)).toBe(true);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    const confirm = dialog.querySelector<HTMLButtonElement>(".settings-actions .warning-button")!;
+    expect(confirm.textContent).toBe("Confirm and start");
+    confirm.click();
+    await vi.waitFor(() => expect(buzzBodies).toHaveLength(2));
+    expect(buzzBodies[1]).toMatchObject({ version_id: "one", confirm_exposure: true });
+    expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+    expect(document.contains(dialog)).toBe(false);
+    // The plaque stays while the analysis is queued/running server-side.
+    const [alpha] = packetCards(root) as [HTMLElement, HTMLElement];
+    await vi.waitFor(() => expect(alpha.querySelector(".training-buzz-plaque")!.textContent)
+      .toBe("Preparing best buzz…"));
+  });
+
+  it("suppresses duplicate preparation requests for the same packet", async () => {
+    const buzzBodies: Array<Record<string, unknown>> = [];
+    const { root, feedback } = create({ routes: (path, init) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: true, theme_count: 12, eligible_theme_count: 12 };
+      if (path === "/api/miniapp/knowledge/best_buzz") {
+        buzzBodies.push(init.body as Record<string, unknown>);
+        return { request_id: "buzz-1" };
+      }
+      if (path.startsWith("/api/miniapp/training/analysis")) return { status: "running" };
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    const [alpha] = packetCards(root) as [HTMLElement, HTMLElement];
+    alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    await vi.waitFor(() =>
+      expect(dialog.querySelector("[role=status]")!.textContent).toBe("Themes to prepare: 12."));
+    // A double click on Begin still sends exactly one request.
+    const begin = dialog.querySelector<HTMLButtonElement>(".settings-actions .primary-button")!;
+    begin.click();
+    begin.click();
+    await vi.waitFor(() => expect(buzzBodies).toHaveLength(1));
+    await vi.waitFor(() => expect(alpha.querySelector(".training-buzz-plaque")).not.toBeNull());
+    // The card-level guard blocks a second dialog while the same packet prepares.
+    expect(alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.disabled).toBe(true);
+    alpha.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    expect(document.querySelectorAll("dialog[aria-label='Prepare Best buzz']").length).toBeLessThan(2);
+    // Independent packets stay available: Beta can still start its own dialog.
+    packetCards(root)[1]!.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const betaDialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']");
+    expect(betaDialog).not.toBeNull();
+    expect(feedback.notifySuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("signals a haptic error when the preparation initiation fails", async () => {
+    const { root, feedback } = create({ routes: (path) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: true, theme_count: 12, eligible_theme_count: 12 };
+      if (path === "/api/miniapp/knowledge/best_buzz") throw new ApiError("forbidden", 403, false);
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(packetCards(root).length).toBe(2));
+    packetCards(root)[0]!.querySelector<HTMLButtonElement>("button[data-prepare]")!.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog[aria-label='Prepare Best buzz']")!;
+    await vi.waitFor(() =>
+      expect(dialog.querySelector("[role=status]")!.textContent).toBe("Themes to prepare: 12."));
+    dialog.querySelector<HTMLButtonElement>(".settings-actions .primary-button")!.click();
+    await vi.waitFor(() =>
+      expect(dialog.querySelector(".error-text")!.textContent).not.toBe(""));
+    expect(dialog.querySelector(".error-text")!.textContent).toBe("Something went wrong.");
+    expect(feedback.notifyError).toHaveBeenCalledTimes(1);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    // The dialog stays open with the honest error; no plaque was added.
+    expect(document.contains(dialog)).toBe(true);
+    expect(packetCards(root)[0]!.querySelector(".training-buzz-plaque")).toBeNull();
+  });
+
+  it("restores active preparation and recovers an unknown status without haptics", async () => {
+    let reads = 0;
+    vi.useFakeTimers();
+    try {
+      const { root, feedback } = create({ activeBuzz: "restored", routes: (path) => {
+        if (path.startsWith("/api/miniapp/training/analysis?")) {
+          reads += 1;
+          if (reads === 1) throw new Error("temporary offline");
+          return { status: "failed" };
+        }
+      } });
+      await vi.advanceTimersByTimeAsync(0);
+      const alpha = packetCards(root)[0]!;
+      expect(alpha.querySelector(".training-buzz-plaque")!.textContent)
+        .toBe("Preparation status unavailable; checking again…");
+      expect(alpha.querySelector<HTMLButtonElement>("[data-prepare]")!.disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(alpha.querySelector(".training-buzz-plaque")).toBeNull();
+      expect(alpha.querySelector<HTMLButtonElement>("[data-prepare]")!.disabled).toBe(false);
+      expect(detailValue(alpha, "Best buzz calculated")).toBe("No");
+      expect(status(root)).toBe("Failed");
+      expect(feedback.notifySuccess).not.toHaveBeenCalled();
+      expect(feedback.notifyError).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not start or buzz when confirmation is cancelled and prevents duplicate dialogs", async () => {
+    const { root, request, feedback } = create({ routes: (path) => {
+      if (path.startsWith("/api/miniapp/knowledge/best_buzz_preview?"))
+        return { enabled: true, can_begin: true, theme_count: 12, eligible_theme_count: 12 };
+    } });
+    await vi.waitFor(() => expect(packetCards(root)).toHaveLength(2));
+    const prepare = packetCards(root)[0]!.querySelector<HTMLButtonElement>("[data-prepare]")!;
+    prepare.click(); prepare.click();
+    expect(document.querySelectorAll("dialog")).toHaveLength(1);
+    await vi.waitFor(() => expect(document.querySelector("dialog [role=status]")!.textContent)
+      .toBe("Themes to prepare: 12."));
+    document.querySelector<HTMLButtonElement>("dialog .secondary-button")!.click();
+    expect(document.querySelector("dialog")).toBeNull();
+    expect(request.mock.calls.some(([path]) => path === "/api/miniapp/knowledge/best_buzz")).toBe(false);
+    expect(feedback.notifySuccess).not.toHaveBeenCalled();
+    expect(feedback.notifyError).not.toHaveBeenCalled();
   });
 
   it("offers removal of the selected packet on the General overview tab", async () => {
