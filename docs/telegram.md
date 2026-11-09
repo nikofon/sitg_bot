@@ -34,6 +34,9 @@ Per-user event isolation prevents rapid input from bypassing an active conversat
 `/start`, `/menu`, `/help`, `/command_help`, `/cancel`, and `/language` support recovery and
 registration. `/help` shows a short tutorial (choosing a tournament, joining or creating a
 lobby, starting a game, answering questions) and is also sent once when a player completes registration;
+the packet licensing notice follows that tutorial once on completed registration, and `/license`
+returns the same notice to any private chat (no registration required); the terms name links to the
+public `license.html` page on the Mini App host.
 `/command_help` lists every command with a description and the context where it applies.
 Tournament menus expose **Registration link** to managers; active participants find the same
 link in the tournament profile Mini App's general section while registration is open.

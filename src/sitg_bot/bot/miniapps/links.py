@@ -59,6 +59,15 @@ def mini_app_launch_url(base_url: str, route: str, reference: LaunchReference) -
     return urlunsplit((parsed.scheme, parsed.netloc, path, query, ""))
 
 
+def license_terms_url(base_url: str) -> str:
+    """Build the public URL of the packet licensing terms page."""
+    parsed = urlsplit(base_url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Mini App base URL must be HTTPS")
+    path = f"{parsed.path.rstrip('/')}/license.html"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
 def website_url(base_url: str, *segments: str) -> str:
     parsed = urlsplit(base_url)
     if parsed.scheme != "https" or not parsed.netloc:

@@ -128,6 +128,7 @@ async def handle_menu(
     locale: str,
     navigation: NavigationState | None,
     state: FSMContext,
+    launch_links: str | None = None,
 ) -> None:
     await state.clear()
     if navigation is None or navigation.context == "registration":
@@ -139,6 +140,7 @@ async def handle_menu(
             claim=telegram_update_claim,
             localization=localization,
             locale=locale,
+            launch_links=launch_links,
         )
         return
     from sitg_bot.bot.handlers.common import send_menu_with_notification_alert

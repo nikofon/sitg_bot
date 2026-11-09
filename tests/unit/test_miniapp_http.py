@@ -110,6 +110,7 @@ async def test_miniapp_entry_pages_require_revalidation(tmp_path: Path, path: st
     ("index-12345678.js", "no-cache"),
     ("favicon.ico", "no-cache"),
     ("index.html", "no-cache"),
+    ("license.html", "no-cache"),
 ])
 async def test_static_file_cache_policy(tmp_path: Path, path: str, cache_control: str) -> None:
     asset = tmp_path / path

@@ -5,6 +5,7 @@ from sitg_bot.bot.keyboards.common import (
     navigation_keyboard,
     registration_consent_keyboard,
 )
+from sitg_bot.bot.miniapps.links import license_terms_url
 from sitg_bot.bot.presenters.models import MessageModel, RemoveKeyboardModel
 from sitg_bot.bot.state.models import NavigationState, RegistrationState
 
@@ -84,6 +85,17 @@ def help_message(
     if navigation is not None and (navigation.active_lobby or navigation.active_game):
         text += "\n\n" + localization.text("chat.help", locale)
     return MessageModel(text)
+
+
+def license_message(
+    localization: LocalizationService, locale: str, launch_links: str | None
+) -> MessageModel:
+    """Render the canonical packet licensing notice shared by all delivery points."""
+    if launch_links is None:
+        return MessageModel(localization.text("license.notice.unlinked", locale))
+    return MessageModel(
+        localization.text("license.notice", locale, terms_url=license_terms_url(launch_links))
+    )
 
 
 def language_message(localization: LocalizationService, locale: str) -> MessageModel:

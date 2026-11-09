@@ -26,7 +26,7 @@ from sitg_bot.bot.handlers.admin import (
     token_decision_confirmation,
     token_decision_receipt,
 )
-from sitg_bot.bot.handlers.common import resume_registration
+from sitg_bot.bot.handlers.common import handle_license, resume_registration
 from sitg_bot.bot.handlers.manager import (
     _creation_prompt,
     delivered_token_message,
@@ -48,12 +48,17 @@ from sitg_bot.bot.handlers.player import (
     other_menu_message,
     settings_message,
 )
-from sitg_bot.bot.handlers.registration import parse_consent
+from sitg_bot.bot.handlers.registration import handle_registration_input, parse_consent
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.i18n.catalog import CatalogError
 from sitg_bot.bot.keyboards.common import tournament_language_keyboard
 from sitg_bot.bot.middleware.authentication import TelegramDeduplicationMiddleware
-from sitg_bot.bot.presenters.common import menu_message, mode_message, registration_prompt
+from sitg_bot.bot.presenters.common import (
+    license_message,
+    menu_message,
+    mode_message,
+    registration_prompt,
+)
 from sitg_bot.bot.presenters.models import (
     InlineKeyboardModel,
     ReplyKeyboardModel,
@@ -470,6 +475,21 @@ def test_catalog_validation_permits_only_plain_http_links() -> None:
     ):
         with pytest.raises(CatalogError, match="Translated links"):
             LocalizationService({"ru": {"one": f"Один {invalid}"}, "en": {"one": f"One {invalid}"}})
+
+
+def test_catalog_link_placeholders_require_http_urls() -> None:
+    localization = LocalizationService(
+        {"ru": {"one": "<a href=\"{url}\">link</a>"}, "en": {"one": "<a href=\"{url}\">link</a>"}}
+    )
+
+    rendered = localization.text("one", "en", url="https://example.org/terms")
+    assert rendered == '<a href="https://example.org/terms">link</a>'
+    with pytest.raises(CatalogError, match="http\\(s\\) URL"):
+        localization.text("one", "en", url="javascript:alert(1)")
+    with pytest.raises(CatalogError, match="http\\(s\\) URL"):
+        localization.text("one", "en", url="not a url")
+    with pytest.raises(CatalogError, match="http\\(s\\) URL"):
+        localization.text("one", "en")
 
 
 @pytest.mark.parametrize("step", ("real_name", "nickname", "telegram_public"))
@@ -1681,6 +1701,101 @@ async def test_registration_start_handles_missing_telegram_username() -> None:
 
     backend.start_registration.assert_awaited_once_with(claim, telegram_username=None)
     message.answer.assert_awaited_once()
+
+
+async def test_completed_registration_delivers_license_notice_after_help() -> None:
+    backend = SimpleNamespace(
+        start_registration=AsyncMock(return_value=registration(step=None)),
+        complete_registration=AsyncMock(),
+        navigation=AsyncMock(return_value=navigation()),
+        claim_notification_alerts=AsyncMock(return_value=SimpleNamespace(audiences=[])),
+    )
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(username=None),
+        answer=AsyncMock(),
+    )
+
+    await resume_registration(
+        message,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="ru",
+        launch_links="https://mini.example.test/app",
+    )
+
+    texts = [call.args[0] for call in message.answer.await_args_list]
+    assert texts[0] == "Регистрация завершена."
+    assert "Ваша первая игра" in texts[2]
+    assert len(texts) == 4
+    license_text = texts[3]
+    assert (
+        '<a href="https://mini.example.test/app/license.html">'
+        "«Только для личного использования — все права сохранены»</a>" in license_text
+    )
+
+
+async def test_final_registration_step_delivers_license_notice_after_help() -> None:
+    backend = SimpleNamespace(
+        start_registration=AsyncMock(
+            return_value=registration(step="telegram_public", version=2)
+        ),
+        save_registration_step=AsyncMock(
+            return_value=registration(step=None, version=3)
+        ),
+        complete_registration=AsyncMock(),
+        navigation=AsyncMock(return_value=navigation()),
+        claim_notification_alerts=AsyncMock(return_value=SimpleNamespace(audiences=[])),
+    )
+    message = SimpleNamespace(
+        from_user=SimpleNamespace(username=None),
+        text="да",
+        answer=AsyncMock(),
+    )
+
+    await handle_registration_input(
+        message,  # type: ignore[arg-type]
+        backend=backend,  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="ru",
+        state=None,
+        launch_links="https://mini.example.test/app",
+    )
+
+    texts = [call.args[0] for call in message.answer.await_args_list]
+    assert len(texts) == 3
+    assert "Регистрация завершена." in texts[0]
+    assert "Ваша первая игра" in texts[1]
+    license_text = texts[2]
+    assert "https://mini.example.test/app/license.html" in license_text
+    assert "без явного разрешения авторов пакета" in license_text
+
+
+async def test_license_command_returns_notice_with_clickable_terms_link() -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+
+    await handle_license(
+        message,  # type: ignore[arg-type]
+        localization=LocalizationService(),
+        locale="en",
+        launch_links="https://mini.example.test/app",
+    )
+
+    text = message.answer.await_args.args[0]
+    assert message.answer.await_count == 1
+    assert (
+        '<a href="https://mini.example.test/app/license.html">'
+        "Personal Use Only — All Rights Reserved</a>" in text
+    )
+    assert "Creative Commons or OSI license" in text
+
+
+def test_license_message_without_launch_links_uses_unlinked_notice() -> None:
+    model = license_message(LocalizationService(), "en", None)
+
+    assert "<a href" not in model.text
+    assert "Personal Use Only — All Rights Reserved" in model.text
 
 
 def telegram_update(kind: str) -> Update:

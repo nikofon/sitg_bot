@@ -10,6 +10,7 @@ from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
 from sitg_bot.bot.presenters.common import (
     help_message,
+    license_message,
     menu_message,
     registration_prompt,
 )
@@ -44,6 +45,7 @@ async def handle_registration_input(
     localization: LocalizationService,
     locale: str,
     state: FSMContext,
+    launch_links: str | None = None,
 ) -> None:
     username = message.from_user.username if message.from_user is not None else None
     draft = await backend.start_registration(telegram_update_claim, telegram_username=username)
@@ -59,6 +61,7 @@ async def handle_registration_input(
             localization=localization,
             locale=locale,
             state=state,
+            launch_links=launch_links,
         )
         return
     if message.text.startswith("/"):
@@ -114,6 +117,7 @@ async def handle_registration_input(
         localization=localization,
         locale=locale,
         state=state,
+        launch_links=launch_links,
     )
 
 
@@ -125,6 +129,7 @@ async def _send_completed_menu(
     localization: LocalizationService,
     locale: str,
     state: FSMContext | None = None,
+    launch_links: str | None = None,
 ) -> None:
     navigation = await backend.navigation(claim)
     if navigation is None:
@@ -142,6 +147,7 @@ async def _send_completed_menu(
     text = f"{localization.text('registration.complete', locale)}\n\n{menu.text}"
     await send_message_model(message, MessageModel(text, menu.keyboard))
     await send_message_model(message, help_message(navigation, localization, locale))
+    await send_message_model(message, license_message(localization, locale, launch_links))
     if state is not None:
         from sitg_bot.bot.handlers.common import resume_invitation
 
@@ -155,6 +161,7 @@ async def handle_unsupported_registration_message(
     telegram_update_claim: TelegramUpdateClaim,
     localization: LocalizationService,
     locale: str,
+    launch_links: str | None = None,
 ) -> None:
     from sitg_bot.bot.handlers.common import resume_registration
 
@@ -164,4 +171,5 @@ async def handle_unsupported_registration_message(
         claim=telegram_update_claim,
         localization=localization,
         locale=locale,
+        launch_links=launch_links,
     )

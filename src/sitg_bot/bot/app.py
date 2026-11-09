@@ -113,6 +113,7 @@ async def configure_bot_commands(bot: Bot, localization: LocalizationService) ->
         "menu",
         "help",
         "command_help",
+        "license",
         "cancel",
         "language",
         "set",

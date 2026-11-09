@@ -1,5 +1,6 @@
 import html
 import json
+import re
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -32,18 +33,27 @@ class _TelegramHTMLValidator(HTMLParser):
         "code",
     }
     link_schemes = ("http://", "https://")
+    # A link target may be a single format placeholder; LocalizationService.text
+    # then requires the substituted value to be an http(s) URL.
+    href_placeholder = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.stack: list[str] = []
+        self.href_fields: set[str] = set()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "a":
             href = attrs[0][1] if len(attrs) == 1 and attrs[0][0] == "href" else None
-            if not href or not href.startswith(self.link_schemes):
+            placeholder = self.href_placeholder.fullmatch(href or "")
+            if not href or not (
+                href.startswith(self.link_schemes) or placeholder is not None
+            ):
                 raise CatalogError(
                     "Translated links must use exactly one http(s) href attribute"
                 )
+            if placeholder is not None:
+                self.href_fields.add(placeholder.group(1))
             self.stack.append(tag)
             return
         if tag not in self.allowed_tags or attrs:
@@ -64,6 +74,7 @@ class LocalizationService:
 
     def __init__(self, catalogs: dict[str, dict[str, str]] | None = None) -> None:
         self.catalogs = catalogs or self._load_catalogs()
+        self._link_fields: dict[str, dict[str, frozenset[str]]] = {}
         self.validate()
 
     def locale(self, value: str | None) -> str:
@@ -75,6 +86,14 @@ class LocalizationService:
             template = self.catalogs[selected][key]
         except KeyError as error:
             raise CatalogError(f"Unknown message key: {key}") from error
+        for field in self._link_fields.get(selected, {}).get(key, frozenset()):
+            value = parameters.get(field)
+            if not isinstance(value, str) or not value.startswith(
+                _TelegramHTMLValidator.link_schemes
+            ):
+                raise CatalogError(
+                    f"Parameter {field!r} for {key} must be an http(s) URL"
+                )
         escaped = {
             name: html.escape(str(value), quote=True) if isinstance(value, str) else value
             for name, value in parameters.items()
@@ -134,6 +153,9 @@ class LocalizationService:
                 validator.feed(value)
                 validator.close()
                 validator.finish()
+                self._link_fields.setdefault(locale, {})[key] = frozenset(
+                    validator.href_fields
+                )
 
     @staticmethod
     def _fields(template: str) -> set[str]:

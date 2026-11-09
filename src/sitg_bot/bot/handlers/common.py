@@ -9,7 +9,12 @@ from aiogram.types import Message
 
 from sitg_bot.application.telegram import TelegramUpdateClaim
 from sitg_bot.bot.i18n import LocalizationService
-from sitg_bot.bot.presenters.common import help_message, menu_message, registration_prompt
+from sitg_bot.bot.presenters.common import (
+    help_message,
+    license_message,
+    menu_message,
+    registration_prompt,
+)
 from sitg_bot.bot.presenters.models import MessageModel
 from sitg_bot.bot.presenters.render import send_message_model
 from sitg_bot.bot.state import BotBackend, NavigationState
@@ -60,6 +65,7 @@ async def resume_registration(
     localization: LocalizationService,
     locale: str,
     state: FSMContext | None = None,
+    launch_links: str | None = None,
 ) -> None:
     username = message.from_user.username if message.from_user is not None else None
     draft = await backend.start_registration(claim, telegram_username=username)
@@ -81,6 +87,9 @@ async def resume_registration(
             locale=locale,
         )
         await send_message_model(message, help_message(navigation, localization, locale))
+        await send_message_model(
+            message, license_message(localization, locale, launch_links)
+        )
         if state is not None:
             await resume_invitation(message, backend, claim, localization, locale, state)
         return
@@ -96,6 +105,7 @@ async def handle_start(
     locale: str,
     navigation: NavigationState | None,
     state: FSMContext,
+    launch_links: str | None = None,
 ) -> None:
     await state.clear()
     reupload = re.fullmatch(
@@ -141,6 +151,7 @@ async def handle_start(
             localization=localization,
             locale=locale,
             state=state,
+            launch_links=launch_links,
         )
         return
     await send_menu_with_notification_alert(
@@ -194,6 +205,18 @@ async def handle_help(
         )
         return
     await send_message_model(message, help_message(navigation, localization, locale))
+
+
+@router.message(Command("license"))
+async def handle_license(
+    message: Message,
+    localization: LocalizationService,
+    locale: str,
+    launch_links: str | None = None,
+) -> None:
+    await send_message_model(
+        message, license_message(localization, locale, launch_links)
+    )
 
 
 @router.message(Command("command_help"))
