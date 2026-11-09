@@ -598,6 +598,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
             "player.authors",
             "player.players",
             "player.author_link",
+            "player.tester_link",
             "player.rating",
             "player.history",
             "player.other",
@@ -613,6 +614,7 @@ def test_other_menu_groups_profile_actions_and_back_navigation() -> None:
         "Authors",
         "Players",
         "Link to author",
+        "Link to tester",
         "Back",
     )
 
@@ -991,6 +993,38 @@ async def test_player_ongoing_action_opens_ongoing_mini_app_list() -> None:
     button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
     assert button.text == "Open ongoing games"
     assert button.web_app.url == "https://mini.example.test/app/ongoing?_launch=1"
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+async def test_player_tester_link_opens_private_window(locale) -> None:
+    message = SimpleNamespace(answer=AsyncMock())
+    await handle_player_menu_action(
+        message,  # type: ignore[arg-type]
+        player_action="player.tester_link",
+        backend=SimpleNamespace(),  # type: ignore[arg-type]
+        telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
+        localization=LocalizationService(), locale=locale,
+        navigation=navigation(allowed_actions=["player.tester_link"]),
+        state=SimpleNamespace(),  # type: ignore[arg-type]
+        launch_links="https://mini.example.test/app",
+    )
+    button = message.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.web_app.url == "https://mini.example.test/app/testers/link?_launch=1"
+
+
+@pytest.mark.parametrize("locale", ["en", "ru"])
+def test_tester_link_notifications_render_names_and_decision(locale) -> None:
+    localization = LocalizationService()
+    created = notification_text(
+        "tester_link.request_created",
+        {"player_nickname": "<Player>", "tester_name": "<Tester>"}, localization, locale,
+    )
+    assert "&lt;Player&gt;" in created and "&lt;Tester&gt;" in created
+    decided = notification_text(
+        "tester_link.request_decided", {"status": "approved"}, localization, locale,
+    )
+    assert "approved" in decided
+    assert "tester_link.request_decided" not in decided
 
 
 async def test_player_tournament_info_action_opens_tournament_profile_window() -> None:

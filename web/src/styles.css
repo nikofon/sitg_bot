@@ -349,7 +349,8 @@ p {
   opacity: 0.55;
 }
 
-.settings-form {
+.settings-form,
+.spaced-content {
   display: grid;
   gap: 1rem;
 }

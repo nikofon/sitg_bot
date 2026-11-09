@@ -624,6 +624,7 @@ class TelegramNavigationService:
                         "player.profile",
                         "player.library",
                         "player.author_link",
+                        "player.tester_link",
                         "player.authors",
                         "player.players",
                         "player.ongoing",

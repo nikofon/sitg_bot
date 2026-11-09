@@ -18,6 +18,7 @@ from sitg_bot.storage.models import (
     GamePacketVersionRecord,
     PacketDraftRecord,
     PacketVersionRecord,
+    PacketVersionTesterRecord,
     PlayerExposureClaimRecord,
     QuestionRevisionRecord,
     TournamentManagerRecord,
@@ -78,6 +79,7 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         draft_id = UUID(prepared["draft_id"])
         content = deepcopy(editor["packet"])
         content["name"] = "Reinterpreted packet"
+        content["testers"] = ["Reupload Tester"]
         content["themes"][0]["name"] = "Reinterpreted theme"
         content["themes"][0]["authors"] = ["Source spelling"]
         content["themes"][0]["questions"][0]["text"] = "Corrected parsing"
@@ -95,12 +97,26 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
             draft_id, fixture.manager.id, first_name="Resolved", second_name=None,
             surname="Author", telegram_link=None,
         )
+        # Reupload uses the full ordinary upload namesake-registration workflow.
+        await service.create_tester(
+            draft_id, fixture.manager.id, first_name="Reupload", surname="Tester",
+            second_name=None, telegram_link=None,
+        )
+        tester = await service.create_tester(
+            draft_id, fixture.manager.id, first_name="Reupload", surname="Tester",
+            second_name=None, telegram_link=None,
+        )
         updated = await service.update_draft(
             draft_id, fixture.manager.id, expected_version=imported["version"], content=content,
+            tester_bindings={"Reupload Tester": UUID(tester["tester_id"])},
             author_bindings={"Source spelling": UUID(author["author_id"])},
             lead_author_id=UUID(author["author_id"]),
         )
         assert updated["reupload_target"] == prepared["reupload_target"]
+        updated = await service.update_draft(
+            draft_id, fixture.manager.id, expected_version=updated["version"], content=content,
+        )
+        assert updated["tester_bindings"] == {"Reupload Tester": tester["tester_id"]}
         with pytest.raises(StaleWriteError):
             await service.publish(
                 draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
@@ -112,7 +128,14 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         assert new.version_id != old.version_id
         assert new.packet.lead_author == author["display_name"]
         assert new.packet.themes[0].authors == (author["display_name"],)
+        assert new.packet.testers == ("Reupload Tester",)
         async with database.sessions() as session:
+            assert list(await session.scalars(select(PacketVersionTesterRecord.tester_id).where(
+                PacketVersionTesterRecord.packet_version_id == new.version_id,
+            ))) == [UUID(tester["tester_id"])]
+            assert not list(await session.scalars(select(PacketVersionTesterRecord.tester_id).where(
+                PacketVersionTesterRecord.packet_version_id == old.version_id,
+            )))
             new_version = await session.get(PacketVersionRecord, new.version_id)
             _, new_rows = await service._version_fields(session, new_version)
             assert [t.theme_id for t, _ in new_rows] == [t.theme_id for t, _ in old_rows]
@@ -184,7 +207,7 @@ async def test_reupload_intake_shape_authorization_rejection_and_stale_target(da
             draft_id, fixture.manager.id, source, source_filename="fixed.json",
         )
         altered = deepcopy(editor["packet"])
-        altered["themes"][0]["questions"].pop()
+        altered["themes"][0]["questions"] = altered["themes"][0]["questions"][:-1]
         with pytest.raises(ValueError, match="same theme count"):
             await service.update_draft(
                 draft_id, fixture.manager.id, expected_version=imported["version"], content=altered,

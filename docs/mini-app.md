@@ -29,6 +29,8 @@ single-parameter categories show their input directly, and theme count offers a
 "all themes from the selected packets" checkbox that submits the `max` sentinel. The author-link
 window (`/authors/link`) lets a registered player search authors, submit a link request
 with an optional note, and follow their own request statuses; the bot's player menu opens it.
+**Other... → Link to tester** opens the analogous private `/testers/link` window.
+Tester request and decision notifications use the existing Telegram notification delivery.
 The private tester-link window (`/testers/link`) mirrors that flow for testers: search requires
 a name (there is no tester directory), results list tested packet names to distinguish namesakes,
 and players can cancel their own pending requests and see their linked testers with tested

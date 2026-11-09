@@ -428,7 +428,7 @@ export class MiniAppShell {
 
   private renderReuploadIntake(route: RouteMatch, prepared: PacketDraftResource & { intake_url?: string },
     packet: ManagementPacket): void {
-    this.renderFrame(route, element("section", { className: "route-content" },
+    this.renderFrame(route, element("section", { className: "route-content spaced-content" },
       this.statusCard("empty", this.i18n.t("packet_management.reupload_started")),
       element("p", { className: "field-help" }, `${this.i18n.t("packet_management.packet_id")}: ${packet.name} (${packet.packet_id})`),
       prepared.reupload_target
@@ -3828,7 +3828,7 @@ export class MiniAppShell {
               : this.i18n.t("testers_link.tested_none")}`))))
         : [element("li", {}, element("p", {}, this.i18n.t("testers_link.no_testers")))]));
     }).catch(() => undefined);
-    this.renderFrame(route, element("section", { className: "route-content" },
+    this.renderFrame(route, element("section", { className: "route-content spaced-content" },
       element("p", { className: "field-help" }, this.i18n.t("testers_link.privacy_note")),
       form,
       element("h2", {}, this.i18n.t("testers_link.my_testers")),

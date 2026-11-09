@@ -181,6 +181,16 @@ def notification_text(
             author_name=payload.get("author_name", ""),
             tournament_name=payload.get("tournament_name", ""),
         )
+    if kind == "tester_link.request_decided":
+        return localization.text(
+            "notification.tester_link.decided", locale, status=payload.get("status", ""),
+        )
+    if kind == "tester_link.request_created":
+        return localization.text(
+            "tester_link.request_created", locale,
+            player_nickname=payload.get("player_nickname", ""),
+            tester_name=payload.get("tester_name", ""),
+        )
     if kind == "author_link.request_decided":
         return localization.text(
             "notification.author_link.decided",
@@ -719,7 +729,8 @@ async def handle_player_menu_action(
             ),
         )
         return
-    if player_action == "player.author_link":
+    if player_action in {"player.author_link", "player.tester_link"}:
+        identity = "testers" if player_action == "player.tester_link" else "authors"
         if launch_links is None:
             await send_message_model(
                 message,
@@ -727,21 +738,21 @@ async def handle_player_menu_action(
                     localization.text(
                         "feature.placeholder",
                         locale,
-                        feature=localization.text("button.player.author_link", locale),
+                        feature=localization.text(f"button.{player_action}", locale),
                     )
                 ),
             )
             return
-        url = mini_app_route_url(launch_links, "authors/link")
+        url = mini_app_route_url(launch_links, f"{identity}/link")
         await send_message_model(
             message,
             MessageModel(
-                localization.text("miniapp.authors_link.prompt", locale),
+                localization.text(f"miniapp.{identity}_link.prompt", locale),
                 InlineKeyboardModel(
                     rows=(
                         (
                             InlineButtonModel(
-                                localization.text("miniapp.authors_link.open", locale),
+                                localization.text(f"miniapp.{identity}_link.open", locale),
                                 web_app_url=url,
                             ),
                         ),
