@@ -1,5 +1,6 @@
 import re
 from typing import Literal, cast
+from uuid import UUID
 
 from aiogram import Router
 from aiogram.filters import Command, CommandStart
@@ -97,6 +98,20 @@ async def handle_start(
     state: FSMContext,
 ) -> None:
     await state.clear()
+    reupload = re.fullmatch(
+        r"/start(?:@[A-Za-z0-9_]+)? reupload_([0-9a-fA-F]{32})", message.text or "",
+    )
+    if reupload and navigation is not None and navigation.context != "registration":
+        from sitg_bot.bot.state.settings import PacketUploadState
+
+        draft_id = UUID(hex=reupload.group(1))
+        await backend.reupload_draft(telegram_update_claim, draft_id=draft_id)
+        await state.set_state(PacketUploadState.waiting_document)
+        await state.update_data(reupload_draft_id=str(draft_id))
+        await send_message_model(
+            message, MessageModel(localization.text("packet_upload.reupload_prompt", locale))
+        )
+        return
     invite = re.fullmatch(
         r"/start(?:@[A-Za-z0-9_]+)? ((?:reg|join)_[A-Za-z0-9_-]{32})", message.text or "",
     )

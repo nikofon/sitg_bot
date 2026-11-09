@@ -87,6 +87,8 @@ class ActionCode(StrEnum):
     TOURNAMENT_START = "tournaments.manager.start.v1"
     PACKET_UPLOAD_ELIGIBILITY = "packets.upload.eligibility.v1"
     PACKET_UPLOAD = "packets.upload.v1"
+    PACKET_REUPLOAD_PREPARE = "packets.reupload.prepare.v1"
+    PACKET_REUPLOAD_UPLOAD = "packets.reupload.upload.v1"
     PACKET_DRAFT_GET = "packets.drafts.get.v1"
     PACKET_DRAFT_UPDATE = "packets.drafts.update.v1"
     PACKET_DRAFT_AUTHOR_CREATE = "packets.drafts.authors.create.v1"
@@ -771,6 +773,20 @@ class PacketUploadOperation(ContractModel):
     source_base64: str = Field(min_length=1, max_length=5_600_000, repr=False)
 
 
+class PacketReuploadPrepareOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_REUPLOAD_PREPARE]
+    tournament_id: UUID
+    assignment_id: UUID
+    expected_version: int = Field(ge=1)
+
+
+class PacketReuploadUploadOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_REUPLOAD_UPLOAD]
+    draft_id: UUID
+    source_filename: str = Field(min_length=1, max_length=500)
+    source_base64: str = Field(min_length=1, max_length=5_600_000, repr=False)
+
+
 class PacketDraftGetOperation(ContractModel):
     action: Literal[ActionCode.PACKET_DRAFT_GET]
     draft_id: UUID
@@ -806,6 +822,7 @@ class PacketDraftTelegramBindOperation(ContractModel):
 class PacketDraftDecisionOperation(ContractModel):
     action: Literal[ActionCode.PACKET_DRAFT_PUBLISH, ActionCode.PACKET_DRAFT_REJECT]
     draft_id: UUID
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class NotificationsListOperation(ContractModel):
@@ -1217,6 +1234,8 @@ GatewayOperation = Annotated[
     | TournamentStartOperation
     | PacketUploadEligibilityOperation
     | PacketUploadOperation
+    | PacketReuploadPrepareOperation
+    | PacketReuploadUploadOperation
     | PacketDraftGetOperation
     | PacketDraftUpdateOperation
     | PacketDraftAuthorCreateOperation

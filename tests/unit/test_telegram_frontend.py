@@ -127,6 +127,56 @@ async def test_packet_upload_sends_controls_for_every_draft(filename) -> None:
     state.clear.assert_not_awaited()
 
 
+async def test_reupload_deep_link_binds_draft_and_intake_uses_only_that_draft() -> None:
+    from sitg_bot.bot.handlers.common import handle_start
+
+    target = {"assignment_id": str(UUID(int=2)), "expected_version": 1}
+    summary = {
+        "draft_id": str(UUID(int=1)), "version": 2, "status": "awaiting_confirmation",
+        "source_filename": "fixed.json", "ruleset_key": "si", "ruleset_version": 1,
+        "packet_name": "Corrected", "theme_count": 1, "question_count": 5,
+        "detected_authors": [], "errors": [], "warnings": [], "can_publish": True,
+        "can_reject": True, "reupload_target": target, "launch_reference": "preview",
+    }
+    gateway = SimpleNamespace(execute_update=AsyncMock(side_effect=[
+        SimpleNamespace(ok=True, data={**summary, "status": "uploaded"}),
+        SimpleNamespace(ok=True, data=summary), SimpleNamespace(ok=True),
+    ]))
+    message = SimpleNamespace(
+        text=f"/start reupload_{UUID(int=1).hex}",
+        document=SimpleNamespace(file_name="fixed.json", file_size=5),
+        bot=SimpleNamespace(download=AsyncMock(return_value=io.BytesIO(b"input"))),
+        answer=AsyncMock(return_value=SimpleNamespace(
+            chat=SimpleNamespace(id=42), message_id=10,
+        )),
+    )
+    state = SimpleNamespace(
+        clear=AsyncMock(), set_state=AsyncMock(), update_data=AsyncMock(),
+        get_data=AsyncMock(return_value={"reupload_draft_id": str(UUID(int=1))}),
+    )
+    backend = BotBackend(gateway)
+    await handle_start(
+        message, backend, object(), LocalizationService(), "en",
+        SimpleNamespace(context="tournament"), state,
+    )
+    state.update_data.assert_awaited_once_with(reupload_draft_id=str(UUID(int=1)))
+    assert "ONE" in message.answer.await_args.args[0]
+    await handle_packet_document(
+        message, backend, object(), LocalizationService(), "en", state, "https://example.org/app",
+    )
+    operations = [call.args[1] for call in gateway.execute_update.await_args_list]
+    assert [op.action for op in operations] == [
+        ActionCode.PACKET_DRAFT_GET, ActionCode.PACKET_REUPLOAD_UPLOAD,
+        ActionCode.PACKET_DRAFT_TELEGRAM_BIND,
+    ]
+    assert operations[1].draft_id == UUID(int=1)
+    assert state.clear.await_count == 2
+    buttons = [button for row in message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+               for button in row]
+    assert any(button.callback_data == f"packet:draft:publish:{UUID(int=1)}:2"
+               for button in buttons)
+
+
 async def test_packet_upload_accepts_several_files_in_one_session() -> None:
     summaries = [
         {

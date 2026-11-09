@@ -126,7 +126,12 @@ Upload checks tournament permission before accepting a bounded file; it reports 
 counts, and authors, then offers authorized preview/edit, publish, or reject actions. The
 upload session accepts several files — sent one after another or as a Telegram media group;
 each file is imported separately into the same tournament until `/cancel` ends the session.
-Manager packet modification uses the Mini App. Remaining placeholder destinations are tracked
+Manager packet modification uses the Mini App. Packet reupload starts there through an
+actor-authorized `/start reupload_<draft-id>` link, then accepts exactly one file for that
+draft and adopted version. Successful intake exits the session and sends the same upload
+preview/edit and publish/reject controls. Reupload publish controls pin the displayed draft
+revision; after editing, confirmation must use the updated editor revision. `/cancel` stops
+intake without changing published content. Remaining placeholder destinations are tracked
 in [planned features](future-work.md).
 
 ## Native SI delivery

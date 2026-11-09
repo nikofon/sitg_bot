@@ -61,6 +61,20 @@ def test_structure_changes_cannot_bypass_field_classification():
         PacketAdminService._validate_changes(old, new, {}, {}, {})
 
 
+@pytest.mark.parametrize("counts", [(1, 2), (2, 2), (1,), (2, 2, 2)])
+def test_reupload_requires_matching_question_counts_per_theme_not_just_total(counts):
+    def packet(shape):
+        return Packet("Packet", tuple(
+            Theme(str(i), tuple(Question("Text", "Answer", "", 10 * (j + 1))
+                                for j in range(count)))
+            for i, count in enumerate(shape)
+        ))
+
+    with pytest.raises(ValueError, match="question count in each theme"):
+        PacketAdminService._require_reupload_shape(packet((2, 1)), packet(counts))
+    PacketAdminService._require_reupload_shape(packet(counts), packet(counts))
+
+
 def test_coauthor_identity_changes_require_correction_even_for_namesakes():
     packet = content()
     path = "themes.0.authors"

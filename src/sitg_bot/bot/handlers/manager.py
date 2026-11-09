@@ -348,7 +348,8 @@ def packet_draft_message(
         decisions.append(
             InlineButtonModel(
                 localization.text("packet_upload.publish", locale),
-                callback_data=f"packet:draft:publish:{draft.draft_id}",
+                callback_data=(f"packet:draft:publish:{draft.draft_id}"
+                               + (f":{draft.version}" if draft.reupload_target else "")),
             )
         )
     if draft.can_reject:
@@ -412,12 +413,22 @@ async def handle_packet_document(
             ),
         )
         return
-    drafts = await backend.upload_packet(
-        telegram_update_claim,
-        tournament_id=UUID(str(data["tournament_id"])),
-        source_filename=filename,
-        source=source,
-    )
+    reupload_draft_id = data.get("reupload_draft_id")
+    if reupload_draft_id:
+        drafts = await backend.reupload_packet(
+            telegram_update_claim, draft_id=UUID(str(reupload_draft_id)),
+            source_filename=filename, source=source,
+        )
+        # Reupload is deliberately single-file: an album's later items must not
+        # become independent new packets or overwrite this correction draft.
+        await state.clear()
+    else:
+        drafts = await backend.upload_packet(
+            telegram_update_claim,
+            tournament_id=UUID(str(data["tournament_id"])),
+            source_filename=filename,
+            source=source,
+        )
     # The upload session stays open so one prompt can receive several files:
     # sent one after another or as a Telegram media group (each album item
     # arrives as its own document message). Every file is imported into the
@@ -1101,9 +1112,9 @@ async def handle_packet_draft_decision(
     locale: str,
 ) -> None:
     data = callback.data or ""
-    parts = data.split(":", 3)
+    parts = data.split(":")
     if (
-        len(parts) != 4
+        len(parts) not in {4, 5}
         or parts[:2] != ["packet", "draft"]
         or parts[2]
         not in {
@@ -1116,6 +1127,9 @@ async def handle_packet_draft_decision(
     decision, raw_draft_id = parts[2], parts[3]
     try:
         draft_id = UUID(raw_draft_id)
+        expected_version = int(parts[4]) if len(parts) == 5 else None
+        if expected_version is not None and expected_version < 1:
+            raise ValueError("Invalid draft version")
     except ValueError:
         await callback.answer(localization.text("error.not_found", locale), show_alert=True)
         return
@@ -1123,6 +1137,7 @@ async def handle_packet_draft_decision(
         telegram_update_claim,
         draft_id=draft_id,
         publish=decision == "publish",
+        expected_version=expected_version,
     )
     await callback.answer()
     if isinstance(callback.message, Message):

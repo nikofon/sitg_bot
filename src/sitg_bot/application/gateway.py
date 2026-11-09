@@ -89,6 +89,8 @@ from sitg_bot.application.contracts import (
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
+    PacketReuploadPrepareOperation,
+    PacketReuploadUploadOperation,
     PacketUploadEligibilityOperation,
     PacketUploadOperation,
     PlayerBanOperation,
@@ -413,6 +415,10 @@ ACTION_POLICIES.update(
             mutation=True, idempotency_required=True, stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.PACKET_REUPLOAD_PREPARE: ActionPolicy(
+            mutation=True, idempotency_required=True, stale_write_field="expected_version"
+        ),
+        ActionCode.PACKET_REUPLOAD_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.LIBRARY_VIEW: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
@@ -1169,20 +1175,32 @@ class ApplicationGateway:
                 operation.tournament_id, player_id,
                 include_player_access=operation.include_player_access,
             )
-        if isinstance(operation, PacketUploadOperation):
-            tournament_id = await self._manager_tournament_id(
-                telegram_user_id, operation.tournament_id
+        if isinstance(operation, PacketReuploadPrepareOperation):
+            return await self.packets.prepare_reupload(
+                operation.tournament_id, operation.assignment_id, player_id,
+                expected_version=operation.expected_version,
+            )
+        if isinstance(operation, (PacketUploadOperation, PacketReuploadUploadOperation)):
+            tournament_id = (
+                await self._manager_tournament_id(telegram_user_id, operation.tournament_id)
+                if isinstance(operation, PacketUploadOperation) else None
             )
             try:
                 source = base64.b64decode(operation.source_base64, validate=True)
             except (binascii.Error, ValueError) as error:
                 raise ValueError("Packet upload is not valid base64") from error
-            result = await self.packets.import_upload(
-                source,
-                source_filename=operation.source_filename,
-                uploader_id=player_id,
-                tournament_id=tournament_id,
-            )
+            if isinstance(operation, PacketReuploadUploadOperation):
+                result = await self.packets.import_reupload(
+                    operation.draft_id, player_id, source,
+                    source_filename=operation.source_filename,
+                )
+            else:
+                result = await self.packets.import_upload(
+                    source,
+                    source_filename=operation.source_filename,
+                    uploader_id=player_id,
+                    tournament_id=tournament_id,
+                )
             summaries = result.get("drafts", [result])
             for summary in summaries:
                 if self.launch_references is not None:
@@ -1245,6 +1263,7 @@ class ApplicationGateway:
                 operation.draft_id,
                 administrator_id=player_id,
                 notify_bound_telegram=notify_telegram,
+                expected_version=operation.expected_version,
             )
             return {
                 "draft_id": str(operation.draft_id),

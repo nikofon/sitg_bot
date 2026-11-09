@@ -319,9 +319,9 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | `/manager/tournaments/{ref}/settings`, `/authors`, `/finalize` | Settings, author lookup/creation, finalization |
 | `/manager/tournaments/{ref}/registration-availability`, `/registrations/{player_id}`, `/packet-access`, `/start`, `/complete` | Tournament management mutations |
 | `/manager/tournaments/{ref}/classic` | Versioned stage configuration, seeding, round controls, and starts |
-| `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management |
+| `/manager/tournaments/{ref}/packets/{assignment_id}[/{command}]` | Published packet view and management; POST `reupload` with `expected_version` prepares a correction draft and returns `intake_url` for Telegram |
 | POST `/manager/tournaments/{ref}/existing-packets/{preview,add}` | Preview and confirm an existing packet assignment |
-| `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject |
+| `/manager/packets/{ref}`, `/authors`, `/{decision}` | Draft view/edit, author lookup/creation, publish/reject; reupload publication requires the displayed draft `expected_version` |
 
 Use the route registrations in `MiniAppHttpServer.application` as the complete HTTP inventory;
 the table groups endpoints rather than duplicating their schemas.

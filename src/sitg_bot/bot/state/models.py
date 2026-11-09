@@ -136,6 +136,7 @@ class PacketDraftState(FrontendState):
     can_publish: bool
     can_reject: bool
     themes_missing: bool = False
+    reupload_target: dict[str, str | int] | None = None
     launch_reference: str | None = None
     launch_expires_at: str | None = None
 

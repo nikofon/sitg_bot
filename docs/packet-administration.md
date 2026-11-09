@@ -204,6 +204,35 @@ Correction-only saves replace the edited version in every active tournament assi
 The previous version is marked deleted and archived; its underlying rows remain as immutable game
 snapshots and statistical evidence. Independently substituted versions are not overwritten.
 
+## Packet reupload
+
+Managers may reupload an assignment's adopted packet to correct bulk parsing errors.
+This is always a correction, not a substitution: packet, theme, and question logical
+identities are retained by position. The file must contain exactly one packet with the
+same theme count and the same question count in each corresponding theme; equal overall
+question totals alone are insufficient.
+
+The manager starts reupload from the packet management card, then follows an actor-authorized
+Telegram intake link and sends one DOCX, PDF, or JSON file. Intake is bound to a prepared
+draft and the exact adopted version. Unlike ordinary upload, the session ends after one
+successful file. Invalid files and shape mismatches leave published content untouched and
+allow another intake attempt. `/cancel` ends intake; rejection closes the draft, including
+one still awaiting its file.
+
+After intake, the ordinary upload preview/editor, metadata, author associations, and
+publish/reject controls are reused. All edits are corrections, without per-field
+classification. Shape is checked on intake, editor save, and final confirmation. Confirmation
+requires the displayed draft revision (`expected_version`) and rechecks manager authority,
+assignment activity, and the target's adopted version. Stale controls cannot publish unseen
+editor changes or overwrite another correction. Publication atomically uses the same correction
+revision writer and shared-assignment propagation as normal corrections, preserving rights,
+exposure identities, statistical continuity, and assigned game snapshots.
+
+Prepared drafts use status `uploaded`; their server-owned `_reupload_target` JSON metadata
+records tournament, assignment, packet and adopted-version IDs plus the expected packet version
+number. It is excluded from editable packet projections and preserved independently of editor
+input. No reupload schema migration is required.
+
 ## Substitutions
 
 A substitution materially changes a question's meaning, expected knowledge, difficulty,

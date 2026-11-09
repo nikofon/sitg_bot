@@ -64,6 +64,7 @@ from sitg_bot.application.contracts import (
     PacketManagementActionOperation,
     PacketManagementGetOperation,
     PacketManagementUpdateOperation,
+    PacketReuploadPrepareOperation,
     PlayerBanOperation,
     PlayerGameResultsOperation,
     PlayerListOperation,
@@ -1519,11 +1520,21 @@ class MiniAppHttpServer:
             "save": ActionCode.PACKET_MANAGEMENT_UPDATE,
             "delete": ActionCode.PACKET_MANAGEMENT_DELETE,
             "release": ActionCode.PACKET_MANAGEMENT_RELEASE,
+            "reupload": ActionCode.PACKET_REUPLOAD_PREPARE,
         }
-        if command not in actions or (request.method == "POST" and command == "get"):
+        if command not in actions or (request.method == "POST" and command == "get") or (
+            request.method != "POST" and command != "get"
+        ):
             raise LookupError("Packet command not found")
         mutation = request.method == "POST"
         body = await self._json_body(request) if mutation else {}
+        username = None
+        if command == "reupload":
+            if self.selection_notifier is None:
+                raise LookupError("Telegram bot is unavailable")
+            username = await self.selection_notifier.bot_username()
+            if not re.fullmatch(r"[A-Za-z0-9_]+", username):
+                raise ValueError("Invalid bot username")
         session, tournament_id = await self._resolve_manager_reference(
             request, request.match_info["launch_ref"], action=actions[command],
             mutation=mutation, expected_routes={"manager_management"},
@@ -1531,6 +1542,7 @@ class MiniAppHttpServer:
         model = (
             PacketManagementGetOperation if not mutation
             else PacketManagementUpdateOperation if command == "save"
+            else PacketReuploadPrepareOperation if command == "reupload"
             else PacketManagementActionOperation
         )
         operation = model.model_validate({
@@ -1540,6 +1552,11 @@ class MiniAppHttpServer:
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
+        if username is not None and result.ok:
+            result = result.model_copy(update={"data": {
+                **result.data,
+                "intake_url": f"https://t.me/{username}?start=reupload_{UUID(result.data['draft_id']).hex}",
+            }})
         return self._gateway_response(result)
 
     async def _packet_draft(self, request: web.Request) -> web.Response:
@@ -1590,9 +1607,12 @@ class MiniAppHttpServer:
             action=action,
             mutation=True,
         )
+        body = await self._json_body(request)
         result = await self.gateway.execute(
             session,
-            PacketDraftDecisionOperation(action=action, draft_id=draft_id),
+            PacketDraftDecisionOperation.model_validate({
+                **body, "action": action, "draft_id": draft_id,
+            }),
             correlation_id=self._correlation_id(request),
         )
         return self._gateway_response(result)

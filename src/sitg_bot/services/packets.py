@@ -337,6 +337,18 @@ class PacketAdminService:
                 )
 
     async def modify_packet(
+        self, tournament_id: UUID, assignment_id: UUID, actor_id: UUID, *,
+        expected_version: int, content: dict[str, object], changes: dict[str, str],
+        field_author_ids: dict[str, UUID | list[UUID | None] | tuple[UUID | None, ...] | None],
+        tester_bindings: dict[str, UUID] | None = None,
+    ) -> None:
+        await self._save_packet(
+            tournament_id, assignment_id, actor_id, expected_version=expected_version,
+            content=content, changes=changes, field_author_ids=field_author_ids,
+            tester_bindings=tester_bindings,
+        )
+
+    async def _save_packet(
         self,
         tournament_id: UUID,
         assignment_id: UUID,
@@ -347,14 +359,32 @@ class PacketAdminService:
         changes: dict[str, str],
         field_author_ids: dict[str, UUID | list[UUID | None] | tuple[UUID | None, ...] | None],
         tester_bindings: dict[str, UUID] | None = None,
-    ) -> None:
+        reupload_draft_id: UUID | None = None,
+        expected_draft_version: int | None = None,
+        notify_bound_telegram: bool = False,
+    ) -> StoredPacket | None:
         self._require_reasonable_content_size(content)
-        packet = packet_from_data(content)
+        packet = packet_from_data(content) if reupload_draft_id is None else None
         field_author_ids = {
             path: tuple(value) if isinstance(value, list) else value
             for path, value in field_author_ids.items()
         }
         async with self.database.transaction() as session:
+            reupload = None
+            if reupload_draft_id is not None:
+                reupload = await session.get(
+                    PacketDraftRecord, reupload_draft_id, with_for_update=True
+                )
+                if reupload is None:
+                    raise LookupError("Packet draft not found")
+                target = self._reupload_target(reupload)
+                if target is None:
+                    raise ValueError("Not a reupload draft")
+                tournament_id = UUID(target["tournament_id"])
+                assignment_id = UUID(target["assignment_id"])
+                expected_version = target["expected_version"]
+                content = self._draft_packet_content(reupload)
+                packet = packet_from_data(content)
             assignment, old = await self._management_records(
                 session, tournament_id, assignment_id, actor_id
             )
@@ -368,10 +398,13 @@ class PacketAdminService:
             }
             resolved_testers = await resolve_testers(
                 session, packet.testers,
-                tester_bindings if tester_bindings is not None else {
-                    name: identity for name, identity in previous_testers.items()
-                    if name in packet.testers
-                },
+                {name: UUID(value) for name, value in reupload.tester_bindings.items()}
+                if reupload is not None else (
+                    tester_bindings if tester_bindings is not None else {
+                        name: identity for name, identity in previous_testers.items()
+                        if name in packet.testers
+                    }
+                ),
             )
             before, after = asdict(stored.packet), asdict(packet)
             # A namesake reassociation is a correction even if spelling is unchanged.
@@ -379,7 +412,33 @@ class PacketAdminService:
             after["testers"] = (packet.testers, tuple(dict.fromkeys(
                 resolved_testers[name].id for name in packet.testers
             )))
-            self._validate_changes(before, after, old_authors, field_author_ids, changes)
+            if reupload is not None:
+                if reupload.version != expected_draft_version:
+                    raise StaleWriteError("Reupload draft has changed; review it again")
+                if reupload.status != "awaiting_confirmation":
+                    raise StaleWriteError("Reupload draft is no longer awaiting confirmation")
+                if str(old.id) != target["packet_version_id"]:
+                    raise StaleWriteError("Packet version has changed")
+                self._require_reupload_shape(stored.packet, packet)
+                resolved, lead = await self._resolve_authors(
+                    session, packet,
+                    {name: UUID(value) for name, value in reupload.author_bindings.items()},
+                    reupload.lead_author_id,
+                )
+                # Draft associations preserve source spelling. Published revisions use
+                # canonical names, just as ordinary upload publication does.
+                packet, field_author_ids = self._resolved_packet_fields(packet, resolved, lead)
+                before_fields = self._flat_fields(before)
+                after_fields = self._flat_fields(asdict(packet))
+                after_fields["testers"] = after["testers"]
+                changes = {key: "correction" for key in before_fields
+                           if before_fields[key] != after_fields[key]}
+                changes.update({key: "correction" for key in old_authors
+                                if old_authors[key] != field_author_ids[key]})
+            else:
+                self._validate_changes(
+                    before, after, old_authors, field_author_ids, changes
+                )
             substitution = "substitution" in changes.values()
             assignments = (
                 await session.scalars(
@@ -448,7 +507,7 @@ class PacketAdminService:
                     matched[0] if matched else None
                 )
             now = datetime.now(UTC)
-            draft = PacketDraftRecord(
+            draft = reupload or PacketDraftRecord(
                 status="published",
                 source_filename="packet-management",
                 source_checksum=hashlib.sha256(
@@ -462,6 +521,11 @@ class PacketAdminService:
                 confirmed_by_id=actor_id,
                 confirmed_at=now,
             )
+            draft.status = "published"
+            draft.confirmed_by_id = actor_id
+            draft.confirmed_at = now
+            if reupload is not None:
+                draft.version += 1
             session.add(draft)
             await session.flush()
             number = await session.scalar(
@@ -613,6 +677,134 @@ class PacketAdminService:
             await burn_author_content(
                 session, version_id=version.id, player_ids=seen_players
             )
+            if reupload is not None:
+                if notify_bound_telegram:
+                    await self._enqueue_bound_telegram_status(session, draft, "published")
+                await session.flush()
+                stored = await PostgresPacketRepository().get(session, version.id)
+                assert stored is not None
+                return stored
+
+    @staticmethod
+    def _reupload_target(draft: PacketDraftRecord) -> dict | None:
+        return draft.content.get("_reupload_target")
+
+    @staticmethod
+    def _draft_packet_content(draft: PacketDraftRecord) -> dict:
+        return {key: value for key, value in draft.content.items() if key != "_reupload_target"}
+
+    @staticmethod
+    def _require_reupload_shape(old: Packet, new: Packet) -> None:
+        if len(old.themes) != len(new.themes) or any(
+            len(before.questions) != len(after.questions)
+            for before, after in zip(old.themes, new.themes, strict=True)
+        ):
+            raise ValueError(
+                "Reupload must retain the same theme count and question count in each theme"
+            )
+
+    @staticmethod
+    def _resolved_packet_fields(packet, resolved, lead):
+        def authors(names):
+            return tuple(resolved[" ".join(name.split())] for name in names)
+
+        ids = {"lead_author": lead.id if lead else None}
+        themes = []
+        for i, theme in enumerate(packet.themes):
+            theme_authors = authors(theme.authors)
+            ids[f"themes.{i}.authors"] = tuple(a.id for a in theme_authors)
+            questions = []
+            for j, question in enumerate(theme.questions):
+                question_authors = authors(question.authors)
+                ids[f"themes.{i}.questions.{j}.authors"] = tuple(a.id for a in question_authors)
+                questions.append(replace(
+                    question, authors=tuple(a.display_name for a in question_authors)
+                ))
+            themes.append(replace(
+                theme, authors=tuple(a.display_name for a in theme_authors),
+                questions=tuple(questions),
+            ))
+        return replace(
+            packet, lead_author=lead.display_name if lead else "", themes=tuple(themes)
+        ), ids
+
+    async def _reupload_records(self, session, draft, actor_id):
+        target = self._reupload_target(draft)
+        if target is None:
+            raise ValueError("Not a reupload draft")
+        assignment, version = await self._management_records(
+            session, draft.creation_tournament_id, UUID(target["assignment_id"]), actor_id
+        )
+        if str(version.id) != target["packet_version_id"] or (
+            version.version_number != target["expected_version"]
+        ):
+            raise StaleWriteError("Packet version has changed")
+        return assignment, version
+
+    async def prepare_reupload(
+        self, tournament_id: UUID, assignment_id: UUID, actor_id: UUID, *, expected_version: int,
+    ) -> dict[str, object]:
+        async with self.database.transaction() as session:
+            assignment, version = await self._management_records(
+                session, tournament_id, assignment_id, actor_id
+            )
+            if version.version_number != expected_version:
+                raise StaleWriteError("Packet version has changed")
+            target = {
+                "tournament_id": str(tournament_id), "assignment_id": str(assignment_id),
+                "packet_id": str(assignment.packet_id), "packet_version_id": str(version.id),
+                "expected_version": version.version_number,
+            }
+            draft = PacketDraftRecord(
+                status="uploaded", source_filename="packet-reupload", source_checksum="0" * 64,
+                content={"_reupload_target": target}, validation_errors=[], validation_warnings=[],
+                uploader_id=actor_id, creation_tournament_id=tournament_id,
+            )
+            session.add(draft)
+            await session.flush()
+            draft_id = draft.id
+            session.add(PacketDraftTournamentRecord(draft_id=draft_id, tournament_id=tournament_id))
+        return await self.draft_summary(draft_id, actor_id)
+
+    async def import_reupload(
+        self, draft_id: UUID, actor_id: UUID, source: bytes, *, source_filename: str,
+    ) -> dict[str, object]:
+        # Authorize before parsing, then repeat the target/version check under locks.
+        draft, _ = await self._authorized_draft(draft_id, actor_id)
+        if self._reupload_target(draft) is None or draft.status != "uploaded":
+            raise StaleWriteError("Reupload intake is no longer open")
+        filename = Path(source_filename).name
+        if Path(filename).suffix.casefold() not in {".docx", ".pdf", ".json"}:
+            raise ValueError("Only DOCX, PDF and JSON packet files are supported")
+        if not source or len(source) > self.MAX_UPLOAD_BYTES:
+            raise ValueError(f"Packet file must be between 1 and {self.MAX_UPLOAD_BYTES} bytes")
+        packets = await asyncio.to_thread(packets_from_document_bytes, source, filename)
+        if len(packets) != 1:
+            raise ValueError("A reupload must contain exactly one packet")
+        packet = packets[0]
+        self._require_reasonable_content_size(asdict(packet))
+        async with self.database.transaction() as session:
+            draft = await session.get(PacketDraftRecord, draft_id, with_for_update=True)
+            if draft is None:
+                raise LookupError("Packet draft not found")
+            if draft.status != "uploaded":
+                raise StaleWriteError("Reupload intake is no longer open")
+            _, version = await self._reupload_records(session, draft, actor_id)
+            stored = await PostgresPacketRepository().get(session, version.id)
+            assert stored is not None
+            self._require_reupload_shape(stored.packet, packet)
+            context = await self.tournaments.context(session, draft.creation_tournament_id)
+            ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
+            errors, warnings = self.validate(packet)
+            errors.extend(ruleset.validate_content(packet, context.settings))
+            draft.content = {**asdict(packet), "_reupload_target": self._reupload_target(draft)}
+            draft.source_filename = filename
+            draft.source_checksum = hashlib.sha256(source).hexdigest()
+            draft.validation_errors = errors
+            draft.validation_warnings = warnings
+            draft.status = "validation_failed" if errors else "awaiting_confirmation"
+            draft.version += 1
+        return await self.draft_summary(draft_id, actor_id)
 
     async def import_json(
         self,
@@ -701,7 +893,9 @@ class PacketAdminService:
             if extension == ".json":
                 decoded = json.loads(source.decode("utf-8-sig"))
                 if isinstance(decoded, dict):
-                    parsed_content = decoded
+                    # Reserved server metadata must never come from an uploaded file.
+                    parsed_content = {key: value for key, value in decoded.items()
+                                      if key != "_reupload_target"}
             packets = await asyncio.to_thread(packets_from_document_bytes, source, filename)
             self._require_reasonable_content_size({"packets": [asdict(p) for p in packets]})
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -930,6 +1124,7 @@ class PacketAdminService:
             "version": draft.version,
             "status": draft.status,
             "source_filename": draft.source_filename,
+            "reupload_target": self._reupload_target(draft),
             "ruleset_key": context.ruleset_key,
             "ruleset_version": context.ruleset_version,
             "packet_name": packet.name if packet is not None else "",
@@ -945,7 +1140,8 @@ class PacketAdminService:
             "warnings": list(draft.validation_warnings),
             "can_publish": draft.status == "awaiting_confirmation"
             and not draft.validation_errors,
-            "can_reject": draft.status in {"awaiting_confirmation", "validation_failed"},
+            "can_reject": draft.status in {"awaiting_confirmation", "validation_failed"}
+            or (draft.status == "uploaded" and self._reupload_target(draft) is not None),
         }
 
     async def editable_draft(self, draft_id: UUID, actor_id: UUID) -> dict[str, object]:
@@ -953,7 +1149,7 @@ class PacketAdminService:
         ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
         summary = await self.draft_summary(draft_id, actor_id)
         content = (
-            draft.content
+            self._draft_packet_content(draft)
             if self._optional_packet(draft.content) is not None
             else {
                 "name": "",
@@ -1092,7 +1288,13 @@ class PacketAdminService:
             errors, warnings = self.validate(packet)
             ruleset = self.tournaments.rulesets.get(context.ruleset_key, context.ruleset_version)
             errors.extend(ruleset.validate_content(packet, context.settings))
-            draft.content = asdict(packet)
+            target = self._reupload_target(draft)
+            if target is not None:
+                _, old = await self._reupload_records(session, draft, actor_id)
+                stored = await PostgresPacketRepository().get(session, old.id)
+                assert stored is not None
+                self._require_reupload_shape(stored.packet, packet)
+            draft.content = {**asdict(packet), **({"_reupload_target": target} if target else {})}
             draft.validation_errors = errors
             draft.validation_warnings = warnings
             draft.status = "validation_failed" if errors else "awaiting_confirmation"
@@ -1117,7 +1319,7 @@ class PacketAdminService:
             if draft is None:
                 raise LookupError("Packet draft not found")
             context = await self.tournaments.context(session, draft.creation_tournament_id)
-            await self._require_upload_access(session, context, actor_id)
+            await self._require_draft_access(session, context, draft, actor_id)
             if draft.uploader_id != actor_id:
                 raise PermissionError("Only the packet uploader can bind its Telegram message")
             existing = (draft.telegram_chat_id, draft.telegram_message_id)
@@ -1144,7 +1346,9 @@ class PacketAdminService:
             if actor_id is not None:
                 context = await self.tournaments.context(session, draft.creation_tournament_id)
                 await self._require_draft_access(session, context, draft, actor_id)
-            if draft.status not in {"awaiting_confirmation", "validation_failed"}:
+            if draft.status not in {"awaiting_confirmation", "validation_failed"} and not (
+                draft.status == "uploaded" and self._reupload_target(draft)
+            ):
                 raise ValueError("Only an unpublished draft can be rejected")
             draft.status = "rejected"
             draft.version += 1
@@ -1157,7 +1361,25 @@ class PacketAdminService:
         *,
         administrator_id: UUID | None = None,
         notify_bound_telegram: bool = False,
+        expected_version: int | None = None,
     ) -> StoredPacket:
+        async with self.database.sessions() as session:
+            draft = await session.get(PacketDraftRecord, draft_id)
+            if draft is None:
+                raise LookupError("Packet draft not found")
+            target = self._reupload_target(draft)
+        if target is not None:
+            if administrator_id is None:
+                raise PermissionError("Reupload confirmation requires a tournament manager")
+            stored = await self._save_packet(
+                UUID(target["tournament_id"]), UUID(target["assignment_id"]), administrator_id,
+                expected_version=target["expected_version"], content={}, changes={},
+                field_author_ids={}, reupload_draft_id=draft_id,
+                expected_draft_version=expected_version,
+                notify_bound_telegram=notify_bound_telegram,
+            )
+            assert stored is not None
+            return stored
         async with self.database.transaction() as session:
             draft = await session.scalar(
                 select(PacketDraftRecord).where(PacketDraftRecord.id == draft_id).with_for_update()
@@ -1598,6 +1820,10 @@ class PacketAdminService:
         return False
 
     async def _require_draft_access(self, session, context, draft, player_id: UUID) -> bool:
+        if self._reupload_target(draft) is not None:
+            await self.tournaments._require_manager(session, context.tournament_id, player_id)
+            await self.tournaments.require_modifiable(session, context.tournament_id)
+            return True
         if await self._require_upload_access(session, context, player_id):
             return True
         if draft.uploader_id != player_id:

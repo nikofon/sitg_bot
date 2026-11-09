@@ -204,7 +204,9 @@ class FakeGateway:
     async def execute(self, principal: ApplicationPrincipal, request: object) -> GatewayResponse:
         self.requests.append(request)
         operation = request.operation  # type: ignore[attr-defined]
-        if operation.action == ActionCode.LIBRARY_LIST:
+        if operation.action == ActionCode.PACKET_REUPLOAD_PREPARE:
+            data = {"draft_id": str(UUID(int=31)), "status": "uploaded"}
+        elif operation.action == ActionCode.LIBRARY_LIST:
             data = {"items": []}
         elif operation.action == ActionCode.TOURNAMENT_LIST:
             data = {
@@ -460,12 +462,14 @@ async def test_existing_packet_uses_launch_scope(command):
         ("delete", ActionCode.PACKET_MANAGEMENT_DELETE),
         ("release", ActionCode.PACKET_MANAGEMENT_RELEASE),
         ("save", ActionCode.PACKET_MANAGEMENT_UPDATE),
+        ("reupload", ActionCode.PACKET_REUPLOAD_PREPARE),
     ],
 )
 async def test_packet_management_mutations_use_launch_scope_and_write_guards(command, action):
     gateway = FakeGateway()
     http = MiniAppHttpServer(
-        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences()
+        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences(),
+        selection_notifier=SimpleNamespace(bot_username=AsyncMock(return_value="sitg_test_bot")),
     )
     request = make_mocked_request(
         "POST",
@@ -499,6 +503,10 @@ async def test_packet_management_mutations_use_launch_scope_and_write_guards(com
     assert operation.assignment_id == UUID(int=30)
     assert operation.expected_version == 3
     assert gateway.requests[0].metadata.idempotency_key == "packet-mutation-test"
+    if command == "reupload":
+        assert json.loads(result.text)["intake_url"] == (
+            f"https://t.me/sitg_test_bot?start=reupload_{UUID(int=31).hex}"
+        )
 
 
 @pytest.mark.parametrize("references", [FakeLaunchReferences, FakeManagementLaunchReferences])
