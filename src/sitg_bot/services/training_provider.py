@@ -6,11 +6,16 @@ https://hyper.charm.land/docs/api/openai-responses.md
 
 import asyncio
 import json
+import logging
+import os
 import re
+from contextlib import suppress
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import aiohttp
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from sitg_bot.domain.game_settings import announcement_tokens
 from sitg_bot.services.training_ai import (
@@ -64,6 +69,10 @@ RESPONSES_ENDPOINTS = {
     "openai": "https://api.openai.com/v1/responses",
     "charm": "https://hyper.charm.land/v1/responses",
 }
+
+LOGGER = logging.getLogger(__name__)
+
+FAULTY_JSON_DIR = "faulty-json"
 
 
 def validate_provider_settings(settings):
@@ -196,7 +205,30 @@ class ResponsesAnalysisProvider:
         ]
         if len(texts) != 1:
             raise AnalysisValidationError("Provider refused or omitted structured output")
-        return schema.model_validate_json(texts[0])
+        try:
+            return schema.model_validate_json(texts[0])
+        except ValidationError:
+            self._save_faulty_output(schema.__name__, texts[0])
+            raise
+
+    def _save_faulty_output(self, schema_name, text):
+        """Preserve a rejected provider response for diagnosis; never masks the original error."""
+        try:
+            log_path = getattr(self.settings, "bot_log_path", None) or Path(
+                os.getenv("BOT_LOG_PATH", "logs/sitg-bot.log")
+            )
+            directory = log_path.expanduser().resolve().parent / FAULTY_JSON_DIR
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / (
+                f"{schema_name}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
+                f"_{uuid4().hex[:8]}.json"
+            )
+            path.write_text(text, encoding="utf-8")
+            with suppress(OSError):
+                os.chmod(path, 0o600)
+            LOGGER.warning("Saved faulty provider output to %s", path)
+        except OSError:
+            LOGGER.warning("Could not save faulty provider output", exc_info=True)
 
     async def extract_facts(self, request):
         result = await self._generate(
