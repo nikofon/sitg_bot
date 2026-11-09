@@ -35,6 +35,10 @@ async def tournament_manager_ids(
     )
 
 
+async def lock_author_exposure(session: AsyncSession) -> None:
+    await session.execute(select(func.pg_advisory_xact_lock(734918227163)))
+
+
 async def burn_author_content(
     session: AsyncSession,
     *,
@@ -51,9 +55,6 @@ async def burn_author_content(
     """
     if player_ids and version_id is None:
         raise ValueError("An explicit player burn requires a packet version")
-    # Serialize publication with late tester approval: whichever commits second
-    # must see either the new membership/version or the newly approved link.
-    await session.execute(select(func.pg_advisory_xact_lock(734918227163)))
     await session.flush()
     links_query = select(PlayerAuthorLinkRecord)
     if author_id is not None:
@@ -82,7 +83,9 @@ async def burn_author_content(
         PacketVersionRecord, PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id
     )
     if version_id is not None:
-        query = query.where(PacketVersionRecord.id == version_id)
+        query = query.where(PacketVersionRecord.packet_id == select(
+            PacketVersionRecord.packet_id
+        ).where(PacketVersionRecord.id == version_id).scalar_subquery())
     for theme, lead_id, packet_id in (await session.execute(query)).all():
         questions = (
             await session.scalars(
@@ -96,8 +99,10 @@ async def burn_author_content(
         ).all()
         authors = {lead_id, *theme.author_ids,
                    *(author_id for question in questions for author_id in question.author_ids)}
-        players = {player for author in authors for player in links.get(author, ())}
-        players.update(player_ids or ())
+        players = set()
+        if version_id is None or theme.packet_version_id == version_id:
+            players.update(player for author in authors for player in links.get(author, ()))
+            players.update(player_ids or ())
         players.update(tester_players.get(packet_id, ()))
         claims = {("theme", theme.theme_id), *(("question", q.question_id) for q in questions)}
         for burned_player_id in sorted(players):

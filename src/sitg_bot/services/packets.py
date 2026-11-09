@@ -23,7 +23,11 @@ from sitg_bot.packet_import import (
     packet_from_data,
     packets_from_document_bytes,
 )
-from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
+from sitg_bot.services.author_exposure import (
+    burn_author_content,
+    lock_author_exposure,
+    tournament_manager_ids,
+)
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
@@ -78,6 +82,7 @@ class PacketAdminService:
         assignment_id: UUID,
         actor_id: UUID,
     ) -> tuple[TournamentPacketAssignmentRecord, PacketVersionRecord]:
+        await lock_author_exposure(session)
         await self.tournaments._require_manager(session, tournament_id, actor_id)
         await self.tournaments.require_modifiable(session, tournament_id)
         assignment = await session.get(TournamentPacketAssignmentRecord, assignment_id)
@@ -112,6 +117,7 @@ class PacketAdminService:
     ) -> dict:
         """Preview an accessible version, or attach that exact version after confirmation."""
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await self.tournaments._require_manager(session, tournament_id, actor_id)
             await self.tournaments.require_modifiable(session, tournament_id)
             await session.get(LogicalPacketRecord, packet_id, with_for_update=True)
@@ -272,8 +278,10 @@ class PacketAdminService:
                 "associated_authors": [
                     {"author_id": str(a.id), "display_name": a.display_name} for a in associated
                 ],
-                "tester_bindings": {t.display_name: str(t.id)
-                                    for t in await version_testers(session, version.id)},
+                "tester_bindings": {
+                    str(i): str(t.id)
+                    for i, t in enumerate(await version_testers(session, version.id))
+                },
                 "associated_testers": [tester_summary(t)
                                        for t in await version_testers(session, version.id)],
             }
@@ -370,6 +378,7 @@ class PacketAdminService:
             for path, value in field_author_ids.items()
         }
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             reupload = None
             if reupload_draft_id is not None:
                 reupload = await session.get(
@@ -393,24 +402,22 @@ class PacketAdminService:
             stored = await PostgresPacketRepository().get(session, old.id)
             assert stored is not None
             old_authors, rows = await self._version_fields(session, old)
-            previous_testers = {
-                t.display_name: t.id for t in await version_testers(session, old.id)
-            }
+            previous_testers = await version_testers(session, old.id)
             resolved_testers = await resolve_testers(
                 session, packet.testers,
-                {name: UUID(value) for name, value in reupload.tester_bindings.items()}
+                {slot: UUID(value) for slot, value in reupload.tester_bindings.items()}
                 if reupload is not None else (
                     tester_bindings if tester_bindings is not None else {
-                        name: identity for name, identity in previous_testers.items()
-                        if name in packet.testers
+                        str(i): tester.id for i, tester in enumerate(previous_testers)
+                        if i < len(packet.testers) and packet.testers[i] == tester.display_name
                     }
                 ),
             )
             before, after = asdict(stored.packet), asdict(packet)
             # A namesake reassociation is a correction even if spelling is unchanged.
-            before["testers"] = (stored.packet.testers, tuple(previous_testers.values()))
+            before["testers"] = (stored.packet.testers, tuple(t.id for t in previous_testers))
             after["testers"] = (packet.testers, tuple(dict.fromkeys(
-                resolved_testers[name].id for name in packet.testers
+                t.id for t in resolved_testers
             )))
             if reupload is not None:
                 if reupload.version != expected_draft_version:
@@ -550,8 +557,8 @@ class PacketAdminService:
             session.add(version)
             await session.flush()
             draft.published_version_id = version.id
-            draft.tester_bindings = {name: str(t.id) for name, t in resolved_testers.items()}
-            store_testers(session, version.id, (resolved_testers[n] for n in packet.testers))
+            draft.tester_bindings = {str(i): str(t.id) for i, t in enumerate(resolved_testers)}
+            store_testers(session, version.id, resolved_testers)
             logical_packet = await session.get(LogicalPacketRecord, old.packet_id)
             if "lead_author" in changes:
                 logical_packet.statistical_author_id = version.lead_author_id
@@ -784,6 +791,7 @@ class PacketAdminService:
         packet = packets[0]
         self._require_reasonable_content_size(asdict(packet))
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             draft = await session.get(PacketDraftRecord, draft_id, with_for_update=True)
             if draft is None:
                 raise LookupError("Packet draft not found")
@@ -1243,6 +1251,7 @@ class PacketAdminService:
         self._require_reasonable_content_size(content)
         packet = packet_from_data(content)
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             draft = await session.scalar(
                 select(PacketDraftRecord).where(PacketDraftRecord.id == draft_id).with_for_update()
             )
@@ -1275,10 +1284,12 @@ class PacketAdminService:
             )
             testers = await resolve_testers(session, packet.testers,
                 tester_bindings if tester_bindings is not None else {
-                    name: UUID(value) for name, value in draft.tester_bindings.items()
-                    if name in packet.testers
+                    slot: UUID(value) for slot, value in draft.tester_bindings.items()
+                    if int(slot) < len(packet.testers)
+                    and int(slot) < len(draft.content.get("testers", ()))
+                    and packet.testers[int(slot)] == draft.content["testers"][int(slot)]
                 })
-            draft.tester_bindings = {name: str(t.id) for name, t in testers.items()}
+            draft.tester_bindings = {str(i): str(t.id) for i, t in enumerate(testers)}
             draft.author_bindings = {name: str(author.id) for name, author in resolved.items()}
             draft.lead_author_id = lead.id if lead else None
             await self._add_tournament_authors(
@@ -1381,6 +1392,7 @@ class PacketAdminService:
             assert stored is not None
             return stored
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             draft = await session.scalar(
                 select(PacketDraftRecord).where(PacketDraftRecord.id == draft_id).with_for_update()
             )
@@ -1407,8 +1419,8 @@ class PacketAdminService:
             draft.lead_author_id = lead_author.id if lead_author else None
             logical_packet.statistical_author_id = draft.lead_author_id
             testers = await resolve_testers(session, packet.testers,
-                {name: UUID(value) for name, value in draft.tester_bindings.items()})
-            draft.tester_bindings = {name: str(t.id) for name, t in testers.items()}
+                {slot: UUID(value) for slot, value in draft.tester_bindings.items()})
+            draft.tester_bindings = {str(i): str(t.id) for i, t in enumerate(testers)}
             version = PacketVersionRecord(
                 packet_id=logical_packet.id,
                 version_number=1,
@@ -1422,7 +1434,7 @@ class PacketAdminService:
             session.add(version)
             await session.flush()
 
-            store_testers(session, version.id, (testers[n] for n in packet.testers))
+            store_testers(session, version.id, testers)
             for theme_position, theme in enumerate(packet.themes, 1):
                 theme_authors = [await self._author(session, name, operation_authors)
                                  for name in theme.authors]

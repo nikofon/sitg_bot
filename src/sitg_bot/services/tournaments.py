@@ -24,7 +24,11 @@ from sitg_bot.domain.game_rulesets import (
 )
 from sitg_bot.domain.game_settings import MAX_THEME_COUNT
 from sitg_bot.domain.packet import normalize_language_tag
-from sitg_bot.services.author_exposure import burn_author_content, tournament_manager_ids
+from sitg_bot.services.author_exposure import (
+    burn_author_content,
+    lock_author_exposure,
+    tournament_manager_ids,
+)
 from sitg_bot.services.classic import ClassicService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
@@ -1785,6 +1789,7 @@ class TournamentService:
         self, tournament_id: UUID, player_id: UUID, *, granted_by_id: UUID
     ) -> None:
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await self._require_manager(session, tournament_id, granted_by_id)
             await self.require_modifiable(session, tournament_id)
             manager = await session.get(TournamentManagerRecord, (tournament_id, player_id))
@@ -3155,6 +3160,7 @@ class TournamentService:
         if library_viewing_rule is not None and library_viewing_rule not in LIBRARY_VIEWING_RULES:
             raise ValueError(f"Unknown library viewing rule: {library_viewing_rule}")
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await self._require_manager(session, tournament_id, manager_id)
             await self.require_modifiable(session, tournament_id)
             context = await self.context(session, tournament_id)

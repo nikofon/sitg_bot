@@ -65,6 +65,9 @@ Membership on any historical version permanently protects the whole logical pack
 linked players, including future substituted identities. Removing membership never restores
 freshness. Late link approval burns every retained version. Publication and approval
 serialize exposure writes with a transaction advisory lock to avoid missed concurrent burns.
+Exposure writers acquire this lock before draft, tournament, packet, request, or claim locks;
+packet management and draft resolution use the same ordering. Tester exposure backfills all
+retained versions of the logical packet; explicit player burns remain version-scoped.
 
 ## Canonical exposure claims
 

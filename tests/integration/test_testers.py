@@ -77,9 +77,9 @@ async def test_namesake_resolution_late_link_future_exposure_and_private_library
             fixture.manager.id,
             expected_version=1,
             content=asdict(content),
-            tester_bindings={name: namesake.id},
+            tester_bindings={"0": namesake.id},
         )
-        assert updated["tester_bindings"] == {name: str(namesake.id)}
+        assert updated["tester_bindings"] == {"0": str(namesake.id)}
         again = await service.update_draft(
             draft_id,
             fixture.manager.id,
@@ -191,6 +191,110 @@ async def test_namesake_resolution_late_link_future_exposure_and_private_library
                 )
             )
             assert event.payload["testers"] == [name]
+    finally:
+        await database.close()
+
+
+async def test_namesake_slots_survive_publication_and_unrelated_correction(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        surname = uuid4().hex
+        name = f"First {surname}"
+        async with database.transaction() as session:
+            first = TesterRecord(display_name=name)
+            second = TesterRecord(display_name=name)
+            session.add_all([first, second])
+        content = replace(packet(), testers=(name, f"{surname} First"))
+        draft_id = await upload(service, fixture, content)
+        bindings = {"0": first.id, "1": second.id}
+        await service.update_draft(
+            draft_id, fixture.manager.id, expected_version=1,
+            content=asdict(content), tester_bindings=bindings,
+        )
+        stored = await service.publish(draft_id, administrator_id=fixture.manager.id)
+        assert stored.packet.testers == (name, name)
+        async with database.sessions() as session:
+            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.packet_id == stored.logical_id
+            ))
+        editor = await edit(service, fixture, assignment)
+        expected = {slot: str(identity) for slot, identity in bindings.items()}
+        assert editor["tester_bindings"] == expected
+        editor["packet"]["name"] += " corrected"
+        await save(service, fixture, assignment, editor, {"name": "correction"})
+        corrected = await edit(service, fixture, assignment)
+        assert corrected["packet"]["testers"] == (name, name)
+        assert corrected["tester_bindings"] == expected
+    finally:
+        await database.close()
+
+
+async def test_new_membership_backfills_branches_without_exposing_hidden_hints(database_url):
+    database = Database(database_url)
+    try:
+        original = await tournament_fixture(database, player_count=1)
+        branch = await tournament_fixture(database, player_count=1)
+        player = original.players[0]
+        service = PacketAdminService(database)
+        testers = TesterService(database)
+        async with database.transaction() as session:
+            tester = TesterRecord(display_name=f"Tester {uuid4().hex}")
+            session.add_all([tester, PlatformAdministratorRecord(player_id=original.manager.id)])
+        request = await testers.create_request(player.id, tester.id)
+        await testers.decide_request(UUID(request["request_id"]), original.manager.id, approve=True)
+        draft_id = await upload(service, original, packet())
+        stored = await service.publish(draft_id, administrator_id=original.manager.id)
+        branch_assignment_id = await service.tournaments.assign_packet(
+            branch.tournament_id, stored.logical_id, branch.manager.id,
+            adopted_version_id=stored.version_id, discoverable=False,
+        )
+        async with database.sessions() as session:
+            branch_assignment = await session.get(
+                TournamentPacketAssignmentRecord, branch_assignment_id
+            )
+            original_assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
+                TournamentPacketAssignmentRecord.packet_id == stored.logical_id,
+                TournamentPacketAssignmentRecord.tournament_id == original.tournament_id,
+            ))
+        editor = await edit(service, branch, branch_assignment)
+        editor["packet"]["name"] = "Hidden branch"
+        editor["packet"]["themes"][0]["name"] = "Replacement"
+        await save(service, branch, branch_assignment, editor, {
+            "name": "correction", "themes.0.name": "substitution",
+        })
+        editor = await edit(service, original, original_assignment)
+        editor["packet"]["testers"] = (tester.display_name,)
+        await save(service, original, original_assignment, editor, {"testers": "correction"})
+        async with database.sessions() as session:
+            claims = list(await session.scalars(select(PlayerExposureClaimRecord).where(
+                PlayerExposureClaimRecord.player_id == player.id
+            )))
+            assert len(claims) == 12 and all(claim.state == "burnt" for claim in claims)
+            manager_claims = await session.scalars(
+                select(PlayerExposureClaimRecord).where(
+                    PlayerExposureClaimRecord.player_id == original.manager.id
+                )
+            )
+            assert len({claim.claim_id for claim in claims} - {
+                claim.claim_id for claim in manager_claims
+            }) == 6
+        expected = [{"packet_id": str(stored.logical_id), "name": stored.packet.name}]
+        matches = await testers.search(player.id, tester.display_name)
+        assert matches["items"][0]["packets"] == expected
+        assert (await testers.mine(player.id))["items"][0]["packets"] == expected
+        draft_matches = await testers.search(
+            original.manager.id, tester.display_name, draft_id=draft_id
+        )
+        assert draft_matches["items"][0]["packets"] == expected
+        async with database.transaction() as session:
+            assignment = await session.get(TournamentPacketAssignmentRecord, original_assignment.id)
+            assignment.discoverable_by_members = False
+        assert (await testers.search(player.id, tester.display_name))["items"][0]["packets"] == []
+        assert (await testers.mine(player.id))["items"][0]["packets"] == []
+        outsider_matches = await testers.search(branch.players[0].id, tester.display_name)
+        assert outsider_matches["items"][0]["packets"] == []
     finally:
         await database.close()
 

@@ -108,7 +108,7 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         )
         updated = await service.update_draft(
             draft_id, fixture.manager.id, expected_version=imported["version"], content=content,
-            tester_bindings={"Reupload Tester": UUID(tester["tester_id"])},
+            tester_bindings={"0": UUID(tester["tester_id"])},
             author_bindings={"Source spelling": UUID(author["author_id"])},
             lead_author_id=UUID(author["author_id"]),
         )
@@ -116,7 +116,7 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         updated = await service.update_draft(
             draft_id, fixture.manager.id, expected_version=updated["version"], content=content,
         )
-        assert updated["tester_bindings"] == {"Reupload Tester": tester["tester_id"]}
+        assert updated["tester_bindings"] == {"0": tester["tester_id"]}
         with pytest.raises(StaleWriteError):
             await service.publish(
                 draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],

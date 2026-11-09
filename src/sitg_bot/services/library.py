@@ -5,7 +5,7 @@ from sqlalchemy import func, or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_exposure import burn_author_content, lock_author_exposure
 from sitg_bot.services.moderation import _require_administrator
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.ruleset_content import (
@@ -238,6 +238,7 @@ class PacketLibraryService:
         administrator: bool = False,
     ) -> dict[str, object]:
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             if administrator:
                 await _require_administrator(session, player_id)
             candidates = [

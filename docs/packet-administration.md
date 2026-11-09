@@ -126,7 +126,9 @@ with it. Repeated saves reuse the persisted associations. Publication
 also adds authors when the draft is published directly from Telegram without an editor save.
 
 Packet testers use separate private identities, not authors. The draft editor API accepts
-`tester_bindings` from source spelling to tester ID and returns `associated_testers`.
+`tester_bindings` from zero-based tester slot (a decimal string) to tester ID and
+returns `associated_testers`. Slots preserve distinct namesakes even when their display
+names are identical, in both draft and published editors.
 Unassociated names match existing testers using the same case/word-order rules as authors;
 explicit registration and association distinguish namesakes. Repeated saves and direct
 Telegram publication preserve those bindings. Testers cover every theme and question.
@@ -138,7 +140,8 @@ Approved player-to-tester links permanently burn all content of all versions of 
 logical packets. Later versions, including replacement themes/questions, remain exposed even
 if the tester is removed. Late approval covers historical and current versions. Tester
 identities have no public profiles, reverse-player projections, or competitive statistics.
-Private linked-profile views expose only identity names and tested packet metadata.
+Private linked-profile views expose only identity names and tested packet metadata that
+the caller can discover through an active tournament assignment.
 
 A draft has an explicit lifecycle:
 

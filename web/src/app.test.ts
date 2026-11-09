@@ -1949,6 +1949,9 @@ describe("MiniAppShell", () => {
         return response({ request_id: "request-2", status: "pending" });
       }
       if (String(url).endsWith("/api/miniapp/tester-links")) {
+        return response({ items: [], next_cursor: "request-page-2" });
+      }
+      if (String(url).includes("/api/miniapp/tester-links?cursor=")) {
         return response({ items: [{
           request_id: "request-1", player_id: "player-1", player_nickname: "Alice",
           tester: { tester_id: "tester-1", display_name: "Ivan Tester <b>" },
@@ -1958,6 +1961,9 @@ describe("MiniAppShell", () => {
       }
       if (String(url).endsWith("/testers/mine")) {
         return response({ items: [{ tester_id: "tester-2", display_name: "Old Tester", packets: [{ packet_id: "p-9", name: "Played packet" }] }] });
+      }
+      if (String(url).includes("/api/miniapp/testers?") && !String(url).includes("cursor=")) {
+        return response({ items: [], next_cursor: "search-page-2" });
       }
       if (String(url).includes("/api/miniapp/testers?")) {
         return response({ items: [{
@@ -2019,7 +2025,7 @@ describe("MiniAppShell", () => {
       },
       author_bindings: {}, lead_author_id: null, associated_authors: [],
       detected_testers: ["Ivan Tester", "Grace Hopper"],
-      tester_bindings: { "Ivan Tester": "tester-existing" },
+      tester_bindings: { "0": "tester-existing" },
       associated_testers: [{ tester_id: "tester-existing", display_name: "Ivan Tester" }],
     } as const;
     const fetcher = vi
@@ -2055,7 +2061,7 @@ describe("MiniAppShell", () => {
     expect(submitted.expected_version).toBe(4);
     expect(submitted.content.testers).toEqual(["Ivan Tester", "Grace Hopper"]);
     expect(submitted.tester_bindings).toEqual({
-      "Ivan Tester": "tester-existing", "Grace Hopper": "tester-new",
+      "0": "tester-existing", "1": "tester-new",
     });
   });
 
@@ -2171,12 +2177,15 @@ describe("MiniAppShell", () => {
       assignment_id: "a-1", version: 2, errors: [], warnings: [],
       field_author_ids: { lead_author: null, "themes.0.authors": [] },
       associated_authors: [],
-      tester_bindings: { "Ivan Tester": "tester-existing" },
-      associated_testers: [{ tester_id: "tester-existing", display_name: "Ivan Tester" }],
+      tester_bindings: { "0": "tester-existing", "1": "tester-second" },
+      associated_testers: [
+        { tester_id: "tester-existing", display_name: "Ivan Tester" },
+        { tester_id: "tester-second", display_name: "Ivan Tester" },
+      ],
       packet: {
         name: "Final packet", language: "en", year: 2026, lead_author: "Ada",
         themes: [{ name: "First", author: "Ada", authors: ["Ada"], questions: [question] }],
-        testers: ["Ivan Tester"],
+        testers: ["Ivan Tester", "Ivan Tester"],
       },
       editor: { packet_fields: ["name", "year", "language", "lead_author"],
         theme_fields: ["name", "authors"], question_fields: ["value", "text", "answer"] },
@@ -2201,6 +2210,7 @@ describe("MiniAppShell", () => {
         },
       } }))
       .mockResolvedValueOnce(response(editor))
+      .mockResolvedValueOnce(response({ items: [], next_cursor: "search-page-2" }))
       .mockResolvedValueOnce(response({ items: [{ tester_id: "tester-registered", display_name: "Ivan Tester", packets: [] }] }))
       .mockResolvedValueOnce(response({
         kind: "manager_management", state: "ready", sections: ["packet_management"],
@@ -2229,22 +2239,27 @@ describe("MiniAppShell", () => {
     changeButton.click();
     expect(testersInput.disabled).toBe(false);
     expect(root.querySelector<HTMLFieldSetElement>('[data-packet-tester="Ivan Tester"] fieldset')!.disabled).toBe(false);
-    // The published editor has no draft, so it uses the name-required public tester search.
-    const testerSearch = root.querySelector<HTMLInputElement>('[data-packet-tester="Ivan Tester"] input[type=search]')!;
+    expect(Array.from(root.querySelectorAll<HTMLSelectElement>('[data-packet-tester="Ivan Tester"] select')).map((select) => select.value))
+      .toEqual(["tester-existing", "tester-second"]);
+    testersInput.value = "Renamed Tester\nIvan Tester";
+    testersInput.dispatchEvent(new Event("change"));
+    expect(root.querySelector<HTMLFieldSetElement>('[data-packet-tester="Renamed Tester"] fieldset')!.disabled).toBe(false);
+    const testerSearch = root.querySelector<HTMLInputElement>('[data-packet-tester="Renamed Tester"] input[type=search]')!;
     testerSearch.value = "Ivan";
     testerSearch.dispatchEvent(new Event("input"));
-    const testerSelect = root.querySelector<HTMLSelectElement>('[data-packet-tester="Ivan Tester"] select')!;
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    const testerSelect = root.querySelector<HTMLSelectElement>('[data-packet-tester="Renamed Tester"] select')!;
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(5));
     expect(fetcher.mock.calls[3]?.[0]).toBe("/api/miniapp/testers?query=Ivan");
+    expect(fetcher.mock.calls[4]?.[0]).toBe("/api/miniapp/testers?query=Ivan&cursor=search-page-2");
     await vi.waitFor(() => expect(testerSelect.querySelector('option[value="tester-registered"]')).not.toBeNull());
     testerSelect.value = "tester-registered";
     testerSelect.dispatchEvent(new Event("change", { bubbles: true }));
     (root.querySelector("form.packet-editor") as HTMLFormElement).requestSubmit();
-    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(5));
-    const submitted = JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body));
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(6));
+    const submitted = JSON.parse(String(fetcher.mock.calls[5]?.[1]?.body));
     expect(submitted.changes).toEqual({ testers: "correction" });
-    expect(submitted.tester_bindings).toEqual({ "Ivan Tester": "tester-registered" });
-    expect(submitted.content.testers).toEqual(["Ivan Tester"]);
+    expect(submitted.tester_bindings).toEqual({ "0": "tester-registered", "1": "tester-second" });
+    expect(submitted.content.testers).toEqual(["Renamed Tester", "Ivan Tester"]);
   });
 
   it("reviews pending tester link requests from the admin management tab", async () => {
@@ -2263,6 +2278,7 @@ describe("MiniAppShell", () => {
         decided = true;
         return response({ request_id: "request-1", status: "approved" });
       }
+      if (!String(url).includes("cursor=")) return response({ items: [], next_cursor: "admin-page-2" });
       return response({ items: [decided ? { ...pending, status: "approved" } : pending], next_cursor: null });
     });
     const root = document.createElement("div");

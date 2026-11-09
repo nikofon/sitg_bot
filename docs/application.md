@@ -80,8 +80,10 @@ metadata. `tester_links.{create,cancel,mine,admin.pending,admin.decide}.v1` mirr
 request permissions, idempotency, terminal-state checks, and private notifications, without
 public profiles or competitive statistics. Draft-authorized
 `packets.drafts.testers.{search,create}.v1` provides lookup/explicit namesake registration.
-Draft update and packet management update accept optional `tester_bindings`; omitted draft
-bindings preserve persisted associations. Tester names in library content never include
+Draft update and packet management update accept optional `tester_bindings`, keyed by
+zero-based decimal-string tester slot, not display name; omitted bindings preserve
+persisted associations for unchanged slots. All tester packet hints use the caller's
+assignment-discovery permissions and the currently adopted packet metadata. Tester names in library content never include
 link or private registration details.
 
 Tournament-token requests retain requester, proposed name, commentary, decision, and audit

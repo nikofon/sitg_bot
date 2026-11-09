@@ -106,6 +106,22 @@ export class MiniAppShell {
     this.platform.destroy();
   }
 
+  private async testerPages<T>(path: string, signal?: AbortSignal): Promise<{
+    items: T[]; next_cursor: null;
+  }> {
+    const items: T[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await this.api.request<{ items: T[]; next_cursor?: string | null }>(
+        cursor ? `${path}${path.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(cursor)}` : path,
+        { signal },
+      );
+      items.push(...page.items);
+      cursor = page.next_cursor;
+    } while (cursor);
+    return { items, next_cursor: null };
+  }
+
   private async load(route: RouteMatch): Promise<void> {
     this.request?.abort();
     this.managerAccessRequest?.abort();
@@ -121,8 +137,8 @@ export class MiniAppShell {
       // The tester link windows are served by their dedicated documented endpoints;
       // the backend exposes no route-resolution entry for them.
       if (route.id === "testers_link") {
-        const page = await this.api.request<TesterLinksPage>(
-          "/api/miniapp/tester-links", { signal: controller.signal },
+        const page = await this.testerPages<TesterLinksPage["items"][number]>(
+          "/api/miniapp/tester-links", controller.signal,
         );
         if (controller.signal.aborted) return;
         this.applySessionLocale(route);
@@ -135,8 +151,8 @@ export class MiniAppShell {
         return;
       }
       if (route.id === "admin_management" && route.query.get("section") === "tester_link_requests") {
-        const page = await this.api.request<TesterLinksPage>(
-          "/api/miniapp/admin/tester-links", { signal: controller.signal },
+        const page = await this.testerPages<TesterLinksPage["items"][number]>(
+          "/api/miniapp/admin/tester-links", controller.signal,
         );
         if (controller.signal.aborted) return;
         this.applySessionLocale(route);
@@ -476,12 +492,12 @@ export class MiniAppShell {
     const testerRows = new Map<string, HTMLElement>();
     const packetTesters = (): string[] => testerNames(testersInput.value);
     const currentTesterBindings = (): Record<string, string> => Object.fromEntries(
-      packetTesters().filter((name) => testerBindings.has(name))
-        .map((name) => [name, testerBindings.get(name)!]));
+      packetTesters().map((_, i) => String(i)).filter((slot) => testerBindings.has(slot))
+        .map((slot) => [slot, testerBindings.get(slot)!]));
     const testersChanged = (): boolean => {
       if (JSON.stringify(packetTesters()) !== JSON.stringify(resource.packet.testers ?? [])) return true;
       const original = resource.tester_bindings ?? {};
-      return packetTesters().some((name) => (testerBindings.get(name) ?? null) !== (original[name] ?? null));
+      return packetTesters().some((_, i) => (testerBindings.get(String(i)) ?? null) !== (original[String(i)] ?? null));
     };
     let themeIndex = 0;
     const form = element("form", { className: "settings-form packet-editor" }) as HTMLFormElement;
@@ -682,29 +698,39 @@ export class MiniAppShell {
       element("p", { className: "field-help" }, this.i18n.t("packet_editor.authors_help")),
       authorList,
     );
-    const markTesterChanged = (): void => markChanged();
+    let previousTesterNames = packetTesters();
     const refreshTesters = (): void => {
       const names = packetTesters();
-      for (const name of names) {
-        if (testerRows.has(name)) continue;
+      for (const slot of testerBindings.keys()) {
+        if (names[Number(slot)] !== previousTesterNames[Number(slot)]) testerBindings.delete(slot);
+      }
+      const rowKeys = names.map((name, i) => `${i}:${name}`);
+      for (const key of testerRows.keys()) {
+        if (!rowKeys.includes(key)) testerRows.delete(key);
+      }
+      for (const [i, name] of names.entries()) {
+        const slot = String(i);
+        const key = rowKeys[i]!;
+        if (testerRows.has(key)) continue;
         const row = element(
           "section",
           { className: "packet-author-association", "data-packet-tester": name },
           element("h3", {}, name),
-          element("fieldset", { disabled: modifying, className: "packet-field-author" },
+          element("fieldset", { disabled: modifying && changes.testers !== "correction", className: "packet-field-author" },
             this.registeredTesterPicker(route, testersPath, !modifying,
-              associatedTesters.get(testerBindings.get(name) ?? ""),
+              associatedTesters.get(testerBindings.get(slot) ?? ""),
               (tester) => {
                 if (tester) {
-                  testerBindings.set(name, tester.tester_id);
+                  testerBindings.set(slot, tester.tester_id);
                   associatedTesters.set(tester.tester_id, tester);
-                } else testerBindings.delete(name);
-                markTesterChanged();
+                } else testerBindings.delete(slot);
+                markChanged();
               })),
         );
-        testerRows.set(name, row);
+        testerRows.set(key, row);
       }
-      replaceChildren(testerList, ...names.map((name) => testerRows.get(name)!));
+      previousTesterNames = names;
+      replaceChildren(testerList, ...rowKeys.map((key) => testerRows.get(key)!));
     };
     const testerField = element("label", {}, this.i18n.t("packet_editor.testers"), testersInput);
     if (modifying) {
@@ -2878,8 +2904,9 @@ export class MiniAppShell {
     const loadTesters = async (): Promise<void> => {
       const sequence = ++requestSequence;
       try {
-        const result = await this.api.request<TesterSearchPage>(
+        const result = await this.testerPages<TesterSearchPage["items"][number]>(
           `${path}${path.includes("?") ? "&" : "?"}query=${encodeURIComponent(search.value)}`,
+          this.request?.signal,
         );
         if (sequence !== requestSequence || !picker.isConnected) return;
         renderOptions(result.items, picker.value);
@@ -3708,9 +3735,9 @@ export class MiniAppShell {
       if (!query) return;
       const sequence = ++requestSequence;
       try {
-        const result = await this.api.request<TesterSearchPage>(
+        const result = await this.testerPages<TesterSearchPage["items"][number]>(
           `/api/miniapp/testers?query=${encodeURIComponent(query)}`,
-          { signal: this.request?.signal },
+          this.request?.signal,
         );
         if (sequence !== requestSequence || !picker.isConnected) return;
         choices.clear();

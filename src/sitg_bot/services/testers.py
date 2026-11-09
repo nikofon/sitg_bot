@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_exposure import burn_author_content, lock_author_exposure
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.storage.database import Database
@@ -18,6 +18,7 @@ from sitg_bot.storage.models import (
     PlayerTesterLinkRecord,
     PlayerTesterLinkRequestRecord,
     TesterRecord,
+    TournamentPacketAssignmentRecord,
 )
 
 
@@ -29,12 +30,12 @@ async def resolve_testers(
     session: AsyncSession,
     names: tuple[str, ...],
     bindings: dict[str, UUID],
-) -> dict[str, TesterRecord]:
+) -> list[TesterRecord]:
     from sitg_bot.services.packets import PacketAdminService
 
-    if set(bindings) - set(names):
+    if set(bindings) - {str(i) for i in range(len(names))}:
         raise ValueError("Tester association must refer to a tester in the packet")
-    resolved = {}
+    resolved = []
     # Serialize default name registration; explicit new profiles preserve namesakes.
     for name in sorted(set(names)):
         await session.execute(
@@ -51,8 +52,9 @@ async def resolve_testers(
                 )
             )
         )
-        if name in bindings:
-            tester = await session.get(TesterRecord, bindings[name])
+    for i, name in enumerate(names):
+        if str(i) in bindings:
+            tester = await session.get(TesterRecord, bindings[str(i)])
             if tester is None:
                 raise LookupError("Associated tester not found")
         else:
@@ -67,7 +69,7 @@ async def resolve_testers(
                 tester = TesterRecord(display_name=name)
                 session.add(tester)
                 await session.flush()
-        resolved[name] = tester
+        resolved.append(tester)
     return resolved
 
 
@@ -140,7 +142,7 @@ class TesterService:
             visible = rows[:limit]
             return {
                 "items": [
-                    {**tester_summary(t), "packets": await self._packets(session, t.id)}
+                    {**tester_summary(t), "packets": await self._packets(session, t.id, actor_id)}
                     for t in visible
                 ],
                 "next_cursor": AuthorLinkService._encode_name_cursor(visible[-1])
@@ -162,34 +164,54 @@ class TesterService:
             )
             return {
                 "items": [
-                    {**tester_summary(t), "packets": await self._packets(session, t.id)}
+                    {**tester_summary(t), "packets": await self._packets(session, t.id, actor_id)}
                     for t in testers
                 ]
             }
 
     @staticmethod
-    async def _packets(session: AsyncSession, tester_id: UUID) -> list[dict[str, str]]:
-        # Packet metadata only; never question statistics or reverse player links.
+    async def _packets(
+        session: AsyncSession, tester_id: UUID, actor_id: UUID,
+    ) -> list[dict[str, str]]:
+        from sitg_bot.services.tournaments import TournamentService
+
         packets = (
             await session.execute(
-                select(
-                    PacketVersionRecord.packet_id,
-                    PacketVersionRecord.name,
-                )
+                select(PacketVersionRecord, TournamentPacketAssignmentRecord)
                 .join(
-                    PacketVersionTesterRecord,
-                    PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
+                    TournamentPacketAssignmentRecord,
+                    TournamentPacketAssignmentRecord.packet_id == PacketVersionRecord.packet_id,
                 )
-                .where(PacketVersionTesterRecord.tester_id == tester_id)
-                .order_by(PacketVersionRecord.published_at.desc())
+                .where(
+                    PacketVersionRecord.packet_id.in_(
+                        select(PacketVersionRecord.packet_id).join(
+                            PacketVersionTesterRecord,
+                            PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
+                        ).where(PacketVersionTesterRecord.tester_id == tester_id).correlate(None)
+                    ),
+                    PacketVersionRecord.state == "published",
+                    TournamentPacketAssignmentRecord.status == "active",
+                )
+                .order_by(PacketVersionRecord.version_number.desc())
             )
         ).all()
         seen = set()
         tested = []
-        for packet_id, name in packets:
-            if packet_id not in seen:
-                tested.append({"packet_id": str(packet_id), "name": name})
-                seen.add(packet_id)
+        for version, assignment in packets:
+            if version.packet_id in seen:
+                continue
+            adopted = assignment.adopted_version_id or await session.scalar(
+                select(PacketVersionRecord.id).where(
+                    PacketVersionRecord.packet_id == version.packet_id,
+                    PacketVersionRecord.state == "published",
+                ).order_by(PacketVersionRecord.version_number.desc()).limit(1)
+            )
+            if version.id != adopted or not await TournamentService.has_assignment_access(
+                session, assignment, actor_id, "discoverable"
+            ):
+                continue
+            tested.append({"packet_id": str(version.packet_id), "name": version.name})
+            seen.add(version.packet_id)
         return tested
 
     @staticmethod
@@ -294,6 +316,7 @@ class TesterService:
         note = AuthorLinkService._note(note, label="Decision note")
         status = "approved" if approve else "rejected"
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await AuthorLinkService._require_administrator(session, actor_id)
             request = await session.get(
                 PlayerTesterLinkRequestRecord, request_id, with_for_update=True

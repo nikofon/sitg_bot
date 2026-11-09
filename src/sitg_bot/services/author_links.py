@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_exposure import burn_author_content, lock_author_exposure
 from sitg_bot.services.navigation import TelegramNavigationService
 from sitg_bot.services.notifications import NOTIFICATION_ALERT_COOLDOWN, NotificationWriter
 from sitg_bot.storage.database import Database
@@ -267,6 +267,7 @@ class AuthorLinkService:
         normalized_note = self._note(note, label="Decision note")
         desired_status = "approved" if approve else "rejected"
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await self._require_administrator(session, administrator_id)
             request = await session.scalar(
                 select(PlayerAuthorLinkRequestRecord)
