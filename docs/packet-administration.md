@@ -33,8 +33,8 @@ Community uploads are opt-in; original-file retention remains [planned work](fut
 
 ## Input formats
 
-JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, and `language`
-(default `und`). Each theme has `name`, optional `authors` (name list) and `commentary`, and `questions`.
+JSON has packet fields `name`, `themes`, optional `year`, `lead_author`, `testers`
+(a list of names, default empty), and `language` (default `und`). Each theme has `name`, optional `authors` (name list) and `commentary`, and `questions`.
 Each question requires integer `value`, `text`, and `answer`; optional fields are `accepted_answers`
 (string list), `rejected_answers` (string list of unaccepted answers), `form`, `commentary`,
 `source`, and `authors`. Missing or empty question authors inherit all theme authors; explicit
@@ -124,6 +124,21 @@ several registered authors match, the earliest by display name, then identifier,
 genuine namesake separate, the uploader explicitly registers a new author and associates the name
 with it. Repeated saves reuse the persisted associations. Publication
 also adds authors when the draft is published directly from Telegram without an editor save.
+
+Packet testers use separate private identities, not authors. The draft editor API accepts
+`tester_bindings` from source spelling to tester ID and returns `associated_testers`.
+Unassociated names match existing testers using the same case/word-order rules as authors;
+explicit registration and association distinguish namesakes. Repeated saves and direct
+Telegram publication preserve those bindings. Testers cover every theme and question.
+Authorized library reads return tester names separately from theme pages (for a frontend
+page zero), and DOCX downloads place `Testers:` before themes. DOCX/PDF input accepts
+`Тестировщики:`, `Тестеры:`, or `Testers:` with the same delimiters as authors.
+
+Approved player-to-tester links permanently burn all content of all versions of the tested
+logical packets. Later versions, including replacement themes/questions, remain exposed even
+if the tester is removed. Late approval covers historical and current versions. Tester
+identities have no public profiles, reverse-player projections, or competitive statistics.
+Private linked-profile views expose only identity names and tested packet metadata.
 
 A draft has an explicit lifecycle:
 
@@ -254,7 +269,7 @@ continue with their snapshots.
 Delete retires only the current tournament assignment, preventing discovery, play, and library
 access there without changing results or statistics. Release opens the adopted version's global
 library gate. The read decision requires both this gate and tournament-scoped read eligibility;
-the library reader itself remains unimplemented.
+the library reader enforces both gates before returning content or queuing a download.
 
 ## Validation rules
 

@@ -57,6 +57,7 @@ from sitg_bot.application.contracts import (
     PacketDraftAuthorCreateOperation,
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
+    PacketDraftTesterCreateOperation,
     PacketDraftUpdateOperation,
     PacketExistingAddOperation,
     PacketExistingPreviewOperation,
@@ -68,6 +69,12 @@ from sitg_bot.application.contracts import (
     PlayerListOperation,
     PlayerProfileOperation,
     PlayerUnbanOperation,
+    TesterLinkAdminDecideOperation,
+    TesterLinkCancelOperation,
+    TesterLinkCreateOperation,
+    TesterLinkListOperation,
+    TestersMineOperation,
+    TestersSearchOperation,
     TournamentAuthorCreateOperation,
     TournamentChatGameTimeOperation,
     TournamentChatInfoOperation,
@@ -162,6 +169,19 @@ class MiniAppHttpServer:
         app.router.add_get("/auth/telegram/callback", self._website_login_callback)
         app.router.add_get("/auth/bot", self._website_bot)
         app.router.add_get("/api/miniapp/routes/resolve", self._resolve_route)
+        app.router.add_get("/api/miniapp/testers", self._search_testers)
+        app.router.add_get("/api/miniapp/testers/mine", self._my_testers)
+        app.router.add_get("/api/miniapp/tester-links", self._tester_requests)
+        app.router.add_post("/api/miniapp/tester-links", self._create_tester_link)
+        app.router.add_post("/api/miniapp/tester-links/{request_id}/cancel",
+                            self._cancel_tester_link)
+        app.router.add_get("/api/miniapp/admin/tester-links", self._tester_requests)
+        app.router.add_post("/api/miniapp/admin/tester-links/{request_id}/decide",
+                            self._decide_tester_link)
+        app.router.add_get("/api/miniapp/manager/packets/{launch_ref}/testers",
+                           self._search_packet_testers)
+        app.router.add_post("/api/miniapp/manager/packets/{launch_ref}/testers",
+                            self._create_packet_tester)
         app.router.add_get("/api/miniapp/authors", self._search_authors)
         app.router.add_post("/api/miniapp/authors/link", self._create_author_link)
         app.router.add_post("/api/miniapp/library/{version_id}/{command}", self._library_access)
@@ -1163,6 +1183,71 @@ class MiniAppHttpServer:
         result = await self.gateway.execute(
             session, operation, correlation_id=self._correlation_id(request)
         )
+        return self._gateway_response(result)
+
+    async def _search_testers(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, TestersSearchOperation.model_validate({
+            "action": ActionCode.TESTERS_SEARCH, "query": request.query.get("query", ""),
+            "cursor": request.query.get("cursor"), "limit": request.query.get("limit", "20"),
+        }))
+        return self._gateway_response(result)
+
+    async def _my_testers(self, request: web.Request) -> web.Response:
+        _, result = await self._query(request, TestersMineOperation(action=ActionCode.TESTERS_MINE))
+        return self._gateway_response(result)
+
+    async def _tester_requests(self, request: web.Request) -> web.Response:
+        action = (ActionCode.TESTER_LINK_ADMIN_PENDING if "/admin/" in request.path
+                  else ActionCode.TESTER_LINK_MINE)
+        _, result = await self._query(request, TesterLinkListOperation.model_validate({
+            "action": action, "cursor": request.query.get("cursor"),
+            "limit": request.query.get("limit", "20"),
+        }))
+        return self._gateway_response(result)
+
+    async def _create_tester_link(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        _, result = await self._mutation(request, TesterLinkCreateOperation.model_validate({
+            **body, "action": ActionCode.TESTER_LINK_CREATE,
+        }))
+        return self._gateway_response(result)
+
+    async def _cancel_tester_link(self, request: web.Request) -> web.Response:
+        _, result = await self._mutation(request, TesterLinkCancelOperation(
+            action=ActionCode.TESTER_LINK_CANCEL, request_id=UUID(request.match_info["request_id"]),
+        ))
+        return self._gateway_response(result)
+
+    async def _decide_tester_link(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        _, result = await self._mutation(request, TesterLinkAdminDecideOperation.model_validate({
+            **body, "action": ActionCode.TESTER_LINK_ADMIN_DECIDE,
+            "request_id": request.match_info["request_id"],
+        }))
+        return self._gateway_response(result)
+
+    async def _search_packet_testers(self, request: web.Request) -> web.Response:
+        session, draft_id = await self._resolve_packet_reference(
+            request, request.match_info["launch_ref"], action=ActionCode.PACKET_DRAFT_TESTER_SEARCH,
+        )
+        result = await self.gateway.execute(session, TestersSearchOperation.model_validate({
+            "action": ActionCode.PACKET_DRAFT_TESTER_SEARCH, "draft_id": draft_id,
+            "query": request.query.get("query", ""), "cursor": request.query.get("cursor"),
+            "limit": request.query.get("limit", "20"),
+        }), correlation_id=self._correlation_id(request))
+        return self._gateway_response(result)
+
+    async def _create_packet_tester(self, request: web.Request) -> web.Response:
+        body = await self._json_body(request)
+        session, draft_id = await self._resolve_packet_reference(
+            request, request.match_info["launch_ref"], action=ActionCode.PACKET_DRAFT_TESTER_CREATE,
+            mutation=True,
+        )
+        operation = PacketDraftTesterCreateOperation.model_validate({
+            **body, "action": ActionCode.PACKET_DRAFT_TESTER_CREATE, "draft_id": draft_id,
+        })
+        result = await self.gateway.execute(
+            session, operation, correlation_id=self._correlation_id(request))
         return self._gateway_response(result)
 
     async def _search_authors(self, request: web.Request) -> web.Response:

@@ -293,6 +293,8 @@ class PacketLibraryService:
             if administrator:
                 await burn_author_content(session, version_id=version_id, player_ids=[player_id])
             pages = await adapter.library_pages(session, version_id)
+            from sitg_bot.services.testers import version_testers
+            testers = [t.display_name for t in await version_testers(session, version_id)]
             for namespace, claim_id in sorted(claims - burnt):
                 await session.execute(insert(PlayerExposureClaimRecord).values(
                     player_id=player_id, packet_version_id=version_id,
@@ -318,6 +320,7 @@ class PacketLibraryService:
                 "confirmation_required": False,
                 "name": version.name,
                 "pages": pages,
+                "testers": testers,
                 "statistics": await self._question_statistics(session, version_id),
             }
             if download:
@@ -329,7 +332,7 @@ class PacketLibraryService:
                     deduplication_key=f"library:{player_id}:{request_key}",
                     partition_key=f"telegram:chat:{player.telegram_user_id}",
                     payload={"recipient_telegram_user_id": player.telegram_user_id,
-                             "name": version.name, "pages": pages},
+                             "name": version.name, "pages": pages, "testers": testers},
                 )
                 return {"confirmation_required": False, "queued": True}
             return result

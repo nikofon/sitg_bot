@@ -301,9 +301,12 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | --- | --- |
 | POST `/session`, `/session/refresh` | Authenticate and refresh |
 | GET `/authors`; POST `/authors/link` | Player author search and author-link request submission |
+| GET `/testers` (`query` required), `/testers/mine`; GET/POST `/tester-links`; POST `/tester-links/{request_id}/cancel` | Authenticated tester lookup, private linked identities/tested packets, own requests and cancellation |
+| GET `/admin/tester-links`; POST `/admin/tester-links/{request_id}/decide` | Administrator-only pending tester-link queue and decisions |
+| GET/POST `/manager/packets/{ref}/testers` | Draft-authorized tester lookup and explicit namesake registration |
 | GET `/routes/resolve?path=/players` | Public player directory; `search`, `order`, `offset`, `limit` |
 | GET `/players/{player_id}`; GET `/players/{player_id}/games/{game_id}` | Public per-ruleset player profile statistics and per-theme game result grids (also served via route resolution for `/players/...` paths) |
-| POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery |
+| POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery; authorized view adds `testers: string[]` for frontend page zero without changing theme-page indices |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
 | POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |

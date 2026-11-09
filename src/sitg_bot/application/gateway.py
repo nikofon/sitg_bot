@@ -82,6 +82,7 @@ from sitg_bot.application.contracts import (
     PacketDraftDecisionOperation,
     PacketDraftGetOperation,
     PacketDraftTelegramBindOperation,
+    PacketDraftTesterCreateOperation,
     PacketDraftUpdateOperation,
     PacketExistingAddOperation,
     PacketExistingPreviewOperation,
@@ -103,6 +104,12 @@ from sitg_bot.application.contracts import (
     ReputationVoteOperation,
     SettingsUpdateOperation,
     TelegramUsernameRefreshOperation,
+    TesterLinkAdminDecideOperation,
+    TesterLinkCancelOperation,
+    TesterLinkCreateOperation,
+    TesterLinkListOperation,
+    TestersMineOperation,
+    TestersSearchOperation,
     TokenClaimOperation,
     TokenRequestAdminDecideOperation,
     TokenRequestCreateOperation,
@@ -151,6 +158,7 @@ from sitg_bot.services.packets import PacketAdminService
 from sitg_bot.services.persistent_game import ParticipantInput
 from sitg_bot.services.players import PlayerAccountService, ProfileVersionConflict
 from sitg_bot.services.profiles import PlayerProfileService
+from sitg_bot.services.testers import TesterService
 from sitg_bot.services.token_requests import (
     TokenPlaintextUnavailable,
     TournamentTokenRequestService,
@@ -299,6 +307,22 @@ ACTION_POLICIES.update(
         ActionCode.TELEGRAM_USERNAME_REFRESH: ActionPolicy(
             mutation=True, idempotency_required=True
         ),
+        ActionCode.TESTERS_SEARCH: ActionPolicy(cursor_paginated=True, sensitive_response=True),
+        ActionCode.TESTERS_MINE: ActionPolicy(sensitive_response=True),
+        ActionCode.PACKET_DRAFT_TESTER_SEARCH: ActionPolicy(cursor_paginated=True,
+                                                          sensitive_response=True),
+        ActionCode.PACKET_DRAFT_TESTER_CREATE: ActionPolicy(mutation=True,
+                                                          idempotency_required=True),
+        ActionCode.TESTER_LINK_CREATE: ActionPolicy(mutation=True, idempotency_required=True,
+                                                   sensitive_response=True),
+        ActionCode.TESTER_LINK_CANCEL: ActionPolicy(mutation=True, idempotency_required=True,
+                                                   sensitive_response=True),
+        ActionCode.TESTER_LINK_MINE: ActionPolicy(cursor_paginated=True, sensitive_response=True),
+        ActionCode.TESTER_LINK_ADMIN_PENDING: ActionPolicy(cursor_paginated=True,
+                                                         sensitive_response=True),
+        ActionCode.TESTER_LINK_ADMIN_DECIDE: ActionPolicy(mutation=True, idempotency_required=True,
+                                                        stale_write_field="expected_status",
+                                                        sensitive_response=True),
         ActionCode.AUTHORS_SEARCH: ActionPolicy(cursor_paginated=True),
         ActionCode.ADMIN_PACKET_LIST: ActionPolicy(cursor_paginated=True),
         ActionCode.ADMIN_GAME_LIST: ActionPolicy(cursor_paginated=True),
@@ -758,6 +782,33 @@ class ApplicationGateway:
                 value=operation.value,
                 expected_version=operation.expected_version,
             )
+        if isinstance(operation, TestersSearchOperation):
+            if action == ActionCode.PACKET_DRAFT_TESTER_SEARCH and operation.draft_id is None:
+                raise ValueError("Draft identity is required")
+            return await TesterService(self.database).search(
+                player_id, operation.query, draft_id=operation.draft_id,
+                cursor=operation.cursor, limit=operation.limit,
+            )
+        if isinstance(operation, TestersMineOperation):
+            return await TesterService(self.database).mine(player_id)
+        if isinstance(operation, TesterLinkCreateOperation):
+            return await TesterService(self.database).create_request(
+                player_id, operation.tester_id, note=operation.note)
+        if isinstance(operation, TesterLinkCancelOperation):
+            return await TesterService(self.database).cancel_request(
+                operation.request_id, player_id)
+        if isinstance(operation, TesterLinkListOperation):
+            return await TesterService(self.database).requests(
+                player_id, admin=action == ActionCode.TESTER_LINK_ADMIN_PENDING,
+                cursor=operation.cursor, limit=operation.limit)
+        if isinstance(operation, TesterLinkAdminDecideOperation):
+            return await TesterService(self.database).decide_request(
+                operation.request_id, player_id, approve=operation.approve, note=operation.note)
+        if isinstance(operation, PacketDraftTesterCreateOperation):
+            return await self.packets.create_tester(
+                operation.draft_id, player_id, first_name=operation.first_name,
+                second_name=operation.second_name, surname=operation.surname,
+                telegram_link=operation.telegram_link)
         if isinstance(operation, AuthorsSearchOperation):
             return await self.author_links.search_authors(
                 operation.query, cursor=operation.cursor, limit=operation.limit
@@ -1102,6 +1153,7 @@ class ApplicationGateway:
                 expected_version=operation.expected_version,
                 content=dict(operation.content), changes=operation.changes,
                 field_author_ids=operation.field_author_ids,
+                tester_bindings=operation.tester_bindings,
             )
             return await self.tournaments.manager_management(
                 operation.tournament_id, player_id,
@@ -1157,6 +1209,7 @@ class ApplicationGateway:
                 content=dict(operation.content),
                 author_bindings=operation.author_bindings,
                 lead_author_id=operation.lead_author_id,
+                tester_bindings=operation.tester_bindings,
             )
         if isinstance(operation, PacketDraftAuthorCreateOperation):
             return await self.packets.create_author(

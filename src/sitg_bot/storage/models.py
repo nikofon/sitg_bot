@@ -586,6 +586,76 @@ class PlayerAuthorLinkRecord(Base, TimestampMixin):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TesterRecord(Base, TimestampMixin):
+    __tablename__ = "testers"
+
+    id: Mapped[UUID] = uuid_column()
+    display_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    first_name: Mapped[str | None] = mapped_column(String(100))
+    second_name: Mapped[str | None] = mapped_column(String(100))
+    surname: Mapped[str | None] = mapped_column(String(100))
+    telegram_link: Mapped[str | None] = mapped_column(String(200))
+    telegram_username: Mapped[str | None] = mapped_column(String(64))
+    __table_args__ = (Index("ix_testers_display_name", func.lower(display_name), "id"),)
+
+
+class PlayerTesterLinkRequestRecord(Base, TimestampMixin):
+    __tablename__ = "player_tester_link_requests"
+
+    id: Mapped[UUID] = uuid_column()
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    tester_id: Mapped[UUID] = mapped_column(ForeignKey("testers.id"), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    request_note: Mapped[str | None] = mapped_column(String(1000))
+    decided_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("players.id"))
+    decision_note: Mapped[str | None] = mapped_column(String(1000))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'approved', 'rejected', 'cancelled')"),
+        CheckConstraint(
+            "(status = 'pending' AND decided_by_id IS NULL AND decided_at IS NULL "
+            "AND cancelled_at IS NULL) OR "
+            "(status = 'cancelled' AND decided_by_id IS NULL AND decided_at IS NULL "
+            "AND cancelled_at IS NOT NULL) OR "
+            "(status IN ('approved', 'rejected') AND decided_by_id IS NOT NULL "
+            "AND decided_at IS NOT NULL AND cancelled_at IS NULL)"
+        ),
+        Index("uq_player_tester_link_requests_pending", "player_id", "tester_id",
+              unique=True, postgresql_where=text("status = 'pending'")),
+        Index("ix_player_tester_link_requests_queue", "status", "created_at", "id"),
+        Index("ix_player_tester_link_requests_player", "player_id", "created_at", "id"),
+    )
+
+
+class PlayerTesterLinkRecord(Base, TimestampMixin):
+    __tablename__ = "player_tester_links"
+
+    player_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    tester_id: Mapped[UUID] = mapped_column(ForeignKey("testers.id"), primary_key=True)
+    approved_request_id: Mapped[UUID] = mapped_column(
+        ForeignKey("player_tester_link_requests.id"), nullable=False, unique=True
+    )
+    approved_by_id: Mapped[UUID] = mapped_column(ForeignKey("players.id"), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PacketVersionTesterRecord(Base):
+    __tablename__ = "packet_version_testers"
+
+    packet_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("packet_versions.id"), primary_key=True
+    )
+    tester_id: Mapped[UUID] = mapped_column(ForeignKey("testers.id"), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("packet_version_id", "position"),
+        Index("ix_packet_version_testers_tester", "tester_id", "packet_version_id"),
+    )
+
+
 class PlayerNotificationRecord(Base, TimestampMixin):
     __tablename__ = "player_notifications"
 
@@ -910,6 +980,9 @@ class PacketDraftRecord(Base, TimestampMixin):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     lead_author_id: Mapped[UUID | None] = mapped_column(ForeignKey("authors.id"))
+    tester_bindings: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     __table_args__ = (
         CheckConstraint(

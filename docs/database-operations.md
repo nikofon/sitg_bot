@@ -60,6 +60,9 @@ chain require an intentional reset; stamping them with this revision is unsuppor
 Subsequent schema changes require new ordered migrations.
 
 Run `alembic upgrade head` against the server database before restarting after an update.
+Revision `0021_testers` adds separate private tester identities, audited player-link requests
+and approvals, ordered packet-version membership, and persisted draft tester bindings.
+Existing packets have no testers; the migration does not change author identities or statistics.
 Revision `0020_database_maintenance` adds compaction timestamps and maintenance indexes;
 it does not prune existing data. Apply it before running the maintenance CLI or enabling
 automatic maintenance.

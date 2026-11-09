@@ -10,7 +10,9 @@ from sitg_bot.storage.models import (
     AuthorRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
+    PacketVersionTesterRecord,
     QuestionRevisionRecord,
+    TesterRecord,
     ThemeRevisionRecord,
 )
 
@@ -112,5 +114,10 @@ class PostgresPacketRepository:
                     else ""
                 ),
                 language=version.language,
+                testers=tuple(await session.scalars(select(TesterRecord.display_name).join(
+                    PacketVersionTesterRecord,
+                    PacketVersionTesterRecord.tester_id == TesterRecord.id
+                ).where(PacketVersionTesterRecord.packet_version_id == version.id)
+                  .order_by(PacketVersionTesterRecord.position))),
             ),
         )

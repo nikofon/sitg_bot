@@ -268,6 +268,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
         questions = []
         theme_commentary = ""
 
+    testers: list[str] = []
     normalized: list[Line] = []
     for line in lines:
         text = line.text
@@ -278,6 +279,10 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
                               for chunk in INLINE_FIELD_RE.split(part))
 
     for line in normalized:
+        tester_match = re.match(r"^(?:Тестировщики|Тестеры|Testers)\s*:\s*(.*)$", line.text, re.I)
+        if tester_match:
+            testers.extend(author_names(tester_match.group(1)))
+            continue
         heading = _heading_level(line.style)
         theme_marker = THEME_RE.match(line.text)
         if heading == 2 or theme_marker:
@@ -335,7 +340,7 @@ def _packet_from_lines(lines: list[Line], packet_name: str) -> Packet:
     finish_theme()
     if not themes:
         raise ZeroThemesError(f"Packet {packet_name!r} contains no themes with questions")
-    return packet_from_data(asdict(Packet(packet_name, tuple(themes))))
+    return packet_from_data(asdict(Packet(packet_name, tuple(themes), testers=tuple(testers))))
 
 
 def packet_to_json(packet: Packet, *, indent: int | None = 2) -> str:
@@ -436,6 +441,7 @@ def packet_from_data(data: Mapping[str, Any]) -> Packet:
             year=(int(data["year"]) if data.get("year") not in (None, "") else None),
             lead_author=string(data.get("lead_author"), "lead_author", default=""),
             language=string(data.get("language"), "language", default="und"),
+            testers=tuple(sequence(data.get("testers", []), "testers")),
         )
     except ZeroThemesError:
         raise

@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sitg_bot.storage.models import (
     PacketQuestionRecord,
     PacketVersionRecord,
+    PacketVersionTesterRecord,
     PlayerAuthorLinkRecord,
     PlayerExposureClaimRecord,
+    PlayerTesterLinkRecord,
     QuestionRevisionRecord,
     ThemeRevisionRecord,
     TournamentManagerRecord,
@@ -38,6 +40,7 @@ async def burn_author_content(
     *,
     version_id: UUID | None = None,
     author_id: UUID | None = None,
+    tester_id: UUID | None = None,
     player_ids: Iterable[UUID] | None = None,
 ) -> None:
     """Burn canonical claims for linked authors and optionally explicit players.
@@ -48,21 +51,39 @@ async def burn_author_content(
     """
     if player_ids and version_id is None:
         raise ValueError("An explicit player burn requires a packet version")
+    # Serialize publication with late tester approval: whichever commits second
+    # must see either the new membership/version or the newly approved link.
+    await session.execute(select(func.pg_advisory_xact_lock(734918227163)))
     await session.flush()
     links_query = select(PlayerAuthorLinkRecord)
     if author_id is not None:
         links_query = links_query.where(PlayerAuthorLinkRecord.author_id == author_id)
     links: dict[UUID, set[UUID]] = {}
-    for link in await session.scalars(links_query):
-        links.setdefault(link.author_id, set()).add(link.player_id)
-    if not links and not player_ids:
+    if tester_id is None:
+        for link in await session.scalars(links_query):
+            links.setdefault(link.author_id, set()).add(link.player_id)
+    # Historical membership protects the entire logical packet, including future
+    # substitutions. Removing a tester never restores freshness.
+    tester_players: dict[UUID, set[UUID]] = {}
+    if author_id is None:
+        tested = select(PacketVersionRecord.packet_id, PlayerTesterLinkRecord.player_id).join(
+            PacketVersionTesterRecord,
+            PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
+        ).join(PlayerTesterLinkRecord,
+               PlayerTesterLinkRecord.tester_id == PacketVersionTesterRecord.tester_id)
+        if tester_id is not None:
+            tested = tested.where(PlayerTesterLinkRecord.tester_id == tester_id)
+        for packet_id, player_id in await session.execute(tested):
+            tester_players.setdefault(packet_id, set()).add(player_id)
+    if not links and not player_ids and not tester_players:
         return
-    query = select(ThemeRevisionRecord, PacketVersionRecord.lead_author_id).join(
+    query = select(ThemeRevisionRecord, PacketVersionRecord.lead_author_id,
+                   PacketVersionRecord.packet_id).join(
         PacketVersionRecord, PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id
     )
     if version_id is not None:
         query = query.where(PacketVersionRecord.id == version_id)
-    for theme, lead_id in (await session.execute(query)).all():
+    for theme, lead_id, packet_id in (await session.execute(query)).all():
         questions = (
             await session.scalars(
                 select(QuestionRevisionRecord)
@@ -77,6 +98,7 @@ async def burn_author_content(
                    *(author_id for question in questions for author_id in question.author_ids)}
         players = {player for author in authors for player in links.get(author, ())}
         players.update(player_ids or ())
+        players.update(tester_players.get(packet_id, ()))
         claims = {("theme", theme.theme_id), *(("question", q.question_id) for q in questions)}
         for burned_player_id in sorted(players):
             for namespace, claim_id in sorted(claims):

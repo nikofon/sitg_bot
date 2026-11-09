@@ -28,6 +28,12 @@ from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.notifications import NotificationWriter
 from sitg_bot.services.reliable_delivery import TransactionalOutbox
 from sitg_bot.services.subscriptions import SubscriptionService
+from sitg_bot.services.testers import (
+    resolve_testers,
+    store_testers,
+    tester_summary,
+    version_testers,
+)
 from sitg_bot.services.tournaments import (
     MEMBER_UPLOADS_POLICY,
     PACKET_ACCESS_DEFAULT_POLICIES,
@@ -45,6 +51,7 @@ from sitg_bot.storage.models import (
     PlatformAdministratorRecord,
     PlayerRecord,
     QuestionRevisionRecord,
+    TesterRecord,
     ThemeRecord,
     ThemeRevisionRecord,
     TournamentAuthorRecord,
@@ -265,6 +272,10 @@ class PacketAdminService:
                 "associated_authors": [
                     {"author_id": str(a.id), "display_name": a.display_name} for a in associated
                 ],
+                "tester_bindings": {t.display_name: str(t.id)
+                                    for t in await version_testers(session, version.id)},
+                "associated_testers": [tester_summary(t)
+                                       for t in await version_testers(session, version.id)],
             }
 
     async def management_action(
@@ -335,6 +346,7 @@ class PacketAdminService:
         content: dict[str, object],
         changes: dict[str, str],
         field_author_ids: dict[str, UUID | list[UUID | None] | tuple[UUID | None, ...] | None],
+        tester_bindings: dict[str, UUID] | None = None,
     ) -> None:
         self._require_reasonable_content_size(content)
         packet = packet_from_data(content)
@@ -351,9 +363,23 @@ class PacketAdminService:
             stored = await PostgresPacketRepository().get(session, old.id)
             assert stored is not None
             old_authors, rows = await self._version_fields(session, old)
-            self._validate_changes(
-                asdict(stored.packet), asdict(packet), old_authors, field_author_ids, changes
+            previous_testers = {
+                t.display_name: t.id for t in await version_testers(session, old.id)
+            }
+            resolved_testers = await resolve_testers(
+                session, packet.testers,
+                tester_bindings if tester_bindings is not None else {
+                    name: identity for name, identity in previous_testers.items()
+                    if name in packet.testers
+                },
             )
+            before, after = asdict(stored.packet), asdict(packet)
+            # A namesake reassociation is a correction even if spelling is unchanged.
+            before["testers"] = (stored.packet.testers, tuple(previous_testers.values()))
+            after["testers"] = (packet.testers, tuple(dict.fromkeys(
+                resolved_testers[name].id for name in packet.testers
+            )))
+            self._validate_changes(before, after, old_authors, field_author_ids, changes)
             substitution = "substitution" in changes.values()
             assignments = (
                 await session.scalars(
@@ -460,6 +486,8 @@ class PacketAdminService:
             session.add(version)
             await session.flush()
             draft.published_version_id = version.id
+            draft.tester_bindings = {name: str(t.id) for name, t in resolved_testers.items()}
+            store_testers(session, version.id, (resolved_testers[n] for n in packet.testers))
             logical_packet = await session.get(LogicalPacketRecord, old.packet_id)
             if "lead_author" in changes:
                 logical_packet.statistical_author_id = version.lead_author_id
@@ -912,6 +940,7 @@ class PacketAdminService:
                 else None
             ),
             "detected_authors": list(authors),
+            "detected_testers": list(packet.testers) if packet is not None else [],
             "errors": list(draft.validation_errors),
             "warnings": list(draft.validation_warnings),
             "can_publish": draft.status == "awaiting_confirmation"
@@ -941,7 +970,42 @@ class PacketAdminService:
             "author_bindings": dict(draft.author_bindings),
             "lead_author_id": str(draft.lead_author_id) if draft.lead_author_id else None,
             "associated_authors": await self._associated_authors(draft),
+            "tester_bindings": dict(draft.tester_bindings),
+            "associated_testers": await self._associated_testers(draft),
         }
+
+    async def _associated_testers(self, draft: PacketDraftRecord) -> list[dict[str, str]]:
+        async with self.database.sessions() as session:
+            return [tester_summary(t) for t in await session.scalars(select(TesterRecord).where(
+                TesterRecord.id.in_([UUID(v) for v in draft.tester_bindings.values()])
+            ).order_by(TesterRecord.display_name, TesterRecord.id))]
+
+    async def create_tester(
+        self, draft_id: UUID, actor_id: UUID, *, first_name: str,
+        second_name: str | None, surname: str, telegram_link: str | None,
+    ) -> dict[str, str]:
+        first = self.tournaments._normalize_author_component(first_name, "Tester name")
+        second = (self.tournaments._normalize_author_component(second_name, "Tester second name")
+                  if second_name and second_name.strip() else None)
+        family = self.tournaments._normalize_author_component(surname, "Tester surname")
+        link, username = self.tournaments._normalize_telegram_link(telegram_link)
+        display_name = " ".join(p for p in (first, second, family) if p)
+        if len(display_name) > 300:
+            raise ValueError("Tester display name cannot exceed 300 characters")
+        async with self.database.transaction() as session:
+            draft = await session.get(PacketDraftRecord, draft_id, with_for_update=True)
+            if draft is None:
+                raise LookupError("Packet draft not found")
+            context = await self.tournaments.context(session, draft.creation_tournament_id)
+            await self._require_draft_access(session, context, draft, actor_id)
+            if draft.status not in {"awaiting_confirmation", "validation_failed"}:
+                raise ValueError("Only an unpublished packet draft can be edited")
+            tester = TesterRecord(display_name=display_name,
+                                  first_name=first, second_name=second, surname=family,
+                                  telegram_link=link, telegram_username=username)
+            session.add(tester)
+            await session.flush()
+            return tester_summary(tester)
 
     async def _associated_authors(self, draft: PacketDraftRecord) -> list[dict[str, str]]:
         ids = {UUID(value) for value in draft.author_bindings.values()}
@@ -978,6 +1042,7 @@ class PacketAdminService:
         content: dict[str, object],
         author_bindings: dict[str, UUID] | None = None,
         lead_author_id: UUID | None = None,
+        tester_bindings: dict[str, UUID] | None = None,
     ) -> dict[str, object]:
         self._require_reasonable_content_size(content)
         packet = packet_from_data(content)
@@ -1012,6 +1077,12 @@ class PacketAdminService:
             resolved, lead = await self._resolve_authors(
                 session, packet, bindings, lead_author_id,
             )
+            testers = await resolve_testers(session, packet.testers,
+                tester_bindings if tester_bindings is not None else {
+                    name: UUID(value) for name, value in draft.tester_bindings.items()
+                    if name in packet.testers
+                })
+            draft.tester_bindings = {name: str(t.id) for name, t in testers.items()}
             draft.author_bindings = {name: str(author.id) for name, author in resolved.items()}
             draft.lead_author_id = lead.id if lead else None
             await self._add_tournament_authors(
@@ -1113,6 +1184,9 @@ class PacketAdminService:
             }
             draft.lead_author_id = lead_author.id if lead_author else None
             logical_packet.statistical_author_id = draft.lead_author_id
+            testers = await resolve_testers(session, packet.testers,
+                {name: UUID(value) for name, value in draft.tester_bindings.items()})
+            draft.tester_bindings = {name: str(t.id) for name, t in testers.items()}
             version = PacketVersionRecord(
                 packet_id=logical_packet.id,
                 version_number=1,
@@ -1126,6 +1200,7 @@ class PacketAdminService:
             session.add(version)
             await session.flush()
 
+            store_testers(session, version.id, (testers[n] for n in packet.testers))
             for theme_position, theme in enumerate(packet.themes, 1):
                 theme_authors = [await self._author(session, name, operation_authors)
                                  for name in theme.authors]

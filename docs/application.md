@@ -74,6 +74,16 @@ collide with the surviving identity are dropped, and inherited linked players bu
 surviving author's content. Approved links feed permanent
 authorship exposure burns; see [packet administration](packet-administration.md).
 
+Tester operations are separately authenticated: `testers.search.v1` requires a nonempty
+name query; `testers.mine.v1` returns only the caller's linked identities and tested packet
+metadata. `tester_links.{create,cancel,mine,admin.pending,admin.decide}.v1` mirrors author
+request permissions, idempotency, terminal-state checks, and private notifications, without
+public profiles or competitive statistics. Draft-authorized
+`packets.drafts.testers.{search,create}.v1` provides lookup/explicit namesake registration.
+Draft update and packet management update accept optional `tester_bindings`; omitted draft
+bindings preserve persisted associations. Tester names in library content never include
+link or private registration details.
+
 Tournament-token requests retain requester, proposed name, commentary, decision, and audit
 history. Approval issues an expiring, creator-bound, single-use token. Creation consumes it
 atomically. Inventory and rulings work without a token-delivery key;

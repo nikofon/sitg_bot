@@ -8,7 +8,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
-def library_docx(name: str, pages: list[dict[str, object]]) -> bytes:
+def library_docx(
+    name: str, pages: list[dict[str, object]], testers: list[str] | tuple[str, ...] = (),
+) -> bytes:
     document = Element(f"{{{WORD}}}document")
     body = SubElement(document, f"{{{WORD}}}body")
 
@@ -27,6 +29,8 @@ def library_docx(name: str, pages: list[dict[str, object]]) -> bytes:
             text.text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", line)
 
     paragraph(name, 1)
+    if testers:
+        paragraph(f"Testers: {'; '.join(testers)}")
     for page in pages:
         paragraph(page["title"], 2)
         if page.get("authors"):

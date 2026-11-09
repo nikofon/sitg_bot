@@ -29,6 +29,15 @@ class ActionCode(StrEnum):
     AUTHORS_SEARCH = "authors.search.v1"
     AUTHOR_CATALOGUE = "authors.catalogue.v1"
     AUTHOR_PROFILE = "authors.profile.v1"
+    TESTERS_SEARCH = "testers.search.v1"
+    TESTERS_MINE = "testers.mine.v1"
+    TESTER_LINK_CREATE = "tester_links.create.v1"
+    TESTER_LINK_CANCEL = "tester_links.cancel.v1"
+    TESTER_LINK_MINE = "tester_links.mine.v1"
+    TESTER_LINK_ADMIN_PENDING = "tester_links.admin.pending.v1"
+    TESTER_LINK_ADMIN_DECIDE = "tester_links.admin.decide.v1"
+    PACKET_DRAFT_TESTER_SEARCH = "packets.drafts.testers.search.v1"
+    PACKET_DRAFT_TESTER_CREATE = "packets.drafts.testers.create.v1"
     AUTHOR_LINK_CREATE = "author_links.create.v1"
     AUTHOR_LINK_CANCEL = "author_links.cancel.v1"
     AUTHOR_LINK_MINE = "author_links.mine.v1"
@@ -279,6 +288,53 @@ class AuthorLinkAdminDecideOperation(ContractModel):
     approve: bool
     note: str | None = Field(default=None, max_length=1000)
     expected_status: Literal["pending"] = "pending"
+
+
+class TestersSearchOperation(ContractModel):
+    action: Literal[ActionCode.TESTERS_SEARCH, ActionCode.PACKET_DRAFT_TESTER_SEARCH]
+    query: str = Field(default="", max_length=300)
+    draft_id: UUID | None = None
+    cursor: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class TestersMineOperation(ContractModel):
+    action: Literal[ActionCode.TESTERS_MINE]
+
+
+class TesterLinkCreateOperation(ContractModel):
+    action: Literal[ActionCode.TESTER_LINK_CREATE]
+    tester_id: UUID
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class TesterLinkCancelOperation(ContractModel):
+    action: Literal[ActionCode.TESTER_LINK_CANCEL]
+    request_id: UUID
+    expected_status: Literal["pending"] = "pending"
+
+
+class TesterLinkListOperation(ContractModel):
+    action: Literal[ActionCode.TESTER_LINK_MINE, ActionCode.TESTER_LINK_ADMIN_PENDING]
+    cursor: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class TesterLinkAdminDecideOperation(ContractModel):
+    action: Literal[ActionCode.TESTER_LINK_ADMIN_DECIDE]
+    request_id: UUID
+    approve: bool
+    note: str | None = Field(default=None, max_length=1000)
+    expected_status: Literal["pending"] = "pending"
+
+
+class PacketDraftTesterCreateOperation(ContractModel):
+    action: Literal[ActionCode.PACKET_DRAFT_TESTER_CREATE]
+    draft_id: UUID
+    first_name: str = Field(min_length=1, max_length=100)
+    second_name: str | None = Field(default=None, max_length=100)
+    surname: str = Field(min_length=1, max_length=100)
+    telegram_link: str | None = Field(default=None, max_length=200)
 
 
 class TokenRequestCreateOperation(ContractModel):
@@ -693,6 +749,7 @@ class PacketManagementUpdateOperation(ManagementSnapshotOptions):
     content: dict[str, JsonValue]
     changes: dict[str, Literal["correction", "substitution"]]
     field_author_ids: dict[str, UUID | list[UUID | None] | None]
+    tester_bindings: dict[str, UUID] | None = None
 
 
 class PacketManagementActionOperation(ManagementSnapshotOptions):
@@ -726,6 +783,7 @@ class PacketDraftUpdateOperation(ContractModel):
     content: dict[str, JsonValue]
     author_bindings: dict[str, UUID] | None = None
     lead_author_id: UUID | None = None
+    tester_bindings: dict[str, UUID] | None = None
 
 
 class PacketDraftAuthorCreateOperation(ContractModel):
@@ -1105,6 +1163,13 @@ GatewayOperation = Annotated[
     | AuthorsSearchOperation
     | AuthorCatalogueOperation
     | AuthorProfileOperation
+    | TestersSearchOperation
+    | TestersMineOperation
+    | TesterLinkCreateOperation
+    | TesterLinkCancelOperation
+    | TesterLinkListOperation
+    | TesterLinkAdminDecideOperation
+    | PacketDraftTesterCreateOperation
     | AuthorLinkCreateOperation
     | AuthorLinkCancelOperation
     | AuthorLinkMineOperation

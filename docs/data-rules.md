@@ -16,7 +16,7 @@ concurrent operations or commit halfway through an atomic assignment/publication
 
 | Record family | Principal tables and relationships |
 | --- | --- |
-| Identity | `players`, `platform_administrators`, `player_telegram_navigation`, author-link records |
+| Identity | `players`, `platform_administrators`, `player_telegram_navigation`, separate author-link and private tester-link records |
 | Organization | `tournaments` references type/ruleset/policy versions; managers, memberships, registration attempts, pricing and authors are related records |
 | Classic competition | `classic_stages` owns seeds/scoring; `classic_rounds` owns packets/deadlines; `classic_matches` stores prescribed seats, advancement, assigned game, and final results; `classic_chats`/`classic_chat_messages`/`classic_chat_members` store per-match chat state, replayable history, and per-player read/cleanup ledgers |
 | Content | `logical_packets` → `packet_versions`; `themes` → `theme_revisions`; `logical_questions` → `question_revisions`; `packet_questions` stores placements |
@@ -51,6 +51,20 @@ constraints. Migration procedure belongs in the operations guide.
   content do not alter an assigned game.
 - Lobby start repeats validation and creates the game, participants, content provenance,
   and exposure reservations in one transaction.
+
+## Tester identities
+
+`testers` are independent of authors and carry no competitive attribution or statistics.
+`packet_version_testers` records ordered immutable membership; draft `tester_bindings`
+preserve namesake choices. Player tester links require an audited administrator decision,
+with private self-service request history. No public tester directory/profile or reverse
+player-link projection exists. Authenticated name search supports linking; draft editors
+may also browse matching identities under their existing content permission.
+
+Membership on any historical version permanently protects the whole logical packet for
+linked players, including future substituted identities. Removing membership never restores
+freshness. Late link approval burns every retained version. Publication and approval
+serialize exposure writes with a transaction advisory lock to avoid missed concurrent burns.
 
 ## Canonical exposure claims
 
