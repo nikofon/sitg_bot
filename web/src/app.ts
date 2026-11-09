@@ -37,6 +37,11 @@ import type {
   AdminCard,
   AuthorLinksResource,
   AuthorSearchPage,
+  RegisteredTester,
+  TesterLinksPage,
+  TesterLinksResource,
+  TesterSearchPage,
+  TesterSummary,
 } from "./api/types";
 import { I18n } from "./i18n";
 import type { MessageKey } from "./i18n/en";
@@ -113,6 +118,36 @@ export class MiniAppShell {
     this.configureTelegram(route);
     this.renderFrame(route, this.statusCard("loading", this.i18n.t("common.loading")));
     try {
+      // The tester link windows are served by their dedicated documented endpoints;
+      // the backend exposes no route-resolution entry for them.
+      if (route.id === "testers_link") {
+        const page = await this.api.request<TesterLinksPage>(
+          "/api/miniapp/tester-links", { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        this.applySessionLocale(route);
+        this.renderTestersLinkRoute(route, {
+          kind: "tester_links",
+          state: page.items.length ? "ready" : "empty",
+          items: page.items,
+          next_cursor: page.next_cursor,
+        });
+        return;
+      }
+      if (route.id === "admin_management" && route.query.get("section") === "tester_link_requests") {
+        const page = await this.api.request<TesterLinksPage>(
+          "/api/miniapp/admin/tester-links", { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        this.applySessionLocale(route);
+        this.renderAdminManagementRoute(route, {
+          kind: "admin_management",
+          state: "ready",
+          section: "tester_link_requests",
+          items: page.items.map((request) => this.testerLinkCard(request)),
+        });
+        return;
+      }
       const path = encodeURIComponent(routeRequestPath(route));
       let requestPath = `/api/miniapp/routes/resolve?path=${path}`;
       if (route.id === "manager_management") requestPath += "&include_player_access=false";
@@ -374,7 +409,7 @@ export class MiniAppShell {
           }, this.i18n.t("route.library.title")),
           renderLibraryReader(
             result.name, result.pages, this.i18n, result.statistics,
-            (path) => this.router.navigate(path))));
+            (path) => this.router.navigate(path), result.testers ?? [])));
       } else if ("queued" in result) {
         this.showTextDialog(this.i18n.t("library.download"), [this.i18n.t("library.queued")]);
       }
@@ -391,6 +426,30 @@ export class MiniAppShell {
     }
   }
 
+  private renderReuploadIntake(route: RouteMatch, prepared: PacketDraftResource & { intake_url?: string },
+    packet: ManagementPacket): void {
+    this.renderFrame(route, element("section", { className: "route-content" },
+      this.statusCard("empty", this.i18n.t("packet_management.reupload_started")),
+      element("p", { className: "field-help" }, `${this.i18n.t("packet_management.packet_id")}: ${packet.name} (${packet.packet_id})`),
+      prepared.reupload_target
+        ? element("p", { className: "field-help" }, `${this.i18n.t("packet_management.packet_version_id")}: ${
+          prepared.reupload_target.packet_version_id}`)
+        : null,
+      element("div", { className: "settings-actions" },
+        prepared.intake_url
+          ? element("a", {
+              href: prepared.intake_url, target: "_blank", rel: "noopener noreferrer",
+              className: "primary-button",
+            }, this.i18n.t("packet_management.reupload_intake"))
+          : null,
+        element("button", {
+          type: "button", className: "secondary-button",
+          onclick: (() => void this.load(route)) as EventListener,
+        }, this.i18n.t("common.back")),
+      ),
+    ));
+  }
+
   private renderPacketEditor(route: RouteMatch, resource: PacketDraftResource): void {
     const modifying = Boolean(resource.assignment_id);
     const changes: Record<string, "correction" | "substitution"> = {};
@@ -402,6 +461,28 @@ export class MiniAppShell {
     let leadAuthorId = resource.lead_author_id;
     const authorsPath = modifying ? `${managementPath}/authors?return_author=true`
       : `/api/miniapp/manager/packets/${encodeURIComponent(route.params.launch_ref ?? "")}/authors`;
+    const testerBindings = new Map(Object.entries(resource.tester_bindings ?? {}));
+    const associatedTesters = new Map((resource.associated_testers ?? []).map((tester) => [tester.tester_id, tester]));
+    // Draft editors search and create testers through the draft launch reference; the published
+    // management editor has no draft, so it reuses the name-required public tester search.
+    const testersPath = modifying ? "/api/miniapp/testers"
+      : `/api/miniapp/manager/packets/${encodeURIComponent(route.params.launch_ref ?? "")}/testers`;
+    const testerNames = (value: string): string[] => value.split(/\n/)
+      .map((name) => name.trim().replace(/\s+/g, " ")).filter(Boolean);
+    if (!packet.testers) packet.testers = resource.packet.testers ?? [];
+    const testersInput = element("textarea", { "data-field": "testers", rows: "3" },
+      (packet.testers ?? []).join("\n")) as HTMLTextAreaElement;
+    const testerList = element("div", { className: "packet-author-list" });
+    const testerRows = new Map<string, HTMLElement>();
+    const packetTesters = (): string[] => testerNames(testersInput.value);
+    const currentTesterBindings = (): Record<string, string> => Object.fromEntries(
+      packetTesters().filter((name) => testerBindings.has(name))
+        .map((name) => [name, testerBindings.get(name)!]));
+    const testersChanged = (): boolean => {
+      if (JSON.stringify(packetTesters()) !== JSON.stringify(resource.packet.testers ?? [])) return true;
+      const original = resource.tester_bindings ?? {};
+      return packetTesters().some((name) => (testerBindings.get(name) ?? null) !== (original[name] ?? null));
+    };
     let themeIndex = 0;
     const form = element("form", { className: "settings-form packet-editor" }) as HTMLFormElement;
     const label = (field: string): string => this.i18n.t(`packet_editor.${field === "authors" ? "coauthors" : field}` as MessageKey);
@@ -601,13 +682,79 @@ export class MiniAppShell {
       element("p", { className: "field-help" }, this.i18n.t("packet_editor.authors_help")),
       authorList,
     );
+    const markTesterChanged = (): void => markChanged();
+    const refreshTesters = (): void => {
+      const names = packetTesters();
+      for (const name of names) {
+        if (testerRows.has(name)) continue;
+        const row = element(
+          "section",
+          { className: "packet-author-association", "data-packet-tester": name },
+          element("h3", {}, name),
+          element("fieldset", { disabled: modifying, className: "packet-field-author" },
+            this.registeredTesterPicker(route, testersPath, !modifying,
+              associatedTesters.get(testerBindings.get(name) ?? ""),
+              (tester) => {
+                if (tester) {
+                  testerBindings.set(name, tester.tester_id);
+                  associatedTesters.set(tester.tester_id, tester);
+                } else testerBindings.delete(name);
+                markTesterChanged();
+              })),
+        );
+        testerRows.set(name, row);
+      }
+      replaceChildren(testerList, ...names.map((name) => testerRows.get(name)!));
+    };
+    const testerField = element("label", {}, this.i18n.t("packet_editor.testers"), testersInput);
+    if (modifying) {
+      testersInput.disabled = true;
+      const buttons = element("span", { className: "packet-change-actions" });
+      const button = element("button", {
+        type: "button", className: "packet-change-button is-correction",
+        title: this.i18n.t("packet_management.correction"),
+        "aria-label": `${this.i18n.t("packet_management.correction")}: ${this.i18n.t("packet_editor.testers")}`,
+        "aria-pressed": "false",
+      }, "✎");
+      button.addEventListener("click", () => {
+        if (changes.testers === "correction") {
+          if (testersInput.validity.valid && !testersChanged()) {
+            delete changes.testers;
+            testersInput.disabled = true;
+            for (const fieldset of testerList.querySelectorAll("fieldset")) fieldset.disabled = true;
+            button.setAttribute("aria-pressed", "false");
+          }
+          return;
+        }
+        changes.testers = "correction";
+        testersInput.disabled = false;
+        for (const fieldset of testerList.querySelectorAll("fieldset")) fieldset.disabled = false;
+        button.setAttribute("aria-pressed", "true");
+        testersInput.focus();
+      });
+      buttons.append(button);
+      testerField.prepend(buttons);
+    }
+    testersInput.addEventListener("change", refreshTesters);
+    refreshTesters();
+    const testersSection = element("fieldset", {},
+      element("legend", {}, this.i18n.t("packet_editor.testers_title")),
+      testerField,
+      element("p", { className: "field-help" }, this.i18n.t("packet_editor.testers_help")),
+      testerList,
+    );
     const page = element("section", { className: "packet-page" });
     const decide = async (decision: "publish" | "reject"): Promise<void> => {
       if (!window.confirm(this.i18n.t(`packet_editor.${decision}_confirm` as MessageKey))) return;
       try {
+        // A reupload confirmation pins the displayed draft revision so unseen edits cannot publish.
         const result = await this.api.request<{ status: string }>(
           `/api/miniapp/manager/packets/${encodeURIComponent(route.params.launch_ref ?? "")}/${decision}`,
-          { method: "POST", body: {} },
+          {
+            method: "POST",
+            body: resource.reupload_target && decision === "publish"
+              ? { expected_version: resource.version } : {},
+          },
         );
         const resolvedDecision = result.status === "published" ? "publish" : "reject";
         this.platform.notifySuccess();
@@ -704,6 +851,7 @@ export class MiniAppShell {
       diagnostics("packet_editor.errors", resource.errors, "errors"),
       diagnostics("packet_editor.warnings", resource.warnings, "warnings"),
       metadata,
+      testersSection,
       page,
       element(
         "div",
@@ -725,11 +873,13 @@ export class MiniAppShell {
         if (field === "year") packet.year = input.value ? Number(input.value) : null;
         else if (field && field !== "themes") (packet[field as "name" | "language" | "lead_author"] as string) = input.value;
       }
+      packet.testers = testerNames(testersInput.value);
       try {
         if (modifying) {
           const unchanged = Object.keys(changes).some((path) =>
-            JSON.stringify(valueAt(resource.packet, path)) === JSON.stringify(valueAt(packet, path))
-            && JSON.stringify(fieldAuthors[path]) === JSON.stringify(resource.field_author_ids?.[path]));
+            path === "testers" ? !testersChanged()
+              : JSON.stringify(valueAt(resource.packet, path)) === JSON.stringify(valueAt(packet, path))
+              && JSON.stringify(fieldAuthors[path]) === JSON.stringify(resource.field_author_ids?.[path]));
           if (!Object.keys(changes).length || unchanged) {
             this.showTextDialog(this.i18n.t("packet_management.changes_required"), []);
             return;
@@ -737,7 +887,8 @@ export class MiniAppShell {
           const updated = await this.api.request<TournamentManagerManagementResource>(
             `${managementPath}/packets/${encodeURIComponent(resource.assignment_id!)}/save`,
             { method: "POST", body: { expected_version: resource.version, content: packet,
-              changes, field_author_ids: fieldAuthors, include_player_access: false } },
+              changes, field_author_ids: fieldAuthors, tester_bindings: currentTesterBindings(),
+              include_player_access: false } },
           );
           this.platform.notifySuccess();
           this.renderManagerManagement(route, { ...updated, kind: "manager_management", state: "ready" });
@@ -751,6 +902,7 @@ export class MiniAppShell {
               .filter((name) => authorBindings.has(name))
               .map((name) => [name, authorBindings.get(name)])),
             lead_author_id: leadAuthorId ?? null,
+            tester_bindings: currentTesterBindings(),
           } },
         );
         this.platform.notifySuccess();
@@ -1808,20 +1960,29 @@ export class MiniAppShell {
             element("p", { className: "field-help" }, this.i18n.t("manager_management.default_access_help")),
           );
         }
-        if (can("packet_management")) for (const command of ["modify", "release", "delete"] as const) {
+        if (can("packet_management")) for (const command of ["modify", "reupload", "release", "delete"] as const) {
           const button = element("button", {
             type: "button", className: command === "delete" ? "danger-button" : "secondary-button",
-            disabled: command === "release" && packet.released,
+            disabled: (command === "release" && packet.released)
+              || (command === "reupload" && (packet.version == null || !packet.packet_version_id)),
           }, this.i18n.t(packet.released && command === "release" ? "packet_management.released" : `packet_management.${command}`));
           button.addEventListener("click", async () => {
             if (command === "delete" && !window.confirm(this.i18n.t("packet_management.delete_confirm"))) return;
             if (command === "release" && !window.confirm(this.i18n.t("packet_management.release_confirm"))) return;
+            if (command === "reupload" && !window.confirm(this.i18n.t("packet_management.reupload_confirm"))) return;
             const path = `/api/miniapp/manager/tournaments/${encodeURIComponent(route.params.launch_ref ?? "")}/packets/${encodeURIComponent(packet.assignment_id)}`;
             button.disabled = true;
             try {
               if (command === "modify") {
                 const editor = await this.api.request<PacketDraftResource>(path);
                 this.renderPacketEditor(route, editor);
+              } else if (command === "reupload") {
+                const prepared = await this.api.request<PacketDraftResource & { intake_url?: string }>(
+                  `${path}/reupload`,
+                  { method: "POST", body: { expected_version: packet.version }, signal: this.request?.signal },
+                );
+                this.platform.notifySuccess();
+                this.renderReuploadIntake(route, prepared, packet);
               } else {
                 const updated = await this.api.request<TournamentManagerManagementResource>(`${path}/${command}`, {
                   method: "POST", body: { expected_version: packet.version, include_player_access: false },
@@ -2681,6 +2842,137 @@ export class MiniAppShell {
     return plans;
   }
 
+  private registeredTesterPicker(
+    route: RouteMatch,
+    path: string,
+    allowCreate: boolean,
+    selected: RegisteredTester | undefined,
+    onSelect: (tester: RegisteredTester | undefined) => void,
+  ): HTMLElement {
+    const search = element("input", {
+      type: "search", maxlength: "300",
+      placeholder: this.i18n.t("packet_editor.tester_search_placeholder"),
+      "aria-label": this.i18n.t("packet_editor.tester_search"),
+    });
+    const choices = new Map<string, RegisteredTester>();
+    if (selected) choices.set(selected.tester_id, selected);
+    const picker = element("select", { "aria-label": this.i18n.t("packet_editor.tester_select") });
+    const renderOptions = (items: RegisteredTester[], id: string): void => {
+      for (const tester of items) choices.set(tester.tester_id, tester);
+      const visible = new Map(items.map((tester) => [tester.tester_id, tester]));
+      if (id && choices.has(id)) visible.set(id, choices.get(id)!);
+      replaceChildren(picker,
+        element("option", { value: "" }, this.i18n.t("packet_editor.tester_select")),
+        ...Array.from(visible.values()).map((tester) => element("option", {
+          value: tester.tester_id,
+        }, tester.display_name)),
+      );
+      picker.value = id;
+    };
+    renderOptions(selected ? [selected] : [], selected?.tester_id ?? "");
+    picker.addEventListener("change", () => onSelect(choices.get(picker.value)));
+    const errorText = element("p", { className: "field-help", role: "status" });
+    let requestSequence = 0;
+    let timer: number | undefined;
+    let loaded = false;
+    const loadTesters = async (): Promise<void> => {
+      const sequence = ++requestSequence;
+      try {
+        const result = await this.api.request<TesterSearchPage>(
+          `${path}${path.includes("?") ? "&" : "?"}query=${encodeURIComponent(search.value)}`,
+        );
+        if (sequence !== requestSequence || !picker.isConnected) return;
+        renderOptions(result.items, picker.value);
+        errorText.textContent = result.items.length ? "" : this.i18n.t("packet_editor.testers_no_matches");
+        loaded = true;
+      } catch (error) {
+        if (sequence === requestSequence) {
+          const code = error instanceof ApiError ? error.code : "internal_error";
+          errorText.textContent = this.i18n.t(`error.${code}`);
+        }
+      }
+    };
+    // The public tester search requires a name; only draft-scoped search browses empty queries.
+    picker.addEventListener("focus", () => {
+      if (!loaded && (allowCreate || search.value.trim())) void loadTesters();
+    });
+    search.addEventListener("input", () => {
+      requestSequence += 1;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void loadTesters(), 200);
+    });
+    const create = allowCreate
+      ? element("button", { type: "button", className: "secondary-button" }, this.i18n.t("packet_editor.tester_add_new"))
+      : null;
+    create?.addEventListener("click", () => this.showNewTesterDialog(route, {
+      path,
+      onCreated: (tester) => {
+        renderOptions([tester], tester.tester_id);
+        onSelect(tester);
+      },
+    }));
+    return element("div", { className: "packet-author-picker" },
+      element("label", {}, this.i18n.t("packet_editor.tester_associate"), search, picker),
+      errorText,
+      create ? element("div", { className: "inline-actions" }, this.i18n.t("packet_editor.or"), create) : null,
+    );
+  }
+
+  private showNewTesterDialog(route: RouteMatch, packetTester?: {
+    path: string;
+    onCreated: (tester: RegisteredTester) => void;
+  }): void {
+    const testerForm = element(
+      "form",
+      { className: "settings-form" },
+      element("label", {}, this.i18n.t("packet_editor.tester_first_name"), element("input", { name: "first_name", required: true })),
+      element("label", {}, this.i18n.t("packet_editor.tester_second_name"), element("input", { name: "second_name" })),
+      element("label", {}, this.i18n.t("packet_editor.tester_surname"), element("input", { name: "surname", required: true })),
+      element("label", {}, this.i18n.t("packet_editor.tester_telegram"), element("input", { name: "telegram_link", type: "text", placeholder: "https://t.me/username" })),
+      element("button", { type: "submit", className: "primary-button" }, this.i18n.t("packet_editor.tester_register")),
+    );
+    const dialog = element(
+      "dialog",
+      { className: "tournament-dialog", "aria-labelledby": "new-tester-title" },
+      element("div", { className: "dialog-heading" }, element("h2", { id: "new-tester-title" }, this.i18n.t("packet_editor.tester_add_new")), element("button", { type: "button", className: "icon-button", "aria-label": this.i18n.t("common.close") }, "×")),
+      testerForm,
+    );
+    dialog.querySelector<HTMLButtonElement>(".icon-button")?.addEventListener("click", () => dialog.close());
+    testerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(testerForm);
+      try {
+        const response = await this.api.request<RegisteredTester>(
+          packetTester?.path ?? `/api/miniapp/manager/packets/${encodeURIComponent(route.params.launch_ref ?? "")}/testers`,
+          {
+            method: "POST",
+            body: {
+              first_name: String(data.get("first_name") ?? ""),
+              second_name: String(data.get("second_name") ?? "") || null,
+              surname: String(data.get("surname") ?? ""),
+              telegram_link: String(data.get("telegram_link") ?? "") || null,
+            },
+          },
+        );
+        dialog.close();
+        this.platform.notifySuccess();
+        packetTester?.onCreated(response);
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        let errorText = testerForm.querySelector<HTMLParagraphElement>("p[role=status]");
+        if (!errorText) {
+          errorText = element("p", { className: "field-help", role: "status" });
+          testerForm.prepend(errorText);
+        }
+        errorText.textContent = this.i18n.t(`error.${code}` as MessageKey);
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
   private registeredAuthorPicker(
     route: RouteMatch,
     path: string,
@@ -3302,6 +3594,10 @@ export class MiniAppShell {
 
   private async adminManagementAction(route: RouteMatch, resource: AdminManagementResource,
     card: AdminCard, command: string, button: HTMLButtonElement): Promise<void> {
+    if (resource.section === "tester_link_requests") {
+      await this.testerLinkDecision(route, card, command, button);
+      return;
+    }
     if (command === "edit_author" || command === "split") {
       this.promptAuthorChange(route, card, command === "split");
       return;
@@ -3346,6 +3642,199 @@ export class MiniAppShell {
       this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
       if (code === "stale_write") await this.load(route);
     } finally { button.disabled = false; }
+  }
+
+  private applySessionLocale(route: RouteMatch): void {
+    const locale = this.api.locale;
+    if (locale === "ru" || locale === "en") {
+      this.i18n.setLocale(locale);
+      this.configureTelegram(route);
+    }
+  }
+
+  private testerLinkCard(request: TesterLinksResource["items"][number]): AdminCard {
+    return {
+      id: request.request_id,
+      name: request.tester.display_name,
+      player: { id: request.player_id, public_nickname: request.player_nickname },
+      tester: { tester_id: request.tester.tester_id, display_name: request.tester.display_name },
+      status: request.status,
+      request_note: request.request_note,
+      decision_note: request.decision_note,
+      created_at: this.formatDate(request.created_at),
+      decided_at: request.decided_at ? this.formatDate(request.decided_at) : null,
+      cancelled_at: request.cancelled_at ? this.formatDate(request.cancelled_at) : null,
+    };
+  }
+
+  private async testerLinkDecision(route: RouteMatch, card: AdminCard,
+    command: string, button: HTMLButtonElement): Promise<void> {
+    if (command !== "approve" && command !== "reject") return;
+    if (!window.confirm(this.i18n.t(`admin_management.tester_${command}_confirm` as MessageKey))) return;
+    button.disabled = true;
+    try {
+      await this.api.request(`/api/miniapp/admin/tester-links/${encodeURIComponent(card.id)}/decide`, {
+        method: "POST", body: { approve: command === "approve" }, signal: this.request?.signal,
+      });
+      await this.load(route);
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "internal_error";
+      this.showTextDialog(this.i18n.t("admin_management.title"), [this.i18n.t(`error.${code}`)]);
+      if (code === "stale_write") await this.load(route);
+    } finally { button.disabled = false; }
+  }
+
+  private renderTestersLinkRoute(route: RouteMatch, resource: TesterLinksResource): void {
+    const status = element("p", { className: "field-help", role: "status" });
+    const tested = element("p", { className: "field-help", role: "status" });
+    const picker = element("select", { "aria-label": this.i18n.t("testers_link.select") });
+    const search = element("input", {
+      type: "search", maxlength: "300",
+      placeholder: this.i18n.t("testers_link.search_placeholder"),
+      "aria-label": this.i18n.t("testers_link.search"),
+    });
+    const choices = new Map<string, TesterSummary>();
+    const showTested = (tester: TesterSummary | undefined): void => {
+      tested.textContent = "";
+      if (!tester) return;
+      const names = tester.packets.map((packet) => packet.name);
+      tested.textContent = `${this.i18n.t("testers_link.tested_packets")}: ${
+        names.length ? names.join(", ") : this.i18n.t("testers_link.tested_none")}`;
+    };
+    let requestSequence = 0;
+    let timer: number | undefined;
+    const loadTesters = async (): Promise<void> => {
+      const query = search.value.trim();
+      if (!query) return;
+      const sequence = ++requestSequence;
+      try {
+        const result = await this.api.request<TesterSearchPage>(
+          `/api/miniapp/testers?query=${encodeURIComponent(query)}`,
+          { signal: this.request?.signal },
+        );
+        if (sequence !== requestSequence || !picker.isConnected) return;
+        choices.clear();
+        for (const tester of result.items) choices.set(tester.tester_id, tester);
+        replaceChildren(picker,
+          element("option", { value: "" }, this.i18n.t("testers_link.select")),
+          ...result.items.map((tester) => element("option", {
+            value: tester.tester_id,
+          }, tester.display_name)));
+        status.textContent = result.items.length ? "" : this.i18n.t("testers_link.no_matches");
+        showTested(undefined);
+      } catch (error) {
+        if (sequence === requestSequence) {
+          const code = error instanceof ApiError ? error.code : "internal_error";
+          status.textContent = this.i18n.t(`error.${code}` as MessageKey);
+        }
+      }
+    };
+    search.addEventListener("input", () => {
+      requestSequence += 1;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => void loadTesters(), 200);
+    });
+    picker.addEventListener("change", () => showTested(choices.get(picker.value)));
+    const note = element("input", {
+      name: "note", maxlength: "1000",
+      placeholder: this.i18n.t("testers_link.note_placeholder"),
+      "aria-label": this.i18n.t("testers_link.note"),
+    });
+    const submit = element("button", { type: "submit", className: "primary-button" },
+      this.i18n.t("testers_link.submit"));
+    const form = element("form", { className: "settings-form" }, status,
+      element("label", {}, this.i18n.t("testers_link.select"), search, picker),
+      tested,
+      element("label", {}, this.i18n.t("testers_link.note"), note),
+      submit);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!picker.value) {
+        status.textContent = this.i18n.t("testers_link.select_required");
+        return;
+      }
+      submit.disabled = true;
+      try {
+        await this.api.request("/api/miniapp/tester-links", {
+          method: "POST",
+          body: { tester_id: picker.value, note: note.value.trim() || null },
+          signal: this.request?.signal,
+        });
+        this.platform.notifySuccess();
+        status.textContent = this.i18n.t("testers_link.submitted");
+        await this.load(route);
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : "internal_error";
+        status.textContent = this.i18n.t(`error.${code}` as MessageKey);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    const requests = element("ul", { className: "resource-list" });
+    if (resource.items.length) {
+      for (const item of resource.items) {
+        const card = element("article", {
+          className: "resource-card", "data-request-id": item.request_id,
+        },
+          element("h2", {}, item.tester.display_name),
+          element("p", {}, `${this.i18n.t("testers_link.status")}: ${
+            this.i18n.t(`testers_link.status_${item.status}` as MessageKey)}`),
+          element("p", {}, `${this.i18n.t("admin_management.created_at")}: ${this.formatDate(item.created_at)}`),
+          item.request_note
+            ? element("p", {}, `${this.i18n.t("testers_link.note")}: ${item.request_note}`)
+            : null);
+        if (item.status === "pending") {
+          const cancel = element("button", {
+            type: "button", className: "secondary-button",
+          }, this.i18n.t("testers_link.cancel"));
+          cancel.addEventListener("click", async () => {
+            if (!window.confirm(this.i18n.t("testers_link.cancel_confirm"))) return;
+            cancel.disabled = true;
+            try {
+              await this.api.request(
+                `/api/miniapp/tester-links/${encodeURIComponent(item.request_id)}/cancel`,
+                { method: "POST", body: {}, signal: this.request?.signal },
+              );
+              this.platform.notifySuccess();
+              await this.load(route);
+            } catch (error) {
+              const code = error instanceof ApiError ? error.code : "internal_error";
+              this.showTextDialog(this.i18n.t(`error.${code}`), []);
+            } finally {
+              cancel.disabled = false;
+            }
+          });
+          card.append(cancel);
+        }
+        requests.append(element("li", {}, card));
+      }
+    } else {
+      requests.append(element("li", {}, element("p", {}, this.i18n.t("testers_link.no_requests"))));
+    }
+    const linked = element("ul", { className: "resource-list" },
+      element("li", {}, element("p", {}, this.i18n.t("testers_link.no_testers"))));
+    void this.api.request<{ items: TesterSummary[] }>("/api/miniapp/testers/mine", {
+      signal: this.request?.signal,
+    }).then((mine) => {
+      if (this.request?.signal.aborted || !linked.isConnected) return;
+      replaceChildren(linked, ...(mine.items.length
+        ? mine.items.map((tester) => element("li", {}, element("article", {
+          className: "resource-card", "data-tester-id": tester.tester_id,
+        },
+          element("h2", {}, tester.display_name),
+          element("p", {}, `${this.i18n.t("testers_link.tested_packets")}: ${
+            tester.packets.length
+              ? tester.packets.map((packet) => packet.name).join(", ")
+              : this.i18n.t("testers_link.tested_none")}`))))
+        : [element("li", {}, element("p", {}, this.i18n.t("testers_link.no_testers")))]));
+    }).catch(() => undefined);
+    this.renderFrame(route, element("section", { className: "route-content" },
+      element("p", { className: "field-help" }, this.i18n.t("testers_link.privacy_note")),
+      form,
+      element("h2", {}, this.i18n.t("testers_link.my_testers")),
+      linked,
+      element("h2", {}, this.i18n.t("testers_link.my_requests")),
+      requests));
   }
 
   private renderAuthorsLinkRoute(route: RouteMatch, resource: AuthorLinksResource): void {

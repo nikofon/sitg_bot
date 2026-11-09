@@ -29,6 +29,11 @@ single-parameter categories show their input directly, and theme count offers a
 "all themes from the selected packets" checkbox that submits the `max` sentinel. The author-link
 window (`/authors/link`) lets a registered player search authors, submit a link request
 with an optional note, and follow their own request statuses; the bot's player menu opens it.
+The private tester-link window (`/testers/link`) mirrors that flow for testers: search requires
+a name (there is no tester directory), results list tested packet names to distinguish namesakes,
+and players can cancel their own pending requests and see their linked testers with tested
+packets. It loads through the dedicated `GET /tester-links` endpoint, because the backend
+provides no route-resolution entry for it; locale comes from the session endpoint.
 
 Registered players open `/authors` through **Other... → Authors**. Like the administrator
 catalogue, it supports name search and sorting, with filters retained when returning from
@@ -233,9 +238,16 @@ pagination with stable name/ID tie-breakers, and the response advertises the sup
 in `supported_orders`.
 
 **Packets:** draft preview/edit, author association/creation, publish/reject, assignment
-retirement, version release, and correction/substitution editing. Packet management cards expose
+retirement, version release, and correction/substitution editing. Draft and published-correction
+editors also carry a packet-wide tester list (one name per line) with the same association,
+namesake, and new-profile flow as authors, but through tester identities; published tester
+changes are always classified as corrections, and the published editor searches the name-required
+tester endpoint because it has no draft reference for registration. Packet management cards expose
 packet IDs. **Add existing packet** looks up an ID from another managed tournament and shows
-metadata before confirmation or cancellation. Published fields stay locked
+metadata before confirmation or cancellation. **Reupload** prepares a correction draft from the
+card's adopted version (`expected_version`), then shows a status card with the returned Telegram
+intake link where the corrected file is sent; the reused draft editor confirms publication with
+the displayed draft revision. Published fields stay locked
 until an edit classification is selected; save validates actual changes atomically.
 See [packet administration](packet-administration.md) for identity and propagation rules.
 
@@ -249,8 +261,11 @@ ruleset-defined pages (SI themes), with a dropdown
 and numbered navigation whose current page button is visually distinct. Pages show theme
 commentary when present; theme and question author names link to public author profiles.
 Each question lists finalized-game statistics (views, accepted buzzes, and correct/incorrect
-answer rates; unplayed questions say so). Download queues a DOCX in Telegram. Both actions
-recheck access and request confirmation before burning fresh content.
+answer rates; unplayed questions say so). Packets with testers list them on a page zero
+inserted before theme 1 (names only, never profile links); theme numbering and question
+indices stay unchanged, and packets without testers keep the existing reader. Download
+queues a DOCX in Telegram that includes testers before themes. Both actions recheck
+access and request confirmation before burning fresh content.
 
 **Ongoing games:** active lobbies and observable games from the viewer's tournaments
 (opened from the player menu's "Ongoing games" button). Lobby cards show the tournament,
@@ -274,7 +289,9 @@ Tournament cards link profiles, offer confirmed Halt, Resume, and permanent Abol
 (see [tournaments](tournaments.md)), and carry a global rating weight slider (0.1–1 in 0.05
 steps) whose green **V** button must be pressed to save the `ruleset_rating_weight` policy.
 Authors show contributions and linked player data; Link accepts a player UUID or `@username`
-and records an approved author link with permanent authorship exposure.
+and records an approved author link with permanent authorship exposure. A **Tester links**
+tab lists pending tester-link requests with player profiles and Approve/Reject rulings, loaded
+from the dedicated administrator tester-link endpoint rather than the generic section route.
 
 Players include banned accounts, private profile details, ratings, reports, and suspicion.
 Ban/Unban and suspicion review/clearance replace the separate Telegram keyboard buttons.

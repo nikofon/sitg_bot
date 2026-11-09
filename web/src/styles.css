@@ -649,6 +649,15 @@ p {
   gap: 0.75rem;
 }
 
+/* Button-styled external links (for example the reupload Telegram intake). */
+a.primary-button,
+a.secondary-button {
+  display: inline-block;
+  text-align: center;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
 .settings-actions button {
   flex: 1 1 12rem;
 }

@@ -526,6 +526,7 @@ export interface PacketContent {
   lead_author: string;
   year: number | null;
   themes: PacketTheme[];
+  testers?: string[];
 }
 
 export interface PacketEditorDescriptor {
@@ -535,6 +536,14 @@ export interface PacketEditorDescriptor {
   theme_fields: string[];
   question_fields: string[];
   question_values: number[];
+}
+
+export interface ReuploadTarget {
+  tournament_id: string;
+  assignment_id: string;
+  packet_id: string;
+  packet_version_id: string;
+  expected_version: number;
 }
 
 export interface PacketDraftResource {
@@ -555,8 +564,17 @@ export interface PacketDraftResource {
   author_bindings: Record<string, string>;
   lead_author_id: string | null;
   associated_authors: RegisteredAuthor[];
+  detected_testers?: string[];
+  tester_bindings?: Record<string, string>;
+  associated_testers?: RegisteredTester[];
+  reupload_target?: ReuploadTarget | null;
   assignment_id?: string;
   field_author_ids?: Record<string, string | Array<string | null> | null>;
+}
+
+export interface RegisteredTester {
+  tester_id: string;
+  display_name: string;
 }
 
 export interface RegisteredAuthor {
@@ -686,8 +704,45 @@ export interface LibraryQuestionStatistics {
 
 export type LibraryAccess =
   | { confirmation_required: true; fresh_unit_count: number }
-  | { confirmation_required: false; name: string; pages: LibraryPage[]; statistics?: Record<string, LibraryQuestionStatistics> }
+  | { confirmation_required: false; name: string; pages: LibraryPage[]; testers?: string[]; statistics?: Record<string, LibraryQuestionStatistics> }
   | { confirmation_required: false; queued: true };
+
+export interface TesterSummary {
+  tester_id: string;
+  display_name: string;
+  packets: Array<{ packet_id: string; name: string }>;
+}
+
+export interface TesterSearchPage {
+  items: TesterSummary[];
+  next_cursor: string | null;
+}
+
+export interface TesterLinkRequest {
+  request_id: string;
+  player_id: string;
+  player_nickname: string;
+  tester: { tester_id: string; display_name: string };
+  status: string;
+  request_note: string | null;
+  decision_note: string | null;
+  decided_by_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+  cancelled_at: string | null;
+}
+
+export interface TesterLinksPage {
+  items: TesterLinkRequest[];
+  next_cursor: string | null;
+}
+
+export interface TesterLinksResource {
+  kind: "tester_links";
+  state: "ready" | "empty";
+  items: TesterLinkRequest[];
+  next_cursor?: string | null;
+}
 
 export interface PlayerProfileIdentity {
   id: string;
@@ -851,6 +906,7 @@ export type AdminSection =
   | "players"
   | "packets"
   | "link_requests"
+  | "tester_link_requests"
   | "ongoing_games"
   | "active_lobbies"
   | "past_games";
@@ -899,6 +955,7 @@ export interface RoutePayload {
     | AdminSuspicionLedgerResource
     | AdminManagementResource
     | AuthorLinksResource
+    | TesterLinksResource
     | AuthorsResource
     | AuthorProfileResource;
   pagination?: PageCursor;

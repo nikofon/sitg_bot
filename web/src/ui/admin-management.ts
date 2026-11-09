@@ -66,7 +66,7 @@ export function renderAdminManagement(
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
   const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
+    ...(["tournaments", "authors", "players", "packets", "link_requests", "tester_link_requests", "ongoing_games",
       "active_lobbies", "past_games"] as const).map((section) => element("button", {
       type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
       "aria-current": resource.section === section ? "page" : undefined,
@@ -91,7 +91,7 @@ export function renderAdminManagement(
       else if (item.moderation_status === "normal" && item.status === "active"
         && item.actual_starts_at && !item.actual_ends_at) add("halt");
       if (item.moderation_status !== "abolished") add("abolish");
-    } else if (resource.section === "link_requests") {
+    } else if (resource.section === "link_requests" || resource.section === "tester_link_requests") {
       profile = typeof item.player === "object" && item.player !== null
         && typeof (item.player as { id?: unknown }).id === "string"
         ? link(`/players/${(item.player as { id: string }).id}`, label("profile")) : null;
@@ -140,6 +140,7 @@ export function renderAdminManagement(
       players: ["id", "real_name", "telegram_username", "suspicion", "reputation", "ban", "games_played", "rulesets", "reports"],
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
       link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
+      tester_link_requests: ["player", "tester", "status", "request_note", "created_at", "decided_at"],
       ongoing_games: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "last_activity_at"],
       active_lobbies: ["id", "tournament", "host", "status", "phase", "paused", "participant_count", "participants", "type", "ruleset", "created_at", "join_deadline", "last_activity_at"],
       past_games: ["id", "tournament", "host", "status", "phase", "participant_count", "participants", "type", "ruleset", "created_at", "completed_at", "finalized_at", "last_activity_at"],
@@ -163,7 +164,8 @@ export function renderAdminManagement(
     if (signal?.aborted) return;
     const search = (filters.search ?? "").trim().toLocaleLowerCase(i18n.locale);
     const order = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-      : resource.section === "link_requests" || GAME_SECTIONS.includes(resource.section)
+      : resource.section === "link_requests" || resource.section === "tester_link_requests"
+        || GAME_SECTIONS.includes(resource.section)
         ? "created_at:desc" : "name:asc");
     const [key, direction] = order.split(":");
     const items = currentItems.filter((item) => cache.get(item.id)!.search.includes(search));
@@ -215,6 +217,7 @@ export function renderAdminManagement(
     tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
     link_requests: ["status", "decided_at"],
+    tester_link_requests: ["status", "decided_at"],
     ongoing_games: ["status", "phase", "participant_count", "last_activity_at"],
     active_lobbies: ["status", "phase", "participant_count", "created_at", "join_deadline", "last_activity_at"],
     past_games: ["status", "phase", "participant_count", "created_at", "completed_at", "last_activity_at"],
@@ -223,7 +226,8 @@ export function renderAdminManagement(
     ["asc", "desc"].map((direction) => element("option", { value: `${key}:${direction}` },
       `${label(key)} ${direction === "asc" ? "↑" : "↓"}`))));
   sort.value = filters.order ?? (resource.section === "tournaments" ? "starts_at:asc"
-    : resource.section === "link_requests" || GAME_SECTIONS.includes(resource.section)
+    : resource.section === "link_requests" || resource.section === "tester_link_requests"
+      || GAME_SECTIONS.includes(resource.section)
       ? "created_at:desc" : "name:asc");
   sort.addEventListener("change", () => { filters.order = sort.value; save(filters); render(); });
   const update = (items: AdminCard[], nextLoading: boolean): void => {

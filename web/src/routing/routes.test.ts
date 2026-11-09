@@ -17,6 +17,7 @@ describe("route matching", () => {
     ["/library", "library"],
     ["/library/version-id", "library_reader"],
     ["/authors/link", "authors_link"],
+    ["/testers/link", "testers_link"],
     ["/manager/appeals", "manager_appeals"],
     ["/admin/suspicion", "admin_suspicion"],
   ])("matches %s", (pathname, expected) => {

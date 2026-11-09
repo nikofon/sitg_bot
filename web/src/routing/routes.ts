@@ -10,6 +10,7 @@ export type RouteId =
   | "library"
   | "library_reader"
   | "authors_link"
+  | "testers_link"
   | "authors"
   | "author_profile"
   | "lobby"
@@ -134,6 +135,13 @@ const routes: RouteDefinition[] = [
     pattern: /^\/authors\/link\/?$/,
     titleKey: "route.authors_link.title",
     emptyKey: "route.authors_link.empty",
+    isRoot: true,
+  },
+  {
+    id: "testers_link",
+    pattern: /^\/testers\/link\/?$/,
+    titleKey: "route.testers_link.title",
+    emptyKey: "route.testers_link.empty",
     isRoot: true,
   },
   {

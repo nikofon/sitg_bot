@@ -158,6 +158,42 @@ describe("library", () => {
     expect(root.querySelector(".library-page a")).toBeNull();
   });
 
+  it("shows testers on page zero before the first theme without shifting theme numbering", () => {
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
+      commentary: "", source: "", form: "", author: "" };
+    const pages: LibraryPage[] = [
+      { title: "First", author: "", questions: [question] },
+      { title: "Second", author: "", questions: [{ ...question, text: "Second question" }] },
+    ];
+    const root = renderLibraryReader("Packet", pages, new I18n("en"), undefined, () => {},
+      ["Ivan Tester", "Grace Hopper <b>"]);
+    expect(root.querySelector(".library-page")!.textContent).toContain("Testers");
+    expect(root.querySelector(".library-page")!.textContent).toContain("Ivan Tester");
+    expect(root.querySelector(".library-page")!.textContent).toContain("Grace Hopper <b>");
+    expect(root.querySelector(".library-page a")).toBeNull();
+    const buttons = root.querySelectorAll<HTMLButtonElement>("nav button");
+    expect(Array.from(buttons).map((button) => button.textContent)).toEqual(["0", "1", "2"]);
+    expect(buttons[0]!.getAttribute("aria-current")).toBe("page");
+    expect(root.querySelector<HTMLSelectElement>("select")!.value).toBe("-1");
+    buttons[1]!.click();
+    expect(root.querySelector(".library-page")!.textContent).toContain("Theme: First");
+    expect(root.querySelectorAll<HTMLButtonElement>("nav button")[1]!.getAttribute("aria-current")).toBe("page");
+    buttons[0]!.click();
+    expect(root.querySelector(".library-page")!.textContent).toContain("Ivan Tester");
+    expect(root.querySelector(".library-page")!.textContent).not.toContain("Theme: First");
+  });
+
+  it("keeps the reader unchanged when a packet has no testers", () => {
+    const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [],
+      commentary: "", source: "", form: "", author: "" };
+    const root = renderLibraryReader("Packet", [{ title: "First", author: "", questions: [question] }],
+      new I18n("en"), undefined, () => {}, []);
+    const buttons = root.querySelectorAll<HTMLButtonElement>("nav button");
+    expect(Array.from(buttons).map((button) => button.textContent)).toEqual(["1"]);
+    expect(buttons[0]!.getAttribute("aria-current")).toBe("page");
+    expect(root.querySelector(".library-page")!.textContent).toContain("Theme: First");
+  });
+
   it("marks the current pagination button so it stands out from its siblings", () => {
     const question = { value: 10, text: "Question", answer: "Answer", accepted_answers: [], commentary: "", author: "", source: "", form: "" };
     const pages: LibraryPage[] = [

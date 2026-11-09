@@ -1409,7 +1409,7 @@ describe("MiniAppShell", () => {
     managementButton?.click();
     expect(root.querySelector(".lobby-packet-card h3")?.textContent).toBe("Final packet");
     expect(Array.from(root.querySelectorAll(".lobby-packet-card:first-child button")).map((button) => button.textContent))
-      .toEqual(["Modify", "Release", "Delete"]);
+      .toEqual(["Modify", "Reupload", "Release", "Delete"]);
     expect(root.querySelector(".lobby-packet-card")?.textContent).toContain("packet-1");
     const addExisting = Array.from(root.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent === "Add existing packet")!;
@@ -1939,6 +1939,353 @@ describe("MiniAppShell", () => {
     expect(submitted.author_bindings).toEqual({ Ada: "registered-ada" });
     expect(submitted.lead_author_id).toBe("new-lead");
     expect(submitted.content.lead_author).toBe("New Editor");
+  });
+
+  it("submits a tester link request from the searchable private window", async () => {
+    window.history.replaceState({}, "", "/testers/link");
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).endsWith("/api/miniapp/tester-links") && options?.method === "POST") {
+        return response({ request_id: "request-2", status: "pending" });
+      }
+      if (String(url).endsWith("/api/miniapp/tester-links")) {
+        return response({ items: [{
+          request_id: "request-1", player_id: "player-1", player_nickname: "Alice",
+          tester: { tester_id: "tester-1", display_name: "Ivan Tester <b>" },
+          status: "pending", request_note: "I tested it", decision_note: null, decided_by_id: null,
+          created_at: "2026-09-04T12:00:00Z", decided_at: null, cancelled_at: null,
+        }], next_cursor: null });
+      }
+      if (String(url).endsWith("/testers/mine")) {
+        return response({ items: [{ tester_id: "tester-2", display_name: "Old Tester", packets: [{ packet_id: "p-9", name: "Played packet" }] }] });
+      }
+      if (String(url).includes("/api/miniapp/testers?")) {
+        return response({ items: [{
+          tester_id: "tester-1", display_name: "Ivan Tester <b>",
+          packets: [{ packet_id: "p-1", name: "Autumn Cup packet" }],
+        }], next_cursor: null });
+      }
+      return response({ locale: "en", authorization: { allowed: true }, resource: { state: "empty" } });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("form.settings-form")).not.toBeNull());
+    expect(root.textContent).toContain("Ivan Tester <b>");
+    expect(root.textContent).toContain("Your linked testers");
+    await vi.waitFor(() => expect(root.textContent).toContain("Old Tester"));
+    expect(root.textContent).toContain("Played packet");
+    const search = root.querySelector<HTMLInputElement>("form input[type=search]")!;
+    search.value = "Ivan";
+    search.dispatchEvent(new Event("input"));
+    await vi.waitFor(() => expect(root.querySelector<HTMLSelectElement>("form select")!.textContent).toContain("Ivan Tester <b>"));
+    const select = root.querySelector<HTMLSelectElement>("form select")!;
+    select.value = "tester-1";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(root.textContent).toContain("Autumn Cup packet");
+    (root.querySelector("form button[type=submit]") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      const call = fetcher.mock.calls.find(([url, options]) =>
+        String(url).endsWith("/api/miniapp/tester-links") && options?.method === "POST");
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ tester_id: "tester-1", note: null });
+    });
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes("/routes/resolve"))).toBe(false);
+  });
+
+  it("associates packet testers, registers a namesake, and submits tester bindings", async () => {
+    window.history.replaceState({}, "", "/manager/packets/opaque-reference/edit");
+    const question = {
+      value: 10, form: "", text: "Question", answer: "Answer", accepted_answers: [],
+      rejected_answers: [], commentary: "", source: "", author: "Ada", authors: ["Ada"],
+    };
+    const resource = {
+      kind: "packet_draft", state: "ready",
+      draft_id: "00000000-0000-0000-0000-000000000011",
+      version: 4, status: "awaiting_confirmation", source_filename: "packet.json",
+      ruleset_key: "si", ruleset_version: 1, errors: [], warnings: [], can_publish: true, can_reject: true,
+      packet: {
+        name: "Final", language: "en", lead_author: "Ada", year: 2026,
+        themes: [{ name: "Theme one", author: "Ada", authors: ["Ada"], questions: [question] }],
+        testers: ["Ivan Tester", "Grace Hopper"],
+      },
+      editor: {
+        schema: "si.packet.v1", page_collection: "themes",
+        packet_fields: ["name", "language", "lead_author", "year"],
+        theme_fields: ["name", "authors"],
+        question_fields: ["value", "text", "answer"], question_values: [10],
+      },
+      author_bindings: {}, lead_author_id: null, associated_authors: [],
+      detected_testers: ["Ivan Tester", "Grace Hopper"],
+      tester_bindings: { "Ivan Tester": "tester-existing" },
+      associated_testers: [{ tester_id: "tester-existing", display_name: "Ivan Tester" }],
+    } as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }))
+      .mockResolvedValueOnce(response({ locale: "en", authorization: { allowed: true }, resource }))
+      .mockResolvedValueOnce(response({ tester_id: "tester-new", display_name: "New Tester" }))
+      .mockResolvedValueOnce(response({ ...resource, version: 5 }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("form.packet-editor")).not.toBeNull());
+    const testersInput = root.querySelector<HTMLTextAreaElement>("[data-field=testers]")!;
+    expect(testersInput.value).toBe("Ivan Tester\nGrace Hopper");
+    expect(Array.from(root.querySelectorAll("[data-packet-tester] h3")).map((item) => item.textContent))
+      .toEqual(["Ivan Tester", "Grace Hopper"]);
+    // Keep a genuine namesake separate by registering a new tester profile for it.
+    const create = root.querySelector<HTMLButtonElement>('[data-packet-tester="Grace Hopper"] .packet-author-picker button')!;
+    create.click();
+    const dialog = document.querySelector<HTMLDialogElement>("dialog")!;
+    Object.defineProperty(dialog, "close", { value: () => dialog.remove() });
+    dialog.querySelector<HTMLInputElement>('[name="first_name"]')!.value = "New";
+    dialog.querySelector<HTMLInputElement>('[name="surname"]')!.value = "Tester";
+    dialog.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/miniapp/manager/packets/opaque-reference/testers");
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toMatchObject({ first_name: "New", surname: "Tester" });
+    (root.querySelector("form.packet-editor") as HTMLFormElement).requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    const submitted = JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body));
+    expect(submitted.expected_version).toBe(4);
+    expect(submitted.content.testers).toEqual(["Ivan Tester", "Grace Hopper"]);
+    expect(submitted.tester_bindings).toEqual({
+      "Ivan Tester": "tester-existing", "Grace Hopper": "tester-new",
+    });
+  });
+
+  it("starts a packet reupload with the adopted version and opens the Telegram intake", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }))
+      .mockResolvedValueOnce(response({
+        locale: "en", authorization: { allowed: true }, resource: {
+          kind: "manager_management", state: "ready",
+          sections: ["general", "packet_management"], settings_version: 1, finalized_at: null,
+          registration_scheduled_open: false, registration_open: false,
+          registration_open_override: null, registration_count: 0, approved_count: 0,
+          participant_count: 0, packet_count: 1, available_actions: ["packet_management"],
+          registrations: [],
+          packets: [{ assignment_id: "a-1", packet_id: "p-1", packet_version_id: "version-1",
+            name: "Final packet", version: 2, player_access: [] }],
+          tournament: {
+            id: "tournament-1", name: "Managed Cup", slug: "managed-cup", status: "active",
+            phase: "ongoing", visibility: "private", language: "en", payment_type: "free",
+            pricing_plans: [], registration_open: false, authors: [], type_key: "ladder",
+            type_version: 1, ruleset_key: "si", ruleset_version: 1, managed: true,
+            policy_version: 1, available_actions: [],
+          },
+        },
+      }))
+      .mockResolvedValueOnce(response({
+        draft_id: "00000000-0000-0000-0000-000000000012", version: 1, status: "uploaded",
+        reupload_target: {
+          tournament_id: "tournament-1", assignment_id: "a-1", packet_id: "p-1",
+          packet_version_id: "version-1", expected_version: 2,
+        },
+        intake_url: "https://t.me/bot?start=reupload_abcdef",
+      }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector(".management-section-nav button")).not.toBeNull());
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Packet management")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".lobby-packet-card")).not.toBeNull());
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".lobby-packet-card button"))
+      .find((button) => button.textContent === "Reupload")!.click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/miniapp/manager/tournaments/opaque-reference/packets/a-1/reupload");
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({ expected_version: 2 });
+    await vi.waitFor(() => expect(root.querySelector("a.primary-button")));
+    const intake = root.querySelector<HTMLAnchorElement>("a.primary-button")!;
+    expect(intake.getAttribute("href")).toBe("https://t.me/bot?start=reupload_abcdef");
+    expect(intake.getAttribute("target")).toBe("_blank");
+    expect(root.textContent).toContain("version-1");
+  });
+
+  it("publishes a reupload draft with the displayed draft revision", async () => {
+    window.history.replaceState({}, "", "/manager/packets/opaque-reference/edit");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const question = {
+      value: 10, form: "", text: "Question", answer: "Answer", accepted_answers: [],
+      rejected_answers: [], commentary: "", source: "", author: "Ada", authors: ["Ada"],
+    };
+    const resource = {
+      kind: "packet_draft", state: "ready",
+      draft_id: "00000000-0000-0000-0000-000000000013",
+      version: 7, status: "awaiting_confirmation", source_filename: "reupload.docx",
+      ruleset_key: "si", ruleset_version: 1, errors: [], warnings: [], can_publish: true, can_reject: true,
+      packet: {
+        name: "Final", language: "en", lead_author: "", year: null,
+        themes: [{ name: "Theme one", author: "", authors: [""], questions: [question] }],
+        testers: [],
+      },
+      editor: {
+        schema: "si.packet.v1", page_collection: "themes",
+        packet_fields: ["name", "language", "lead_author", "year"],
+        theme_fields: ["name", "authors"],
+        question_fields: ["value", "text", "answer"], question_values: [10],
+      },
+      author_bindings: {}, lead_author_id: null, associated_authors: [],
+      reupload_target: {
+        tournament_id: "tournament-1", assignment_id: "a-1", packet_id: "p-1",
+        packet_version_id: "version-1", expected_version: 2,
+      },
+    } as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }))
+      .mockResolvedValueOnce(response({ locale: "en", authorization: { allowed: true }, resource }))
+      .mockResolvedValueOnce(response({ status: "published" }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector("form.packet-editor")).not.toBeNull());
+    Array.from(root.querySelectorAll<HTMLButtonElement>("form button"))
+      .find((button) => button.textContent === "Publish packet")!.click();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect(fetcher.mock.calls[2]?.[0]).toBe("/api/miniapp/manager/packets/opaque-reference/publish");
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).toEqual({ expected_version: 7 });
+    expect(root.textContent).toContain("The packet was published");
+  });
+
+  it("saves published tester corrections with classification and bindings", async () => {
+    window.history.replaceState({}, "", "/manager/tournaments/opaque-reference/management");
+    const question = {
+      value: 10, form: "", text: "Question", answer: "Answer", accepted_answers: [],
+      rejected_answers: [], commentary: "", source: "", author: "Ada", authors: ["Ada"],
+    };
+    const editor = {
+      assignment_id: "a-1", version: 2, errors: [], warnings: [],
+      field_author_ids: { lead_author: null, "themes.0.authors": [] },
+      associated_authors: [],
+      tester_bindings: { "Ivan Tester": "tester-existing" },
+      associated_testers: [{ tester_id: "tester-existing", display_name: "Ivan Tester" }],
+      packet: {
+        name: "Final packet", language: "en", year: 2026, lead_author: "Ada",
+        themes: [{ name: "First", author: "Ada", authors: ["Ada"], questions: [question] }],
+        testers: ["Ivan Tester"],
+      },
+      editor: { packet_fields: ["name", "year", "language", "lead_author"],
+        theme_fields: ["name", "authors"], question_fields: ["value", "text", "answer"] },
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" }))
+      .mockResolvedValueOnce(response({ locale: "en", authorization: { allowed: true }, resource: {
+        kind: "manager_management", state: "ready",
+        sections: ["general", "packet_management"], settings_version: 1, finalized_at: null,
+        registration_scheduled_open: false, registration_open: false,
+        registration_open_override: null, registration_count: 0, approved_count: 0,
+        participant_count: 0, packet_count: 1, available_actions: ["packet_management"],
+        registrations: [],
+        packets: [{ assignment_id: "a-1", packet_id: "p-1", name: "Final packet", version: 2, player_access: [] }],
+        tournament: {
+          id: "tournament-1", name: "Managed Cup", slug: "managed-cup", status: "active",
+          phase: "ongoing", visibility: "private", language: "en", payment_type: "free",
+          pricing_plans: [], registration_open: false, authors: [], type_key: "ladder",
+          type_version: 1, ruleset_key: "si", ruleset_version: 1, managed: true,
+          policy_version: 1, available_actions: [],
+        },
+      } }))
+      .mockResolvedValueOnce(response(editor))
+      .mockResolvedValueOnce(response({ items: [{ tester_id: "tester-registered", display_name: "Ivan Tester", packets: [] }] }))
+      .mockResolvedValueOnce(response({
+        kind: "manager_management", state: "ready", sections: ["packet_management"],
+        settings_version: 1, registration_scheduled_open: false, registration_open: false,
+        registration_count: 0, approved_count: 0, participant_count: 0, packet_count: 1,
+        available_actions: ["packet_management"], registrations: [],
+        packets: [{ assignment_id: "a-1", packet_id: "p-1", name: "Final packet", version: 3, player_access: [] }],
+        tournament: {},
+      }));
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector(".management-section-nav button")).not.toBeNull());
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".management-section-nav button"))
+      .find((button) => button.textContent === "Packet management")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".lobby-packet-card")).not.toBeNull());
+    Array.from(root.querySelectorAll<HTMLButtonElement>(".lobby-packet-card button"))
+      .find((button) => button.textContent === "Modify")!.click();
+    await vi.waitFor(() => expect(root.querySelector("form.packet-editor")).not.toBeNull());
+    const testersInput = root.querySelector<HTMLTextAreaElement>("[data-field=testers]")!;
+    expect(testersInput.disabled).toBe(true);
+    expect(root.querySelector<HTMLFieldSetElement>('[data-packet-tester="Ivan Tester"] fieldset')!.disabled).toBe(true);
+    const changeButton = testersInput.parentElement!.querySelector<HTMLButtonElement>(".packet-change-button")!;
+    changeButton.click();
+    expect(testersInput.disabled).toBe(false);
+    expect(root.querySelector<HTMLFieldSetElement>('[data-packet-tester="Ivan Tester"] fieldset')!.disabled).toBe(false);
+    // The published editor has no draft, so it uses the name-required public tester search.
+    const testerSearch = root.querySelector<HTMLInputElement>('[data-packet-tester="Ivan Tester"] input[type=search]')!;
+    testerSearch.value = "Ivan";
+    testerSearch.dispatchEvent(new Event("input"));
+    const testerSelect = root.querySelector<HTMLSelectElement>('[data-packet-tester="Ivan Tester"] select')!;
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    expect(fetcher.mock.calls[3]?.[0]).toBe("/api/miniapp/testers?query=Ivan");
+    await vi.waitFor(() => expect(testerSelect.querySelector('option[value="tester-registered"]')).not.toBeNull());
+    testerSelect.value = "tester-registered";
+    testerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    (root.querySelector("form.packet-editor") as HTMLFormElement).requestSubmit();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(5));
+    const submitted = JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body));
+    expect(submitted.changes).toEqual({ testers: "correction" });
+    expect(submitted.tester_bindings).toEqual({ "Ivan Tester": "tester-registered" });
+    expect(submitted.content.testers).toEqual(["Ivan Tester"]);
+  });
+
+  it("reviews pending tester link requests from the admin management tab", async () => {
+    window.history.replaceState({}, "", "/admin/management?section=tester_link_requests");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const pending = {
+      request_id: "request-1", player_id: "player-1", player_nickname: "Alice",
+      tester: { tester_id: "tester-1", display_name: "Ivan Tester" },
+      status: "pending", request_note: "I tested it", decision_note: null, decided_by_id: null,
+      created_at: "2026-09-04T12:00:00Z", decided_at: null, cancelled_at: null,
+    };
+    let decided = false;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).endsWith("/session")) return response({ csrf_token: "csrf-test-token", expires_at: "2099-01-01T00:00:00Z", locale: "en" });
+      if (String(url).endsWith("/decide")) {
+        decided = true;
+        return response({ request_id: "request-1", status: "approved" });
+      }
+      return response({ items: [decided ? { ...pending, status: "approved" } : pending], next_cursor: null });
+    });
+    const root = document.createElement("div");
+    document.body.append(root);
+    shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+
+    shell.start();
+    await vi.waitFor(() => expect(root.querySelector(".admin-card")).not.toBeNull());
+    expect(root.textContent).toContain("Ivan Tester");
+    expect(root.textContent).toContain("Alice");
+    expect(root.querySelector<HTMLAnchorElement>(".admin-card a")!.getAttribute("href")).toBe("/players/player-1");
+    const approve = Array.from(root.querySelectorAll<HTMLButtonElement>(".admin-card button"))
+      .find((button) => button.textContent === "Approve")!;
+    approve.click();
+    await vi.waitFor(() => expect(decided).toBe(true));
+    const decision = fetcher.mock.calls.find(([url, options]) =>
+      String(url).endsWith("/decide") && options?.method === "POST");
+    expect(decision?.[0]).toBe("/api/miniapp/admin/tester-links/request-1/decide");
+    expect(JSON.parse(String(decision?.[1]?.body))).toEqual({ approve: true });
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes("/routes/resolve"))).toBe(false);
+    // The decided request is no longer pending, so the ruling buttons are gone.
+    expect(Array.from(root.querySelectorAll<HTMLButtonElement>(".admin-card button"))
+      .some((button) => button.textContent === "Approve")).toBe(false);
   });
 
   function ongoingShell(confirm: boolean, managed = false) {

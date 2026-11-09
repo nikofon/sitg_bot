@@ -124,11 +124,15 @@ export function renderLibraryReader(
   name: string, pages: LibraryPage[], i18n: I18n,
   statistics?: Record<string, LibraryQuestionStatistics>,
   navigate: (path: string) => void = () => {},
+  testers: string[] = [],
 ): HTMLElement {
   const content = element("section", { className: "library-page" });
   const navigation = element("nav", { className: "pagination", "aria-label": i18n.t("library.pages") });
-  const select = element("select", { className: "library-theme-select", "aria-label": i18n.t("library.jump") }, ...pages.map((page, index) =>
-    element("option", { value: String(index) }, `${i18n.t("library.theme")}: ${page.title}`)));
+  const hasTesters = testers.length > 0;
+  const select = element("select", { className: "library-theme-select", "aria-label": i18n.t("library.jump") },
+    ...(hasTesters ? [element("option", { value: "-1" }, `${i18n.t("library.testers")}: 0`)] : []),
+    ...pages.map((page, index) =>
+      element("option", { value: String(index) }, `${i18n.t("library.theme")}: ${page.title}`)));
   const authorField = (label: MessageKey, value: string, authorId?: string | null): HTMLElement =>
     element("p", {}, `${i18n.t(label)}: `, authorId
       ? element("a", {
@@ -146,7 +150,19 @@ export function renderLibraryReader(
       `${i18n.t("library.stats_buzzes")} ${stats.buzzes} (`,
       `${i18n.t("library.stats_correct")} ${percent(stats.correct_rate)}, `,
       `${i18n.t("library.stats_incorrect")} ${percent(stats.incorrect_rate)})`);
+  const renderTesters = (): void => {
+    select.value = "-1";
+    content.replaceChildren(element("h2", { className: "library-theme-title", tabindex: "-1" }, i18n.t("library.testers")));
+    content.append(element("p", {}, i18n.t("library.testers_help")));
+    content.append(element("ul", { className: "detail-list" },
+      ...testers.map((tester) => element("li", {}, tester))));
+  };
   const render = (index: number): void => {
+    if (index === -1) {
+      renderTesters();
+      renderNavigation(-1);
+      return;
+    }
     const page = pages[index];
     if (!page) return;
     select.value = String(index);
@@ -180,14 +196,24 @@ export function renderLibraryReader(
       }
       content.append(block);
     }
-    navigation.replaceChildren(...pages.map((_, pageIndex) => element("button", {
+    renderNavigation(index);
+  };
+  const renderNavigation = (index: number): void => {
+    navigation.replaceChildren(
+      ...(hasTesters ? [element("button", {
+        type: "button", className: "pagination-page",
+        "aria-current": index === -1 ? "page" : undefined,
+        "aria-label": i18n.t("library.testers"),
+        onclick: (() => { render(-1); content.querySelector<HTMLElement>("h2")?.focus(); }) as EventListener,
+      }, "0")] : []),
+      ...pages.map((_, pageIndex) => element("button", {
       type: "button", className: "pagination-page",
       "aria-current": index === pageIndex ? "page" : undefined,
       onclick: (() => { render(pageIndex); content.querySelector<HTMLElement>("h2")?.focus(); }) as EventListener,
     }, String(pageIndex + 1))));
   };
   select.addEventListener("change", () => { render(Number(select.value)); content.querySelector<HTMLElement>("h2")?.focus(); });
-  render(0);
+  render(hasTesters ? -1 : 0);
   return element("section", { className: "route-content" },
     element("h2", { className: "library-packet-title" }, name), select, content, navigation);
 }
