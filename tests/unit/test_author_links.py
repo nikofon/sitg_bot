@@ -210,6 +210,10 @@ class DecisionSession:
         self.added: list[object] = []
         self.flush = AsyncMock()
 
+    async def execute(self, _query: object) -> object:
+        # Advisory exposure locks issued before the pair lock are no-ops here.
+        return None
+
     async def get(self, model: type[object], identity: object, **_kwargs: object) -> object | None:
         if model is PlatformAdministratorRecord and identity == self.administrator.player_id:
             return self.administrator
