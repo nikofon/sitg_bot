@@ -55,10 +55,15 @@ constraints. Migration procedure belongs in the operations guide.
 ## Tester identities
 
 `testers` are independent of authors and carry no competitive attribution or statistics.
-`packet_version_testers` records ordered immutable membership; draft `tester_bindings`
-preserve namesake choices. Player tester links require an audited administrator decision,
+`packet_version_testers` records ordered historical membership; administrator identity merges
+may canonicalize its tester IDs and collapse duplicates, without changing played content or
+exposure. Draft `tester_bindings` preserve namesake choices. Player tester links require an audited administrator decision,
 with private self-service request history. No public tester directory/profile or reverse
-player-link projection exists. Authenticated name search supports linking; draft editors
+player-link projection exists outside administrator management. Management alone exposes
+linked players, private metadata edits, namesake creation and confirmed merge/unlink actions.
+Merges preserve request history (cancelling pending collisions), repoint draft bindings with
+version increments, and union linked players rather than changing any player account.
+Unlinking never clears permanent exposure or approval history. Authenticated name search supports linking; draft editors
 may also browse matching identities under their existing content permission.
 
 Membership on any historical version permanently protects the whole logical packet for

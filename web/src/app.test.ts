@@ -123,6 +123,71 @@ describe("MiniAppShell", () => {
     return { root, fetcher };
   }
 
+  it.each(["create", "update", "link", "unlink", "merge"] as const)(
+    "submits private tester management %s using the existing forms and mutation client", async (command) => {
+      window.history.replaceState({}, "", "/admin/management?section=testers");
+      const primary = "11111111-1111-1111-1111-111111111111";
+      const secondary = "22222222-2222-2222-2222-222222222222";
+      const player = "33333333-3333-3333-3333-333333333333";
+      const resource = { kind: "admin_management", state: "ready", section: "testers", items: [
+        { id: primary, display_name: "Namesake", version: "a".repeat(64), packet_count: 1,
+          packets: [{ id: "v1", name: "First tested packet" }],
+          players: [{ id: player, public_nickname: "Alice" }] },
+        { id: secondary, display_name: "Namesake", version: "b".repeat(64), packet_count: 1,
+          packets: [{ id: "v2", name: "Second tested packet" }], players: [] },
+      ] };
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      vi.spyOn(window, "prompt").mockReturnValue(`  ${player}  `);
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+        if (String(url).endsWith("/session")) return response({
+          csrf_token: "csrf-test-token", expires_at: "2099-01-01", locale: "en",
+        });
+        if (options?.method === "POST") return response({ saved: true });
+        return response({ locale: "en", authorization: { allowed: true }, resource });
+      });
+      const root = document.createElement("div");
+      document.body.append(root);
+      shell = new MiniAppShell(root, new ApiClient("signed-init-data", fetcher), new Router(), new FakePlatform(), false);
+      shell.start();
+      await vi.waitFor(() => expect(root.querySelector("article")).not.toBeNull());
+      const first = root.querySelector("article")!;
+      const actionLabel = { create: "Create tester", update: "Edit tester", link: "Link",
+        unlink: "Unlink: Alice", merge: "Join" }[command];
+      const button = [...(command === "create" ? root : first).querySelectorAll<HTMLButtonElement>("button")]
+        .find(item => item.textContent === actionLabel)!;
+      button.click();
+      if (command === "create" || command === "update") {
+        const form = document.querySelector<HTMLFormElement>("dialog form")!;
+        expect(form.textContent).toContain("save changes");
+        form.querySelector<HTMLInputElement>('[name="display_name"]')!.value = " Updated tester ";
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      } else if (command === "merge") {
+        await vi.waitFor(() => expect(document.querySelectorAll("dialog select option")).toHaveLength(2));
+        const select = document.querySelector<HTMLSelectElement>("dialog select")!;
+        expect(select.options[1]!.textContent).toContain("Second tested packet");
+        expect(select.options[1]!.textContent).toContain(secondary);
+        expect(document.querySelector("dialog")!.textContent).not.toContain("statistics and attributions");
+        select.value = secondary;
+        document.querySelector("dialog form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+      }
+      const endpoint = command === "create" ? "/api/miniapp/admin/management/testers"
+        : `/api/miniapp/admin/management/testers/${primary}/${command}`;
+      await vi.waitFor(() => expect(fetcher.mock.calls.some(([url, options]) =>
+        String(url) === endpoint && options?.method === "POST")).toBe(true));
+      const [, options] = fetcher.mock.calls.find(([url, options]) =>
+        String(url) === endpoint && options?.method === "POST")!;
+      const body = JSON.parse(String(options!.body));
+      if (command === "create") expect(body).not.toHaveProperty("expected_version");
+      if (command === "update") expect(body.expected_version).toBe("a".repeat(64));
+      if (command === "link") expect(body).toEqual({ target: player });
+      if (command === "unlink") expect(body).toEqual({ player_id: player, confirm: true });
+      if (command === "merge") expect(body).toEqual({ merge_tester_id: secondary, confirm: true });
+      expect(new Headers(options?.headers).get("X-CSRF-Token")).toBe("csrf-test-token");
+      expect(new Headers(options?.headers).get("X-Idempotency-Key")).toBeTruthy();
+      expect(fetcher.mock.calls.some(([url]) => String(url).includes("/authors?"))).toBe(false);
+    },
+  );
+
   it("loads the player directory and restores filters when returning from a profile", async () => {
     window.history.replaceState({}, "", "/players");
     const playerId = "11111111-1111-1111-1111-111111111111";

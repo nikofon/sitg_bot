@@ -27,6 +27,11 @@ from sitg_bot.application.contracts import (
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
+    AdminTesterCreateOperation,
+    AdminTesterLinkOperation,
+    AdminTesterMergeOperation,
+    AdminTesterUnlinkOperation,
+    AdminTesterUpdateOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
     ApplicationPrincipal,
@@ -474,6 +479,11 @@ ACTION_POLICIES.update(
         ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
+        ActionCode.ADMIN_TESTER_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_TESTER_UPDATE: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_TESTER_LINK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_TESTER_UNLINK: ActionPolicy(mutation=True, idempotency_required=True),
+        ActionCode.ADMIN_TESTER_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_UPDATE: ActionPolicy(
@@ -1577,6 +1587,24 @@ class ApplicationGateway:
             return await AdminManagementService(self.database).set_tournament_rating_weight(
                 player_id, operation.tournament_id,
                 weight=operation.weight, expected_version=operation.expected_version,
+            )
+        if isinstance(operation, (AdminTesterCreateOperation, AdminTesterUpdateOperation)):
+            return await AdminManagementService(self.database).save_tester(
+                player_id,
+                **operation.model_dump(exclude={"action"}),
+            )
+        if isinstance(operation, AdminTesterLinkOperation):
+            return await AdminManagementService(self.database).link_tester(
+                player_id, operation.tester_id, operation.target,
+            )
+        if isinstance(operation, AdminTesterUnlinkOperation):
+            return await AdminManagementService(self.database).unlink_tester(
+                player_id, operation.tester_id, operation.player_id, confirm=operation.confirm,
+            )
+        if isinstance(operation, AdminTesterMergeOperation):
+            return await AdminManagementService(self.database).merge_testers(
+                player_id, operation.tester_id, operation.merge_tester_id,
+                confirm=operation.confirm,
             )
         if isinstance(operation, AdminAuthorLinkOperation):
             return await AdminManagementService(self.database).link_author(

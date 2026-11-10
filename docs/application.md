@@ -85,6 +85,10 @@ zero-based decimal-string tester slot, not display name; omitted bindings preser
 persisted associations for unchanged slots. All tester packet hints use the caller's
 assignment-discovery permissions and the currently adopted packet metadata. Tester names in library content never include
 link or private registration details.
+Administrator-only `platform.admin.testers.{create,update,link,unlink,merge}.v1` mutations
+use the standard session/CSRF/idempotency boundary. Updates require the metadata fingerprint;
+merge and unlink require explicit confirmation. The existing management list accepts `testers`.
+See [Mini App administration](mini-app.md#implemented-screens) for the private workflow.
 
 Tournament-token requests retain requester, proposed name, commentary, decision, and audit
 history. Approval issues an expiring, creator-bound, single-use token. Creation consumes it

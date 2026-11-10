@@ -31,7 +31,7 @@ export function renderAdminManagement(
   }, text);
   const lazyDetails = (title: string, build: () => Node[]): HTMLDetailsElement => {
     const details = element("details", {}, element("summary", {}, title));
-    if (!["packets", "tournaments", "authors"].includes(resource.section)) {
+    if (!["packets", "tournaments", "authors", "testers"].includes(resource.section)) {
       details.append(...build());
       return details;
     }
@@ -66,7 +66,7 @@ export function renderAdminManagement(
       element("dd", {}, typeof value === "boolean" ? label(value ? "yes" : "no") : String(value ?? "—")))];
   }));
   const tabs = element("nav", { className: "settings-actions", "aria-label": label("title") },
-    ...(["tournaments", "authors", "players", "packets", "link_requests", "tester_link_requests", "ongoing_games",
+    ...(["tournaments", "authors", "testers", "players", "packets", "link_requests", "tester_link_requests", "ongoing_games",
       "active_lobbies", "past_games"] as const).map((section) => element("button", {
       type: "button", className: resource.section === section ? "primary-button" : "secondary-button",
       "aria-current": resource.section === section ? "page" : undefined,
@@ -96,6 +96,19 @@ export function renderAdminManagement(
         && typeof (item.player as { id?: unknown }).id === "string"
         ? link(`/players/${(item.player as { id: string }).id}`, label("profile")) : null;
       if (item.status === "pending") { add("approve"); add("reject"); }
+    } else if (resource.section === "testers") {
+      add("edit_tester"); add("link"); add("merge");
+      for (const player of Array.isArray(item.players) ? item.players : []) {
+        if (!player || typeof player !== "object" || Array.isArray(player)
+          || typeof player.id !== "string") continue;
+        const playerId = player.id;
+        const unlink = element("button", { type: "button", className: "secondary-button" },
+          `${label("unlink")}: ${name(player)}`);
+        unlink.addEventListener("click", () => action(
+          { ...item, unlink_player_id: playerId }, "unlink", unlink,
+        ));
+        buttons.append(unlink);
+      }
     } else if (resource.section === "authors") {
       add("edit_author"); add("link"); add("merge");
       if (Array.isArray(item.split_names) && item.split_names.length > 1) add("split");
@@ -137,6 +150,7 @@ export function renderAdminManagement(
     const essentialKeys = {
       tournaments: ["id", "status", "moderation_status", "type", "ruleset", "language", "starts_at", "actual_starts_at", "actual_ends_at", "participants", "managers", "packets"],
       authors: ["id", "questions", "themes", "packet_count", "players", "tournaments", "packets"],
+      testers: ["id", "packet_count", "players", "packets"],
       players: ["id", "real_name", "telegram_username", "suspicion", "reputation", "ban", "games_played", "rulesets", "reports"],
       packets: ["id", "packet_id", "version_number", "year", "language", "state", "library_released_at", "themes", "questions", "authors", "tournaments"],
       link_requests: ["player", "author", "status", "request_note", "created_at", "decided_at"],
@@ -147,7 +161,7 @@ export function renderAdminManagement(
     }[resource.section];
     const essential = Object.fromEntries(Object.entries(item).filter(([key]) => essentialKeys.includes(key)));
     const remaining = Object.fromEntries(Object.entries(item).filter(([key]) => !essentialKeys.includes(key)
-      && !(resource.section === "authors" && ["version", "split_names"].includes(key))));
+      && !(["authors", "testers"].includes(resource.section) && ["version", "split_names"].includes(key))));
     return element("article", { className: "resource-card admin-card", "data-resource-id": item.id,
       "data-packet-id": resource.section === "packets" ? item.id : undefined },
       element("h2", {}, name(item)), profile, metadata(essential), weightControl,
@@ -215,6 +229,7 @@ export function renderAdminManagement(
   signal?.addEventListener("abort", () => window.clearTimeout(searchTimer), { once: true });
   const sortKeys = ["name", "created_at", ...{
     tournaments: ["starts_at", "participants"], authors: ["questions", "themes", "packet_count"],
+    testers: ["packet_count"],
     players: ["suspicion", "reputation", "games_played"], packets: ["year", "published_at", "questions", "themes"],
     link_requests: ["status", "decided_at"],
     tester_link_requests: ["status", "decided_at"],
@@ -246,8 +261,14 @@ export function renderAdminManagement(
     render();
   };
   update(resource.items, false);
-  return Object.assign(element("section", { className: "route-content" }, tabs,
+  const createTester = element("button", { type: "button", className: "primary-button" }, label("create_tester"));
+  createTester.addEventListener("click", () => action({ id: "" }, "create_tester", createTester));
+  return Object.assign(element("section", {
+    className: resource.section === "testers" ? "route-content spaced-content" : "route-content",
+  }, tabs,
     resource.section === "tournaments" ? saveReminder(i18n) : null,
+    resource.section === "testers" ? element("div", { className: "spaced-content" },
+      element("p", { className: "field-help" }, label("tester_privacy")), createTester) : null,
     element("div", { className: "lobby-packet-filters", role: "search" },
       element("label", {}, label("search"), search), element("label", {}, label("sort"), sort)), progress, list),
     { update });

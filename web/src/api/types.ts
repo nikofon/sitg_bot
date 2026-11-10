@@ -907,6 +907,7 @@ export type AdminSection =
   | "packets"
   | "link_requests"
   | "tester_link_requests"
+  | "testers"
   | "ongoing_games"
   | "active_lobbies"
   | "past_games";

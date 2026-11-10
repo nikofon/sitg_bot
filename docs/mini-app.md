@@ -287,15 +287,26 @@ with fresh-content exposure claims still applying.
 
 **Admin management:** `/admin/management`, opened by **Management** in the admin keyboard.
 Every query and action requires an active platform administrator. Tournaments, Authors,
-Players, Packets, and Ongoing games have searchable, sortable cards; filters persist per
+Testers, Players, Packets, and Ongoing games have searchable, sortable cards; filters persist per
 section. Detailed metadata, settings, and related records are collapsed initially.
 Tournament cards link profiles, offer confirmed Halt, Resume, and permanent Abolish actions
 (see [tournaments](tournaments.md)), and carry a global rating weight slider (0.1–1 in 0.05
 steps) whose green **V** button must be pressed to save the `ruleset_rating_weight` policy.
 Authors show contributions and linked player data; Link accepts a player UUID or `@username`
-and records an approved author link with permanent authorship exposure. A **Tester links**
-tab lists pending tester-link requests with player profiles and Approve/Reject rulings, loaded
-from the dedicated administrator tester-link endpoint rather than the generic section route.
+and records an approved author link with permanent authorship exposure.
+The private **Testers** tab reuses the author cards, detail expansion, metadata edit form,
+player UUID/`@username` linking and confirmed join dialog. It also offers explicit namesake
+creation and per-player confirmed unlinking. Packet credits and IDs distinguish namesakes;
+there are no public tester profiles, question/theme statistics or tournament attribution.
+Tester joins keep the destination's metadata, combine credits and linked players (as author
+joins do), canonicalize draft slot bindings with a stale-write version bump, and retain request
+history. Colliding pending requests become cancelled rather than being deleted. Unlinking
+retains approval history and permanent exposure; joining burns the combined packet credits
+for every retained linked player. Comma-separated coauthor splitting is author-only: testers
+are already individual ordered packet-level identities, not combined theme/question authors.
+The separate **Tester link requests** tab lists pending requests with player profiles and
+Approve/Reject rulings, loaded from the dedicated administrator tester-link endpoint rather
+than the generic section route. Player self-service linking and cancellation are unchanged.
 
 Players include banned accounts, private profile details, ratings, reports, and suspicion.
 Ban/Unban and suspicion review/clearance replace the separate Telegram keyboard buttons.
@@ -334,7 +345,8 @@ All paths below start with `/api/miniapp`. Exact request/response fields live in
 | POST `/library/{version_id}/{view,download}` | Recheck read access, confirm exposure, read or queue DOCX delivery; authorized view adds `testers: string[]` for frontend page zero without changing theme-page indices |
 | GET `/routes/resolve?path=...` | Reauthorize and project a route |
 | POST `/ongoing/lobbies/join`; POST `/ongoing/games/{game_id}/observe` | Join an open lobby by invitation code; observe an ongoing game with fresh-content confirmation |
-| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and author joins, link-request rulings, player bans, unrestricted packet reads/downloads |
+| POST `/admin/management/{section}/{resource_id}/{command}` | Confirmed tournament moderation, tournament rating-weight updates, author links and joins, tester `update`/`link`/`unlink`/`merge`, link-request rulings, player bans, unrestricted packet reads/downloads |
+| POST `/admin/management/testers`; GET route resolution of `/admin/management?section=testers` | Administrator-only tester creation and complete private management catalogue |
 | GET `/admin/suspicion/ledger`; GET `.../ledger/{player_id}/events`; POST `.../ledger/{player_id}/clear` | Admin suspicion ledger, inspection, and reviewed reset |
 | GET `/tournaments/{id}`; POST `/{id}/register`, `/{id}/select` under `/tournaments` | Information, enrollment, navigation |
 | GET route resolution of `/tournaments/{id}` | Tournament profile sections: general, registrations, participants, games, leaders |

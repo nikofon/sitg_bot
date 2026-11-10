@@ -121,6 +121,42 @@ describe("admin management", () => {
     expect(view.querySelector("article button.danger-button")?.textContent).toBe("Join");
   });
 
+  it("gives private testers author-style search, details, edit, link and join controls", () => {
+    const action = vi.fn();
+    const navigate = vi.fn();
+    const first = { id: "t1", display_name: "Same name", version: "secret-version", packet_count: 1,
+      packets: [{ id: "v1", name: "Tested packet one" }],
+      players: [{ id: "p1", public_nickname: "Alice" }] };
+    const view = renderAdminManagement({ kind: "admin_management", state: "ready", section: "testers", items: [
+      first, { id: "t2", display_name: "Same name", packet_count: 0, packets: [], players: [] },
+    ] }, new I18n("en"), {}, vi.fn(), navigate, action);
+    const card = view.querySelector<HTMLElement>('[data-resource-id="t1"]')!;
+    expect([...card.querySelectorAll("button")].map(button => button.textContent))
+      .toEqual(["Edit tester", "Link", "Join", "Unlink: Alice"]);
+    const unlink = card.querySelectorAll<HTMLButtonElement>("button")[3]!;
+    unlink.click();
+    expect(action).toHaveBeenCalledWith({ ...first, unlink_player_id: "p1" }, "unlink", unlink);
+    const details = [...card.querySelectorAll<HTMLDetailsElement>("details")]
+      .find(item => item.querySelector("summary")?.textContent?.startsWith("Packets"))!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    expect(card.textContent).toContain("Tested packet one");
+    expect(card.textContent).not.toContain("secret-version");
+    expect(view.querySelector('a[href^="/testers/"]')).toBeNull();
+    const search = view.querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.value = "Tested packet one";
+    search.dispatchEvent(new Event("input"));
+    expect(view.querySelectorAll("article")).toHaveLength(1);
+    const create = [...view.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent === "Create tester")!;
+    create.click();
+    expect(action).toHaveBeenCalledWith({ id: "" }, "create_tester", create);
+    const requests = [...view.querySelectorAll<HTMLButtonElement>("nav button")]
+      .find(button => button.textContent === "Tester link requests")!;
+    requests.click();
+    expect(navigate).toHaveBeenCalledWith("/admin/management?section=tester_link_requests");
+  });
+
   it("offers splitting only for combined authors", () => {
     const action = vi.fn();
     const combined = { id: "joined", display_name: "Alice, Bob", split_names: ["Alice", "Bob"] };

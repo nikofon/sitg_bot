@@ -29,6 +29,11 @@ from sitg_bot.application.contracts import (
     AdminSuspicionClearOperation,
     AdminSuspicionInspectOperation,
     AdminSuspicionLedgerOperation,
+    AdminTesterCreateOperation,
+    AdminTesterLinkOperation,
+    AdminTesterMergeOperation,
+    AdminTesterUnlinkOperation,
+    AdminTesterUpdateOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
     AuthorCatalogueOperation,
@@ -315,6 +320,7 @@ class MiniAppHttpServer:
         app.router.add_get(
             "/api/miniapp/admin/management/past_games", self._admin_game_page
         )
+        app.router.add_post("/api/miniapp/admin/management/testers", self._admin_tester_create)
         app.router.add_post(
             "/api/miniapp/admin/management/{section}/{resource_id}/{command}",
             self._admin_management_action,
@@ -1840,6 +1846,13 @@ class MiniAppHttpServer:
         _, result = await self._mutation(request, operation)
         return self._gateway_response(result)
 
+    async def _admin_tester_create(self, request: web.Request) -> web.Response:
+        operation = AdminTesterCreateOperation.model_validate({
+            **await self._json_body(request), "action": ActionCode.ADMIN_TESTER_CREATE,
+        })
+        _, result = await self._mutation(request, operation)
+        return self._gateway_response(result)
+
     async def _admin_management_action(self, request: web.Request) -> web.Response:
         body = await self._json_body(request)
         section = request.match_info["section"]
@@ -1854,6 +1867,16 @@ class MiniAppHttpServer:
             operation = AdminTournamentModerateOperation.model_validate({
                 **body, "action": ActionCode.ADMIN_TOURNAMENT_MODERATE,
                 "tournament_id": resource_id, "command": command,
+            })
+        elif section == "testers" and command in {"update", "link", "unlink", "merge"}:
+            contract, action = {
+                "update": (AdminTesterUpdateOperation, ActionCode.ADMIN_TESTER_UPDATE),
+                "link": (AdminTesterLinkOperation, ActionCode.ADMIN_TESTER_LINK),
+                "unlink": (AdminTesterUnlinkOperation, ActionCode.ADMIN_TESTER_UNLINK),
+                "merge": (AdminTesterMergeOperation, ActionCode.ADMIN_TESTER_MERGE),
+            }[command]
+            operation = contract.model_validate({
+                **body, "action": action, "tester_id": resource_id,
             })
         elif section == "authors" and command == "link":
             operation = AdminAuthorLinkOperation.model_validate({

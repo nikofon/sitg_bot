@@ -3625,6 +3625,10 @@ export class MiniAppShell {
       await this.testerLinkDecision(route, card, command, button);
       return;
     }
+    if (command === "edit_tester" || command === "create_tester") {
+      this.promptAuthorChange(route, card, false, true);
+      return;
+    }
     if (command === "edit_author" || command === "split") {
       this.promptAuthorChange(route, card, command === "split");
       return;
@@ -3645,11 +3649,16 @@ export class MiniAppShell {
       if (!window.confirm(this.i18n.t(`admin_management.${command}_confirm` as MessageKey))) return;
       body.confirm = true; body.expected_version = card.settings_version;
     } else if (command === "link") {
-      const target = window.prompt(this.i18n.t("admin_management.link_prompt"));
+      const target = window.prompt(this.i18n.t(resource.section === "testers"
+        ? "admin_management.tester_link_prompt" : "admin_management.link_prompt"));
       if (!target?.trim()) return;
       body.target = target.trim();
+    } else if (command === "unlink") {
+      if (!window.confirm(this.i18n.t("admin_management.tester_unlink_confirm"))) return;
+      body.player_id = card.unlink_player_id;
+      body.confirm = true;
     } else if (command === "merge") {
-      this.promptAuthorMerge(route, card);
+      this.promptAuthorMerge(route, card, resource.section === "testers" ? resource.items : undefined);
       return;
     } else if (command === "approve" || command === "reject") {
       if (!window.confirm(this.i18n.t(`admin_management.${command}_confirm` as MessageKey))) return;
@@ -3961,8 +3970,10 @@ export class MiniAppShell {
       requests));
   }
 
-  private promptAuthorChange(route: RouteMatch, card: AdminCard, split: boolean): void {
-    const title = this.i18n.t(split ? "admin_management.split_title" : "admin_management.edit_author");
+  private promptAuthorChange(route: RouteMatch, card: AdminCard, split: boolean, tester = false): void {
+    const title = this.i18n.t(tester
+      ? card.id ? "admin_management.edit_tester" : "admin_management.create_tester"
+      : split ? "admin_management.split_title" : "admin_management.edit_author");
     const errorText = element("p", { className: "field-help", role: "status" });
     const form = element("form", { className: "settings-form" });
     if (!split) form.append(saveReminder(this.i18n));
@@ -4004,7 +4015,8 @@ export class MiniAppShell {
       }
     }
     const submit = element("button", { type: "submit", className: "primary-button" },
-      this.i18n.t(split ? "admin_management.split" : "admin_management.save_author"));
+      this.i18n.t(tester ? "admin_management.save_tester"
+        : split ? "admin_management.split" : "admin_management.save_author"));
     form.append(errorText, submit);
     const close = element("button", { type: "button", className: "icon-button",
       "aria-label": this.i18n.t("common.close") }, "×");
@@ -4020,8 +4032,11 @@ export class MiniAppShell {
         ...Object.fromEntries([...inputs].map(([key, input]) => [key, input.value.trim() || null])) };
       try {
         await this.api.request(
-          `/api/miniapp/admin/management/authors/${encodeURIComponent(card.id)}/${split ? "split" : "update"}`,
-          { method: "POST", body, signal: this.request?.signal },
+          tester && !card.id ? "/api/miniapp/admin/management/testers"
+            : `/api/miniapp/admin/management/${tester ? "testers" : "authors"}/${encodeURIComponent(card.id)}/${split ? "split" : "update"}`,
+          { method: "POST", body: tester && !card.id
+            ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== "expected_version"))
+            : body, signal: this.request?.signal },
         );
         dialog.close();
         this.platform.notifySuccess();
@@ -4042,26 +4057,39 @@ export class MiniAppShell {
     if (typeof dialog.showModal === "function") dialog.showModal();
   }
 
-  private promptAuthorMerge(route: RouteMatch, card: AdminCard): void {
+  private promptAuthorMerge(route: RouteMatch, card: AdminCard, testers?: AdminCard[]): void {
+    const mergeText = (key: "title" | "help" | "search" | "select" | "select_required" | "action" | "confirm"): string =>
+      this.i18n.t(`admin_management.${testers ? "tester_merge" : "merge"}_${key}` as MessageKey);
     const search = element("input", {
       type: "search", maxlength: "300",
-      placeholder: this.i18n.t("authors_link.search_placeholder"),
-      "aria-label": this.i18n.t("admin_management.merge_search"),
+      placeholder: this.i18n.t(testers ? "testers_link.search_placeholder" : "authors_link.search_placeholder"),
+      "aria-label": mergeText("search"),
     });
-    const picker = element("select", { "aria-label": this.i18n.t("admin_management.merge_select") });
+    const picker = element("select", { "aria-label": mergeText("select") });
     const errorText = element("p", { className: "field-help", role: "status" });
     let requestSequence = 0;
     let timer: number | undefined;
     const loadAuthors = async (): Promise<void> => {
       const sequence = ++requestSequence;
       try {
-        const result = await this.api.request<AuthorSearchPage>(
+        // Local tester choices also yield once so the dialog is mounted before rendering.
+        const result = testers ? await Promise.resolve({
+          items: testers.filter((tester) => String(tester.display_name).toLocaleLowerCase()
+            .includes(search.value.trim().toLocaleLowerCase())).map((tester) => ({
+            author_id: tester.id,
+            display_name: `${tester.display_name} — ${
+              (Array.isArray(tester.packets) ? tester.packets : []).map((packet) =>
+                packet && typeof packet === "object" && !Array.isArray(packet) ? packet.name : ""
+              ).join(", ") || this.i18n.t("testers_link.tested_none")
+            } (${tester.id})`,
+          })), next_cursor: null,
+        }) : await this.api.request<AuthorSearchPage>(
           `/api/miniapp/authors?query=${encodeURIComponent(search.value)}`,
           { signal: this.request?.signal },
         );
         if (sequence !== requestSequence || !picker.isConnected) return;
         replaceChildren(picker,
-          element("option", { value: "" }, this.i18n.t("admin_management.merge_select")),
+          element("option", { value: "" }, mergeText("select")),
           ...result.items
             .filter((author) => author.author_id !== card.id)
             .map((author) => element("option", { value: author.author_id }, author.display_name)));
@@ -4081,17 +4109,17 @@ export class MiniAppShell {
     });
     void loadAuthors();
     const confirmButton = element("button", { type: "submit", className: "danger-button" },
-      this.i18n.t("admin_management.merge_action"));
+      mergeText("action"));
     const form = element("form", { className: "settings-form" },
-      element("p", { className: "field-help" }, this.i18n.t("admin_management.merge_help")),
-      element("label", {}, this.i18n.t("admin_management.merge_search"), search),
-      element("label", {}, this.i18n.t("admin_management.merge_select"), picker),
+      element("p", { className: "field-help" }, mergeText("help")),
+      element("label", {}, mergeText("search"), search),
+      element("label", {}, mergeText("select"), picker),
       errorText, confirmButton);
     const dialog = element(
       "dialog",
       { className: "tournament-dialog", "aria-labelledby": "merge-author-title" },
       element("div", { className: "dialog-heading" },
-        element("h2", { id: "merge-author-title" }, this.i18n.t("admin_management.merge_title")),
+        element("h2", { id: "merge-author-title" }, mergeText("title")),
         element("button", {
           type: "button", className: "icon-button", "aria-label": this.i18n.t("common.close"),
         }, "×")),
@@ -4101,15 +4129,16 @@ export class MiniAppShell {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!picker.value) {
-        errorText.textContent = this.i18n.t("admin_management.merge_select_required");
+        errorText.textContent = mergeText("select_required");
         return;
       }
-      if (!window.confirm(this.i18n.t("admin_management.merge_confirm"))) return;
+      if (!window.confirm(mergeText("confirm"))) return;
       confirmButton.disabled = true;
       try {
         await this.api.request(
-          `/api/miniapp/admin/management/authors/${encodeURIComponent(card.id)}/merge`,
-          { method: "POST", body: { merge_author_id: picker.value, confirm: true }, signal: this.request?.signal },
+          `/api/miniapp/admin/management/${testers ? "testers" : "authors"}/${encodeURIComponent(card.id)}/merge`,
+          { method: "POST", body: { [testers ? "merge_tester_id" : "merge_author_id"]: picker.value,
+            confirm: true }, signal: this.request?.signal },
         );
         dialog.close();
         this.platform.notifySuccess();

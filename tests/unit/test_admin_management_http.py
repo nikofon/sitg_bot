@@ -11,6 +11,9 @@ from sitg_bot.application.contracts import (
     AdminGameListOperation,
     AdminPacketAccessOperation,
     AdminPacketListOperation,
+    AdminTesterCreateOperation,
+    AdminTesterMergeOperation,
+    AdminTesterUnlinkOperation,
     AdminTournamentModerateOperation,
     AdminTournamentRatingWeightOperation,
     GatewayResponse,
@@ -21,7 +24,7 @@ from sitg_bot.miniapp_http import MiniAppHttpServer
 
 @pytest.mark.parametrize(
     "section",
-    ["tournaments", "authors", "players", "packets", "link_requests",
+    ["tournaments", "authors", "testers", "players", "packets", "link_requests",
      "ongoing_games", "active_lobbies", "past_games"],
 )
 @pytest.mark.parametrize("include_items", ["true", "false"])
@@ -47,6 +50,40 @@ async def test_management_route_resolves_requested_section(section, include_item
     response = await http._resolve_route(request)
     assert response.status == 200
     assert json.loads(response.text)["resource"]["section"] == section
+
+
+async def test_admin_tester_creation_uses_authenticated_csrf_and_idempotency():
+    class RecordingAuth(FakeAuth):
+        async def authorize_request(self, session_token, **values):
+            assert values["csrf_token"] == "csrf"
+            assert values["idempotency_key"] == "tester-create"
+            assert values["action"] == ActionCode.ADMIN_TESTER_CREATE
+            return await super().authorize_request(session_token, **values)
+
+    gateway = FakeGateway()
+    http = MiniAppHttpServer(RecordingAuth(), gateway)
+    request = make_mocked_request("POST", "/api/miniapp/admin/management/testers", headers={
+        "Origin": "https://mini.example.test", "Cookie": "__Host-sitg_session=test-session",
+        "X-CSRF-Token": "csrf", "X-Idempotency-Key": "tester-create",
+    })
+    request._read_bytes = json.dumps({"display_name": "Same name"}).encode()
+    assert (await http.application.router.resolve(request)).handler == http._admin_tester_create
+    assert (await http._admin_tester_create(request)).status == 200
+    assert isinstance(gateway.requests[0].operation, AdminTesterCreateOperation)
+    assert ACTION_POLICIES[ActionCode.ADMIN_TESTER_CREATE].idempotency_required
+
+
+@pytest.mark.parametrize("contract,values", [
+    (AdminTesterMergeOperation, {"action": ActionCode.ADMIN_TESTER_MERGE,
+                                "tester_id": UUID(int=1), "merge_tester_id": UUID(int=2)}),
+    (AdminTesterUnlinkOperation, {"action": ActionCode.ADMIN_TESTER_UNLINK,
+                                 "tester_id": UUID(int=1), "player_id": UUID(int=2)}),
+])
+def test_tester_management_requires_explicit_confirmation_and_rejects_authority(contract, values):
+    assert contract.model_validate(values).confirm is False
+    for extra in ({"confirm": "true"}, {"administrator_id": UUID(int=3)}, {"role": "admin"}):
+        with pytest.raises(ValidationError):
+            contract.model_validate({**values, **extra})
 
 
 async def test_admin_packet_page_is_authenticated_and_uses_version_cursor():
@@ -145,6 +182,13 @@ def test_admin_packet_page_validation(values):
             ActionCode.ADMIN_TOURNAMENT_RATING_WEIGHT,
         ),
         ("authors", "link", {"target": "@nickname"}, ActionCode.ADMIN_AUTHOR_LINK),
+        ("testers", "link", {"target": "@nickname"}, ActionCode.ADMIN_TESTER_LINK),
+        ("testers", "unlink", {"player_id": str(UUID(int=31)), "confirm": True},
+         ActionCode.ADMIN_TESTER_UNLINK),
+        ("testers", "merge", {"merge_tester_id": str(UUID(int=31)), "confirm": True},
+         ActionCode.ADMIN_TESTER_MERGE),
+        ("testers", "update", {"expected_version": "a" * 64, "display_name": "Tester"},
+         ActionCode.ADMIN_TESTER_UPDATE),
         (
             "authors",
             "merge",

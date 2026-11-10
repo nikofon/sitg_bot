@@ -149,6 +149,11 @@ class ActionCode(StrEnum):
     ADMIN_AUTHOR_MERGE = "platform.admin.authors.merge.v1"
     ADMIN_AUTHOR_UPDATE = "platform.admin.authors.update.v1"
     ADMIN_AUTHOR_SPLIT = "platform.admin.authors.split.v1"
+    ADMIN_TESTER_CREATE = "platform.admin.testers.create.v1"
+    ADMIN_TESTER_UPDATE = "platform.admin.testers.update.v1"
+    ADMIN_TESTER_LINK = "platform.admin.testers.link.v1"
+    ADMIN_TESTER_UNLINK = "platform.admin.testers.unlink.v1"
+    ADMIN_TESTER_MERGE = "platform.admin.testers.merge.v1"
     ADMIN_PACKET_ACCESS = "platform.admin.packets.access.v1"
     ADMIN_PACKET_LIST = "platform.admin.packets.list.v1"
     ADMIN_GAME_LIST = "platform.admin.games.list.v1"
@@ -1075,7 +1080,7 @@ class BugReportCreateOperation(ContractModel):
 class AdminManagementListOperation(ContractModel):
     action: Literal[ActionCode.ADMIN_MANAGEMENT_LIST]
     section: Literal[
-        "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
+        "tournaments", "authors", "testers", "players", "packets", "link_requests", "ongoing_games",
         "active_lobbies", "past_games",
     ] = ("tournaments")
     include_items: bool = True
@@ -1106,6 +1111,41 @@ class AdminTournamentRatingWeightOperation(ContractModel):
     tournament_id: UUID
     weight: float = Field(ge=0.1, le=1)
     expected_version: int = Field(ge=1)
+
+
+class AdminTesterCreateOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TESTER_CREATE]
+    display_name: str = Field(min_length=1, max_length=300)
+    first_name: str | None = Field(default=None, max_length=100)
+    second_name: str | None = Field(default=None, max_length=100)
+    surname: str | None = Field(default=None, max_length=100)
+    telegram_link: str | None = Field(default=None, max_length=200)
+
+
+class AdminTesterUpdateOperation(AdminTesterCreateOperation):
+    action: Literal[ActionCode.ADMIN_TESTER_UPDATE]
+    tester_id: UUID
+    expected_version: str = Field(min_length=64, max_length=64)
+
+
+class AdminTesterLinkOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TESTER_LINK]
+    tester_id: UUID
+    target: str = Field(min_length=1, max_length=200)
+
+
+class AdminTesterUnlinkOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TESTER_UNLINK]
+    tester_id: UUID
+    player_id: UUID
+    confirm: bool = Field(default=False, strict=True)
+
+
+class AdminTesterMergeOperation(ContractModel):
+    action: Literal[ActionCode.ADMIN_TESTER_MERGE]
+    tester_id: UUID
+    merge_tester_id: UUID
+    confirm: bool = Field(default=False, strict=True)
 
 
 class AdminAuthorLinkOperation(ContractModel):
@@ -1286,6 +1326,11 @@ GatewayOperation = Annotated[
     | AdminGameListOperation
     | AdminTournamentModerateOperation
     | AdminTournamentRatingWeightOperation
+    | AdminTesterCreateOperation
+    | AdminTesterUpdateOperation
+    | AdminTesterLinkOperation
+    | AdminTesterUnlinkOperation
+    | AdminTesterMergeOperation
     | AdminAuthorLinkOperation
     | AdminAuthorMergeOperation
     | AdminAuthorUpdateOperation

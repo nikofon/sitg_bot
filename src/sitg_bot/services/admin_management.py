@@ -27,15 +27,19 @@ from sitg_bot.storage.models import (
     PacketDraftRecord,
     PacketQuestionRecord,
     PacketVersionRecord,
+    PacketVersionTesterRecord,
     PlatformAdministratorRecord,
     PlayerAuthorLinkRecord,
     PlayerAuthorLinkRequestRecord,
     PlayerBanRecord,
     PlayerRecord,
     PlayerReportRecord,
+    PlayerTesterLinkRecord,
+    PlayerTesterLinkRequestRecord,
     QuestionRevisionRecord,
     RulesetRatingLedgerRecord,
     RulesetRatingRecord,
+    TesterRecord,
     ThemeRecord,
     ThemeRevisionRecord,
     TournamentAuthorRecord,
@@ -62,6 +66,12 @@ def author_version(author: AuthorRecord) -> str:
     return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
 
 
+def tester_version(tester: TesterRecord) -> str:
+    values = [str(tester.id), tester.display_name, tester.first_name, tester.second_name,
+              tester.surname, tester.telegram_link, tester.telegram_username]
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()
+
+
 def split_author_names(name: str) -> list[str]:
     names = [" ".join(part.split()) for part in name.split(",") if part.strip()]
     return names if len(names) > 1 else []
@@ -84,13 +94,34 @@ class AdminManagementService:
         self, administrator_id: UUID, section: str, *, include_items: bool = True,
     ) -> dict:
         if section not in {
-            "tournaments", "authors", "players", "packets", "link_requests", "ongoing_games",
-            "active_lobbies", "past_games",
+            "tournaments", "authors", "testers", "players", "packets", "link_requests",
+            "ongoing_games", "active_lobbies", "past_games",
         }:
             raise ValueError("Unknown management section")
         async with self.database.sessions() as session:
             await _require_administrator(session, administrator_id)
             items = []
+            if section == "testers":
+                for tester in await session.scalars(select(TesterRecord).order_by(TesterRecord.id)):
+                    packets = list(await session.scalars(
+                        select(PacketVersionRecord).join(PacketVersionTesterRecord).where(
+                            PacketVersionTesterRecord.tester_id == tester.id,
+                        ).order_by(PacketVersionRecord.packet_id,
+                                   PacketVersionRecord.version_number)
+                    ))
+                    players = await session.scalars(select(PlayerRecord).join(
+                        PlayerTesterLinkRecord, PlayerTesterLinkRecord.player_id == PlayerRecord.id,
+                    ).where(PlayerTesterLinkRecord.tester_id == tester.id))
+                    items.append({
+                        **fields(tester), "version": tester_version(tester),
+                        "packet_count": len({p.packet_id for p in packets}),
+                        "packets": [{"id": p.id, "packet_id": p.packet_id, "name": p.name,
+                                     "version_number": p.version_number} for p in packets],
+                        "players": [{"id": p.id, "public_nickname": p.public_nickname,
+                                     "telegram_username": p.telegram_username} for p in players],
+                    })
+                return {"kind": "admin_management", "state": "ready", "section": section,
+                        "items": items}
             if section == "packets":
                 if include_items:
                     versions = tuple(await session.scalars(
@@ -663,6 +694,175 @@ class AdminManagementService:
             tournament.settings_version += 1
             await session.flush()
             return fields(tournament)
+
+    async def save_tester(
+        self, administrator_id: UUID, *, display_name: str, tester_id: UUID | None = None,
+        expected_version: str | None = None, first_name: str | None = None,
+        second_name: str | None = None, surname: str | None = None,
+        telegram_link: str | None = None,
+    ) -> dict:
+        async with self.database.transaction() as session:
+            await lock_author_exposure(session)
+            await _require_administrator(session, administrator_id)
+            if tester_id is None:
+                tester = TesterRecord()
+                session.add(tester)
+            else:
+                tester = await session.get(TesterRecord, tester_id, with_for_update=True)
+                if tester is None:
+                    raise LookupError("Tester not found")
+                if tester_version(tester) != expected_version:
+                    raise StaleWriteError("Tester data has changed")
+            name = " ".join(display_name.split())
+            if not name or len(name) > 300:
+                raise ValueError("Tester display name must contain 1–300 characters")
+            tester.display_name = name
+            for key, value in {"first_name": first_name, "second_name": second_name,
+                               "surname": surname}.items():
+                setattr(tester, key, TournamentService._normalize_author_component(value, key)
+                        if value and value.strip() else None)
+            tester.telegram_link, tester.telegram_username = (
+                TournamentService._normalize_telegram_link(telegram_link)
+            )
+            await session.flush()
+            return {**fields(tester), "version": tester_version(tester)}
+
+    async def link_tester(self, administrator_id: UUID, tester_id: UUID, target: str) -> dict:
+        async with self.database.transaction() as session:
+            await lock_author_exposure(session)
+            await _require_administrator(session, administrator_id)
+            if not target.startswith("@"):
+                UUID(target)
+            player = await _resolve_player(session, target.removeprefix("@"))
+            tester = await session.get(TesterRecord, tester_id)
+            if player is None or player.status != "active" or tester is None:
+                raise LookupError("Active player or tester not found")
+            await session.execute(select(func.pg_advisory_xact_lock(
+                AuthorLinkService._pair_lock_key(player.id, tester_id)
+            )))
+            if await session.get(PlayerTesterLinkRecord, (player.id, tester_id)):
+                return {"linked": True}
+            request = await session.scalar(select(PlayerTesterLinkRequestRecord).where(
+                PlayerTesterLinkRequestRecord.player_id == player.id,
+                PlayerTesterLinkRequestRecord.tester_id == tester_id,
+                PlayerTesterLinkRequestRecord.status == "pending",
+            ).with_for_update())
+            if request is None:
+                request = PlayerTesterLinkRequestRecord(player_id=player.id, tester_id=tester_id)
+                session.add(request)
+            now = datetime.now(UTC)
+            request.status = "approved"
+            request.decided_by_id = administrator_id
+            request.decided_at = now
+            request.decision_note = "Linked through administrator management"
+            await session.flush()
+            session.add(PlayerTesterLinkRecord(
+                player_id=player.id, tester_id=tester_id, approved_request_id=request.id,
+                approved_by_id=administrator_id, approved_at=now,
+            ))
+            await burn_author_content(session, tester_id=tester_id)
+            return {"linked": True}
+
+    async def unlink_tester(
+        self, administrator_id: UUID, tester_id: UUID, player_id: UUID, *, confirm: bool,
+    ) -> dict:
+        async with self.database.transaction() as session:
+            await lock_author_exposure(session)
+            await _require_administrator(session, administrator_id)
+            if not confirm:
+                raise ValueError("Tester unlink requires confirmation")
+            if await session.get(TesterRecord, tester_id) is None:
+                raise LookupError("Tester not found")
+            # Burn before removal as well: unlinking never restores freshness or deletes history.
+            await burn_author_content(session, tester_id=tester_id)
+            await session.execute(delete(PlayerTesterLinkRecord).where(
+                PlayerTesterLinkRecord.tester_id == tester_id,
+                PlayerTesterLinkRecord.player_id == player_id,
+            ))
+            return {"unlinked": True}
+
+    async def merge_testers(
+        self, administrator_id: UUID, tester_id: UUID, merge_tester_id: UUID, *, confirm: bool,
+    ) -> dict:
+        async with self.database.transaction() as session:
+            await lock_author_exposure(session)
+            await _require_administrator(session, administrator_id)
+            if not confirm or tester_id == merge_tester_id:
+                raise ValueError("Confirm a merge of two distinct testers")
+            primary = await session.get(TesterRecord, tester_id, with_for_update=True)
+            secondary = await session.get(TesterRecord, merge_tester_id, with_for_update=True)
+            if primary is None or secondary is None:
+                raise LookupError("Tester not found")
+            # All link players survive, as for authors; no player account itself is merged.
+            await burn_author_content(session, tester_id=tester_id)
+            await burn_author_content(session, tester_id=merge_tester_id)
+            for membership in await session.scalars(select(PacketVersionTesterRecord).where(
+                PacketVersionTesterRecord.tester_id == merge_tester_id,
+            )):
+                existing = await session.get(PacketVersionTesterRecord,
+                                             (membership.packet_version_id, tester_id))
+                if existing is not None:
+                    await session.delete(membership)
+                else:
+                    membership.tester_id = tester_id
+            # Preserve explicit namesake choices and the default resolution of unsaved slots.
+            # Source text and played content remain untouched.
+            from sitg_bot.services.packets import PacketAdminService
+
+            for draft in await session.scalars(select(PacketDraftRecord).with_for_update()):
+                bindings = dict(draft.tester_bindings)
+                names = draft.content.get("testers", [])
+                for index, name in enumerate(names if isinstance(names, (list, tuple)) else ()):
+                    slot = str(index)
+                    if slot in bindings or not isinstance(name, str):
+                        continue
+                    default = await session.scalar(select(TesterRecord.id).where(
+                        func.regexp_replace(func.lower(TesterRecord.display_name), r"\s+", " ", "g")
+                        .in_(PacketAdminService._name_match_forms(name))
+                    ).order_by(func.lower(TesterRecord.display_name), TesterRecord.id).limit(1))
+                    if default == merge_tester_id:
+                        bindings[slot] = str(merge_tester_id)
+                bindings = {slot: str(tester_id) if value == str(merge_tester_id) else value
+                            for slot, value in bindings.items()}
+                if bindings != draft.tester_bindings:
+                    draft.tester_bindings = bindings
+                    draft.version += 1
+            links = list(await session.scalars(select(PlayerTesterLinkRecord).where(
+                PlayerTesterLinkRecord.tester_id.in_((tester_id, merge_tester_id)),
+            )))
+            linked_players = {link.player_id for link in links}
+            requests = list(await session.scalars(select(PlayerTesterLinkRequestRecord).where(
+                PlayerTesterLinkRequestRecord.tester_id.in_((tester_id, merge_tester_id)),
+            ).order_by(PlayerTesterLinkRequestRecord.created_at,
+                       PlayerTesterLinkRequestRecord.id).with_for_update()))
+            pending_players = set()
+            for request in sorted(requests, key=lambda r: r.tester_id != tester_id):
+                if request.status != "pending":
+                    continue
+                if request.player_id in linked_players or request.player_id in pending_players:
+                    request.status = "cancelled"
+                    request.cancelled_at = datetime.now(UTC)
+                    request.decision_note = "Superseded by administrator tester merge"
+                else:
+                    pending_players.add(request.player_id)
+            # Close collisions before moving identities to satisfy the partial unique index.
+            await session.flush()
+            for request in requests:
+                request.tester_id = tester_id
+            primary_players = {link.player_id for link in links if link.tester_id == tester_id}
+            for link in links:
+                if link.tester_id == tester_id:
+                    continue
+                if link.player_id in primary_players:
+                    await session.delete(link)
+                else:
+                    link.tester_id = tester_id
+            await session.flush()
+            await burn_author_content(session, tester_id=tester_id)
+            await session.delete(secondary)
+            await session.flush()
+            return {"merged": True, "tester_id": str(tester_id),
+                    "merged_tester_id": str(merge_tester_id), "display_name": primary.display_name}
 
     async def update_author(
         self, administrator_id: UUID, author_id: UUID, *, expected_version: str,

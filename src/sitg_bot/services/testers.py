@@ -232,6 +232,8 @@ class TesterService:
     async def create_request(self, player_id: UUID, tester_id: UUID, *, note=None) -> dict:
         note = AuthorLinkService._note(note, label="Request note")
         async with self.database.transaction() as session:
+            # Identity merges serialize with request creation before acquiring the pair lock.
+            await lock_author_exposure(session)
             await session.execute(
                 select(
                     func.pg_advisory_xact_lock(
