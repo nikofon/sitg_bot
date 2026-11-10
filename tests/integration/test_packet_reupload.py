@@ -507,3 +507,46 @@ async def test_reupload_confirmation_revalidates_shape_and_serializes_double_sub
             assert len(versions) == 2
     finally:
         await database.close()
+
+
+async def test_reupload_telegram_bind_allows_any_tournament_manager(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        other = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        assignment = await assigned(database, fixture)
+        editor = await edit(service, fixture, assignment)
+        async with database.transaction() as session:
+            session.add(
+                TournamentManagerRecord(
+                    tournament_id=fixture.tournament_id,
+                    player_id=other.manager.id,
+                )
+            )
+        prepared = await service.prepare_reupload(
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
+        )
+        draft_id = UUID(prepared["draft_id"])
+        imported = await service.import_reupload(
+            draft_id,
+            other.manager.id,
+            json.dumps(editor["packet"]).encode(),
+            source_filename="fixed.json",
+        )
+        assert imported["can_publish"]
+        await service.bind_telegram_message(
+            draft_id,
+            other.manager.id,
+            chat_id=4242,
+            message_id=99,
+            locale="en",
+        )
+        async with database.sessions() as session:
+            draft = await session.get(PacketDraftRecord, draft_id)
+            assert (draft.telegram_chat_id, draft.telegram_message_id) == (4242, 99)
+    finally:
+        await database.close()

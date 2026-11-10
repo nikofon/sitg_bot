@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 
 from sitg_bot.services.author_exposure import burn_author_content, lock_author_exposure
 from sitg_bot.services.author_links import AuthorLinkService
@@ -809,7 +809,14 @@ class AdminManagementService:
             # Source text and played content remain untouched.
             from sitg_bot.services.packets import PacketAdminService
 
-            for draft in await session.scalars(select(PacketDraftRecord).with_for_update()):
+            draft_testers = PacketDraftRecord.content.op("->")("testers")
+            for draft in await session.scalars(select(PacketDraftRecord).where(or_(
+                PacketDraftRecord.tester_bindings != text("'{}'::jsonb"),
+                and_(
+                    func.jsonb_typeof(draft_testers) == "array",
+                    func.jsonb_array_length(draft_testers) > 0,
+                ),
+            )).with_for_update()):
                 bindings = dict(draft.tester_bindings)
                 names = draft.content.get("testers", [])
                 for index, name in enumerate(names if isinstance(names, (list, tuple)) else ()):

@@ -1403,7 +1403,7 @@ class PacketAdminService:
                 raise LookupError("Packet draft not found")
             context = await self.tournaments.context(session, draft.creation_tournament_id)
             await self._require_draft_access(session, context, draft, actor_id)
-            if draft.uploader_id != actor_id:
+            if draft.uploader_id != actor_id and self._reupload_target(draft) is None:
                 raise PermissionError("Only the packet uploader can bind its Telegram message")
             existing = (draft.telegram_chat_id, draft.telegram_message_id)
             requested = (chat_id, message_id)
