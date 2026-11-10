@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import asdict, replace
 from uuid import UUID, uuid4
 
@@ -120,11 +121,38 @@ async def test_tester_merge_preserves_credits_drafts_links_requests_and_exposure
             unbound_source, source_filename="unbound.json", uploader_id=fixture.manager.id,
             tournament_id=fixture.tournament_id,
         )
-        await service.merge_testers(fixture.manager.id, primary_id, only_secondary["id"],
-                                    confirm=True)
+        # Tester merges must not lock unrelated drafts with empty/missing/invalid testers.
+        empty_drafts = [
+            await packets.create_draft(
+                packet(), source_filename="no-testers.json", uploader_id=fixture.manager.id,
+                tournament_id=fixture.tournament_id,
+            )
+            for _ in range(2)
+        ]
+        async with database.transaction() as session:
+            draft = await session.get(PacketDraftRecord, empty_drafts[0])
+            draft.content = {key: value for key, value in draft.content.items() if key != "testers"}
+        for invalid_testers in (None, "not an array", {"name": "invalid"}):
+            invalid = await packets.import_upload(
+                json.dumps({**asdict(packet()), "testers": invalid_testers}).encode(),
+                source_filename="invalid-testers.json", uploader_id=fixture.manager.id,
+                tournament_id=fixture.tournament_id,
+            )
+            assert invalid["status"] == "validation_failed"
+            empty_drafts.append(UUID(invalid["draft_id"]))
+        async with database.transaction() as session:
+            await session.execute(select(PacketDraftRecord).where(
+                PacketDraftRecord.id.in_(empty_drafts),
+            ).with_for_update())
+            await asyncio.wait_for(service.merge_testers(
+                fixture.manager.id, primary_id, only_secondary["id"], confirm=True,
+            ), timeout=5)
         async with database.sessions() as session:
             draft = await session.get(PacketDraftRecord, unbound)
             assert draft.tester_bindings == {"0": str(primary_id)} and draft.version == 2
+            for draft_id in empty_drafts:
+                draft = await session.get(PacketDraftRecord, draft_id)
+                assert draft.version == 1 and draft.tester_bindings == {}
         player, other, pending_player, cancel_player = fixture.players
         pending = await testers.create_request(player.id, secondary_id)
         with pytest.raises(PermissionError):
