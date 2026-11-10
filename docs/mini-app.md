@@ -110,7 +110,9 @@ sessions still return `401 authentication_required`. Signing in cannot fix an or
 
 The public `web/public/license.html` page — the full text of the packet content terms
 ("Personal Use Only — All Rights Reserved") — is copied to the build root by Vite and served
-unauthenticated by the static handler alongside the Mini App shell.
+unauthenticated by the static handler alongside the Mini App shell. The bot links to this
+page when `MINI_APP_BASE_URL` is configured; otherwise it retains the licensing notice
+without a URL.
 
 HTML and unversioned static files use `Cache-Control: no-cache`: browsers may store them
 but must revalidate before reuse; unchanged files return 304. Content-hashed files under

@@ -9,7 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, delete, func, or_, select, update
 
-from sitg_bot.services.author_exposure import burn_author_content
+from sitg_bot.services.author_exposure import burn_author_content, lock_author_exposure
 from sitg_bot.services.author_links import AuthorLinkService
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.moderation import _require_administrator, _resolve_player
@@ -699,6 +699,7 @@ class AdminManagementService:
     ) -> dict:
         """Replace a combined identity with new coauthors in one transaction."""
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await _require_administrator(session, administrator_id)
             original = await session.get(AuthorRecord, author_id, with_for_update=True)
             if original is None:
@@ -828,6 +829,7 @@ class AdminManagementService:
     async def link_author(self, administrator_id: UUID, author_id: UUID, target: str) -> dict:
         # Use the same pair lock and approval records as player-requested links.
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await _require_administrator(session, administrator_id)
             if not target.startswith("@"):
                 UUID(target)
@@ -895,6 +897,7 @@ class AdminManagementService:
         if not confirm:
             raise ValueError("Author merge requires confirmation")
         async with self.database.transaction() as session:
+            await lock_author_exposure(session)
             await _require_administrator(session, administrator_id)
             primary = await session.get(AuthorRecord, author_id, with_for_update=True)
             secondary = await session.get(AuthorRecord, merge_author_id, with_for_update=True)

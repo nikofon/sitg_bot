@@ -1737,7 +1737,10 @@ async def test_registration_start_handles_missing_telegram_username() -> None:
     message.answer.assert_awaited_once()
 
 
-async def test_completed_registration_delivers_license_notice_after_help() -> None:
+@pytest.mark.parametrize("launch_links", [None, "https://mini.example.test/app"])
+async def test_completed_registration_delivers_license_notice_after_help(
+    launch_links: str | None,
+) -> None:
     backend = SimpleNamespace(
         start_registration=AsyncMock(return_value=registration(step=None)),
         complete_registration=AsyncMock(),
@@ -1755,7 +1758,7 @@ async def test_completed_registration_delivers_license_notice_after_help() -> No
         claim=SimpleNamespace(),  # type: ignore[arg-type]
         localization=LocalizationService(),
         locale="ru",
-        launch_links="https://mini.example.test/app",
+        launch_links=launch_links,
     )
 
     texts = [call.args[0] for call in message.answer.await_args_list]
@@ -1763,13 +1766,21 @@ async def test_completed_registration_delivers_license_notice_after_help() -> No
     assert "Ваша первая игра" in texts[2]
     assert len(texts) == 4
     license_text = texts[3]
-    assert (
-        '<a href="https://mini.example.test/app/license.html">'
-        "«Только для личного использования — все права сохранены»</a>" in license_text
-    )
+    assert "без явного разрешения авторов пакета" in license_text
+    if launch_links is None:
+        assert "<a href" not in license_text
+        assert "<b>«Только для личного использования — все права сохранены»</b>" in license_text
+    else:
+        assert (
+            '<a href="https://mini.example.test/app/license.html">'
+            "«Только для личного использования — все права сохранены»</a>" in license_text
+        )
 
 
-async def test_final_registration_step_delivers_license_notice_after_help() -> None:
+@pytest.mark.parametrize("launch_links", [None, "https://mini.example.test/app"])
+async def test_final_registration_step_delivers_license_notice_after_help(
+    launch_links: str | None,
+) -> None:
     backend = SimpleNamespace(
         start_registration=AsyncMock(
             return_value=registration(step="telegram_public", version=2)
@@ -1794,7 +1805,7 @@ async def test_final_registration_step_delivers_license_notice_after_help() -> N
         localization=LocalizationService(),
         locale="ru",
         state=None,
-        launch_links="https://mini.example.test/app",
+        launch_links=launch_links,
     )
 
     texts = [call.args[0] for call in message.answer.await_args_list]
@@ -1802,34 +1813,57 @@ async def test_final_registration_step_delivers_license_notice_after_help() -> N
     assert "Регистрация завершена." in texts[0]
     assert "Ваша первая игра" in texts[1]
     license_text = texts[2]
-    assert "https://mini.example.test/app/license.html" in license_text
     assert "без явного разрешения авторов пакета" in license_text
+    if launch_links is None:
+        assert "<a href" not in license_text
+        assert "<b>«Только для личного использования — все права сохранены»</b>" in license_text
+    else:
+        assert "https://mini.example.test/app/license.html" in license_text
 
 
-async def test_license_command_returns_notice_with_clickable_terms_link() -> None:
+@pytest.mark.parametrize("launch_links", [None, "https://mini.example.test/app"])
+async def test_license_command_uses_configured_terms_link(launch_links: str | None) -> None:
     message = SimpleNamespace(answer=AsyncMock())
 
     await handle_license(
         message,  # type: ignore[arg-type]
         localization=LocalizationService(),
         locale="en",
-        launch_links="https://mini.example.test/app",
+        launch_links=launch_links,
     )
 
     text = message.answer.await_args.args[0]
     assert message.answer.await_count == 1
-    assert (
-        '<a href="https://mini.example.test/app/license.html">'
-        "Personal Use Only — All Rights Reserved</a>" in text
-    )
+    if launch_links is None:
+        assert "<a href" not in text
+        assert "<b>Personal Use Only — All Rights Reserved</b>" in text
+    else:
+        assert (
+            '<a href="https://mini.example.test/app/license.html">'
+            "Personal Use Only — All Rights Reserved</a>" in text
+        )
     assert "Creative Commons or OSI license" in text
+    assert "All rights to the packets remain with their authors" in text
+    assert "cannot share or redistribute packets" in text
 
 
-def test_license_message_without_launch_links_uses_unlinked_notice() -> None:
-    model = license_message(LocalizationService(), "en", None)
+@pytest.mark.parametrize("locale", ["en", "ru"])
+@pytest.mark.parametrize("launch_links", [None, "https://mini.example.test/app"])
+def test_license_message_preserves_notice_with_optional_configured_link(
+    locale: str, launch_links: str | None,
+) -> None:
+    localization = LocalizationService()
+    model = license_message(localization, locale, launch_links)
+    unlinked = license_message(localization, locale, None)
 
-    assert "<a href" not in model.text
-    assert "Personal Use Only — All Rights Reserved" in model.text
+    if launch_links is None:
+        assert "<a href" not in model.text
+        assert "https://" not in model.text
+    else:
+        assert '<a href="https://mini.example.test/app/license.html">' in model.text
+        assert model.text.replace(
+            '<a href="https://mini.example.test/app/license.html">', "<b>"
+        ).replace("</a>", "</b>") == unlinked.text
 
 
 def telegram_update(kind: str) -> Update:
