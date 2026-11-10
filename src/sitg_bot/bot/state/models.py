@@ -131,6 +131,7 @@ class PacketDraftState(FrontendState):
     theme_count: int | None
     question_count: int | None
     detected_authors: tuple[str, ...]
+    detected_testers: tuple[str, ...] = ()
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
     can_publish: bool

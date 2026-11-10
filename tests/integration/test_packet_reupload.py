@@ -1,8 +1,9 @@
 import asyncio
 import json
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +11,10 @@ from test_lobby_architecture import database_url as _database_url
 from test_lobby_architecture import tournament_fixture
 from test_packet_management import assigned, edit, save
 
+from sitg_bot.application.adapters import TelegramGatewayAdapter
+from sitg_bot.application.gateway import ApplicationGateway
+from sitg_bot.application.telegram import TelegramUpdateClaim
+from sitg_bot.bot.state.backend import BotBackend
 from sitg_bot.services.concurrency import StaleWriteError
 from sitg_bot.services.matchmaking import InvitationMatchmakingService
 from sitg_bot.services.packets import PacketAdminService
@@ -29,6 +34,45 @@ from sitg_bot.storage.packets import PostgresPacketRepository
 
 pytestmark = pytest.mark.integration
 database_url = _database_url
+
+
+async def test_bot_upload_and_reupload_accept_real_gateway_tester_summaries(database_url):
+    database = Database(database_url)
+    try:
+        fixture = await tournament_fixture(database, player_count=1)
+        service = PacketAdminService(database)
+        assignment = await assigned(database, fixture)
+        editor = await edit(service, fixture, assignment)
+        editor["packet"]["testers"] = ["Gateway Tester"]
+        source = json.dumps(editor["packet"]).encode()
+        backend = BotBackend(TelegramGatewayAdapter(
+            ApplicationGateway(database), client_version="test", bot_id=12345,
+            environment="test",
+        ))
+        claim = TelegramUpdateClaim(
+            receipt_id=uuid4(), correlation_id=uuid4(), bot_id=12345,
+            environment="test", update_id=1, telegram_user_id=fixture.manager.telegram_user_id,
+        )
+        drafts = await backend.upload_packet(
+            claim, tournament_id=fixture.tournament_id,
+            source_filename="ordinary.json", source=source,
+        )
+        assert len(drafts) == 1
+        assert drafts[0].can_publish
+        assert drafts[0].detected_testers == ("Gateway Tester",)
+        prepared = await service.prepare_reupload(
+            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+        )
+        drafts = await backend.reupload_packet(
+            replace(claim, update_id=2), draft_id=UUID(prepared["draft_id"]),
+            source_filename="reupload.json", source=source,
+        )
+        assert len(drafts) == 1
+        assert drafts[0].can_publish
+        assert drafts[0].detected_testers == ("Gateway Tester",)
+        assert drafts[0].reupload_target == prepared["reupload_target"]
+    finally:
+        await database.close()
 
 
 async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(database_url):
