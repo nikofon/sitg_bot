@@ -67,25 +67,33 @@ async def burn_author_content(
     # substitutions. Removing a tester never restores freshness.
     tester_players: dict[UUID, set[UUID]] = {}
     if author_id is None:
-        tested = select(PacketVersionRecord.packet_id, PlayerTesterLinkRecord.player_id).join(
-            PacketVersionTesterRecord,
-            PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
-        ).join(PlayerTesterLinkRecord,
-               PlayerTesterLinkRecord.tester_id == PacketVersionTesterRecord.tester_id)
+        tested = (
+            select(PacketVersionRecord.packet_id, PlayerTesterLinkRecord.player_id)
+            .join(
+                PacketVersionTesterRecord,
+                PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
+            )
+            .join(
+                PlayerTesterLinkRecord,
+                PlayerTesterLinkRecord.tester_id == PacketVersionTesterRecord.tester_id,
+            )
+        )
         if tester_id is not None:
             tested = tested.where(PlayerTesterLinkRecord.tester_id == tester_id)
         for packet_id, player_id in await session.execute(tested):
             tester_players.setdefault(packet_id, set()).add(player_id)
     if not links and not player_ids and not tester_players:
         return
-    query = select(ThemeRevisionRecord, PacketVersionRecord.lead_author_id,
-                   PacketVersionRecord.packet_id).join(
-        PacketVersionRecord, PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id
-    )
+    query = select(
+        ThemeRevisionRecord, PacketVersionRecord.lead_author_id, PacketVersionRecord.packet_id
+    ).join(PacketVersionRecord, PacketVersionRecord.id == ThemeRevisionRecord.packet_version_id)
     if version_id is not None:
-        query = query.where(PacketVersionRecord.packet_id == select(
+        query = query.where(
             PacketVersionRecord.packet_id
-        ).where(PacketVersionRecord.id == version_id).scalar_subquery())
+            == select(PacketVersionRecord.packet_id)
+            .where(PacketVersionRecord.id == version_id)
+            .scalar_subquery()
+        )
     for theme, lead_id, packet_id in (await session.execute(query)).all():
         questions = (
             await session.scalars(

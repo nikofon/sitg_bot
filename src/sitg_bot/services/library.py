@@ -170,34 +170,50 @@ class PacketLibraryService:
         self, session: AsyncSession, version_id: UUID
     ) -> dict[str, dict[str, object]]:
         """Logical-question aggregates, keyed by the displayed immutable revisions."""
-        displayed = select(
-            PacketQuestionRecord.question_revision_id.label("displayed_revision_id"),
-            QuestionRevisionRecord.question_id,
-        ).join(
-            QuestionRevisionRecord,
-            QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
-        ).where(PacketQuestionRecord.packet_version_id == version_id).subquery()
-        rounds = select(
-            QuestionRoundRecord.id,
-            displayed.c.displayed_revision_id.label("question_revision_id"),
-        ).join(
-            QuestionRevisionRecord,
-            QuestionRevisionRecord.id == QuestionRoundRecord.question_revision_id,
-        ).join(
-            displayed, displayed.c.question_id == QuestionRevisionRecord.question_id,
-        ).join(GameRecord, GameRecord.id == QuestionRoundRecord.game_id).join(
-            GameRulesetVersionRecord,
-            GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
-        ).where(
-            GameRulesetVersionRecord.key == "si",
-            GameRecord.status == "finalized",
-            QuestionRoundRecord.status == "completed",
-            QuestionRoundRecord.started_at.is_not(None),
-            ~select(AppealRecord.id).where(
-                AppealRecord.game_id == GameRecord.id,
-                AppealRecord.status.not_in(("accepted", "rejected")),
-            ).exists(),
-        ).subquery()
+        displayed = (
+            select(
+                PacketQuestionRecord.question_revision_id.label("displayed_revision_id"),
+                QuestionRevisionRecord.question_id,
+            )
+            .join(
+                QuestionRevisionRecord,
+                QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
+            )
+            .where(PacketQuestionRecord.packet_version_id == version_id)
+            .subquery()
+        )
+        rounds = (
+            select(
+                QuestionRoundRecord.id,
+                displayed.c.displayed_revision_id.label("question_revision_id"),
+            )
+            .join(
+                QuestionRevisionRecord,
+                QuestionRevisionRecord.id == QuestionRoundRecord.question_revision_id,
+            )
+            .join(
+                displayed,
+                displayed.c.question_id == QuestionRevisionRecord.question_id,
+            )
+            .join(GameRecord, GameRecord.id == QuestionRoundRecord.game_id)
+            .join(
+                GameRulesetVersionRecord,
+                GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
+            )
+            .where(
+                GameRulesetVersionRecord.key == "si",
+                GameRecord.status == "finalized",
+                QuestionRoundRecord.status == "completed",
+                QuestionRoundRecord.started_at.is_not(None),
+                ~select(AppealRecord.id)
+                .where(
+                    AppealRecord.game_id == GameRecord.id,
+                    AppealRecord.status.not_in(("accepted", "rejected")),
+                )
+                .exists(),
+            )
+            .subquery()
+        )
         exposures = select(
             PlayerQuestionStateRecord.round_id,
             func.count().label("views"),
@@ -305,6 +321,7 @@ class PacketLibraryService:
                 await burn_author_content(session, version_id=version_id, player_ids=[player_id])
             pages = await adapter.library_pages(session, version_id)
             from sitg_bot.services.testers import version_testers
+
             testers = [t.display_name for t in await version_testers(session, version_id)]
             for namespace, claim_id in sorted(claims - burnt):
                 await session.execute(insert(PlayerExposureClaimRecord).values(
@@ -339,11 +356,16 @@ class PacketLibraryService:
                 if player is None or player.telegram_user_id is None:
                     raise PermissionError("Telegram account is required for downloads")
                 await TransactionalOutbox.enqueue(
-                    session, topic="telegram.library.document",
+                    session,
+                    topic="telegram.library.document",
                     deduplication_key=f"library:{player_id}:{request_key}",
                     partition_key=f"telegram:chat:{player.telegram_user_id}",
-                    payload={"recipient_telegram_user_id": player.telegram_user_id,
-                             "name": version.name, "pages": pages, "testers": testers},
+                    payload={
+                        "recipient_telegram_user_id": player.telegram_user_id,
+                        "name": version.name,
+                        "pages": pages,
+                        "testers": testers,
+                    },
                 )
                 return {"confirmation_required": False, "queued": True}
             return result

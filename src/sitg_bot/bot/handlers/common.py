@@ -87,9 +87,7 @@ async def resume_registration(
             locale=locale,
         )
         await send_message_model(message, help_message(navigation, localization, locale))
-        await send_message_model(
-            message, license_message(localization, locale, launch_links)
-        )
+        await send_message_model(message, license_message(localization, locale, launch_links))
         if state is not None:
             await resume_invitation(message, backend, claim, localization, locale, state)
         return
@@ -109,7 +107,8 @@ async def handle_start(
 ) -> None:
     await state.clear()
     reupload = re.fullmatch(
-        r"/start(?:@[A-Za-z0-9_]+)? reupload_([0-9a-fA-F]{32})", message.text or "",
+        r"/start(?:@[A-Za-z0-9_]+)? reupload_([0-9a-fA-F]{32})",
+        message.text or "",
     )
     if reupload and navigation is not None and navigation.context != "registration":
         from sitg_bot.bot.state.settings import PacketUploadState
@@ -214,9 +213,7 @@ async def handle_license(
     locale: str,
     launch_links: str | None = None,
 ) -> None:
-    await send_message_model(
-        message, license_message(localization, locale, launch_links)
-    )
+    await send_message_model(message, license_message(localization, locale, launch_links))
 
 
 @router.message(Command("command_help"))

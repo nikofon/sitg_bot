@@ -328,7 +328,8 @@ async def test_partial_exposure_still_requires_confirmation(database_url):
 
 @pytest.mark.parametrize("correction_method", ["editor", "reupload"])
 async def test_reader_exposes_authors_commentary_and_question_statistics(
-    database_url, correction_method,
+    database_url,
+    correction_method,
 ):
     database = Database(database_url)
     try:
@@ -450,26 +451,41 @@ async def test_reader_exposes_authors_commentary_and_question_statistics(
         editor["packet"]["themes"][0]["questions"][0]["text"] = "Corrected parsing"
         if correction_method == "reupload":
             prepared = await packets.prepare_reupload(
-                fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+                fixture.tournament_id,
+                assignment.id,
+                fixture.manager.id,
+                expected_version=1,
             )
             draft_id = UUID(prepared["draft_id"])
             imported = await packets.import_reupload(
-                draft_id, fixture.manager.id, json.dumps(editor["packet"]).encode(),
+                draft_id,
+                fixture.manager.id,
+                json.dumps(editor["packet"]).encode(),
                 source_filename="statistics.json",
             )
             corrected = await packets.publish(
-                draft_id, administrator_id=fixture.manager.id,
+                draft_id,
+                administrator_id=fixture.manager.id,
                 expected_version=imported["version"],
             )
             corrected_version_id = corrected.version_id
         else:
-            await save(packets, fixture, assignment, editor, {
-                "name": "correction", "themes.0.questions.0.text": "correction",
-            })
+            await save(
+                packets,
+                fixture,
+                assignment,
+                editor,
+                {
+                    "name": "correction",
+                    "themes.0.questions.0.text": "correction",
+                },
+            )
             corrected_version_id = (await assigned(database, fixture)).adopted_version_id
         corrected_view = await library.access(
-            fixture.players[0].id, corrected_version_id,
-            confirm=True, request_key="corrected-stats",
+            fixture.players[0].id,
+            corrected_version_id,
+            confirm=True,
+            request_key="corrected-stats",
         )
         corrected_question = corrected_view["pages"][0]["questions"][0]
         assert corrected_question["id"] != str(played_revision)
@@ -479,13 +495,21 @@ async def test_reader_exposes_authors_commentary_and_question_statistics(
         assignment = await assigned(database, fixture)
         editor = await edit(packets, fixture, assignment)
         editor["packet"]["themes"][0]["questions"][0]["text"] = "Different knowledge"
-        await save(packets, fixture, assignment, editor, {
-            "themes.0.questions.0.text": "substitution",
-        })
+        await save(
+            packets,
+            fixture,
+            assignment,
+            editor,
+            {
+                "themes.0.questions.0.text": "substitution",
+            },
+        )
         replacement_version = (await assigned(database, fixture)).adopted_version_id
         replacement = await library.access(
-            fixture.players[0].id, replacement_version,
-            confirm=True, request_key="replacement-stats",
+            fixture.players[0].id,
+            replacement_version,
+            confirm=True,
+            request_key="replacement-stats",
         )
         replacement_question = replacement["pages"][0]["questions"][0]
         assert replacement_question["id"] != corrected_question["id"]

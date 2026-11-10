@@ -45,27 +45,42 @@ async def test_bot_upload_and_reupload_accept_real_gateway_tester_summaries(data
         editor = await edit(service, fixture, assignment)
         editor["packet"]["testers"] = ["Gateway Tester"]
         source = json.dumps(editor["packet"]).encode()
-        backend = BotBackend(TelegramGatewayAdapter(
-            ApplicationGateway(database), client_version="test", bot_id=12345,
-            environment="test",
-        ))
+        backend = BotBackend(
+            TelegramGatewayAdapter(
+                ApplicationGateway(database),
+                client_version="test",
+                bot_id=12345,
+                environment="test",
+            )
+        )
         claim = TelegramUpdateClaim(
-            receipt_id=uuid4(), correlation_id=uuid4(), bot_id=12345,
-            environment="test", update_id=1, telegram_user_id=fixture.manager.telegram_user_id,
+            receipt_id=uuid4(),
+            correlation_id=uuid4(),
+            bot_id=12345,
+            environment="test",
+            update_id=1,
+            telegram_user_id=fixture.manager.telegram_user_id,
         )
         drafts = await backend.upload_packet(
-            claim, tournament_id=fixture.tournament_id,
-            source_filename="ordinary.json", source=source,
+            claim,
+            tournament_id=fixture.tournament_id,
+            source_filename="ordinary.json",
+            source=source,
         )
         assert len(drafts) == 1
         assert drafts[0].can_publish
         assert drafts[0].detected_testers == ("Gateway Tester",)
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
         )
         drafts = await backend.reupload_packet(
-            replace(claim, update_id=2), draft_id=UUID(prepared["draft_id"]),
-            source_filename="reupload.json", source=source,
+            replace(claim, update_id=2),
+            draft_id=UUID(prepared["draft_id"]),
+            source_filename="reupload.json",
+            source=source,
         )
         assert len(drafts) == 1
         assert drafts[0].can_publish
@@ -83,28 +98,42 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         service = PacketAdminService(database)
         assignment = await assigned(database, fixture)
         async with database.transaction() as session:
-            session.add(TournamentManagerRecord(
-                tournament_id=fixture.tournament_id, player_id=other.manager.id,
-            ))
+            session.add(
+                TournamentManagerRecord(
+                    tournament_id=fixture.tournament_id,
+                    player_id=other.manager.id,
+                )
+            )
         await service.existing_packet(
-            other.tournament_id, fixture.packet_id, other.manager.id,
+            other.tournament_id,
+            fixture.packet_id,
+            other.manager.id,
             expected_version_id=assignment.adopted_version_id,
         )
         async with database.transaction() as session:
             current = await session.get(TournamentPacketAssignmentRecord, assignment.id)
             current.library_viewing_rule = "anytime"
-            session.add(TournamentPacketEntitlementRecord(
-                assignment_id=assignment.id, player_id=fixture.players[0].id,
-                content_visible=True, discoverable=False, playable=True,
-            ))
+            session.add(
+                TournamentPacketEntitlementRecord(
+                    assignment_id=assignment.id,
+                    player_id=fixture.players[0].id,
+                    content_visible=True,
+                    discoverable=False,
+                    playable=True,
+                )
+            )
             version = await session.get(PacketVersionRecord, assignment.adopted_version_id)
             version.library_released_at = datetime.now(UTC)
         matchmaking = InvitationMatchmakingService(database)
         lobby = await matchmaking.create_lobby(
-            fixture.inputs[0], tournament_id=fixture.tournament_id, max_players=1,
+            fixture.inputs[0],
+            tournament_id=fixture.tournament_id,
+            max_players=1,
         )
         await matchmaking.select_packet(
-            lobby.id, fixture.inputs[0].telegram_user_id, fixture.packet_id,
+            lobby.id,
+            fixture.inputs[0].telegram_user_id,
+            fixture.packet_id,
         )
         await matchmaking.set_ready(lobby.id, fixture.inputs[0].telegram_user_id)
         started = await matchmaking.start(lobby.id, fixture.inputs[0].telegram_user_id)
@@ -113,12 +142,20 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
             old = await PostgresPacketRepository().get(session, assignment.adopted_version_id)
             old_version = await session.get(PacketVersionRecord, old.version_id)
             _, old_rows = await service._version_fields(session, old_version)
-            exposure_before = (await session.execute(select(
-                PlayerExposureClaimRecord.id, PlayerExposureClaimRecord.claim_id,
-            ).where(PlayerExposureClaimRecord.player_id == fixture.players[0].id))).all()
+            exposure_before = (
+                await session.execute(
+                    select(
+                        PlayerExposureClaimRecord.id,
+                        PlayerExposureClaimRecord.claim_id,
+                    ).where(PlayerExposureClaimRecord.player_id == fixture.players[0].id)
+                )
+            ).all()
         editor = await edit(service, fixture, assignment)
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
         )
         draft_id = UUID(prepared["draft_id"])
         content = deepcopy(editor["packet"])
@@ -128,7 +165,9 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         content["themes"][0]["authors"] = ["Source spelling"]
         content["themes"][0]["questions"][0]["text"] = "Corrected parsing"
         imported = await service.import_reupload(
-            draft_id, fixture.manager.id, json.dumps(content).encode(),
+            draft_id,
+            fixture.manager.id,
+            json.dumps(content).encode(),
             source_filename="fixed.json",
         )
         assert imported["can_publish"]
@@ -138,35 +177,57 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         # An injected target cannot redirect this draft.
         content["_reupload_target"] = {"assignment_id": str(UUID(int=999))}
         author = await service.create_author(
-            draft_id, fixture.manager.id, first_name="Resolved", second_name=None,
-            surname="Author", telegram_link=None,
+            draft_id,
+            fixture.manager.id,
+            first_name="Resolved",
+            second_name=None,
+            surname="Author",
+            telegram_link=None,
         )
         # Reupload uses the full ordinary upload namesake-registration workflow.
         await service.create_tester(
-            draft_id, fixture.manager.id, first_name="Reupload", surname="Tester",
-            second_name=None, telegram_link=None,
+            draft_id,
+            fixture.manager.id,
+            first_name="Reupload",
+            surname="Tester",
+            second_name=None,
+            telegram_link=None,
         )
         tester = await service.create_tester(
-            draft_id, fixture.manager.id, first_name="Reupload", surname="Tester",
-            second_name=None, telegram_link=None,
+            draft_id,
+            fixture.manager.id,
+            first_name="Reupload",
+            surname="Tester",
+            second_name=None,
+            telegram_link=None,
         )
         updated = await service.update_draft(
-            draft_id, fixture.manager.id, expected_version=imported["version"], content=content,
+            draft_id,
+            fixture.manager.id,
+            expected_version=imported["version"],
+            content=content,
             tester_bindings={"0": UUID(tester["tester_id"])},
             author_bindings={"Source spelling": UUID(author["author_id"])},
             lead_author_id=UUID(author["author_id"]),
         )
         assert updated["reupload_target"] == prepared["reupload_target"]
         updated = await service.update_draft(
-            draft_id, fixture.manager.id, expected_version=updated["version"], content=content,
+            draft_id,
+            fixture.manager.id,
+            expected_version=updated["version"],
+            content=content,
         )
         assert updated["tester_bindings"] == {"0": tester["tester_id"]}
         with pytest.raises(StaleWriteError):
             await service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
+                draft_id,
+                administrator_id=fixture.manager.id,
+                expected_version=imported["version"],
             )
         new = await service.publish(
-            draft_id, administrator_id=fixture.manager.id, expected_version=updated["version"],
+            draft_id,
+            administrator_id=fixture.manager.id,
+            expected_version=updated["version"],
         )
         assert new.logical_id == old.logical_id
         assert new.version_id != old.version_id
@@ -174,35 +235,52 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
         assert new.packet.themes[0].authors == (author["display_name"],)
         assert new.packet.testers == ("Reupload Tester",)
         async with database.sessions() as session:
-            assert list(await session.scalars(select(PacketVersionTesterRecord.tester_id).where(
-                PacketVersionTesterRecord.packet_version_id == new.version_id,
-            ))) == [UUID(tester["tester_id"])]
-            assert not list(await session.scalars(select(PacketVersionTesterRecord.tester_id).where(
-                PacketVersionTesterRecord.packet_version_id == old.version_id,
-            )))
+            assert list(
+                await session.scalars(
+                    select(PacketVersionTesterRecord.tester_id).where(
+                        PacketVersionTesterRecord.packet_version_id == new.version_id,
+                    )
+                )
+            ) == [UUID(tester["tester_id"])]
+            assert not list(
+                await session.scalars(
+                    select(PacketVersionTesterRecord.tester_id).where(
+                        PacketVersionTesterRecord.packet_version_id == old.version_id,
+                    )
+                )
+            )
             new_version = await session.get(PacketVersionRecord, new.version_id)
             _, new_rows = await service._version_fields(session, new_version)
             assert [t.theme_id for t, _ in new_rows] == [t.theme_id for t, _ in old_rows]
             assert [q.question_id for _, rows in new_rows for _, q in rows] == [
                 q.question_id for _, rows in old_rows for _, q in rows
             ]
-            assignments = (await session.scalars(select(TournamentPacketAssignmentRecord).where(
-                TournamentPacketAssignmentRecord.packet_id == fixture.packet_id,
-            ))).all()
+            assignments = (
+                await session.scalars(
+                    select(TournamentPacketAssignmentRecord).where(
+                        TournamentPacketAssignmentRecord.packet_id == fixture.packet_id,
+                    )
+                )
+            ).all()
             assert len(assignments) == 2
             assert all(a.adopted_version_id == new.version_id for a in assignments)
             current = await session.get(TournamentPacketAssignmentRecord, assignment.id)
             assert current.library_viewing_rule == "anytime"
             entitlement = await session.get(
-                TournamentPacketEntitlementRecord, (assignment.id, fixture.players[0].id),
+                TournamentPacketEntitlementRecord,
+                (assignment.id, fixture.players[0].id),
             )
             assert entitlement.content_visible and entitlement.playable
             assert entitlement.discoverable is False
             historical = await PostgresPacketRepository().get(session, old.version_id)
             assert historical.packet == old.packet
-            assert (await session.scalar(select(GamePacketVersionRecord).where(
-                GamePacketVersionRecord.packet_version_id == old.version_id,
-            ))) is not None
+            assert (
+                await session.scalar(
+                    select(GamePacketVersionRecord).where(
+                        GamePacketVersionRecord.packet_version_id == old.version_id,
+                    )
+                )
+            ) is not None
             revision = await session.get(QuestionRevisionRecord, old_rows[0][1][0][1].id)
             assert revision.text == old.packet.themes[0].questions[0].text
             version = await session.get(PacketVersionRecord, new.version_id)
@@ -210,9 +288,17 @@ async def test_reupload_preserves_shared_identities_rights_and_game_snapshot(dat
             assert version.previous_version_id == old.version_id
             assert version.source_draft_id == draft_id
             assert version.library_released_at is not None
-            assert exposure_before == (await session.execute(select(
-                PlayerExposureClaimRecord.id, PlayerExposureClaimRecord.claim_id,
-            ).where(PlayerExposureClaimRecord.player_id == fixture.players[0].id))).all()
+            assert (
+                exposure_before
+                == (
+                    await session.execute(
+                        select(
+                            PlayerExposureClaimRecord.id,
+                            PlayerExposureClaimRecord.claim_id,
+                        ).where(PlayerExposureClaimRecord.player_id == fixture.players[0].id)
+                    )
+                ).all()
+            )
     finally:
         await database.close()
 
@@ -226,35 +312,55 @@ async def test_reupload_intake_shape_authorization_rejection_and_stale_target(da
         editor = await edit(service, fixture, assignment)
         with pytest.raises(PermissionError):
             await service.prepare_reupload(
-                fixture.tournament_id, assignment.id, fixture.players[0].id, expected_version=1,
+                fixture.tournament_id,
+                assignment.id,
+                fixture.players[0].id,
+                expected_version=1,
             )
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
         )
         draft_id = UUID(prepared["draft_id"])
         source = json.dumps(editor["packet"]).encode()
         with pytest.raises(PermissionError):
             await service.import_reupload(
-                draft_id, fixture.players[0].id, source, source_filename="fixed.json",
+                draft_id,
+                fixture.players[0].id,
+                source,
+                source_filename="fixed.json",
             )
-        for payload in ([editor["packet"], editor["packet"]], {
-            **editor["packet"],
-            "themes": [*editor["packet"]["themes"], editor["packet"]["themes"][0]],
-        }):
+        for payload in (
+            [editor["packet"], editor["packet"]],
+            {
+                **editor["packet"],
+                "themes": [*editor["packet"]["themes"], editor["packet"]["themes"][0]],
+            },
+        ):
             with pytest.raises(ValueError):
                 await service.import_reupload(
-                    draft_id, fixture.manager.id, json.dumps(payload).encode(),
+                    draft_id,
+                    fixture.manager.id,
+                    json.dumps(payload).encode(),
                     source_filename="wrong.json",
                 )
         assert (await service.draft_summary(draft_id, fixture.manager.id))["status"] == "uploaded"
         imported = await service.import_reupload(
-            draft_id, fixture.manager.id, source, source_filename="fixed.json",
+            draft_id,
+            fixture.manager.id,
+            source,
+            source_filename="fixed.json",
         )
         altered = deepcopy(editor["packet"])
         altered["themes"][0]["questions"] = altered["themes"][0]["questions"][:-1]
         with pytest.raises(ValueError, match="same theme count"):
             await service.update_draft(
-                draft_id, fixture.manager.id, expected_version=imported["version"], content=altered,
+                draft_id,
+                fixture.manager.id,
+                expected_version=imported["version"],
+                content=altered,
             )
         with pytest.raises(PermissionError):
             await service.publish(draft_id, administrator_id=fixture.players[0].id)
@@ -264,12 +370,17 @@ async def test_reupload_intake_shape_authorization_rejection_and_stale_target(da
         await save(service, fixture, assignment, editor, {"name": "correction"})
         with pytest.raises(StaleWriteError):
             await service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
+                draft_id,
+                administrator_id=fixture.manager.id,
+                expected_version=imported["version"],
             )
         await service.reject(draft_id, actor_id=fixture.manager.id)
         current = await assigned(database, fixture)
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=2,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=2,
         )
         cancelled_id = UUID(prepared["draft_id"])
         await service.reject(cancelled_id, actor_id=fixture.manager.id)
@@ -286,38 +397,52 @@ async def test_reupload_revoked_manager_and_retired_assignment_cannot_confirm(da
         assignment = await assigned(database, fixture)
         editor = await edit(service, fixture, assignment)
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
         )
         draft_id = UUID(prepared["draft_id"])
         imported = await service.import_reupload(
-            draft_id, fixture.manager.id, json.dumps(editor["packet"]).encode(),
+            draft_id,
+            fixture.manager.id,
+            json.dumps(editor["packet"]).encode(),
             source_filename="fixed.json",
         )
         async with database.transaction() as session:
             manager = await session.get(
-                TournamentManagerRecord, (fixture.tournament_id, fixture.manager.id),
+                TournamentManagerRecord,
+                (fixture.tournament_id, fixture.manager.id),
             )
             manager.revoked_at = datetime.now(UTC)
         for operation in (
             service.editable_draft(draft_id, fixture.manager.id),
             service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
+                draft_id,
+                administrator_id=fixture.manager.id,
+                expected_version=imported["version"],
             ),
         ):
             with pytest.raises(PermissionError):
                 await operation
         async with database.transaction() as session:
             manager = await session.get(
-                TournamentManagerRecord, (fixture.tournament_id, fixture.manager.id),
+                TournamentManagerRecord,
+                (fixture.tournament_id, fixture.manager.id),
             )
             manager.revoked_at = None
         await service.management_action(
-            fixture.tournament_id, assignment.id, fixture.manager.id,
-            expected_version=1, delete=True,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
+            delete=True,
         )
         with pytest.raises(LookupError):
             await service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
+                draft_id,
+                administrator_id=fixture.manager.id,
+                expected_version=imported["version"],
             )
     finally:
         await database.close()
@@ -331,11 +456,16 @@ async def test_reupload_confirmation_revalidates_shape_and_serializes_double_sub
         assignment = await assigned(database, fixture)
         editor = await edit(service, fixture, assignment)
         prepared = await service.prepare_reupload(
-            fixture.tournament_id, assignment.id, fixture.manager.id, expected_version=1,
+            fixture.tournament_id,
+            assignment.id,
+            fixture.manager.id,
+            expected_version=1,
         )
         draft_id = UUID(prepared["draft_id"])
         imported = await service.import_reupload(
-            draft_id, fixture.manager.id, json.dumps(editor["packet"]).encode(),
+            draft_id,
+            fixture.manager.id,
+            json.dumps(editor["packet"]).encode(),
             source_filename="fixed.json",
         )
         async with database.transaction() as session:
@@ -346,22 +476,34 @@ async def test_reupload_confirmation_revalidates_shape_and_serializes_double_sub
             draft.content = malformed
         with pytest.raises(ValueError, match="same theme count"):
             await service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
+                draft_id,
+                administrator_id=fixture.manager.id,
+                expected_version=imported["version"],
             )
         async with database.transaction() as session:
             draft = await session.get(PacketDraftRecord, draft_id)
             draft.content = original_content
-        results = await asyncio.gather(*(
-            service.publish(
-                draft_id, administrator_id=fixture.manager.id, expected_version=imported["version"],
-            ) for _ in range(2)
-        ), return_exceptions=True)
+        results = await asyncio.gather(
+            *(
+                service.publish(
+                    draft_id,
+                    administrator_id=fixture.manager.id,
+                    expected_version=imported["version"],
+                )
+                for _ in range(2)
+            ),
+            return_exceptions=True,
+        )
         assert sum(isinstance(result, StaleWriteError) for result in results) == 1
         assert sum(not isinstance(result, Exception) for result in results) == 1
         async with database.sessions() as session:
-            versions = (await session.scalars(select(PacketVersionRecord).where(
-                PacketVersionRecord.packet_id == fixture.packet_id,
-            ))).all()
+            versions = (
+                await session.scalars(
+                    select(PacketVersionRecord).where(
+                        PacketVersionRecord.packet_id == fixture.packet_id,
+                    )
+                )
+            ).all()
             assert len(versions) == 2
     finally:
         await database.close()

@@ -9,7 +9,9 @@ WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
 def library_docx(
-    name: str, pages: list[dict[str, object]], testers: list[str] | tuple[str, ...] = (),
+    name: str,
+    pages: list[dict[str, object]],
+    testers: list[str] | tuple[str, ...] = (),
 ) -> bytes:
     document = Element(f"{{{WORD}}}document")
     body = SubElement(document, f"{{{WORD}}}body")

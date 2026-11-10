@@ -474,7 +474,10 @@ class BotBackend:
                      for draft in data.get("drafts", [data]))
 
     async def reupload_draft(
-        self, claim: TelegramUpdateClaim, *, draft_id: UUID,
+        self,
+        claim: TelegramUpdateClaim,
+        *,
+        draft_id: UUID,
     ) -> dict[str, object]:
         response = await self._execute(
             claim, PacketDraftGetOperation(action=ActionCode.PACKET_DRAFT_GET, draft_id=draft_id)
@@ -485,12 +488,22 @@ class BotBackend:
         return data
 
     async def reupload_packet(
-        self, claim: TelegramUpdateClaim, *, draft_id: UUID, source_filename: str, source: bytes,
+        self,
+        claim: TelegramUpdateClaim,
+        *,
+        draft_id: UUID,
+        source_filename: str,
+        source: bytes,
     ) -> tuple[PacketDraftState, ...]:
-        response = await self._execute(claim, PacketReuploadUploadOperation(
-            action=ActionCode.PACKET_REUPLOAD_UPLOAD, draft_id=draft_id,
-            source_filename=source_filename, source_base64=base64.b64encode(source).decode("ascii"),
-        ))
+        response = await self._execute(
+            claim,
+            PacketReuploadUploadOperation(
+                action=ActionCode.PACKET_REUPLOAD_UPLOAD,
+                draft_id=draft_id,
+                source_filename=source_filename,
+                source_base64=base64.b64encode(source).decode("ascii"),
+            ),
+        )
         return (PacketDraftState.model_validate(response.data),)
 
     async def decide_packet_draft(

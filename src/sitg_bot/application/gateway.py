@@ -311,20 +311,28 @@ ACTION_POLICIES.update(
         ),
         ActionCode.TESTERS_SEARCH: ActionPolicy(cursor_paginated=True, sensitive_response=True),
         ActionCode.TESTERS_MINE: ActionPolicy(sensitive_response=True),
-        ActionCode.PACKET_DRAFT_TESTER_SEARCH: ActionPolicy(cursor_paginated=True,
-                                                          sensitive_response=True),
-        ActionCode.PACKET_DRAFT_TESTER_CREATE: ActionPolicy(mutation=True,
-                                                          idempotency_required=True),
-        ActionCode.TESTER_LINK_CREATE: ActionPolicy(mutation=True, idempotency_required=True,
-                                                   sensitive_response=True),
-        ActionCode.TESTER_LINK_CANCEL: ActionPolicy(mutation=True, idempotency_required=True,
-                                                   sensitive_response=True),
+        ActionCode.PACKET_DRAFT_TESTER_SEARCH: ActionPolicy(
+            cursor_paginated=True, sensitive_response=True
+        ),
+        ActionCode.PACKET_DRAFT_TESTER_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True
+        ),
+        ActionCode.TESTER_LINK_CREATE: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
+        ActionCode.TESTER_LINK_CANCEL: ActionPolicy(
+            mutation=True, idempotency_required=True, sensitive_response=True
+        ),
         ActionCode.TESTER_LINK_MINE: ActionPolicy(cursor_paginated=True, sensitive_response=True),
-        ActionCode.TESTER_LINK_ADMIN_PENDING: ActionPolicy(cursor_paginated=True,
-                                                         sensitive_response=True),
-        ActionCode.TESTER_LINK_ADMIN_DECIDE: ActionPolicy(mutation=True, idempotency_required=True,
-                                                        stale_write_field="expected_status",
-                                                        sensitive_response=True),
+        ActionCode.TESTER_LINK_ADMIN_PENDING: ActionPolicy(
+            cursor_paginated=True, sensitive_response=True
+        ),
+        ActionCode.TESTER_LINK_ADMIN_DECIDE: ActionPolicy(
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_status",
+            sensitive_response=True,
+        ),
         ActionCode.AUTHORS_SEARCH: ActionPolicy(cursor_paginated=True),
         ActionCode.ADMIN_PACKET_LIST: ActionPolicy(cursor_paginated=True),
         ActionCode.ADMIN_GAME_LIST: ActionPolicy(cursor_paginated=True),
@@ -398,7 +406,9 @@ ACTION_POLICIES.update(
             stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_SUBSCRIPTIONS_UPDATE: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_REGISTRATION_DECIDE: ActionPolicy(
             mutation=True, idempotency_required=True
@@ -412,7 +422,9 @@ ACTION_POLICIES.update(
             stale_write_field="expected_version",
         ),
         ActionCode.TOURNAMENT_START: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.PACKET_UPLOAD: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.PACKET_REUPLOAD_PREPARE: ActionPolicy(
@@ -465,19 +477,21 @@ ACTION_POLICIES.update(
         ActionCode.ADMIN_AUTHOR_LINK: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_MERGE: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.ADMIN_AUTHOR_UPDATE: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.ADMIN_AUTHOR_SPLIT: ActionPolicy(
-            mutation=True, idempotency_required=True, stale_write_field="expected_version",
+            mutation=True,
+            idempotency_required=True,
+            stale_write_field="expected_version",
         ),
         ActionCode.ADMIN_PACKET_ACCESS: ActionPolicy(
             mutation=True, idempotency_required=True, sensitive_response=True
         ),
         ActionCode.PLAYER_UNBAN: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.BUG_REPORT_CREATE: ActionPolicy(mutation=True, idempotency_required=True),
-        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(
-            mutation=True, idempotency_required=True
-        ),
+        ActionCode.ADMIN_SUSPICION_CLEAR: ActionPolicy(mutation=True, idempotency_required=True),
         ActionCode.NAVIGATION_CONTEXT_SET: ActionPolicy(
             mutation=True, idempotency_required=True, stale_write_field="expected_version"
         ),
@@ -792,29 +806,42 @@ class ApplicationGateway:
             if action == ActionCode.PACKET_DRAFT_TESTER_SEARCH and operation.draft_id is None:
                 raise ValueError("Draft identity is required")
             return await TesterService(self.database).search(
-                player_id, operation.query, draft_id=operation.draft_id,
-                cursor=operation.cursor, limit=operation.limit,
+                player_id,
+                operation.query,
+                draft_id=operation.draft_id,
+                cursor=operation.cursor,
+                limit=operation.limit,
             )
         if isinstance(operation, TestersMineOperation):
             return await TesterService(self.database).mine(player_id)
         if isinstance(operation, TesterLinkCreateOperation):
             return await TesterService(self.database).create_request(
-                player_id, operation.tester_id, note=operation.note)
+                player_id, operation.tester_id, note=operation.note
+            )
         if isinstance(operation, TesterLinkCancelOperation):
             return await TesterService(self.database).cancel_request(
-                operation.request_id, player_id)
+                operation.request_id, player_id
+            )
         if isinstance(operation, TesterLinkListOperation):
             return await TesterService(self.database).requests(
-                player_id, admin=action == ActionCode.TESTER_LINK_ADMIN_PENDING,
-                cursor=operation.cursor, limit=operation.limit)
+                player_id,
+                admin=action == ActionCode.TESTER_LINK_ADMIN_PENDING,
+                cursor=operation.cursor,
+                limit=operation.limit,
+            )
         if isinstance(operation, TesterLinkAdminDecideOperation):
             return await TesterService(self.database).decide_request(
-                operation.request_id, player_id, approve=operation.approve, note=operation.note)
+                operation.request_id, player_id, approve=operation.approve, note=operation.note
+            )
         if isinstance(operation, PacketDraftTesterCreateOperation):
             return await self.packets.create_tester(
-                operation.draft_id, player_id, first_name=operation.first_name,
-                second_name=operation.second_name, surname=operation.surname,
-                telegram_link=operation.telegram_link)
+                operation.draft_id,
+                player_id,
+                first_name=operation.first_name,
+                second_name=operation.second_name,
+                surname=operation.surname,
+                telegram_link=operation.telegram_link,
+            )
         if isinstance(operation, AuthorsSearchOperation):
             return await self.author_links.search_authors(
                 operation.query, cursor=operation.cursor, limit=operation.limit
@@ -1155,9 +1182,12 @@ class ApplicationGateway:
             return preview
         if isinstance(operation, PacketManagementUpdateOperation):
             await self.packets.modify_packet(
-                operation.tournament_id, operation.assignment_id, player_id,
+                operation.tournament_id,
+                operation.assignment_id,
+                player_id,
                 expected_version=operation.expected_version,
-                content=dict(operation.content), changes=operation.changes,
+                content=dict(operation.content),
+                changes=operation.changes,
                 field_author_ids=operation.field_author_ids,
                 tester_bindings=operation.tester_bindings,
             )
@@ -1177,13 +1207,16 @@ class ApplicationGateway:
             )
         if isinstance(operation, PacketReuploadPrepareOperation):
             return await self.packets.prepare_reupload(
-                operation.tournament_id, operation.assignment_id, player_id,
+                operation.tournament_id,
+                operation.assignment_id,
+                player_id,
                 expected_version=operation.expected_version,
             )
         if isinstance(operation, (PacketUploadOperation, PacketReuploadUploadOperation)):
             tournament_id = (
                 await self._manager_tournament_id(telegram_user_id, operation.tournament_id)
-                if isinstance(operation, PacketUploadOperation) else None
+                if isinstance(operation, PacketUploadOperation)
+                else None
             )
             try:
                 source = base64.b64decode(operation.source_base64, validate=True)
@@ -1191,7 +1224,9 @@ class ApplicationGateway:
                 raise ValueError("Packet upload is not valid base64") from error
             if isinstance(operation, PacketReuploadUploadOperation):
                 result = await self.packets.import_reupload(
-                    operation.draft_id, player_id, source,
+                    operation.draft_id,
+                    player_id,
+                    source,
                     source_filename=operation.source_filename,
                 )
             else:

@@ -348,8 +348,10 @@ def packet_draft_message(
         decisions.append(
             InlineButtonModel(
                 localization.text("packet_upload.publish", locale),
-                callback_data=(f"packet:draft:publish:{draft.draft_id}"
-                               + (f":{draft.version}" if draft.reupload_target else "")),
+                callback_data=(
+                    f"packet:draft:publish:{draft.draft_id}"
+                    + (f":{draft.version}" if draft.reupload_target else "")
+                ),
             )
         )
     if draft.can_reject:
@@ -416,8 +418,10 @@ async def handle_packet_document(
     reupload_draft_id = data.get("reupload_draft_id")
     if reupload_draft_id:
         drafts = await backend.reupload_packet(
-            telegram_update_claim, draft_id=UUID(str(reupload_draft_id)),
-            source_filename=filename, source=source,
+            telegram_update_claim,
+            draft_id=UUID(str(reupload_draft_id)),
+            source_filename=filename,
+            source=source,
         )
         # Reupload is deliberately single-file: an album's later items must not
         # become independent new packets or overwrite this correction draft.

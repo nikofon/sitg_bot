@@ -137,49 +137,86 @@ async def test_reupload_deep_link_binds_draft_and_intake_uses_only_that_draft() 
 
     target = {"assignment_id": str(UUID(int=2)), "expected_version": 1}
     summary = {
-        "draft_id": str(UUID(int=1)), "version": 2, "status": "awaiting_confirmation",
-        "source_filename": "fixed.json", "ruleset_key": "si", "ruleset_version": 1,
-        "packet_name": "Corrected", "theme_count": 1, "question_count": 5,
-        "detected_authors": [], "errors": [], "warnings": [], "can_publish": True,
-        "can_reject": True, "reupload_target": target, "launch_reference": "preview",
+        "draft_id": str(UUID(int=1)),
+        "version": 2,
+        "status": "awaiting_confirmation",
+        "source_filename": "fixed.json",
+        "ruleset_key": "si",
+        "ruleset_version": 1,
+        "packet_name": "Corrected",
+        "theme_count": 1,
+        "question_count": 5,
+        "detected_authors": [],
+        "errors": [],
+        "warnings": [],
+        "can_publish": True,
+        "can_reject": True,
+        "reupload_target": target,
+        "launch_reference": "preview",
     }
-    gateway = SimpleNamespace(execute_update=AsyncMock(side_effect=[
-        SimpleNamespace(ok=True, data={**summary, "status": "uploaded"}),
-        SimpleNamespace(ok=True, data=summary), SimpleNamespace(ok=True),
-    ]))
+    gateway = SimpleNamespace(
+        execute_update=AsyncMock(
+            side_effect=[
+                SimpleNamespace(ok=True, data={**summary, "status": "uploaded"}),
+                SimpleNamespace(ok=True, data=summary),
+                SimpleNamespace(ok=True),
+            ]
+        )
+    )
     message = SimpleNamespace(
         text=f"/start reupload_{UUID(int=1).hex}",
         document=SimpleNamespace(file_name="fixed.json", file_size=5),
         bot=SimpleNamespace(download=AsyncMock(return_value=io.BytesIO(b"input"))),
-        answer=AsyncMock(return_value=SimpleNamespace(
-            chat=SimpleNamespace(id=42), message_id=10,
-        )),
+        answer=AsyncMock(
+            return_value=SimpleNamespace(
+                chat=SimpleNamespace(id=42),
+                message_id=10,
+            )
+        ),
     )
     state = SimpleNamespace(
-        clear=AsyncMock(), set_state=AsyncMock(), update_data=AsyncMock(),
+        clear=AsyncMock(),
+        set_state=AsyncMock(),
+        update_data=AsyncMock(),
         get_data=AsyncMock(return_value={"reupload_draft_id": str(UUID(int=1))}),
     )
     backend = BotBackend(gateway)
     await handle_start(
-        message, backend, object(), LocalizationService(), "en",
-        SimpleNamespace(context="tournament"), state,
+        message,
+        backend,
+        object(),
+        LocalizationService(),
+        "en",
+        SimpleNamespace(context="tournament"),
+        state,
     )
     state.update_data.assert_awaited_once_with(reupload_draft_id=str(UUID(int=1)))
     assert "ONE" in message.answer.await_args.args[0]
     await handle_packet_document(
-        message, backend, object(), LocalizationService(), "en", state, "https://example.org/app",
+        message,
+        backend,
+        object(),
+        LocalizationService(),
+        "en",
+        state,
+        "https://example.org/app",
     )
     operations = [call.args[1] for call in gateway.execute_update.await_args_list]
     assert [op.action for op in operations] == [
-        ActionCode.PACKET_DRAFT_GET, ActionCode.PACKET_REUPLOAD_UPLOAD,
+        ActionCode.PACKET_DRAFT_GET,
+        ActionCode.PACKET_REUPLOAD_UPLOAD,
         ActionCode.PACKET_DRAFT_TELEGRAM_BIND,
     ]
     assert operations[1].draft_id == UUID(int=1)
     assert state.clear.await_count == 2
-    buttons = [button for row in message.answer.await_args.kwargs["reply_markup"].inline_keyboard
-               for button in row]
-    assert any(button.callback_data == f"packet:draft:publish:{UUID(int=1)}:2"
-               for button in buttons)
+    buttons = [
+        button
+        for row in message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert any(
+        button.callback_data == f"packet:draft:publish:{UUID(int=1)}:2" for button in buttons
+    )
 
 
 async def test_packet_upload_accepts_several_files_in_one_session() -> None:
@@ -479,7 +516,7 @@ def test_catalog_validation_permits_only_plain_http_links() -> None:
 
 def test_catalog_link_placeholders_require_http_urls() -> None:
     localization = LocalizationService(
-        {"ru": {"one": "<a href=\"{url}\">link</a>"}, "en": {"one": "<a href=\"{url}\">link</a>"}}
+        {"ru": {"one": '<a href="{url}">link</a>'}, "en": {"one": '<a href="{url}">link</a>'}}
     )
 
     rendered = localization.text("one", "en", url="https://example.org/terms")
@@ -1003,7 +1040,8 @@ async def test_player_tester_link_opens_private_window(locale) -> None:
         player_action="player.tester_link",
         backend=SimpleNamespace(),  # type: ignore[arg-type]
         telegram_update_claim=SimpleNamespace(),  # type: ignore[arg-type]
-        localization=LocalizationService(), locale=locale,
+        localization=LocalizationService(),
+        locale=locale,
         navigation=navigation(allowed_actions=["player.tester_link"]),
         state=SimpleNamespace(),  # type: ignore[arg-type]
         launch_links="https://mini.example.test/app",
@@ -1017,11 +1055,16 @@ def test_tester_link_notifications_render_names_and_decision(locale) -> None:
     localization = LocalizationService()
     created = notification_text(
         "tester_link.request_created",
-        {"player_nickname": "<Player>", "tester_name": "<Tester>"}, localization, locale,
+        {"player_nickname": "<Player>", "tester_name": "<Tester>"},
+        localization,
+        locale,
     )
     assert "&lt;Player&gt;" in created and "&lt;Tester&gt;" in created
     decided = notification_text(
-        "tester_link.request_decided", {"status": "approved"}, localization, locale,
+        "tester_link.request_decided",
+        {"status": "approved"},
+        localization,
+        locale,
     )
     assert "approved" in decided
     assert "tester_link.request_decided" not in decided
@@ -1782,12 +1825,8 @@ async def test_final_registration_step_delivers_license_notice_after_help(
     launch_links: str | None,
 ) -> None:
     backend = SimpleNamespace(
-        start_registration=AsyncMock(
-            return_value=registration(step="telegram_public", version=2)
-        ),
-        save_registration_step=AsyncMock(
-            return_value=registration(step=None, version=3)
-        ),
+        start_registration=AsyncMock(return_value=registration(step="telegram_public", version=2)),
+        save_registration_step=AsyncMock(return_value=registration(step=None, version=3)),
         complete_registration=AsyncMock(),
         navigation=AsyncMock(return_value=navigation()),
         claim_notification_alerts=AsyncMock(return_value=SimpleNamespace(audiences=[])),
@@ -1850,7 +1889,8 @@ async def test_license_command_uses_configured_terms_link(launch_links: str | No
 @pytest.mark.parametrize("locale", ["en", "ru"])
 @pytest.mark.parametrize("launch_links", [None, "https://mini.example.test/app"])
 def test_license_message_preserves_notice_with_optional_configured_link(
-    locale: str, launch_links: str | None,
+    locale: str,
+    launch_links: str | None,
 ) -> None:
     localization = LocalizationService()
     model = license_message(localization, locale, launch_links)
@@ -1861,9 +1901,12 @@ def test_license_message_preserves_notice_with_optional_configured_link(
         assert "https://" not in model.text
     else:
         assert '<a href="https://mini.example.test/app/license.html">' in model.text
-        assert model.text.replace(
-            '<a href="https://mini.example.test/app/license.html">', "<b>"
-        ).replace("</a>", "</b>") == unlinked.text
+        assert (
+            model.text.replace(
+                '<a href="https://mini.example.test/app/license.html">', "<b>"
+            ).replace("</a>", "</b>")
+            == unlinked.text
+        )
 
 
 def telegram_update(kind: str) -> Update:

@@ -146,9 +146,9 @@ def test_chat_library_merge_from_each_branch(baseline_database, start_revision):
         engine = create_async_engine(url)
         try:
             async with engine.connect() as connection:
-                assert (await connection.execute(text(
-                    "SELECT version_num FROM alembic_version"
-                ))).scalars().all() == ["0021_testers"]
+                assert (
+                    await connection.execute(text("SELECT version_num FROM alembic_version"))
+                ).scalars().all() == ["0021_testers"]
                 # Both branches' schema changes must be present.
                 await connection.execute(text("SELECT match_id FROM classic_chats LIMIT 0"))
                 await connection.execute(text(

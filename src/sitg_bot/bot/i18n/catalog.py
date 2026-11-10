@@ -46,9 +46,7 @@ class _TelegramHTMLValidator(HTMLParser):
         if tag == "a":
             href = attrs[0][1] if len(attrs) == 1 and attrs[0][0] == "href" else None
             placeholder = self.href_placeholder.fullmatch(href or "")
-            if not href or not (
-                href.startswith(self.link_schemes) or placeholder is not None
-            ):
+            if not href or not (href.startswith(self.link_schemes) or placeholder is not None):
                 raise CatalogError(
                     "Translated links must use exactly one http(s) href attribute"
                 )
@@ -91,9 +89,7 @@ class LocalizationService:
             if not isinstance(value, str) or not value.startswith(
                 _TelegramHTMLValidator.link_schemes
             ):
-                raise CatalogError(
-                    f"Parameter {field!r} for {key} must be an http(s) URL"
-                )
+                raise CatalogError(f"Parameter {field!r} for {key} must be an http(s) URL")
         escaped = {
             name: html.escape(str(value), quote=True) if isinstance(value, str) else value
             for name, value in parameters.items()
@@ -153,9 +149,7 @@ class LocalizationService:
                 validator.feed(value)
                 validator.close()
                 validator.finish()
-                self._link_fields.setdefault(locale, {})[key] = frozenset(
-                    validator.href_fields
-                )
+                self._link_fields.setdefault(locale, {})[key] = frozenset(validator.href_fields)
 
     @staticmethod
     def _fields(template: str) -> set[str]:

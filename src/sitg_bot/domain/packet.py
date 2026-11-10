@@ -116,9 +116,13 @@ class Packet:
         if self.year is not None and not 1000 <= self.year <= 9999:
             raise ValueError("Packet year must contain four digits")
         object.__setattr__(self, "language", normalize_language_tag(self.language))
-        if isinstance(self.testers, str) or len(self.testers) > 512 or any(
-            not isinstance(name, str) or not name.strip() or len(name) > 300
-            for name in self.testers
+        if (
+            isinstance(self.testers, str)
+            or len(self.testers) > 512
+            or any(
+                not isinstance(name, str) or not name.strip() or len(name) > 300
+                for name in self.testers
+            )
         ):
             raise ValueError("Testers must be a list of non-empty names (maximum 512)")
         object.__setattr__(self, "testers", tuple(" ".join(n.split()) for n in self.testers))

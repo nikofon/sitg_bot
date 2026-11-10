@@ -210,15 +210,20 @@ async def test_namesake_slots_survive_publication_and_unrelated_correction(datab
         draft_id = await upload(service, fixture, content)
         bindings = {"0": first.id, "1": second.id}
         await service.update_draft(
-            draft_id, fixture.manager.id, expected_version=1,
-            content=asdict(content), tester_bindings=bindings,
+            draft_id,
+            fixture.manager.id,
+            expected_version=1,
+            content=asdict(content),
+            tester_bindings=bindings,
         )
         stored = await service.publish(draft_id, administrator_id=fixture.manager.id)
         assert stored.packet.testers == (name, name)
         async with database.sessions() as session:
-            assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
-                TournamentPacketAssignmentRecord.packet_id == stored.logical_id
-            ))
+            assignment = await session.scalar(
+                select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.packet_id == stored.logical_id
+                )
+            )
         editor = await edit(service, fixture, assignment)
         expected = {slot: str(identity) for slot, identity in bindings.items()}
         assert editor["tester_bindings"] == expected
@@ -247,39 +252,59 @@ async def test_new_membership_backfills_branches_without_exposing_hidden_hints(d
         draft_id = await upload(service, original, packet())
         stored = await service.publish(draft_id, administrator_id=original.manager.id)
         branch_assignment_id = await service.tournaments.assign_packet(
-            branch.tournament_id, stored.logical_id, branch.manager.id,
-            adopted_version_id=stored.version_id, discoverable=False,
+            branch.tournament_id,
+            stored.logical_id,
+            branch.manager.id,
+            adopted_version_id=stored.version_id,
+            discoverable=False,
         )
         async with database.sessions() as session:
             branch_assignment = await session.get(
                 TournamentPacketAssignmentRecord, branch_assignment_id
             )
-            original_assignment = await session.scalar(select(TournamentPacketAssignmentRecord).where(
-                TournamentPacketAssignmentRecord.packet_id == stored.logical_id,
-                TournamentPacketAssignmentRecord.tournament_id == original.tournament_id,
-            ))
+            original_assignment = await session.scalar(
+                select(TournamentPacketAssignmentRecord).where(
+                    TournamentPacketAssignmentRecord.packet_id == stored.logical_id,
+                    TournamentPacketAssignmentRecord.tournament_id == original.tournament_id,
+                )
+            )
         editor = await edit(service, branch, branch_assignment)
         editor["packet"]["name"] = "Hidden branch"
         editor["packet"]["themes"][0]["name"] = "Replacement"
-        await save(service, branch, branch_assignment, editor, {
-            "name": "correction", "themes.0.name": "substitution",
-        })
+        await save(
+            service,
+            branch,
+            branch_assignment,
+            editor,
+            {
+                "name": "correction",
+                "themes.0.name": "substitution",
+            },
+        )
         editor = await edit(service, original, original_assignment)
         editor["packet"]["testers"] = (tester.display_name,)
         await save(service, original, original_assignment, editor, {"testers": "correction"})
         async with database.sessions() as session:
-            claims = list(await session.scalars(select(PlayerExposureClaimRecord).where(
-                PlayerExposureClaimRecord.player_id == player.id
-            )))
+            claims = list(
+                await session.scalars(
+                    select(PlayerExposureClaimRecord).where(
+                        PlayerExposureClaimRecord.player_id == player.id
+                    )
+                )
+            )
             assert len(claims) == 12 and all(claim.state == "burnt" for claim in claims)
             manager_claims = await session.scalars(
                 select(PlayerExposureClaimRecord).where(
                     PlayerExposureClaimRecord.player_id == original.manager.id
                 )
             )
-            assert len({claim.claim_id for claim in claims} - {
-                claim.claim_id for claim in manager_claims
-            }) == 6
+            assert (
+                len(
+                    {claim.claim_id for claim in claims}
+                    - {claim.claim_id for claim in manager_claims}
+                )
+                == 6
+            )
         expected = [{"packet_id": str(stored.logical_id), "name": stored.packet.name}]
         matches = await testers.search(player.id, tester.display_name)
         assert matches["items"][0]["packets"] == expected

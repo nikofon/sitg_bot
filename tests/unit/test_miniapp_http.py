@@ -101,17 +101,20 @@ async def test_miniapp_entry_pages_require_revalidation(tmp_path: Path, path: st
     assert response.headers["Cache-Control"] == "no-cache"
 
 
-@pytest.mark.parametrize(("path", "cache_control"), [
-    ("assets/index-DVTqsAUJ.js", "public, max-age=31536000, immutable"),
-    ("assets/index-Dy3l3TP3.css", "public, max-age=31536000, immutable"),
-    ("assets/logo-Abc123_-.svg", "public, max-age=31536000, immutable"),
-    ("assets/config.js", "no-cache"),
-    ("assets/page-12345678.html", "no-cache"),
-    ("index-12345678.js", "no-cache"),
-    ("favicon.ico", "no-cache"),
-    ("index.html", "no-cache"),
-    ("license.html", "no-cache"),
-])
+@pytest.mark.parametrize(
+    ("path", "cache_control"),
+    [
+        ("assets/index-DVTqsAUJ.js", "public, max-age=31536000, immutable"),
+        ("assets/index-Dy3l3TP3.css", "public, max-age=31536000, immutable"),
+        ("assets/logo-Abc123_-.svg", "public, max-age=31536000, immutable"),
+        ("assets/config.js", "no-cache"),
+        ("assets/page-12345678.html", "no-cache"),
+        ("index-12345678.js", "no-cache"),
+        ("favicon.ico", "no-cache"),
+        ("index.html", "no-cache"),
+        ("license.html", "no-cache"),
+    ],
+)
 async def test_static_file_cache_policy(tmp_path: Path, path: str, cache_control: str) -> None:
     asset = tmp_path / path
     asset.parent.mkdir(parents=True, exist_ok=True)
@@ -469,7 +472,9 @@ async def test_existing_packet_uses_launch_scope(command):
 async def test_packet_management_mutations_use_launch_scope_and_write_guards(command, action):
     gateway = FakeGateway()
     http = MiniAppHttpServer(
-        FakeAuth(), gateway, launch_references=FakeManagementLaunchReferences(),
+        FakeAuth(),
+        gateway,
+        launch_references=FakeManagementLaunchReferences(),
         selection_notifier=SimpleNamespace(bot_username=AsyncMock(return_value="sitg_test_bot")),
     )
     request = make_mocked_request(

@@ -272,8 +272,12 @@ class PacketAdminService:
                 "can_publish": False,
                 "can_reject": False,
                 "field_author_ids": {
-                    key: [str(item) for item in value] if isinstance(value, tuple)
-                    else str(value) if value else None for key, value in authors.items()
+                    key: [str(item) for item in value]
+                    if isinstance(value, tuple)
+                    else str(value)
+                    if value
+                    else None
+                    for key, value in authors.items()
                 },
                 "associated_authors": [
                     {"author_id": str(a.id), "display_name": a.display_name} for a in associated
@@ -282,8 +286,9 @@ class PacketAdminService:
                     str(i): str(t.id)
                     for i, t in enumerate(await version_testers(session, version.id))
                 },
-                "associated_testers": [tester_summary(t)
-                                       for t in await version_testers(session, version.id)],
+                "associated_testers": [
+                    tester_summary(t) for t in await version_testers(session, version.id)
+                ],
             }
 
     async def management_action(
@@ -345,14 +350,25 @@ class PacketAdminService:
                 )
 
     async def modify_packet(
-        self, tournament_id: UUID, assignment_id: UUID, actor_id: UUID, *,
-        expected_version: int, content: dict[str, object], changes: dict[str, str],
+        self,
+        tournament_id: UUID,
+        assignment_id: UUID,
+        actor_id: UUID,
+        *,
+        expected_version: int,
+        content: dict[str, object],
+        changes: dict[str, str],
         field_author_ids: dict[str, UUID | list[UUID | None] | tuple[UUID | None, ...] | None],
         tester_bindings: dict[str, UUID] | None = None,
     ) -> None:
         await self._save_packet(
-            tournament_id, assignment_id, actor_id, expected_version=expected_version,
-            content=content, changes=changes, field_author_ids=field_author_ids,
+            tournament_id,
+            assignment_id,
+            actor_id,
+            expected_version=expected_version,
+            content=content,
+            changes=changes,
+            field_author_ids=field_author_ids,
             tester_bindings=tester_bindings,
         )
 
@@ -404,11 +420,16 @@ class PacketAdminService:
             old_authors, rows = await self._version_fields(session, old)
             previous_testers = await version_testers(session, old.id)
             resolved_testers = await resolve_testers(
-                session, packet.testers,
+                session,
+                packet.testers,
                 {slot: UUID(value) for slot, value in reupload.tester_bindings.items()}
-                if reupload is not None else (
-                    tester_bindings if tester_bindings is not None else {
-                        str(i): tester.id for i, tester in enumerate(previous_testers)
+                if reupload is not None
+                else (
+                    tester_bindings
+                    if tester_bindings is not None
+                    else {
+                        str(i): tester.id
+                        for i, tester in enumerate(previous_testers)
                         if i < len(packet.testers) and packet.testers[i] == tester.display_name
                     }
                 ),
@@ -416,9 +437,10 @@ class PacketAdminService:
             before, after = asdict(stored.packet), asdict(packet)
             # A namesake reassociation is a correction even if spelling is unchanged.
             before["testers"] = (stored.packet.testers, tuple(t.id for t in previous_testers))
-            after["testers"] = (packet.testers, tuple(dict.fromkeys(
-                t.id for t in resolved_testers
-            )))
+            after["testers"] = (
+                packet.testers,
+                tuple(dict.fromkeys(t.id for t in resolved_testers)),
+            )
             if reupload is not None:
                 if reupload.version != expected_draft_version:
                     raise StaleWriteError("Reupload draft has changed; review it again")
@@ -428,7 +450,8 @@ class PacketAdminService:
                     raise StaleWriteError("Packet version has changed")
                 self._require_reupload_shape(stored.packet, packet)
                 resolved, lead = await self._resolve_authors(
-                    session, packet,
+                    session,
+                    packet,
                     {name: UUID(value) for name, value in reupload.author_bindings.items()},
                     reupload.lead_author_id,
                 )
@@ -438,14 +461,20 @@ class PacketAdminService:
                 before_fields = self._flat_fields(before)
                 after_fields = self._flat_fields(asdict(packet))
                 after_fields["testers"] = after["testers"]
-                changes = {key: "correction" for key in before_fields
-                           if before_fields[key] != after_fields[key]}
-                changes.update({key: "correction" for key in old_authors
-                                if old_authors[key] != field_author_ids[key]})
-            else:
-                self._validate_changes(
-                    before, after, old_authors, field_author_ids, changes
+                changes = {
+                    key: "correction"
+                    for key in before_fields
+                    if before_fields[key] != after_fields[key]
+                }
+                changes.update(
+                    {
+                        key: "correction"
+                        for key in old_authors
+                        if old_authors[key] != field_author_ids[key]
+                    }
                 )
+            else:
+                self._validate_changes(before, after, old_authors, field_author_ids, changes)
             substitution = "substitution" in changes.values()
             assignments = (
                 await session.scalars(
@@ -724,13 +753,16 @@ class PacketAdminService:
             for j, question in enumerate(theme.questions):
                 question_authors = authors(question.authors)
                 ids[f"themes.{i}.questions.{j}.authors"] = tuple(a.id for a in question_authors)
-                questions.append(replace(
-                    question, authors=tuple(a.display_name for a in question_authors)
-                ))
-            themes.append(replace(
-                theme, authors=tuple(a.display_name for a in theme_authors),
-                questions=tuple(questions),
-            ))
+                questions.append(
+                    replace(question, authors=tuple(a.display_name for a in question_authors))
+                )
+            themes.append(
+                replace(
+                    theme,
+                    authors=tuple(a.display_name for a in theme_authors),
+                    questions=tuple(questions),
+                )
+            )
         return replace(
             packet, lead_author=lead.display_name if lead else "", themes=tuple(themes)
         ), ids
@@ -749,7 +781,12 @@ class PacketAdminService:
         return assignment, version
 
     async def prepare_reupload(
-        self, tournament_id: UUID, assignment_id: UUID, actor_id: UUID, *, expected_version: int,
+        self,
+        tournament_id: UUID,
+        assignment_id: UUID,
+        actor_id: UUID,
+        *,
+        expected_version: int,
     ) -> dict[str, object]:
         async with self.database.transaction() as session:
             assignment, version = await self._management_records(
@@ -758,14 +795,21 @@ class PacketAdminService:
             if version.version_number != expected_version:
                 raise StaleWriteError("Packet version has changed")
             target = {
-                "tournament_id": str(tournament_id), "assignment_id": str(assignment_id),
-                "packet_id": str(assignment.packet_id), "packet_version_id": str(version.id),
+                "tournament_id": str(tournament_id),
+                "assignment_id": str(assignment_id),
+                "packet_id": str(assignment.packet_id),
+                "packet_version_id": str(version.id),
                 "expected_version": version.version_number,
             }
             draft = PacketDraftRecord(
-                status="uploaded", source_filename="packet-reupload", source_checksum="0" * 64,
-                content={"_reupload_target": target}, validation_errors=[], validation_warnings=[],
-                uploader_id=actor_id, creation_tournament_id=tournament_id,
+                status="uploaded",
+                source_filename="packet-reupload",
+                source_checksum="0" * 64,
+                content={"_reupload_target": target},
+                validation_errors=[],
+                validation_warnings=[],
+                uploader_id=actor_id,
+                creation_tournament_id=tournament_id,
             )
             session.add(draft)
             await session.flush()
@@ -774,7 +818,12 @@ class PacketAdminService:
         return await self.draft_summary(draft_id, actor_id)
 
     async def import_reupload(
-        self, draft_id: UUID, actor_id: UUID, source: bytes, *, source_filename: str,
+        self,
+        draft_id: UUID,
+        actor_id: UUID,
+        source: bytes,
+        *,
+        source_filename: str,
     ) -> dict[str, object]:
         # Authorize before parsing, then repeat the target/version check under locks.
         draft, _ = await self._authorized_draft(draft_id, actor_id)
@@ -902,8 +951,9 @@ class PacketAdminService:
                 decoded = json.loads(source.decode("utf-8-sig"))
                 if isinstance(decoded, dict):
                     # Reserved server metadata must never come from an uploaded file.
-                    parsed_content = {key: value for key, value in decoded.items()
-                                      if key != "_reupload_target"}
+                    parsed_content = {
+                        key: value for key, value in decoded.items() if key != "_reupload_target"
+                    }
             packets = await asyncio.to_thread(packets_from_document_bytes, source, filename)
             self._require_reasonable_content_size({"packets": [asdict(p) for p in packets]})
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -1138,16 +1188,13 @@ class PacketAdminService:
             "packet_name": packet.name if packet is not None else "",
             "theme_count": len(packet.themes) if packet is not None else None,
             "question_count": (
-                sum(len(theme.questions) for theme in packet.themes)
-                if packet is not None
-                else None
+                sum(len(theme.questions) for theme in packet.themes) if packet is not None else None
             ),
             "detected_authors": list(authors),
             "detected_testers": list(packet.testers) if packet is not None else [],
             "errors": list(draft.validation_errors),
             "warnings": list(draft.validation_warnings),
-            "can_publish": draft.status == "awaiting_confirmation"
-            and not draft.validation_errors,
+            "can_publish": draft.status == "awaiting_confirmation" and not draft.validation_errors,
             "can_reject": draft.status in {"awaiting_confirmation", "validation_failed"}
             or (draft.status == "uploaded" and self._reupload_target(draft) is not None),
         }
@@ -1180,17 +1227,31 @@ class PacketAdminService:
 
     async def _associated_testers(self, draft: PacketDraftRecord) -> list[dict[str, str]]:
         async with self.database.sessions() as session:
-            return [tester_summary(t) for t in await session.scalars(select(TesterRecord).where(
-                TesterRecord.id.in_([UUID(v) for v in draft.tester_bindings.values()])
-            ).order_by(TesterRecord.display_name, TesterRecord.id))]
+            return [
+                tester_summary(t)
+                for t in await session.scalars(
+                    select(TesterRecord)
+                    .where(TesterRecord.id.in_([UUID(v) for v in draft.tester_bindings.values()]))
+                    .order_by(TesterRecord.display_name, TesterRecord.id)
+                )
+            ]
 
     async def create_tester(
-        self, draft_id: UUID, actor_id: UUID, *, first_name: str,
-        second_name: str | None, surname: str, telegram_link: str | None,
+        self,
+        draft_id: UUID,
+        actor_id: UUID,
+        *,
+        first_name: str,
+        second_name: str | None,
+        surname: str,
+        telegram_link: str | None,
     ) -> dict[str, str]:
         first = self.tournaments._normalize_author_component(first_name, "Tester name")
-        second = (self.tournaments._normalize_author_component(second_name, "Tester second name")
-                  if second_name and second_name.strip() else None)
+        second = (
+            self.tournaments._normalize_author_component(second_name, "Tester second name")
+            if second_name and second_name.strip()
+            else None
+        )
         family = self.tournaments._normalize_author_component(surname, "Tester surname")
         link, username = self.tournaments._normalize_telegram_link(telegram_link)
         display_name = " ".join(p for p in (first, second, family) if p)
@@ -1204,9 +1265,14 @@ class PacketAdminService:
             await self._require_draft_access(session, context, draft, actor_id)
             if draft.status not in {"awaiting_confirmation", "validation_failed"}:
                 raise ValueError("Only an unpublished packet draft can be edited")
-            tester = TesterRecord(display_name=display_name,
-                                  first_name=first, second_name=second, surname=family,
-                                  telegram_link=link, telegram_username=username)
+            tester = TesterRecord(
+                display_name=display_name,
+                first_name=first,
+                second_name=second,
+                surname=family,
+                telegram_link=link,
+                telegram_username=username,
+            )
             session.add(tester)
             await session.flush()
             return tester_summary(tester)
@@ -1282,13 +1348,19 @@ class PacketAdminService:
             resolved, lead = await self._resolve_authors(
                 session, packet, bindings, lead_author_id,
             )
-            testers = await resolve_testers(session, packet.testers,
-                tester_bindings if tester_bindings is not None else {
-                    slot: UUID(value) for slot, value in draft.tester_bindings.items()
+            testers = await resolve_testers(
+                session,
+                packet.testers,
+                tester_bindings
+                if tester_bindings is not None
+                else {
+                    slot: UUID(value)
+                    for slot, value in draft.tester_bindings.items()
                     if int(slot) < len(packet.testers)
                     and int(slot) < len(draft.content.get("testers", ()))
                     and packet.testers[int(slot)] == draft.content["testers"][int(slot)]
-                })
+                },
+            )
             draft.tester_bindings = {str(i): str(t.id) for i, t in enumerate(testers)}
             draft.author_bindings = {name: str(author.id) for name, author in resolved.items()}
             draft.lead_author_id = lead.id if lead else None
@@ -1383,9 +1455,14 @@ class PacketAdminService:
             if administrator_id is None:
                 raise PermissionError("Reupload confirmation requires a tournament manager")
             stored = await self._save_packet(
-                UUID(target["tournament_id"]), UUID(target["assignment_id"]), administrator_id,
-                expected_version=target["expected_version"], content={}, changes={},
-                field_author_ids={}, reupload_draft_id=draft_id,
+                UUID(target["tournament_id"]),
+                UUID(target["assignment_id"]),
+                administrator_id,
+                expected_version=target["expected_version"],
+                content={},
+                changes={},
+                field_author_ids={},
+                reupload_draft_id=draft_id,
                 expected_draft_version=expected_version,
                 notify_bound_telegram=notify_bound_telegram,
             )
@@ -1418,8 +1495,11 @@ class PacketAdminService:
             }
             draft.lead_author_id = lead_author.id if lead_author else None
             logical_packet.statistical_author_id = draft.lead_author_id
-            testers = await resolve_testers(session, packet.testers,
-                {slot: UUID(value) for slot, value in draft.tester_bindings.items()})
+            testers = await resolve_testers(
+                session,
+                packet.testers,
+                {slot: UUID(value) for slot, value in draft.tester_bindings.items()},
+            )
             draft.tester_bindings = {str(i): str(t.id) for i, t in enumerate(testers)}
             version = PacketVersionRecord(
                 packet_id=logical_packet.id,

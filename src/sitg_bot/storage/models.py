@@ -623,8 +623,13 @@ class PlayerTesterLinkRequestRecord(Base, TimestampMixin):
             "(status IN ('approved', 'rejected') AND decided_by_id IS NOT NULL "
             "AND decided_at IS NOT NULL AND cancelled_at IS NULL)"
         ),
-        Index("uq_player_tester_link_requests_pending", "player_id", "tester_id",
-              unique=True, postgresql_where=text("status = 'pending'")),
+        Index(
+            "uq_player_tester_link_requests_pending",
+            "player_id",
+            "tester_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
         Index("ix_player_tester_link_requests_queue", "status", "created_at", "id"),
         Index("ix_player_tester_link_requests_player", "player_id", "created_at", "id"),
     )

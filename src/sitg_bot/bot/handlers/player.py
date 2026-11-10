@@ -183,11 +183,14 @@ def notification_text(
         )
     if kind == "tester_link.request_decided":
         return localization.text(
-            "notification.tester_link.decided", locale, status=payload.get("status", ""),
+            "notification.tester_link.decided",
+            locale,
+            status=payload.get("status", ""),
         )
     if kind == "tester_link.request_created":
         return localization.text(
-            "tester_link.request_created", locale,
+            "tester_link.request_created",
+            locale,
             player_nickname=payload.get("player_nickname", ""),
             tester_name=payload.get("tester_name", ""),
         )

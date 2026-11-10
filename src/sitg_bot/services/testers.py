@@ -171,7 +171,9 @@ class TesterService:
 
     @staticmethod
     async def _packets(
-        session: AsyncSession, tester_id: UUID, actor_id: UUID,
+        session: AsyncSession,
+        tester_id: UUID,
+        actor_id: UUID,
     ) -> list[dict[str, str]]:
         from sitg_bot.services.tournaments import TournamentService
 
@@ -184,10 +186,13 @@ class TesterService:
                 )
                 .where(
                     PacketVersionRecord.packet_id.in_(
-                        select(PacketVersionRecord.packet_id).join(
+                        select(PacketVersionRecord.packet_id)
+                        .join(
                             PacketVersionTesterRecord,
                             PacketVersionTesterRecord.packet_version_id == PacketVersionRecord.id,
-                        ).where(PacketVersionTesterRecord.tester_id == tester_id).correlate(None)
+                        )
+                        .where(PacketVersionTesterRecord.tester_id == tester_id)
+                        .correlate(None)
                     ),
                     PacketVersionRecord.state == "published",
                     TournamentPacketAssignmentRecord.status == "active",
@@ -201,10 +206,13 @@ class TesterService:
             if version.packet_id in seen:
                 continue
             adopted = assignment.adopted_version_id or await session.scalar(
-                select(PacketVersionRecord.id).where(
+                select(PacketVersionRecord.id)
+                .where(
                     PacketVersionRecord.packet_id == version.packet_id,
                     PacketVersionRecord.state == "published",
-                ).order_by(PacketVersionRecord.version_number.desc()).limit(1)
+                )
+                .order_by(PacketVersionRecord.version_number.desc())
+                .limit(1)
             )
             if version.id != adopted or not await TournamentService.has_assignment_access(
                 session, assignment, actor_id, "discoverable"
