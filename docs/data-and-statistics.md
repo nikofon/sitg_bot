@@ -43,6 +43,8 @@ and [technical index](architecture.md) for their callers.
 - A correction creates a new revision of the same logical question, so its statistics
   continue across revisions. A substitution creates a new logical question whose
   statistics start empty; the retired question's statistics remain available.
+  Library question statistics follow this logical identity across corrections and reuploads,
+  while their response keys identify the displayed immutable revisions.
 - Final statistics use the outcome after all appeals and authorized manager decisions.
   Preserve both the original answer-checking result and the final result for auditing.
 - Production records retain timestamps for games, attempts, appeals, ratings, and reputation

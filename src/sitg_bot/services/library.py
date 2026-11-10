@@ -27,6 +27,7 @@ from sitg_bot.storage.models import (
     PlayerExposureClaimRecord,
     PlayerQuestionStateRecord,
     PlayerRecord,
+    QuestionRevisionRecord,
     QuestionRoundRecord,
     TournamentManagerRecord,
     TournamentMembershipRecord,
@@ -168,17 +169,26 @@ class PacketLibraryService:
     async def _question_statistics(
         self, session: AsyncSession, version_id: UUID
     ) -> dict[str, dict[str, object]]:
-        """Per-question view and buzz aggregates from finalized, appeal-free SI games."""
-        revisions = select(PacketQuestionRecord.question_revision_id).where(
-            PacketQuestionRecord.packet_version_id == version_id
-        )
+        """Logical-question aggregates, keyed by the displayed immutable revisions."""
+        displayed = select(
+            PacketQuestionRecord.question_revision_id.label("displayed_revision_id"),
+            QuestionRevisionRecord.question_id,
+        ).join(
+            QuestionRevisionRecord,
+            QuestionRevisionRecord.id == PacketQuestionRecord.question_revision_id,
+        ).where(PacketQuestionRecord.packet_version_id == version_id).subquery()
         rounds = select(
-            QuestionRoundRecord.id, QuestionRoundRecord.question_revision_id,
+            QuestionRoundRecord.id,
+            displayed.c.displayed_revision_id.label("question_revision_id"),
+        ).join(
+            QuestionRevisionRecord,
+            QuestionRevisionRecord.id == QuestionRoundRecord.question_revision_id,
+        ).join(
+            displayed, displayed.c.question_id == QuestionRevisionRecord.question_id,
         ).join(GameRecord, GameRecord.id == QuestionRoundRecord.game_id).join(
             GameRulesetVersionRecord,
             GameRulesetVersionRecord.id == GameRecord.game_ruleset_version_id,
         ).where(
-            QuestionRoundRecord.question_revision_id.in_(revisions),
             GameRulesetVersionRecord.key == "si",
             GameRecord.status == "finalized",
             QuestionRoundRecord.status == "completed",
